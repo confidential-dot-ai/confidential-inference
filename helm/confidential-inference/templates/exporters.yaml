@@ -1,0 +1,248 @@
+{{- if .Values.dcgmExporter.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: dcgm-exporter
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dcgm-exporter
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "confidential-inference.selector" (dict "root" . "component" "dcgm-exporter") | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.dcgmExporter.port }}
+      targetPort: metrics
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dcgm-exporter
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dcgm-exporter
+spec:
+  selector:
+    matchLabels:
+      {{- include "confidential-inference.selector" (dict "root" . "component" "dcgm-exporter") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "confidential-inference.selector" (dict "root" . "component" "dcgm-exporter") | nindent 8 }}
+        confidential.ai/environment: {{ .Values.environment | quote }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.dcgmExporter.port | quote }}
+    spec:
+      serviceAccountName: confidential-inference
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.scheduling.inferenceNodeName | quote }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dcgm-exporter
+          image: {{ .Values.images.dcgmExporter }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add: ["SYS_ADMIN"]
+              drop: ["ALL"]
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.dcgmExporter.port }}
+          resources:
+            requests:
+              cpu: {{ .Values.dcgmExporter.resources.cpu | quote }}
+              memory: {{ .Values.dcgmExporter.resources.memory }}
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+{{- end }}
+---
+{{- if .Values.kubeStateMetrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-state-metrics
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kube-state-metrics
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "confidential-inference.selector" (dict "root" . "component" "kube-state-metrics") | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.kubeStateMetrics.port }}
+      targetPort: metrics
+    {{- if .Values.attestationReceipts.enabled }}
+    - name: cds-attest
+      port: {{ .Values.attestationReceipts.kubeStateMetricsPort }}
+      targetPort: cds-attest
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-metrics
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kube-state-metrics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "confidential-inference.selector" (dict "root" . "component" "kube-state-metrics") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "confidential-inference.selector" (dict "root" . "component" "kube-state-metrics") | nindent 8 }}
+        confidential.ai/environment: {{ .Values.environment | quote }}
+      annotations:
+        confidential.ai/cw: kube-state-metrics
+        confidential.ai/c8s-renew-interval: {{ .Values.attestationReceipts.certificateRenewInterval | quote }}
+    spec:
+      serviceAccountName: kube-state-metrics
+      securityContext:
+        {{- include "confidential-inference.workloadClaimsSupplementalGroup" . | nindent 8 }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kube-state-metrics
+          image: {{ .Values.images.kubeStateMetrics }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --host=0.0.0.0
+            - --port={{ .Values.kubeStateMetrics.port }}
+            - --resources=deployments,daemonsets,statefulsets,pods,nodes
+            - --namespaces={{ .Release.Namespace }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.kubeStateMetrics.port }}
+          resources:
+            requests:
+              cpu: {{ .Values.kubeStateMetrics.resources.cpu | quote }}
+              memory: {{ .Values.kubeStateMetrics.resources.memory }}
+          readinessProbe:
+            tcpSocket:
+              port: metrics
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+        {{- if .Values.attestationReceipts.enabled }}
+        {{- include "confidential-inference.cdsAttestSidecar" (dict "root" . "host" "0.0.0.0" "port" .Values.attestationReceipts.kubeStateMetricsPort "workload" .Values.kubeStateMetrics.attestedWorkload) | nindent 8 }}
+        {{- end }}
+      {{- if and .Values.attestationReceipts.enabled (not .Values.attestationReceipts.legacyC8s615) }}
+      volumes:
+        {{- include "confidential-inference.workloadClaimsVolume" . | nindent 8 }}
+      {{- end }}
+{{- end }}
+---
+{{- if .Values.nodeExporter.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-exporter
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "confidential-inference.selector" (dict "root" . "component" "node-exporter") | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.nodeExporter.port }}
+      targetPort: metrics
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-exporter
+spec:
+  selector:
+    matchLabels:
+      {{- include "confidential-inference.selector" (dict "root" . "component" "node-exporter") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "confidential-inference.selector" (dict "root" . "component" "node-exporter") | nindent 8 }}
+        confidential.ai/environment: {{ .Values.environment | quote }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.nodeExporter.port | quote }}
+    spec:
+      serviceAccountName: confidential-inference
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: node-exporter
+          image: {{ .Values.images.nodeExporter }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --path.procfs=/host/proc
+            - --path.sysfs=/host/sys
+            - --path.rootfs=/host/root
+            - --web.listen-address=:{{ .Values.nodeExporter.port }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.nodeExporter.port }}
+          resources:
+            requests:
+              cpu: {{ .Values.nodeExporter.resources.cpu | quote }}
+              memory: {{ .Values.nodeExporter.resources.memory }}
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: metrics
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+          volumeMounts:
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: root
+              mountPath: /host/root
+              readOnly: true
+      volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: root
+          hostPath:
+            path: /
+{{- end }}

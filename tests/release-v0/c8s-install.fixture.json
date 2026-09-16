@@ -1,0 +1,239 @@
+{
+  "schema": "confidential.ai/c8s-install-input/v1",
+  "environment": "production",
+  "c8s": {
+    "repository": "https://github.com/confidential-dot-ai/c8s",
+    "sourceCommit": "615bf738bb44a48f3f249aefd2fe823868e035a7",
+    "imageTag": "615bf73",
+    "capabilities": ["baked-node-socket"],
+    "workloadClaimsHostDir": "/var/run/nri-image-policy",
+    "workloadClaimsSocket": "attestation-api.sock"
+  },
+  "nodeImage": {
+    "cdi": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:e1440a8fdb54b0d9b259a0dab3ed69e275fdfbd8ce6c2c427f0ba06257cac028",
+    "evidenceArtifact": "sha256:0304da26413b1fabf5223a27070eeddf1d3602ab82e5e37a247b8d16977f71dc",
+    "manifest": "repo://images/control-plane-node/manifest-production.json",
+    "measurementsConfig": "repo://images/control-plane-node/measurements-production.json",
+    "manifestDigest": "sha256:5d31072d0043daa4a50615e56807ea60a81046840980df575179d55775262d30"
+  },
+  "cluster": {
+    "release": "c8s",
+    "namespace": "c8s-system",
+    "cvmMode": "node",
+    "hardwarePlatform": "tdx",
+    "singleNode": false,
+    "controlPlaneNode": "control-plane-node-1",
+    "gatewayNode": "gateway-node-1",
+    "nodeNames": [
+      "control-plane-node-1",
+      "gateway-node-1",
+      "inference-node-1"
+    ],
+    "volumes": true,
+    "attest": true,
+    "resolveDigests": true,
+    "environmentValues": "c8s/production-values.yaml",
+    "gatewayStateValues": "c8s/gateway-state-values.yaml",
+    "nodeCount": 3,
+    "nodeRoles": [
+      "control-plane-cds",
+      "gateway-worker",
+      "inference-worker"
+    ]
+  },
+  "operatorPublicKey": {
+    "infisicalEnvironment": "prod",
+    "path": "/v0/production",
+    "secretName": "C8S_OPERATOR_PUBLIC_KEY_PEM",
+    "fingerprint": "sha256:abababababababababababababababababababababababababababababababab",
+    "keySetSha256": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+  },
+  "meshCa": {
+    "infisicalEnvironment": "prod",
+    "path": "/v0/production",
+    "certificateSecretName": "C8S_MESH_CA_CERT_PEM",
+    "fingerprintSecretName": "C8S_MESH_CA_CERT_SHA256"
+  },
+  "application": {
+    "chart": "helm/confidential-inference",
+    "values": "helm/confidential-inference/values-production.yaml",
+    "release": "confidential-inference",
+    "namespace": "confidential-inference"
+  },
+  "systemFloor": [
+    {
+      "name": "c8s-operator",
+      "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:1468ac37566b0f198c41c56c098c32133c09279c08d549f7a57263d8b09d2b89",
+      "source": "c8s-install",
+      "uses": [
+        "operator",
+        "get-cert sidecar",
+        "cds-attest sidecar"
+      ]
+    },
+    {
+      "name": "cds",
+      "image": "ghcr.io/confidential-dot-ai/cds@sha256:a2b856614e0b1cdd48ffb8335d1ba7a8b987ed92b26613726b6176fb6f531923",
+      "source": "measured-node-image",
+      "uses": [
+        "certificate distribution service"
+      ]
+    },
+    {
+      "name": "nri-image-policy",
+      "image": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:7edba14e351df55dc1d1cf74a38a5545239c6917897c41fb975dc650d4d02e45",
+      "source": "measured-node-image",
+      "uses": [
+        "node image admission"
+      ]
+    },
+    {
+      "name": "nginx",
+      "image": "nginxinc/nginx-unprivileged@sha256:e88d990b349df8cf4aa82f16642d7a23375016638c9ace4e5c6ca25028e62e65",
+      "source": "c8s-install",
+      "uses": [
+        "TLS load balancer"
+      ]
+    },
+    {
+      "name": "ratls-mesh",
+      "image": "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:7b73939c367de2f1912b6b1bb644fc7641f29cac6723893a831affaca2ad6b46",
+      "source": "c8s-install",
+      "uses": [
+        "node mesh"
+      ]
+    },
+    {
+      "name": "volumed",
+      "image": "ghcr.io/confidential-dot-ai/volumed@sha256:6c3ca327bd628efd7f1241e024d56d7c74744d68b55ee9a80b3d3dc3752249a2",
+      "source": "c8s-install",
+      "uses": [
+        "model volume"
+      ]
+    },
+    {
+      "name": "private-control-transport",
+      "image": "example.invalid/private-control-transport@sha256:321ce041508c19079b57a28b6666c8d81ab0b08accc0a2585b3ab663d557ac24",
+      "source": "system-infrastructure",
+      "uses": [
+        "private Kubernetes and c8s operator access"
+      ]
+    }
+  ],
+  "workloadMappings": [
+    {
+      "allowlistName": "gateway",
+      "confidentialWorkloadId": "gateway",
+      "secretReads": [
+        "/confidential-inference/gateway/api-key-pepper"
+      ],
+      "controllers": [
+        "Deployment/gateway"
+      ]
+    },
+    {
+      "allowlistName": "gateway-state-mounter",
+      "controllers": [
+        "DaemonSet/gateway-state-mounter"
+      ]
+    },
+    {
+      "allowlistName": "inference-worker-0",
+      "confidentialWorkloadId": "inference-worker-0",
+      "secretReads": [
+        "/confidential-inference/volumes/dsv4"
+      ],
+      "controllers": [
+        "StatefulSet/inference-worker-0"
+      ]
+    },
+    {
+      "allowlistName": "inference-worker-1",
+      "confidentialWorkloadId": "inference-worker-1",
+      "secretReads": [
+        "/confidential-inference/volumes/dsv4"
+      ],
+      "controllers": [
+        "StatefulSet/inference-worker-1"
+      ]
+    },
+    {
+      "allowlistName": "kube-state-metrics",
+      "confidentialWorkloadId": "kube-state-metrics",
+      "controllers": [
+        "Deployment/kube-state-metrics"
+      ]
+    },
+    {
+      "allowlistName": "metrics-collector",
+      "confidentialWorkloadId": "metrics-collector",
+      "controllers": [
+        "Deployment/metrics-collector"
+      ]
+    },
+    {
+      "allowlistName": "sglang-router",
+      "confidentialWorkloadId": "sglang-router",
+      "controllers": [
+        "Deployment/sglang-router"
+      ]
+    }
+  ],
+  "imageConfigs": {
+    "docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24": {
+      "entrypoint": [
+        "/bin/prometheus"
+      ],
+      "cmd": [
+        "--config.file=/etc/prometheus/prometheus.yml",
+        "--storage.tsdb.path=/prometheus"
+      ],
+      "source": "oci-config"
+    },
+    "docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316": {
+      "entrypoint": [],
+      "cmd": [
+        "/bin/bash"
+      ],
+      "source": "oci-config"
+    },
+    "nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101": {
+      "entrypoint": [
+        "/usr/local/dcgm/dcgm-exporter-entrypoint.sh"
+      ],
+      "cmd": [],
+      "source": "oci-config"
+    },
+    "quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a": {
+      "entrypoint": [
+        "/bin/node_exporter"
+      ],
+      "cmd": [],
+      "source": "oci-config"
+    },
+    "registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9": {
+      "entrypoint": [
+        "/kube-state-metrics",
+        "--port=8080",
+        "--telemetry-port=8081"
+      ],
+      "cmd": [],
+      "source": "oci-config"
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:13334810afe09f9ec722eed6fc19c4a64e87b406e926ce383a54dd2ede01fea1": {
+      "entrypoint": [
+        "/usr/local/bin/confidential-gateway"
+      ],
+      "cmd": [],
+      "source": "repository-recipe"
+    }
+  },
+  "allowlist": {
+    "file": "tests/release-v0/allowlist.fixture.json",
+    "digest": "sha256:ff44096e9edb0089e8c46ad042e5566b125d359f165f1ab155123a344756c55f"
+  },
+  "gatewayAttach": {
+    "workloadRef": "gateway=confidential-inference/deployment/gateway:9443",
+    "upstream": "gateway"
+  }
+}

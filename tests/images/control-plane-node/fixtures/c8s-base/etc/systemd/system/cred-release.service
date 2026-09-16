@@ -1,0 +1,60 @@
+[Unit]
+Description=Attested RKE2 operator credential release
+Documentation=https://github.com/confidential-dot-ai/c8s
+# Bound restart storms: a persistent failure (e.g. a runtime-measurement
+# mismatch — the on-disk pubkey doesn't match) should fail closed and stop,
+# not spin. 5 tries in 5 min, then give up until the next boot.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+# Needs the RKE2 client-CA (to sign operator certs) and the attestation-api
+# (to fetch the RA-TLS serving cert's quote from :8400). rke2-server
+# creates /var/lib/rancher/rke2/server/tls/client-ca.* only once it has
+# initialised, so we order after it and gate on the key existing (the Exec
+# startpre below), rather than racing a half-initialised control plane.
+After=network-online.target rke2-role.service rke2-server.service attestation-api.service
+Wants=network-online.target
+Requires=rke2-role.service attestation-api.service
+# Only run on operator boots. A VM launched without --operator-key has no
+# opkeydata disk; the condition makes systemd SKIP the unit (not fail it), so
+# there's no restart-loop on non-operator nodes. The launcher attaches the
+# disk with ISO label "opkeydata".
+ConditionPathExists=/dev/disk/by-label/opkeydata
+# Server role only: agent nodes have no client CA to sign with.
+ConditionPathExists=/run/confos/role-server
+
+[Service]
+Type=simple
+# The operator key is bound into the platform's launch identity (TDX: the
+# initrd extends its hash into RTMR[3]; SNP: the launcher commits its sha256
+# as HOSTDATA); the service verifies the on-disk pubkey against that binding
+# via the local attestation-api and refuses (exits non-zero) if it was
+# substituted.
+# Non-operator boots never reach here (ConditionPathExists skips the unit).
+# Waits bounded (10 min) rather than failing fast: on a slow first boot the
+# CA can take minutes to appear, and 5 quick ExecStartPre failures 10s apart
+# would exhaust StartLimitBurst in under a minute and give up until reboot.
+ExecStartPre=/bin/sh -c 'for _ in $(seq 1 120); do [ -r /var/lib/rancher/rke2/server/tls/client-ca.key ] && exit 0; sleep 5; done; exit 1'
+TimeoutStartSec=630
+# ${CRED_PLATFORM} comes from a drop-in the c8s sync hook renders from the
+# build's required C8S_PLATFORM. The `=` form matters: with the variable
+# unset systemd would elide a bare word, but --platform= expands to an empty
+# value, which platform validation rejects — fail closed, never a default.
+ExecStart=/usr/local/bin/c8s cred-release \
+    --listen :8443 \
+    --attestation-api-url http://127.0.0.1:8400 \
+    --platform=${CRED_PLATFORM} \
+    --cert-ttl 24h \
+    --cert-org system:masters \
+    --cert-cn operator
+Restart=on-failure
+RestartSec=10
+# Reads two files: the initrd-staged operator pubkey (/etc/confai) and the
+# RKE2 client-CA key. No mount needed. Keep the rest of the FS read-only.
+ProtectSystem=strict
+ReadOnlyPaths=/etc/confai /var/lib/rancher/rke2/server/tls
+ReadWritePaths=/run
+ProtectHome=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

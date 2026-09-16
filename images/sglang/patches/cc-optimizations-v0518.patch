@@ -1,0 +1,384 @@
+diff --git a/sglang/srt/layers/flashinfer_comm_fusion.py b/sglang/srt/layers/flashinfer_comm_fusion.py
+index cd399649cf..9f56d75ce2 100644
+--- a/sglang/srt/layers/flashinfer_comm_fusion.py
++++ b/sglang/srt/layers/flashinfer_comm_fusion.py
+@@ -21,6 +21,7 @@ from sglang.srt.utils import (
+     is_sm90_supported,
+     is_sm100_supported,
+ )
++from sglang.srt.utils.common import is_confidential_compute
+ from sglang.srt.utils.custom_op import register_custom_op
+
+ logger = logging.getLogger(__name__)
+@@ -50,6 +51,24 @@ def _resolve_backend(backend: str, is_multi_node: bool = False) -> str:
+             "FlashInfer allreduce fusion requires SM90 or SM10X NVIDIA GPUs."
+         )
+
++    # The mnnvl backend needs NVLink multicast, which is unavailable under
++    # NVIDIA Confidential Computing (CC). Force the multicast-free trtllm
++    # backend there.
++    if is_confidential_compute():
++        if backend == "mnnvl":
++            raise ValueError(
++                "FlashInfer allreduce fusion mnnvl backend requires NVLink "
++                "multicast, unavailable under NVIDIA Confidential Computing. "
++                "Use --flashinfer-allreduce-fusion-backend=trtllm."
++            )
++        if is_multi_node:
++            raise ValueError(
++                "FlashInfer allreduce fusion under NVIDIA Confidential Computing "
++                "is single-node only (multi-node needs the mnnvl backend, which "
++                "requires NVLink multicast)."
++            )
++        return "trtllm"
++
+     if backend == "auto":
+         if is_multi_node:
+             if is_sm100_supported():
+@@ -461,7 +480,15 @@ class FlashInferWorkspaceManager:
+
+         self.cleanup()
+
+-        if not _preflight_check_workspace_memory(
++        # NVIDIA Confidential Computing (CC) can't use the symmetric-memory
++        # (cuMulticast) workspace. FlashInfer auto-selects a multicast-free IPC
++        # workspace under CC and _resolve_backend forces the trtllm backend, so
++        # here cc_enabled only gates the preflight probe below (which itself
++        # uses the symmetric-memory path that fails under CC).
++        cc_enabled = is_confidential_compute()
++
++        # The preflight probes the symmetric-memory path which is not supported by CC
++        if not cc_enabled and not _preflight_check_workspace_memory(
+             world_size=world_size,
+             max_token_num=max_token_num,
+             hidden_dim=hidden_dim,
+diff --git a/sglang/srt/managers/async_d2h_copy_worker.py b/sglang/srt/managers/async_d2h_copy_worker.py
+new file mode 100644
+index 0000000000..ce9a6abf4c
+--- /dev/null
++++ b/sglang/srt/managers/async_d2h_copy_worker.py
+@@ -0,0 +1,147 @@
++from __future__ import annotations
++
++import logging
++import queue
++import threading
++from typing import Callable, Optional
++
++logger = logging.getLogger(__name__)
++
++
++class HostCopyDone:
++    """Completion handle for an async device->host copy run on a worker thread.
++
++    A drop-in for ``torch.cuda.Event`` as far as copy-completion consumers are
++    concerned: it exposes the same ``record()`` / ``synchronize()`` / ``query()``
++    surface, so a caller can hand it to code that already waits on a CUDA event
++    (e.g. store it in a ``copy_done`` field) without that code needing to know
++    the copy was offloaded to a host thread.
++
++    Unlike a CUDA event it also carries any exception the copy raised;
++    ``synchronize()`` re-raises it so a failed copy aborts the consumer instead
++    of letting it read invalid host tensors. ``error`` is None iff the copy
++    succeeded.
++    """
++
++    def __init__(self):
++        self._done = threading.Event()
++        self.error: Optional[BaseException] = None
++
++    def record(self, *args, **kwargs) -> None:
++        # Some copy routines end with ``handle.record()`` (a CUDA-event habit);
++        # the real completion signal is the worker calling ``set_done``, so this
++        # is a no-op kept for drop-in parity with torch.cuda.Event.
++        pass
++
++    def set_done(self, error: Optional[BaseException] = None) -> None:
++        """Signal completion. Called by the worker once the copy has finished
++        (``error`` None) or failed (``error`` set)."""
++        self.error = error
++        self._done.set()
++
++    def synchronize(self) -> None:
++        """Block until the copy completes; re-raise if it failed."""
++        self._done.wait()
++        if self.error is not None:
++            raise RuntimeError(
++                "Async device->host copy failed; destination tensors are invalid"
++            ) from self.error
++
++    def query(self) -> bool:
++        """True once the copy has completed (successfully or not)."""
++        return self._done.is_set()
++
++
++class AsyncD2HCopyWorker:
++    """Runs blocking device->host copies on a dedicated daemon thread.
++
++    Some environments force a device-to-host ``cudaMemcpyAsync`` to be
++    synchronous and block AT ISSUE — most notably NVIDIA Confidential Computing
++    (bounce-buffer CC), where the host destination is staged through an encrypted
++    bounce buffer. Issuing such a copy inline then stalls the *submitting* thread
++    for the whole copy, which is fatal to any pipeline that relies on that thread
++    staying free (for example the SGLang overlap scheduler, which must keep
++    launching the next step).
++
++    This worker moves the (still-blocking) copy off the caller's thread so the
++    caller keeps running. The pattern:
++      - the caller submits ``copy_fn`` with the source-producing stream current;
++        ``submit`` records a readiness event on that stream, hands back a
++        ``HostCopyDone``, and returns immediately;
++      - this worker ``cudaEventSynchronize``-s on that event (event-sync, NOT a
++        stream-wait, so the blocking copy never stalls the caller's CUDA API
++        calls), runs the copy on its own private ``d2h_copy_stream``, blocks
++        until it completes, and signals the handle;
++      - the caller (or a downstream consumer) later calls
++        ``HostCopyDone.synchronize()`` to wait for the copy.
++
++    The stream is private to this worker on purpose: it must never be a stream
++    the caller also enqueues onto. If it were shared, this worker's blanket
++    ``synchronize()`` could block on unrelated work the caller queued after
++    submitting (e.g. a later ``wait_stream``), re-coupling the caller to the copy
++    and defeating the point.
++
++    The copy itself stays synchronous when the platform forces it; it is merely
++    non-blocking *to the submitting thread*.
++    """
++
++    def __init__(self, device_module):
++        self.device_module = device_module
++        # Private stream, created and owned here so nothing outside this worker
++        # can enqueue onto it (see class docstring). Created on the caller's
++        # thread, so it lands on the current device.
++        self.d2h_copy_stream = device_module.Stream()
++        self._queue: queue.Queue = queue.Queue()
++        self._thread = threading.Thread(
++            target=self._loop, name="sglang-d2h-copy-worker", daemon=True
++        )
++        self._thread.start()
++
++    def submit(self, copy_fn: Callable[[], None]) -> HostCopyDone:
++        """Record readiness on the CURRENT stream and enqueue the copy.
++
++        Must be called with the stream that produced the copy sources as the
++        current stream: ``submit`` records a completion event on it synchronously
++        and the worker waits on that event before copying. ``copy_fn`` performs
++        the actual ``.to("cpu", ...)`` copies. The returned ``HostCopyDone`` is
++        signaled once the copies complete (or fail); its ``synchronize()`` blocks
++        until then and re-raises on failure.
++        """
++        src_ready = self.device_module.Event()
++        src_ready.record()
++        done = HostCopyDone()
++        self._queue.put((src_ready, copy_fn, done))
++        return done
++
++    def _loop(self):
++        while True:
++            item = self._queue.get()
++            if item is None:
++                return
++            src_ready, copy_fn, done = item
++            error = None
++            try:
++                # Wait until the producing work has materialized the source
++                # tensors. Event-sync (cudaEventSynchronize), not a stream wait
++                # — see class docstring.
++                src_ready.synchronize()
++                # Run the copies on this thread's private stream. PyTorch's
++                # current stream is thread-local, so this does not affect the
++                # submitting thread's stream.
++                with self.device_module.stream(self.d2h_copy_stream):
++                    copy_fn()
++                self.d2h_copy_stream.synchronize()
++            except Exception as e:
++                logger.exception("AsyncD2HCopyWorker copy failed")
++                error = e
++            finally:
++                # Always signal so the caller never hangs; carry the error so
++                # synchronize() aborts instead of reading invalid host tensors.
++                done.set_done(error=error)
++
++    def shutdown(self, timeout: float = 2.0):
++        """Signal the worker to stop and join it (best-effort, bounded wait)."""
++        if not self._thread.is_alive():
++            return
++        self._queue.put(None)
++        self._thread.join(timeout=timeout)
+diff --git a/sglang/srt/managers/scheduler.py b/sglang/srt/managers/scheduler.py
+index 7dc5be833f..4c012c41d9 100644
+--- a/sglang/srt/managers/scheduler.py
++++ b/sglang/srt/managers/scheduler.py
+@@ -315,7 +315,7 @@ from sglang.srt.utils import (
+     suppress_other_loggers,
+     triton_load_watch,
+ )
+-from sglang.srt.utils.common import is_npu
++from sglang.srt.utils.common import is_confidential_compute, is_npu
+ from sglang.srt.utils.hf_transformers_utils import (
+     get_processor,
+     get_tokenizer,
+@@ -1497,6 +1497,20 @@ class Scheduler(
+         if not self.enable_overlap:
+             return
+
++        # Under NVIDIA Confidential Computing (CC) the per-step D2H result readback is
++        # forced synchronous and blocks the scheduler thread at issue, serializing the
++        # overlap pipeline. Offload it to a worker thread (AsyncD2HCopyWorker).
++        self.enable_async_d2h_copy = is_confidential_compute()
++        self.async_d2h_worker = None
++        if self.enable_async_d2h_copy:
++            from sglang.srt.managers.async_d2h_copy_worker import AsyncD2HCopyWorker
++
++            self.async_d2h_worker = AsyncD2HCopyWorker(self.device_module)
++            logger.info(
++                "NVIDIA Confidential Computing (CC) detected: "
++                "using async D2H copy worker to preserve overlap scheduling."
++            )
++
+         self.batch_record_buf = [None] * 2
+         self.batch_record_ct = 0
+
+@@ -3734,10 +3748,19 @@ class Scheduler(
+                                 # gated by copy_done, so nothing on forward_stream waits.
+                                 self.copy_stream.wait_stream(self.forward_stream)
+                                 with self.copy_stream_ctx:
+-                                    batch_result.copy_to_cpu(
++                                    copy_fn = partial(
++                                        batch_result.copy_to_cpu,
+                                         return_logprob=batch.return_logprob,
+                                         return_hidden_states=batch.return_hidden_states,
+                                     )
++                                    if self.enable_async_d2h_copy:
++                                        # Using the async D2H copy worker when NVIDIA
++                                        # Confidential Computing (CC) is enabled.
++                                        batch_result.copy_done = (
++                                            self.async_d2h_worker.submit(copy_fn)
++                                        )
++                                    else:
++                                        copy_fn()
+                         else:
+                             batch_result.future_indices = future_indices
+
+@@ -3903,10 +3926,17 @@ class Scheduler(
+         # with subsequent forward computation.
+         self.copy_stream.wait_stream(self.forward_stream)
+         with self.copy_stream_ctx:
+-            batch_result.copy_to_cpu(
++            copy_fn = partial(
++                batch_result.copy_to_cpu,
+                 return_logprob=cur_batch.return_logprob,
+                 return_hidden_states=cur_batch.return_hidden_states,
+             )
++            if self.enable_async_d2h_copy:
++                # Using the async D2H copy worker when NVIDIA
++                # Confidential Computing (CC) is enabled.
++                batch_result.copy_done = self.async_d2h_worker.submit(copy_fn)
++            else:
++                copy_fn()
+
+         # Release the closure and large GPU tensors that are no longer needed.
+         # The delay_sample_func closure captures forward_batch (which holds
+@@ -5079,6 +5109,10 @@ def run_scheduler_process(
+             # FPM has a background ZMQ publisher thread that needs explicit
+             # teardown to flush queued metrics and close the socket cleanly.
+             scheduler.metrics_reporter._shutdown_fpm()
++            # Stop the async D2H copy worker thread if any.
++            if getattr(scheduler, "async_d2h_worker", None) is not None:
++                scheduler.async_d2h_worker.shutdown()
++                scheduler.async_d2h_worker = None
+             # Graceful path only: on the exception path the GPU may be wedged
+             # and the synchronize() in destroy() could itself hang.
+             if scheduler.gracefully_exit:
+diff --git a/sglang/srt/managers/utils.py b/sglang/srt/managers/utils.py
+index 69d00c9af9..91f8947e6d 100644
+--- a/sglang/srt/managers/utils.py
++++ b/sglang/srt/managers/utils.py
+@@ -20,6 +20,7 @@ from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+ from sglang.srt.state_capturer.base import TopkCaptureOutput
+
+ if TYPE_CHECKING:
++    from sglang.srt.managers.async_d2h_copy_worker import HostCopyDone
+     from sglang.srt.managers.scheduler import GenerationBatchResult
+     from sglang.srt.speculative.eagle_info import EagleDraftInput
+
+@@ -66,7 +67,7 @@ class GenerationBatchResult:
+     extend_logprob_start_len_per_req: Optional[List[int]] = None
+
+     # For overlap scheduling
+-    copy_done: Optional[torch.cuda.Event] = None
++    copy_done: Optional[Union[torch.cuda.Event, HostCopyDone]] = None
+     delay_sample_func: Optional[callable] = None
+     future_indices: Optional[torch.Tensor] = None
+     speculative_num_draft_tokens: Optional[int] = None
+@@ -292,7 +293,7 @@ class EmbeddingBatchResult:
+
+     embeddings: torch.Tensor
+     pooled_hidden_states: Optional[torch.Tensor] = None
+-    copy_done: Optional[torch.cuda.Event] = None
++    copy_done: Optional[Union[torch.cuda.Event, HostCopyDone]] = None
+     can_run_cuda_graph: bool = False
+
+     @torch.profiler.record_function("copy_embedding_to_cpu")
+diff --git a/sglang/srt/utils/common.py b/sglang/srt/utils/common.py
+index 053f2cdb93..f6c65b08be 100644
+--- a/sglang/srt/utils/common.py
++++ b/sglang/srt/utils/common.py
+@@ -4706,6 +4706,33 @@ def get_or_create_event_loop():
+         return loop
+
+
++@lru_cache(maxsize=1)
++def is_confidential_compute() -> bool:
++    """Whether the GPU is running in NVIDIA Confidential Computing (CC) mode.
++
++    Detected once via NVML and cached.
++    Overridable with ``SGLANG_CONFIDENTIAL_COMPUTE=1/0``
++    """
++    forced = os.environ.get("SGLANG_CONFIDENTIAL_COMPUTE")
++    if forced is not None:
++        return forced == "1"
++    if not torch.cuda.is_available():
++        return False
++    try:
++        import pynvml
++
++        pynvml.nvmlInit()
++        try:
++            state = pynvml.nvmlSystemGetConfComputeState()
++            # ccFeature != 0 means CC is enabled (ON or devtools).
++            return int(getattr(state, "ccFeature", 0)) != 0
++        finally:
++            pynvml.nvmlShutdown()
++    except Exception as e:
++        logger.debug("[SGLang]: Confidential-compute detection failed: %r", e)
++        return False
++
++
+ def init_cublas():
+     """We need to run a small matmul to init cublas. Otherwise, it will raise some errors later."""
+     dtype = torch.float16
+diff --git a/sglang/srt/distributed/device_communicators/cuda_wrapper.py b/sglang/srt/distributed/device_communicators/cuda_wrapper.py
+index 794af8010e..7994399695 100644
+--- a/sglang/srt/distributed/device_communicators/cuda_wrapper.py
++++ b/sglang/srt/distributed/device_communicators/cuda_wrapper.py
+@@ -48,6 +48,19 @@ def find_loaded_library(lib_name) -> Optional[str]:
+     shared libraries loaded by the process. We can use this file to find the path of the
+     a loaded library.
+     """  # noqa
++    if lib_name == "libcudart":
++        for path in (
++            "/usr/local/cuda/targets/x86_64-linux/lib/libcudart.so",
++            "/usr/local/cuda/lib64/libcudart.so",
++        ):
++            if not os.path.isfile(path):
++                continue
++            library = ctypes.CDLL(path)
++            if getattr(library, "cudaDeviceReset", None) is not None:
++                resolved = os.path.realpath(path)
++                logger.info("Using canonical CUDA runtime: %s", resolved)
++                return resolved
++
+     candidates = []
+     with open("/proc/self/maps") as f:
+         for line in f:

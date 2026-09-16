@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "image": "registry.k8s.io/kube-state-metrics/kube-state-metrics",
+    "digest": "sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9",
+    "license": "Apache-2.0"
+  },
+  "build": {
+    "buildxVersion": "0.36.1",
+    "buildkitImage": "moby/buildkit",
+    "buildkitDigest": "sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8"
+  },
+  "runtime": {
+    "uid": 65534,
+    "gid": 65534,
+    "entrypoint": ["/kube-state-metrics", "--port=8080", "--telemetry-port=8081"]
+  }
+}

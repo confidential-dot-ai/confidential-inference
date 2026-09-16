@@ -1,0 +1,13 @@
+**
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!services/
+!services/gateway/
+!services/gateway/Cargo.toml
+!services/gateway/src/
+!services/gateway/src/**
+!services/maintenance-gateway/
+!services/maintenance-gateway/Cargo.toml
+!services/maintenance-gateway/src/
+!services/maintenance-gateway/src/**

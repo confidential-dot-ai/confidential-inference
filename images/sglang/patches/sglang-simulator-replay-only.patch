@@ -1,0 +1,69 @@
+diff --git a/src/sglang_simulator/time_predictor/__init__.py b/src/sglang_simulator/time_predictor/__init__.py
+--- a/src/sglang_simulator/time_predictor/__init__.py
++++ b/src/sglang_simulator/time_predictor/__init__.py
+@@ -1,19 +1,11 @@
+-from sglang_simulator.time_predictor.aiconfigurator import (
+-    AIConfiguratorTimePredictor,
+-)
+ from sglang_simulator.time_predictor.base import (
+     InferTimePredictor,
+     ScheduleBatch,
+     ScheduleRequest,
+ )
+-from sglang_simulator.time_predictor.ml import MLTimePredictor
+-from sglang_simulator.time_predictor.replay import ReplayTimePredictor
+ 
+ __all__ = (
+     ScheduleRequest,
+     ScheduleBatch,
+     InferTimePredictor,
+-    AIConfiguratorTimePredictor,
+-    MLTimePredictor,
+-    ReplayTimePredictor,
+ )
+diff --git a/src/sglang_simulator/simulation/manager/config.py b/src/sglang_simulator/simulation/manager/config.py
+--- a/src/sglang_simulator/simulation/manager/config.py
++++ b/src/sglang_simulator/simulation/manager/config.py
+@@ -9,10 +9,7 @@ from sglang_simulator.simulation.utils import (
+     calc_kv_cache_per_layer_elems,
+ )
+ from sglang_simulator.spec import AcceleratorInfo, DataType, ModelInfo
+-from sglang_simulator.time_predictor import (
+-    AIConfiguratorTimePredictor,
+-    InferTimePredictor,
+-)
++from sglang_simulator.time_predictor import InferTimePredictor
+ from sglang_simulator.utils import get_logger
+ 
+ logger = get_logger()
+@@ -195,6 +192,10 @@ class ConfigManager:
+         config = cls._get_raw_config()
+         predictor_config = config.get("predictor", {})
+         if predictor_config.get("name") == "aiconfigurator":
++            from sglang_simulator.time_predictor.aiconfigurator import (
++                AIConfiguratorTimePredictor,
++            )
++
+             database_mode = predictor_config.get("database_mode", "SILICON")
+             prefill_scale_factor = predictor_config.get("prefill_scale_factor", 1)
+             decode_scale_factor = predictor_config.get("decode_scale_factor", 1)
+diff --git a/src/sglang_simulator/simulation/utils.py b/src/sglang_simulator/simulation/utils.py
+--- a/src/sglang_simulator/simulation/utils.py
++++ b/src/sglang_simulator/simulation/utils.py
+@@ -2,7 +2,6 @@ import numpy as np
+ from sglang_simulator.simulation.types import RequestStats, SchedulerConfig
+ from sglang_simulator.spec.accelerator import AcceleratorInfo
+ from sglang_simulator.spec.model import ModelInfo
+-from sglang_simulator.time_predictor.aiconfigurator import get_perf_model
+ 
+ 
+ def calc_kv_cache_cell_elems(model_info: ModelInfo, tp_size: int, pp_size: int) -> int:
+@@ -41,6 +40,8 @@ def profile_device_available_bytes(
+             "simulator never falls back to the local GPU memory capacity."
+         )
+ 
++    from sglang_simulator.time_predictor.aiconfigurator import get_perf_model
++
+     perf_model = get_perf_model(scheduler_config, model)
+     weights = 0
+     for op in perf_model.context_ops:

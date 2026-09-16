@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "image": "docker.io/prom/prometheus",
+    "digest": "sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24",
+    "license": "Apache-2.0"
+  },
+  "build": {
+    "buildxVersion": "0.36.1",
+    "buildkitImage": "moby/buildkit",
+    "buildkitDigest": "sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8"
+  },
+  "runtime": {
+    "entrypoint": ["/bin/prometheus"],
+    "args": ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]
+  }
+}

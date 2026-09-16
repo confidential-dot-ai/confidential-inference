@@ -1,0 +1,8 @@
+[Unit]
+Description=Boot-sim stub of RKE2 role dispatch
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/rke2-role.sh
+[Install]
+WantedBy=multi-user.target

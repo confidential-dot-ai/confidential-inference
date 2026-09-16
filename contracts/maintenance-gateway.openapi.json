@@ -1,0 +1,325 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Confidential Inference Maintenance Gateway API",
+    "version": "1.0.0",
+    "description": "This contract defines the public API during a complete inference outage. The maintenance gateway runs no inference workload."
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "servers": [
+    {
+      "url": "https://api.example.invalid"
+    }
+  ],
+  "x-deployment-contract": {
+    "tlsTermination": "c8s-tls-lb",
+    "tlsRequirement": "c8s TLS-LB terminates public TLS and sends HTTP to the attested workload through the internal mesh.",
+    "inferenceWorkload": "none",
+    "canonicalState": "none"
+  },
+  "paths": {
+    "/v1/models": {
+      "get": {
+        "operationId": "listMaintenanceModels",
+        "responses": {
+          "200": {
+            "description": "The maintenance gateway advertises the production model catalog. Inference requests remain unavailable during maintenance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceModelList"
+                },
+                "example": {
+                  "object": "list",
+                  "data": [
+                    {"id": "deepseek-ai/DeepSeek-V4-Flash-0731", "object": "model", "owned_by": "confidential.ai"},
+                    {"id": "MiniMaxAI/MiniMax-M3-MXFP8", "object": "model", "owned_by": "confidential.ai"}
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/completions": {
+      "post": {
+        "operationId": "rejectMaintenanceCompletion",
+        "responses": {
+          "429": {
+            "$ref": "#/components/responses/InferenceUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/chat/completions": {
+      "post": {
+        "operationId": "rejectMaintenanceChatCompletion",
+        "responses": {
+          "429": {
+            "$ref": "#/components/responses/InferenceUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/responses": {
+      "post": {
+        "operationId": "rejectMaintenanceResponse",
+        "responses": {
+          "429": {
+            "$ref": "#/components/responses/InferenceUnavailable"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "getMaintenanceLiveness",
+        "description": "This route reports only that the maintenance process runs.",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/MaintenanceLive"
+          }
+        }
+      }
+    },
+    "/readiness": {
+      "get": {
+        "operationId": "getMaintenanceReadiness",
+        "description": "This route reports whether the process can serve the maintenance contract.",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/MaintenanceReady"
+          },
+          "503": {
+            "$ref": "#/components/responses/MaintenanceNotReady"
+          }
+        }
+      }
+    },
+    "/attestation": {
+      "get": {
+        "operationId": "getMaintenanceAttestationStatus",
+        "description": "This route makes no inference attestation claim.",
+        "responses": {
+          "200": {
+            "description": "The response declares that the maintenance gateway runs no inference workload.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceAttestationStatus"
+                },
+                "example": {
+                  "mode": "maintenance",
+                  "inferenceAvailable": false,
+                  "inferenceWorkloads": [],
+                  "attestationType": "outage-status",
+                  "statement": "This maintenance gateway runs no inference workload."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "x-unknown-route-response": {
+    "status": 404,
+    "contentType": "application/json",
+    "body": {
+      "error": {
+        "message": "Route not found.",
+        "type": "invalid_request_error",
+        "param": null,
+        "code": "not_found"
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "MaintenanceModelList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["object", "data"],
+        "properties": {
+          "object": {
+            "const": "list"
+          },
+          "data": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "object", "owned_by"],
+                "properties": {
+                  "id": {"const": "deepseek-ai/DeepSeek-V4-Flash-0731"},
+                  "object": {"const": "model"},
+                  "owned_by": {"const": "confidential.ai"}
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "object", "owned_by"],
+                "properties": {
+                  "id": {"const": "MiniMaxAI/MiniMax-M3-MXFP8"},
+                  "object": {"const": "model"},
+                  "owned_by": {"const": "confidential.ai"}
+                }
+              }
+            ],
+            "items": false
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["message", "type", "param", "code"],
+            "properties": {
+              "message": {
+                "const": "Inference is temporarily unavailable."
+              },
+              "type": {
+                "const": "service_unavailable"
+              },
+              "param": {
+                "type": "null"
+              },
+              "code": {
+                "const": "inference_unavailable"
+              }
+            }
+          }
+        }
+      },
+      "MaintenanceStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "mode", "inferenceAvailable"],
+        "properties": {
+          "status": {
+            "enum": ["live", "ready", "not_ready"]
+          },
+          "mode": {
+            "const": "maintenance"
+          },
+          "inferenceAvailable": {
+            "const": false
+          }
+        }
+      },
+      "MaintenanceAttestationStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["mode", "inferenceAvailable", "inferenceWorkloads", "attestationType", "statement"],
+        "properties": {
+          "mode": {
+            "const": "maintenance"
+          },
+          "inferenceAvailable": {
+            "const": false
+          },
+          "inferenceWorkloads": {
+            "type": "array",
+            "maxItems": 0
+          },
+          "attestationType": {
+            "const": "outage-status"
+          },
+          "statement": {
+            "const": "This maintenance gateway runs no inference workload."
+          }
+        }
+      }
+    },
+    "responses": {
+      "InferenceUnavailable": {
+        "description": "The maintenance gateway rejects inference without an upstream call.",
+        "headers": {
+          "Retry-After": {
+            "required": true,
+            "schema": {
+              "const": "60"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            },
+            "example": {
+              "error": {
+                "message": "Inference is temporarily unavailable.",
+                "type": "service_unavailable",
+                "param": null,
+                "code": "inference_unavailable"
+              }
+            }
+          }
+        }
+      },
+      "MaintenanceLive": {
+        "description": "The maintenance process runs.",
+        "content": {
+          "application/json": {
+            "example": {
+              "status": "live",
+              "mode": "maintenance",
+              "inferenceAvailable": false
+            },
+            "schema": {
+              "allOf": [
+                {"$ref": "#/components/schemas/MaintenanceStatus"},
+                {"properties": {"status": {"const": "live"}}}
+              ]
+            }
+          }
+        }
+      },
+      "MaintenanceReady": {
+        "description": "The process can serve all maintenance responses.",
+        "content": {
+          "application/json": {
+            "example": {
+              "status": "ready",
+              "mode": "maintenance",
+              "inferenceAvailable": false
+            },
+            "schema": {
+              "allOf": [
+                {"$ref": "#/components/schemas/MaintenanceStatus"},
+                {"properties": {"status": {"const": "ready"}}}
+              ]
+            }
+          }
+        }
+      },
+      "MaintenanceNotReady": {
+        "description": "The process cannot serve all maintenance responses.",
+        "content": {
+          "application/json": {
+            "example": {
+              "status": "not_ready",
+              "mode": "maintenance",
+              "inferenceAvailable": false
+            },
+            "schema": {
+              "allOf": [
+                {"$ref": "#/components/schemas/MaintenanceStatus"},
+                {"properties": {"status": {"const": "not_ready"}}}
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

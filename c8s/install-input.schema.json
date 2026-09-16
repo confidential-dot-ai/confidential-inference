@@ -1,0 +1,287 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://confidential.ai/schemas/c8s-install-input.v1.json",
+  "title": "Confidential Inference c8s install input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "environment",
+    "c8s",
+    "nodeImage",
+    "cluster",
+    "meshCa",
+    "application",
+    "systemFloor",
+    "workloadMappings",
+    "imageConfigs",
+    "allowlist"
+  ],
+  "properties": {
+    "schema": {"const": "confidential.ai/c8s-install-input/v1"},
+    "environment": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"},
+    "retiredWorkloads": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"}
+    },
+    "c8s": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "sourceCommit", "imageTag"],
+      "properties": {
+        "repository": {"type": "string", "format": "uri"},
+        "sourceCommit": {"$ref": "#/$defs/gitCommit"},
+        "imageTag": {"type": "string", "minLength": 1, "maxLength": 128},
+        "policyMode": {"enum": ["operator", "static"]},
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "contains": {"const": "baked-node-socket"},
+          "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}
+        },
+        "workloadClaimsHostDir": {"const": "/var/run/nri-image-policy"},
+        "workloadClaimsSocket": {"const": "attestation-api.sock"}
+      }
+    },
+    "nodeImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cdi", "evidenceArtifact", "manifest", "manifestDigest", "measurementsConfig"],
+      "properties": {
+        "cdi": {"$ref": "#/$defs/ociDigestRef"},
+        "evidenceArtifact": {"$ref": "#/$defs/sha256Digest"},
+        "manifest": {"$ref": "#/$defs/configPath"},
+        "manifestDigest": {"$ref": "#/$defs/sha256Digest"},
+        "measurementsConfig": {"$ref": "#/$defs/configPath"}
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["release", "namespace", "cvmMode", "hardwarePlatform", "singleNode", "controlPlaneNode", "nodeNames", "volumes", "attest", "resolveDigests", "environmentValues", "gatewayStateValues"],
+      "properties": {
+        "release": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+        "namespace": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+        "cvmMode": {"const": "node"},
+        "hardwarePlatform": {"const": "tdx"},
+        "singleNode": {"type": "boolean"},
+        "controlPlaneNode": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+        "nodeNames": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"}
+        },
+        "gatewayNode": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+        "nodeCount": {"type": "integer", "minimum": 1, "maximum": 128},
+        "nodeRoles": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"}
+        },
+        "volumes": {"type": "boolean"},
+        "attest": {"const": true},
+        "resolveDigests": {"type": "boolean"},
+        "imagePullSecret": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+        "environmentValues": {"$ref": "#/$defs/configPath"},
+        "gatewayStateValues": {"$ref": "#/$defs/configPath"},
+        "kubeVersion": {
+          "type": "string",
+          "pattern": "^v?1\\.[0-9]{2}\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$"
+        }
+      }
+    },
+    "gatewayAttach": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workloadRef", "upstream"],
+      "properties": {
+        "workloadRef": {
+          "pattern": "^[a-z0-9-]+=[a-z0-9-]+/(?:deployment|statefulset|daemonset)/[a-z0-9-]+:[0-9]{1,5}$"
+        },
+        "upstream": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"}
+      }
+    },
+    "operatorPublicKey": {"$ref": "#/$defs/infisicalPublicMaterial"},
+    "meshCa": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["infisicalEnvironment", "path", "certificateSecretName", "fingerprintSecretName"],
+      "properties": {
+        "infisicalEnvironment": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"},
+        "path": {"type": "string", "pattern": "^/[^\\s]+$"},
+        "certificateSecretName": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"},
+        "fingerprintSecretName": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"}
+      }
+    },
+    "application": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chart", "values", "release", "namespace"],
+      "properties": {
+        "chart": {"enum": ["helm/confidential-inference", "helm/maintenance-gateway"]},
+        "values": {"$ref": "#/$defs/configPath"},
+        "release": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+        "namespace": {"type": "string", "pattern": "^[a-z0-9-]+$"}
+      }
+    },
+    "systemFloor": {
+      "type": "array",
+      "minItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "image", "source"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+          "image": {"$ref": "#/$defs/ociDigestRef"},
+          "source": {"enum": ["measured-node-image", "c8s-install", "system-infrastructure"]},
+          "uses": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+        }
+      }
+    },
+    "workloadMappings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+          "required": ["allowlistName", "controllers"],
+        "properties": {
+          "allowlistName": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$"},
+          "confidentialWorkloadId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{0,62}$"},
+          "controllers": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^(Deployment|StatefulSet|DaemonSet)/[a-z0-9-]+$"}
+          },
+          "secretReads": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^/[A-Za-z0-9._/-]+$"}
+          }
+        }
+      }
+    },
+    "externalWorkloadMappings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["allowlistName", "confidentialWorkloadId", "controller", "source"],
+        "properties": {
+          "allowlistName": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$"},
+          "confidentialWorkloadId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{0,62}$"},
+          "controller": {"type": "string", "pattern": "^(Deployment|StatefulSet|DaemonSet)/[a-z0-9-]+$"},
+          "source": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type"],
+                "properties": {"type": {"const": "c8s-chart"}}
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type", "file"],
+                "properties": {
+                  "type": {"const": "manifest"},
+                  "file": {"$ref": "#/$defs/configPath"}
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "imageConfigs": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["entrypoint", "cmd", "source"],
+        "properties": {
+          "entrypoint": {"$ref": "#/$defs/argvOrEmpty"},
+          "cmd": {"$ref": "#/$defs/argvOrEmpty"},
+          "source": {"enum": ["oci-config", "repository-recipe"]}
+        }
+      }
+    },
+    "allowlist": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest"],
+      "oneOf": [
+        {"required": ["file"], "not": {"required": ["publicRelease"]}},
+        {"required": ["publicRelease"], "not": {"required": ["file"]}}
+      ],
+      "properties": {
+        "file": {"$ref": "#/$defs/configPath"},
+        "publicRelease": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "commit", "path"],
+          "properties": {
+            "repository": {"type": "string", "format": "uri"},
+            "commit": {"$ref": "#/$defs/gitCommit"},
+            "path": {"type": "string", "pattern": "^c8s/allowlists/[a-z0-9-]+\\.json$"}
+          }
+        },
+        "digest": {"$ref": "#/$defs/sha256Digest"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "c8s": {
+            "required": ["policyMode"],
+            "properties": {"policyMode": {"const": "static"}}
+          }
+        }
+      },
+      "then": {
+        "required": ["operatorPublicKey"],
+        "properties": {"allowlist": {"oneOf": [
+          {"required": ["file"], "not": {"required": ["publicRelease"]}},
+          {"required": ["publicRelease"], "not": {"required": ["file"]}}
+        ]}}
+      },
+      "else": {"required": ["operatorPublicKey"]}
+    }
+  ],
+  "$defs": {
+    "gitCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256Digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "ociDigestRef": {"type": "string", "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"},
+    "argvOrEmpty": {"type": "array", "maxItems": 256, "items": {"type": "string", "minLength": 1}},
+    "infisicalPublicMaterial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["infisicalEnvironment", "path", "secretName", "fingerprint"],
+      "properties": {
+        "infisicalEnvironment": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"},
+        "path": {"type": "string", "pattern": "^/[^\\s]+$"},
+        "secretName": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"},
+        "fingerprint": {"$ref": "#/$defs/sha256Digest"},
+        "keySetSha256": {"$ref": "#/$defs/sha256Digest"}
+      }
+    },
+    "configPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\n]+$"
+    }
+  }
+}

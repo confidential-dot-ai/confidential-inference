@@ -1,0 +1,10 @@
+[Unit]
+Description=Boot-sim stub of rke2-agent
+ConditionPathExists=/run/confos/role-agent
+Requires=rke2-role.service
+After=rke2-role.service
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rke2-agent
+[Install]
+WantedBy=multi-user.target

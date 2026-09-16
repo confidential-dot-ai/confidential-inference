@@ -1,0 +1,237 @@
+{{- if .Values.metricsCollector.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metrics-collector
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      scrape_timeout: 10s
+      external_labels:
+        environment: {{ .Values.environment | quote }}
+    {{- if .Values.metricsCollector.remoteWrite.enabled }}
+    remote_write:
+      - url: {{ .Values.metricsCollector.remoteWrite.url | quote }}
+        follow_redirects: false
+        enable_http2: true
+        tls_config:
+          server_name: {{ .Values.metricsCollector.remoteWrite.serverName | quote }}
+          cert_file: /run/prometheus/remote-write/tls.crt
+          key_file: /run/prometheus/remote-write/tls.key
+          min_version: TLS12
+        queue_config:
+          capacity: {{ .Values.metricsCollector.remoteWrite.queue.capacity }}
+          max_shards: {{ .Values.metricsCollector.remoteWrite.queue.maxShards }}
+          max_samples_per_send: {{ .Values.metricsCollector.remoteWrite.queue.maxSamplesPerSend }}
+          sample_age_limit: {{ .Values.metricsCollector.remoteWrite.queue.sampleAgeLimit | quote }}
+    {{- end }}
+    scrape_configs:
+      - job_name: gateway
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ .Release.Namespace | quote }}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: gateway
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: $1:{{ .Values.gateway.containerPorts.metrics }}
+          - target_label: component
+            replacement: gateway
+        metric_relabel_configs:
+          - source_labels: [api_key_name]
+            action: keep
+            regex: {{ printf "^(|%s)$" (join "|" .Values.metricsCollector.approvedApiKeyLabels) | quote }}
+          - source_labels: [api_key_tag]
+            action: keep
+            regex: {{ printf "^(|%s)$" (join "|" .Values.metricsCollector.approvedApiKeyLabels) | quote }}
+          - action: labeldrop
+            regex: "^(authorization|api_key|api_key_id|api_key_hash|api_key_value|prompt|response)$"
+      - job_name: sglang-router
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ .Release.Namespace | quote }}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: sglang-router
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: $1:{{ .Values.router.metricsPort }}
+          - target_label: component
+            replacement: sglang-router
+        metric_relabel_configs:
+          - action: labeldrop
+            regex: "^(api_key.*|authorization|prompt.*|response.*)$"
+      {{- if .Values.inference.enabled }}
+      - job_name: inference-worker-0
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ .Release.Namespace | quote }}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: inference-worker
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_instance]
+            action: keep
+            regex: inference-worker-0
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: $1:{{ .Values.inference.port }}
+          - target_label: replica
+            replacement: inference-worker-0
+          - target_label: component
+            replacement: inference-worker
+        metric_relabel_configs:
+          - action: labeldrop
+            regex: "^(api_key.*|authorization|prompt.*|response.*)$"
+      - job_name: inference-worker-1
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ .Release.Namespace | quote }}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: inference-worker
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_instance]
+            action: keep
+            regex: inference-worker-1
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: $1:{{ .Values.inference.port }}
+          - target_label: replica
+            replacement: inference-worker-1
+          - target_label: component
+            replacement: inference-worker
+        metric_relabel_configs:
+          - action: labeldrop
+            regex: "^(api_key.*|authorization|prompt.*|response.*)$"
+      {{- if gt (int .Values.inference.gpusPerReplica) 0 }}
+      - job_name: inference-gpu-worker-0
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ .Release.Namespace | quote }}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: inference-worker
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_instance]
+            action: keep
+            regex: inference-worker-0
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: $1:{{ .Values.inference.metricsPort }}
+          - target_label: replica
+            replacement: inference-worker-0
+          - target_label: component
+            replacement: inference-gpu
+        metric_relabel_configs:
+          - action: labelkeep
+            regex: "^(__name__|environment|component|replica|worker|gpu)$"
+      - job_name: inference-gpu-worker-1
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ .Release.Namespace | quote }}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: inference-worker
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_instance]
+            action: keep
+            regex: inference-worker-1
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: $1:{{ .Values.inference.metricsPort }}
+          - target_label: replica
+            replacement: inference-worker-1
+          - target_label: component
+            replacement: inference-gpu
+        metric_relabel_configs:
+          - action: labelkeep
+            regex: "^(__name__|environment|component|replica|worker|gpu)$"
+      {{- end }}
+      {{- end }}
+      {{- if .Values.dcgmExporter.enabled }}
+      - job_name: dcgm-exporter
+        static_configs:
+          - targets: ["dcgm-exporter:{{ .Values.dcgmExporter.port }}"]
+            labels:
+              component: dcgm-exporter
+        metric_relabel_configs:
+          - action: labeldrop
+            regex: "^(api_key.*|authorization|prompt.*|response.*)$"
+      {{- end }}
+      {{- if .Values.nodeExporter.enabled }}
+      - job_name: node-exporter
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ .Release.Namespace | quote }}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: node-exporter
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: $1:{{ .Values.nodeExporter.port }}
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+          - target_label: component
+            replacement: node-exporter
+        metric_relabel_configs:
+          - action: labeldrop
+            regex: "^(api_key.*|authorization|prompt.*|response.*)$"
+      {{- end }}
+      - job_name: kubernetes-container-resources
+        scheme: https
+        authorization:
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          server_name: kubernetes.default.svc
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/$1/proxy/metrics/resource
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - target_label: component
+            replacement: kubernetes-container-resources
+        metric_relabel_configs:
+          - source_labels: [namespace]
+            action: keep
+            regex: {{ .Release.Namespace | quote }}
+          - source_labels: [__name__]
+            action: keep
+            regex: "^(container_cpu_usage_seconds_total|container_memory_working_set_bytes)$"
+      {{- if .Values.kubeStateMetrics.enabled }}
+      - job_name: kube-state-metrics
+        static_configs:
+          - targets: ["kube-state-metrics:{{ .Values.kubeStateMetrics.port }}"]
+            labels:
+              component: kube-state-metrics
+        metric_relabel_configs:
+          - action: labeldrop
+            regex: "^(api_key.*|authorization|prompt.*|response.*)$"
+      {{- end }}
+  {{- if .Values.metricsCollector.tls.enabled }}
+  web.yml: |
+    tls_server_config:
+      cert_file: /run/prometheus/tls/tls.crt
+      key_file: /run/prometheus/tls/tls.key
+      client_auth_type: RequireAndVerifyClientCert
+      client_ca_file: /run/prometheus/client-ca/ca.crt
+  {{- end }}
+{{- end }}

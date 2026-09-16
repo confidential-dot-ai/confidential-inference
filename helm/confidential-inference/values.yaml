@@ -1,0 +1,289 @@
+environment: example
+
+imagePullSecret:
+  name: registry-pull
+
+scheduling:
+  gatewayNodeName: gateway-node
+  inferenceNodeName: inference-node
+
+images:
+  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:13334810afe09f9ec722eed6fc19c4a64e87b406e926ce383a54dd2ede01fea1
+  sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
+  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
+  metricsCollector: ghcr.io/confidential-dot-ai/confidential-inference/metrics-collector@sha256:28138b1ccaf244abacc798d3e1102c463ecdd12c7c8332ea83489f417c4a6627
+  dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
+  nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
+  kubeStateMetrics: ghcr.io/confidential-dot-ai/confidential-inference/kube-state-metrics@sha256:89c1fe0bbd01800eb7475825467b29d0268273e7c5be7b574c72b3370b5fc3f0
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:1468ac37566b0f198c41c56c098c32133c09279c08d549f7a57263d8b09d2b89
+  stateMounter: docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
+
+# The gateway sends prompts through the c8s named-workload proxy. The proxy
+# verifies the router identity before it releases plaintext to the router.
+namedWorkloadProxy:
+  enabled: true
+
+attestationReceipts:
+  enabled: true
+  # Use the node-local attestation API and the two-field gateway target format
+  # on the production c8s 615 release.
+  legacyC8s615: false
+  # This URL must be the c8s tls-lb front door. The gateway reads only c8s
+  # discovery and allowlist evidence from it.
+  evidenceBaseUrl: https://api.example.invalid
+  # Permit only the public c8s front-door addresses that evidenceBaseUrl can
+  # use. Keep this empty until an environment supplies its reviewed CIDRs.
+  evidenceEgressCidrs: []
+  releaseId: example-release
+  releaseBundleSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  # `operator` uses a signed mutable allowlist. `static` uses the allowlist
+  # sealed into the measured c8s node image and disables policy writes.
+  policyMode: operator
+  expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  expectedStaticAllowlistSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  targets:
+    - target: gateway
+      workload: gateway
+      identity: gateway
+      url: http://127.0.0.1:8800
+    - target: sglang-router
+      workload: sglang-router
+      identity: sglang-router
+      url: http://sglang-router:8801
+    - target: inference-worker-0
+      workload: inference-worker-0
+      identity: inference-worker-0
+      url: http://inference-worker-0-0.inference-workers:8802
+    - target: inference-worker-1
+      workload: inference-worker-1
+      identity: inference-worker-1
+      url: http://inference-worker-1-0.inference-workers:8802
+  # A cached workload image can start after c8s issues the first, unnamed
+  # certificate. Renew quickly so the next certificate contains the measured
+  # workload identity and the receipt sidecar becomes ready.
+  certificateRenewInterval: 30s
+  gatewayPort: 8800
+  routerPort: 8801
+  firstWorkerPort: 8802
+  metricsCollectorPort: 8803
+  kubeStateMetricsPort: 8804
+  platform: tdx
+  attestationApiPort: 8400
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+gateway:
+  # This is the exact c8s policy entry for this workload.
+  attestedWorkload: gateway
+  # Kubernetes waits longer than the gateway's graceful shutdown deadline.
+  shutdownGraceSeconds: 900
+  # CoreDNS keeps a removed gateway address for up to 30 seconds. Continue to
+  # serve that address for five additional seconds after SIGTERM.
+  endpointDrainSeconds: 35
+  terminationGracePeriodSeconds: 960
+  replicas: 1
+  resources:
+    cpu: 500m
+    memory: 512Mi
+  service:
+    # The inner cluster does not allocate the public address.
+    type: ClusterIP
+    publicPort: 443
+  containerPorts:
+    public: 9443
+    metrics: 9090
+  c8sSecrets:
+    apiKeyPepper:
+      name: GATEWAY_API_KEY_PEPPER
+      sourcePath: /confidential-inference/gateway/api-key-pepper
+  protection:
+    maximumHeaders: 64
+    maximumHeaderBytes: 16384
+    maximumUriBytes: 2048
+    maximumBodyBytes: 2097152
+    headerTimeoutSeconds: 5
+    bodyTimeoutSeconds: 10
+    upstreamTimeoutSeconds: 900
+    streamIdleTimeoutSeconds: 60
+    globalRequestConcurrency: 256
+    perAddressConcurrency: 256
+    inferenceConcurrency: 48
+    inferenceQueue: 0
+    queueTimeoutSeconds: 2
+    perKeyConcurrency: 128
+    attestationConcurrency: 4
+    requestsPerAddressPerSecond: 256
+    # Add only an outer proxy which overwrites X-Forwarded-For with one address.
+    trustedProxyCidrs:
+      - 10.52.0.0/16
+  secrets:
+    adminSigner:
+      secretName: gateway-admin-mtls
+      certificateKey: client.crt
+  state:
+    # The host can read, replace, delete, or roll back this unencrypted v0 disk.
+    enabled: false
+    storageResources:
+      # An external state workflow can own these resources.
+      create: true
+    absencePolicy: fail-closed
+    startupTimeoutSeconds: 60
+    databasePath: /var/lib/confidential-gateway/gateway.sqlite3
+    mountPath: /var/lib/confidential-gateway
+    claimName: gateway-state
+    persistentVolumeName: gateway-state
+    storageClassName: confidential-inference-gateway-state
+    storageNamespace: kube-system
+    size: 16Gi
+    nodeName: gateway-node
+    hostStateRootPath: /var/lib/confidential-inference/gateway-state-root
+    hostMountPath: /var/lib/confidential-inference/gateway-state-root/data
+    devicePath: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_confai-gateway-state
+    diskSerial: confai-gateway-state
+    allowFormat: true
+
+inference:
+  enabled: true
+  # mode has NO default, on purpose. Every values file must state it.
+  # Use "model" for production GPU inference. Use "simulator" for the
+  # GPU-free staging worker in the same SGLang image.
+  #
+  # A default here is dangerous. The two modes render different container
+  # commands, different arguments and a different c8s volume annotation, so
+  # the mode selects the workload policy the c8s allowlist admits. A values
+  # file that omits the field would silently take the default and run the
+  # wrong backend. values.schema.json lists mode as required, so an omitted
+  # field now fails the render with "inference: mode is required".
+  replicas: 2
+  gpusPerReplica: 0
+  # Required when GPUs are enabled. This policy is copied into the release
+  # bundle and checked by the c8s NVIDIA verifier.
+  gpuArchitectures: []
+  # Number of attested NVIDIA devices the release bundle expects in one
+  # worker's GPU evidence. Several worker pods can share one node's GPUs:
+  # the device plugin allocates gpusPerReplica to a pod, but driver-level
+  # evidence enumerates every device visible in the CVM. 0 means the
+  # evidence must show exactly gpusPerReplica devices.
+  attestedGpuCount: 0
+  # Keep the pod identity stable. Use these names to select exact c8s launch
+  # policies during an old/new worker overlap.
+  attestedWorkloads:
+    - inference-worker-0
+    - inference-worker-1
+  autoscaling:
+    enabled: false
+    maxReplicas: 0
+  model:
+    name: example/model
+    revision: "0000000000000000000000000000000000000000"
+    c8sVolumeSource: /example/volumes/model
+    volumeNames:
+      - model
+    volumeDirectory: /models
+    mountVerification:
+      timeoutSeconds: 900
+      pollSeconds: 1
+      revisionMetadata: .model-lock-local-manifest.json
+      expectedFiles:
+        .model-lock-local-manifest.json: "0000000000000000000000000000000000000000000000000000000000000000"
+  port: 30000
+  metricsPort: 29000
+  # Name of the reasoning parser to pass as --reasoning-parser on the model
+  # and simulator worker commands. Empty string means the worker does not
+  # split reasoning content out of the response. Set this only after the
+  # target environment's release bundle carries the matching source.lock
+  # argv and allowlist.
+  reasoningParser: ""
+  # Kubernetes waits longer than the wrapper's drain deadline before it
+  # kills the pod. wait-for-model drains in-flight requests for
+  # (terminationGracePeriodSeconds - drainDeadlineMarginSeconds), then
+  # stops the worker either way.
+  terminationGracePeriodSeconds: 600
+  drainDeadlineMarginSeconds: 30
+  resources:
+    cpu: "2"
+    memory: 8Gi
+  simulator:
+    outputMode: BLOCKING
+    maxTotalTokens: 8192
+    maxRunningRequests: 48
+    chatTemplate: chatml
+
+router:
+  # This is the exact c8s policy entry for this workload.
+  attestedWorkload: sglang-router
+  enabled: true
+  replicas: 1
+  port: 30000
+  # TLS port for the c8s named-workload server proxy. The Service exposes the
+  # application port and targets this port; it must remain pinned.
+  proxyPort: 9443
+  metricsPort: 29000
+  resources:
+    cpu: "1"
+    memory: 1Gi
+
+metricsCollector:
+  enabled: true
+  attestedWorkload: metrics-collector
+  kubeApi:
+    port: 6443
+  remoteWrite:
+    enabled: true
+    url: https://metrics.example.invalid/api/v1/write
+    address: 192.0.2.1
+    serverName: metrics.example.invalid
+    secretName: metrics-remote-write-mtls
+    destinationCidrs:
+      - 192.0.2.1/32
+    queue:
+      capacity: 10000
+      maxShards: 4
+      maxSamplesPerSend: 2000
+      sampleAgeLimit: 1h
+  tls:
+    enabled: false
+    secretName: prometheus-server-tls
+    clientCaSecretName: gateway-admin-mtls
+  resources:
+    cpu: 250m
+    memory: 512Mi
+  # The gateway emits only these bounded values as api_key_name or api_key_tag.
+  approvedApiKeyLabels:
+    - unassigned
+  walSizeLimit: 4Gi
+
+dcgmExporter:
+  enabled: false
+  port: 9400
+  resources:
+    cpu: 100m
+    memory: 128Mi
+
+nodeExporter:
+  enabled: false
+  port: 9100
+  resources:
+    cpu: 100m
+    memory: 128Mi
+
+kubeStateMetrics:
+  enabled: true
+  attestedWorkload: kube-state-metrics
+  port: 8080
+  resources:
+    cpu: 100m
+    memory: 128Mi
+
+network:
+  adminMtlsCidrs:
+    - 192.0.2.0/24
+  clusterCidrs:
+    - 10.52.0.0/16
+    - 10.53.0.0/16

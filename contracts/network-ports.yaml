@@ -1,0 +1,117 @@
+schemaVersion: confidential.ai/network-ports/v0alpha1
+
+ports:
+  - name: public-gateway
+    scope: public
+    protocol: tcp-tls
+    externalPort: 443
+    cvmPort: 443
+    podPort: 9443
+    direction: inbound
+    access: internet
+  - name: public-acme-challenge
+    scope: public
+    protocol: http
+    externalPort: 80
+    cvmPort: 80
+    podPort: 8080
+    direction: inbound
+    access: internet-acme-challenge-only
+  - name: gateway-metrics
+    scope: workload
+    protocol: http
+    podPort: 9090
+    direction: internal
+    access: metrics-collector-only
+  - name: c8s-attestation
+    scope: c8s-node
+    protocol: http
+    cvmPort: 8400
+    direction: inbound
+    access: gateway-and-host-operator
+  - name: c8s-credential-release
+    scope: c8s-node
+    protocol: tcp-ratls
+    cvmPort: 8443
+    direction: inbound
+    access: physical-host-operator-only
+  - name: c8s-credential-release-bootstrap
+    scope: control-plane-local
+    protocol: tcp-ratls
+    cvmPort: 8444
+    direction: inbound
+    access: physical-host-operator-only
+  - name: inner-kubernetes-api
+    scope: c8s-node
+    protocol: tcp-tls
+    cvmPort: 6443
+    direction: inbound
+    access: physical-host-operator-only
+  - name: outer-kubernetes-api
+    scope: bare-metal
+    protocol: tcp-tls
+    externalPort: 6443
+    direction: inbound
+    access: physical-host-operator-only
+  - name: admin-prometheus-remote-write
+    scope: external
+    protocol: https
+    externalPort: 443
+    direction: outbound
+    access: metrics-collector-only
+
+publicEntry:
+  outerControlServiceType: ClusterIP
+  outerPublicServiceType: LoadBalancer
+  outerPublicServicePorts: [443, 80]
+  guestTarget: gateway-host-port
+  innerGatewayServiceType: ClusterIP
+  liveProof: required
+
+publicProtection:
+  application:
+    maximumHeaders: 64
+    maximumHeaderBytes: 16384
+    maximumUriBytes: 2048
+    maximumBodyBytes: 2097152
+    headerTimeoutSeconds: 5
+    bodyTimeoutSeconds: 10
+    streamIdleTimeoutSeconds: 60
+    globalRequestConcurrency: 256
+    perAddressConcurrency: 256
+    inferenceConcurrency: 48
+    inferenceQueue: 0
+    queueTimeoutSeconds: 2
+    perKeyConcurrency: 128
+    attestationConcurrency: 4
+    nonceEncoding: base64url-no-padding-32-bytes
+    nonceReplayTtlSeconds: 900
+    nonceReplayCapacity: 4096
+  outerForwarder:
+    maximumConnections: 512
+    maximumConnectionsPerAddress: 32
+    connectionRatePerAddressPerSecond: 10
+    headerTimeoutSeconds: 5
+    idleTimeoutSeconds: 65
+    maximumHeaderBytes: 16384
+    maximumUriBytes: 2048
+    maximumBodyBytes: 2097152
+    queueCapacity: 128
+    forwardingHeaderMode: overwrite-single-x-forwarded-for
+  providerDdosProtection: unconfirmed
+
+rules:
+  - The outer control Service must not receive a public address.
+  - The outer public Service must forward TCP port 443 and ACME challenge port 80 to the CVM.
+  - Port 80 must serve only the ACME HTTP challenge. It must not serve application traffic.
+  - The gateway pod must map CVM port 443 to pod port 9443.
+  - Signed admin requests must use the public TLS-LB path and the gateway listener on port 9443.
+  - An external admin service must not open an inbound metrics route to the CVM.
+  - The metrics collector must send remote-write data outbound through HTTPS.
+  - Each reported workload receipt sidecar must reach the node attestation service on TCP port 8400.
+  - The outer forwarder must overwrite X-Forwarded-For with one client address.
+  - The gateway must trust X-Forwarded-For only from a configured outer proxy CIDR.
+  - The gateway must reject Forwarded, X-Real-IP, and untrusted X-Forwarded-For headers.
+  - The outer forwarder must reject work above each connection and queue limit.
+  - Retry-After must contain a bounded integer count of seconds.
+  - Fail2ban may protect operator access. It must not serve as public DDoS protection.

@@ -1,0 +1,136 @@
+apiVersion: confidential.ai/v0
+kind: ObservabilityMetricsContract
+metadata:
+  name: inference-v0
+collection:
+  environmentLabel: environment
+  remoteWriteAuth:
+    flow: public-mtls
+    receiverUrl: https://metrics.example.invalid:9443/api/v1/write
+    tlsServerName: metrics.example.invalid
+    tlsMinimumVersion: TLS1.2
+    clientIdentity: dedicated-environment-certificate
+    sourceCidr: 192.0.2.1/32
+    privateNetworkPolicyRequired: true
+    inferenceFailurePolicy: fail-open
+  scrapeJobs:
+    - gateway
+    - sglang-router
+    - inference-workers
+    - inference-gpu-workers
+    - kubernetes-container-resources
+    - kube-state-metrics
+  sensitiveLabelsForbidden:
+    - authorization
+    - api_key
+    - api_key_id
+    - api_key_hash
+    - client_secret
+    - access_token
+    - refresh_token
+    - prompt
+    - response
+  gatewayOnlyBoundedLabels:
+    - api_key_name
+    - api_key_tag
+recordingRules:
+  - record: confidential:ttft_seconds:p50
+    source: gen_ai_server_time_to_first_token_bucket
+    promql: histogram_quantile(0.50, sum by (environment, le) (rate(gen_ai_server_time_to_first_token_bucket[5m])))
+  - record: confidential:ttft_seconds:p95
+    source: gen_ai_server_time_to_first_token_bucket
+    promql: histogram_quantile(0.95, sum by (environment, le) (rate(gen_ai_server_time_to_first_token_bucket[5m])))
+  - record: confidential:ttft_cached_seconds:p50
+    source: gateway_time_to_first_token_seconds_bucket
+    promql: histogram_quantile(0.50, sum by (environment, le) (rate(gateway_time_to_first_token_seconds_bucket{cache_status="cached"}[5m])))
+  - record: confidential:ttft_cached_seconds:p95
+    source: gateway_time_to_first_token_seconds_bucket
+    promql: histogram_quantile(0.95, sum by (environment, le) (rate(gateway_time_to_first_token_seconds_bucket{cache_status="cached"}[5m])))
+  - record: confidential:ttft_cold_seconds:p50
+    source: gateway_time_to_first_token_seconds_bucket
+    promql: histogram_quantile(0.50, sum by (environment, le) (rate(gateway_time_to_first_token_seconds_bucket{cache_status="cold"}[5m])))
+  - record: confidential:ttft_cold_seconds:p95
+    source: gateway_time_to_first_token_seconds_bucket
+    promql: histogram_quantile(0.95, sum by (environment, le) (rate(gateway_time_to_first_token_seconds_bucket{cache_status="cold"}[5m])))
+  - record: confidential:tokens_per_second:p50
+    source: gateway_tokens_per_second_bucket
+    promql: histogram_quantile(0.50, sum by (environment, le) (rate(gateway_tokens_per_second_bucket[5m])))
+  - record: confidential:tokens_per_second:p95
+    source: gateway_tokens_per_second_bucket
+    promql: histogram_quantile(0.95, sum by (environment, le) (rate(gateway_tokens_per_second_bucket[5m])))
+  - record: confidential:inter_token_latency_seconds:p50
+    source: gen_ai_server_time_per_output_token_bucket
+    promql: histogram_quantile(0.50, sum by (environment, le) (rate(gen_ai_server_time_per_output_token_bucket[5m])))
+  - record: confidential:inter_token_latency_seconds:p95
+    source: gen_ai_server_time_per_output_token_bucket
+    promql: histogram_quantile(0.95, sum by (environment, le) (rate(gen_ai_server_time_per_output_token_bucket[5m])))
+  - record: confidential:request_latency_seconds:p50
+    source: gateway_request_duration_bucket
+    promql: histogram_quantile(0.50, sum by (environment, le) (rate(gateway_request_duration_bucket[5m])))
+  - record: confidential:request_latency_seconds:p95
+    source: gateway_request_duration_bucket
+    promql: histogram_quantile(0.95, sum by (environment, le) (rate(gateway_request_duration_bucket[5m])))
+  - record: confidential:queue_time_seconds:p50
+    source: gateway_queue_duration_bucket
+    promql: histogram_quantile(0.50, sum by (environment, le) (rate(gateway_queue_duration_bucket[5m])))
+  - record: confidential:queue_time_seconds:p95
+    source: gateway_queue_duration_bucket
+    promql: histogram_quantile(0.95, sum by (environment, le) (rate(gateway_queue_duration_bucket[5m])))
+  - record: confidential:errors_per_second
+    source: gateway_requests
+    promql: sum by (environment, status) (rate(gateway_requests{status!~="2.."}[5m]))
+  - record: confidential:timeouts_per_second
+    source: gateway_requests
+    promql: sum by (environment) (rate(gateway_requests{status=~="408|504"}[5m]))
+  - record: confidential:prompt_tokens:p50
+    source: gateway_input_tokens_per_request_bucket
+    promql: histogram_quantile(0.50, sum by (environment, le) (rate(gateway_input_tokens_per_request_bucket[5m])))
+  - record: confidential:prompt_tokens:p95
+    source: gateway_input_tokens_per_request_bucket
+    promql: histogram_quantile(0.95, sum by (environment, le) (rate(gateway_input_tokens_per_request_bucket[5m])))
+  - record: confidential:output_tokens:p50
+    source: gateway_output_tokens_per_request_bucket
+    promql: histogram_quantile(0.50, sum by (environment, le) (rate(gateway_output_tokens_per_request_bucket[5m])))
+  - record: confidential:output_tokens:p95
+    source: gateway_output_tokens_per_request_bucket
+    promql: histogram_quantile(0.95, sum by (environment, le) (rate(gateway_output_tokens_per_request_bucket[5m])))
+  - record: confidential:kv_cache_use_percent:max
+    source: sglang:full_token_usage
+    promql: max by (environment) (sglang:full_token_usage)
+  - record: confidential:gpu_use_percent:avg
+    source: confidential_inference_gpu_utilization_ratio
+    promql: avg by (environment) (confidential_inference_gpu_utilization_ratio) * 100
+  - record: confidential:gpu_memory_bytes:sum
+    source: confidential_inference_gpu_memory_used_bytes
+    promql: sum by (environment) (confidential_inference_gpu_memory_used_bytes)
+  - record: confidential:gpu_temperature_celsius:max
+    source: confidential_inference_gpu_temperature_celsius
+    promql: max by (environment) (confidential_inference_gpu_temperature_celsius)
+  - record: confidential:gpu_ecc_corrected_errors:sum
+    source: confidential_inference_gpu_ecc_corrected_errors_total
+    promql: sum by (environment) (confidential_inference_gpu_ecc_corrected_errors_total)
+  - record: confidential:gpu_ecc_uncorrected_errors:sum
+    source: confidential_inference_gpu_ecc_uncorrected_errors_total
+    promql: sum by (environment) (confidential_inference_gpu_ecc_uncorrected_errors_total)
+  - record: confidential:cpu_use_ratio
+    source: container_cpu_usage_seconds_total
+    promql: sum by (environment, pod, container) (rate(container_cpu_usage_seconds_total{container=~"sglang-.*"}[5m]))
+  - record: confidential:ram_use_bytes
+    source: container_memory_working_set_bytes
+    promql: sum by (environment, pod, container) (container_memory_working_set_bytes{container=~"sglang-.*"})
+  - record: confidential:requests_per_second
+    source: gateway_requests
+    promql: sum by (environment) (rate(gateway_requests[5m]))
+  - record: confidential:tokens_per_second
+    source: gen_ai_client_token_usage
+    promql: sum by (environment, type) (rate(gen_ai_client_token_usage[5m]))
+  - record: confidential:active_replicas
+    source: kube_statefulset_status_replicas_ready
+    promql: sum by (environment) (kube_statefulset_status_replicas_ready{statefulset=~"inference-worker-.*"})
+  - record: confidential:desired_replicas
+    source: kube_statefulset_replicas
+    promql: sum by (environment) (kube_statefulset_replicas{statefulset=~"inference-worker-.*"})
+  - record: confidential:requests_per_second:by_api_key
+    source: gateway_requests
+    gatewayOnly: true
+    promql: sum by (environment, key_id) (rate(gateway_requests[5m]))

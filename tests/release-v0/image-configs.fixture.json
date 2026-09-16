@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "fixtureOnly": true,
+  "images": {
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:1468ac37566b0f198c41c56c098c32133c09279c08d549f7a57263d8b09d2b89": {
+      "entrypoint": [
+        "/c8s"
+      ],
+      "cmd": []
+    },
+    "docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24": {
+      "entrypoint": [
+        "/bin/prometheus"
+      ],
+      "cmd": []
+    },
+    "nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101": {
+      "entrypoint": [
+        "/usr/local/dcgm-exporter"
+      ],
+      "cmd": []
+    },
+    "quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a": {
+      "entrypoint": [
+        "/bin/node_exporter"
+      ],
+      "cmd": []
+    },
+    "registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9": {
+      "entrypoint": [
+        "/kube-state-metrics"
+      ],
+      "cmd": []
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/metrics-collector@sha256:28138b1ccaf244abacc798d3e1102c463ecdd12c7c8332ea83489f417c4a6627": {
+      "entrypoint": [
+        "/bin/prometheus"
+      ],
+      "cmd": [
+        "--config.file=/etc/prometheus/prometheus.yml",
+        "--storage.tsdb.path=/prometheus"
+      ],
+      "build": {
+        "repository": "https://example.invalid/confidential-inference",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "context": "images/metrics-collector",
+        "dockerfile": "images/metrics-collector/Dockerfile",
+        "platform": "linux/amd64"
+      }
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/kube-state-metrics@sha256:89c1fe0bbd01800eb7475825467b29d0268273e7c5be7b574c72b3370b5fc3f0": {
+      "entrypoint": [
+        "/kube-state-metrics",
+        "--port=8080",
+        "--telemetry-port=8081"
+      ],
+      "cmd": [],
+      "build": {
+        "repository": "https://example.invalid/confidential-inference",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "context": "images/kube-state-metrics",
+        "dockerfile": "images/kube-state-metrics/Dockerfile",
+        "platform": "linux/amd64"
+      }
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:1d8009933dd158f058ee8be346dd9fa86aef956c242188896eb0d5d352f34f38": {
+      "entrypoint": [
+        "/usr/local/bin/confidential-gateway"
+      ],
+      "cmd": [],
+      "build": {
+        "repository": "https://example.invalid/confidential-inference",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "context": ".",
+        "dockerfile": "images/gateway/Dockerfile",
+        "platform": "linux/amd64"
+      }
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:13334810afe09f9ec722eed6fc19c4a64e87b406e926ce383a54dd2ede01fea1": {
+      "entrypoint": [
+        "/usr/local/bin/confidential-gateway"
+      ],
+      "cmd": [],
+      "build": {
+        "repository": "https://example.invalid/confidential-inference",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "context": ".",
+        "dockerfile": "images/gateway/Dockerfile",
+        "platform": "linux/amd64"
+      }
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:1cc4208add73f4312dd77e2e263d49933242d60103d7503de44b3790e867da84": {
+      "build": {
+        "repository": "https://example.invalid/confidential-inference",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "context": "images/sglang",
+        "dockerfile": "images/sglang/Dockerfile",
+        "platform": "linux/amd64"
+      }
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:96196db3f8d2084e97d9133a6b831860561943eaa6b2ebc090ddea293aad6e28": {
+      "build": {
+        "repository": "https://example.invalid/confidential-inference",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "context": "images/sglang",
+        "dockerfile": "images/sglang/Dockerfile",
+        "platform": "linux/amd64"
+      }
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:a831f90869a3f7471962e7fcfb9a957a1dc67df9a3c93cbea4fa36f02cacf7c5": {
+      "build": {
+        "repository": "https://example.invalid/confidential-inference",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "context": "images/sglang",
+        "dockerfile": "images/sglang/Dockerfile",
+        "platform": "linux/amd64"
+      }
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b": {
+      "build": {
+        "repository": "https://example.invalid/confidential-inference",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "context": "images/sglang",
+        "dockerfile": "images/sglang/Dockerfile",
+        "platform": "linux/amd64"
+      }
+    }
+  }
+}

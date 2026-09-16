@@ -1,0 +1,10 @@
+[Unit]
+Description=Boot-sim: fake the operator-key disk before anything else runs
+DefaultDependencies=no
+Before=sysinit.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'mkdir -p /dev/disk/by-label && ln -sf /dev/null /dev/disk/by-label/opkeydata'
+[Install]
+WantedBy=sysinit.target

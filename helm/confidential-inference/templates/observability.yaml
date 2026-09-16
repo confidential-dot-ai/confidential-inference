@@ -1,0 +1,145 @@
+{{- if .Values.metricsCollector.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-collector
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "confidential-inference.selector" (dict "root" . "component" "metrics-collector") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/metrics-config.yaml") . | sha256sum | quote }}
+        confidential.ai/cw: metrics-collector
+        confidential.ai/c8s-renew-interval: {{ .Values.attestationReceipts.certificateRenewInterval | quote }}
+      labels:
+        {{- include "confidential-inference.selector" (dict "root" . "component" "metrics-collector") | nindent 8 }}
+        confidential.ai/environment: {{ .Values.environment | quote }}
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.scheduling.gatewayNodeName | quote }}
+      {{- if .Values.metricsCollector.remoteWrite.enabled }}
+      hostAliases:
+        - ip: {{ .Values.metricsCollector.remoteWrite.address | quote }}
+          hostnames: [{{ .Values.metricsCollector.remoteWrite.serverName | quote }}]
+      {{- end }}
+      serviceAccountName: metrics-collector
+      securityContext:
+        {{- include "confidential-inference.workloadClaimsSupplementalGroup" . | nindent 8 }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: prometheus
+          image: {{ .Values.images.metricsCollector }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            {{- if .Values.metricsCollector.tls.enabled }}
+            - --web.config.file=/etc/prometheus/web/web.yml
+            {{- end }}
+          ports:
+            - name: health
+              containerPort: 9090
+          resources:
+            requests:
+              cpu: {{ .Values.metricsCollector.resources.cpu | quote }}
+              memory: {{ .Values.metricsCollector.resources.memory }}
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: health
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: health
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+              readOnly: true
+            {{- if .Values.metricsCollector.tls.enabled }}
+            - name: server-tls
+              mountPath: /run/prometheus/tls
+              readOnly: true
+            - name: client-ca
+              mountPath: /run/prometheus/client-ca
+              readOnly: true
+            {{- end }}
+            {{- if .Values.metricsCollector.remoteWrite.enabled }}
+            - name: remote-write
+              mountPath: /run/prometheus/remote-write
+              readOnly: true
+            {{- end }}
+            - name: data
+              mountPath: /prometheus
+        {{- if .Values.attestationReceipts.enabled }}
+        {{- include "confidential-inference.cdsAttestSidecar" (dict "root" . "host" "0.0.0.0" "port" .Values.attestationReceipts.metricsCollectorPort "workload" .Values.metricsCollector.attestedWorkload) | nindent 8 }}
+        {{- end }}
+      volumes:
+        {{- if and .Values.attestationReceipts.enabled (not .Values.attestationReceipts.legacyC8s615) }}
+        {{- include "confidential-inference.workloadClaimsVolume" . | nindent 8 }}
+        {{- end }}
+        - name: config
+          configMap:
+            name: metrics-collector
+        {{- if .Values.metricsCollector.tls.enabled }}
+        - name: server-tls
+          secret:
+            secretName: {{ .Values.metricsCollector.tls.secretName }}
+            items:
+              - {key: tls.crt, path: tls.crt}
+              - {key: tls.key, path: tls.key}
+        - name: client-ca
+          secret:
+            secretName: {{ .Values.metricsCollector.tls.clientCaSecretName }}
+            items:
+              - {key: ca.crt, path: ca.crt}
+        {{- end }}
+        {{- if .Values.metricsCollector.remoteWrite.enabled }}
+        - name: remote-write
+          secret:
+            secretName: {{ .Values.metricsCollector.remoteWrite.secretName }}
+            items:
+              - {key: tls.crt, path: tls.crt}
+              - {key: tls.key, path: tls.key}
+        {{- end }}
+        - name: data
+          emptyDir:
+            sizeLimit: {{ .Values.metricsCollector.walSizeLimit }}
+{{- end }}
+{{- if .Values.metricsCollector.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metrics-collector
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics-collector
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "confidential-inference.selector" (dict "root" . "component" "metrics-collector") | nindent 4 }}
+  ports:
+    - name: prometheus
+      port: 9090
+      targetPort: health
+    {{- if .Values.attestationReceipts.enabled }}
+    - name: cds-attest
+      port: {{ .Values.attestationReceipts.metricsCollectorPort }}
+      targetPort: cds-attest
+    {{- end }}
+{{- end }}

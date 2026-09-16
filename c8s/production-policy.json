@@ -1,0 +1,99 @@
+{
+  "schema": "confidential.ai/c8s-production-policy/v1",
+  "environment": "production",
+  "output": "c8s/allowlists/production.json",
+  "chart": {
+    "path": "helm/confidential-inference",
+    "release": "confidential-inference",
+    "namespace": "confidential-inference",
+    "values": "c8s/production-values.yaml",
+    "kubeVersion": "1.32.0"
+  },
+  "c8s": {
+    "repository": "https://github.com/confidential-dot-ai/c8s",
+    "sourceCommit": "079aeb48c4d523aa7500b4bd78f0283b2d12e317",
+    "imageTag": "079aeb4",
+    "cvmMode": "node",
+    "hardwarePlatform": "tdx",
+    "distro": "rke2",
+    "volumes": true,
+    "attest": true
+  },
+  "systemImages": {
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723",
+    "ghcr.io/confidential-dot-ai/cds@sha256:a2aada807121dd7f34ec86e1ae64e86104177b4da89eddb2839174c03aed7404": "ghcr.io/confidential-dot-ai/cds@sha256:a2aada807121dd7f34ec86e1ae64e86104177b4da89eddb2839174c03aed7404",
+    "nginxinc/nginx-unprivileged@sha256:11f3f6249b4ae3d7a4ec2a51797060107b88ead52b33b6ed3c6c33f55ca96200": "nginxinc/nginx-unprivileged@sha256:11f3f6249b4ae3d7a4ec2a51797060107b88ead52b33b6ed3c6c33f55ca96200",
+    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:7700f5490bfde2342b1368af5b28e816fdd2a3b723648360149b5d86e456054e": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:7700f5490bfde2342b1368af5b28e816fdd2a3b723648360149b5d86e456054e",
+    "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:88c5fb9a1b274c25c29480cfec4272e8babd083fb4af69392a34de6745f05760": "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:88c5fb9a1b274c25c29480cfec4272e8babd083fb4af69392a34de6745f05760",
+    "ghcr.io/confidential-dot-ai/volumed@sha256:47cac3bed60e2a142e4aa126c399eb18c339b32e557cce5f23bd41438e9df85f": "ghcr.io/confidential-dot-ai/volumed@sha256:47cac3bed60e2a142e4aa126c399eb18c339b32e557cce5f23bd41438e9df85f"
+  },
+  "workloads": [
+    {"name": "gateway-db0b6ee", "controller": "Deployment/gateway", "secretReads": ["/confidential-inference/gateway/api-key-pepper"]},
+    {"name": "gateway-state-mounter", "controller": "DaemonSet/gateway-state-mounter"},
+    {"name": "inference-worker-0-tool-calls-v1", "controller": "StatefulSet/inference-worker-0", "secretReads": ["/confidential-inference/volumes/dsv4"]},
+    {"name": "inference-worker-1-tool-calls-v1", "controller": "StatefulSet/inference-worker-1", "secretReads": ["/confidential-inference/volumes/dsv4"]},
+    {"name": "kube-state-metrics-a941ea9", "controller": "Deployment/kube-state-metrics"},
+    {"name": "metrics-collector-a941ea9", "controller": "Deployment/metrics-collector"},
+    {"name": "sglang-router-684393d", "controller": "Deployment/sglang-router"}
+  ],
+  "systemWorkloads": {
+    "c8s-tls-lb": {
+      "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723",
+      "initContainers": [
+        {
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723",
+          "command": ["/c8s"],
+          "args": ["get-cert", "--cds-url=https://c8s-cds.c8s-system.svc:8443", "--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock", "--san=api.confidential.ai", "--out=/tls/cert.pem", "--key-out=/tls/key.pem", "--key-mode=0640", "--ca-out=/tls/ca.pem", "--initial-retry-timeout=2m", "--renew-interval=1h", "--reload-nginx=true", "--continue-on-initial-error", "--discovery-out=/discovery/discovery.json", "--discovery-cds-cert-url=/.well-known/cds-cert.pem", "--discovery-public-tls-mode=acme", "--discovery-mesh-ca-url=/.well-known/mesh-ca.pem", "--ca-watch-interval=1m", "--workload-claims"]
+        },
+        {
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723",
+          "command": ["/c8s", "probe-file", "--wait", "--timeout=3m", "/tls/cert.pem"],
+          "args": []
+        },
+        {
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723",
+          "command": ["/c8s"],
+          "args": ["acme", "--domains=api.confidential.ai", "--challenge-port=8402", "--http-port=8080", "--cert-dir=/etc/c8s-acme-tls"]
+        }
+      ],
+      "containers": [
+        {
+          "image": "nginxinc/nginx-unprivileged@sha256:11f3f6249b4ae3d7a4ec2a51797060107b88ead52b33b6ed3c6c33f55ca96200",
+          "command": ["/docker-entrypoint.sh"],
+          "args": ["nginx", "-g", "daemon off;"]
+        },
+        {
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723",
+          "command": ["/c8s"],
+          "args": ["cds-attest", "--host=127.0.0.1", "--port=8800", "--platform=tdx", "--generation=", "--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock", "--front-door-mode=acme", "--serving-cert-file=/etc/c8s-acme-tls/cert.pem", "--expected-workload=c8s-tls-lb", "--mesh-identity-cert-file=/tls/cert.pem", "--mesh-identity-key-file=/tls/key.pem", "--mesh-identity-ca-file=/tls/ca.pem", "--upstream=http://c8s-gateway.confidential-inference.svc.cluster.local:9443"]
+        },
+        {
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723",
+          "command": ["/c8s"],
+          "args": ["allowlist-proxy", "--host=127.0.0.1", "--port=8801", "--cds-url=https://c8s-cds.c8s-system.svc:8443", "--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock", "--measurements-config=/etc/c8s-measurements/cds.json"]
+        }
+      ]
+    }
+  },
+  "imageConfigs": {
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:ea29a58f423ee4e8652450c2e1b2bf78c5b2bab8d12f977ad3a6772d104ba552": [{"command": ["/usr/local/bin/confidential-gateway"], "args": []}],
+    "docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316": [{"command": ["/bin/sh", "/opt/confidential-inference/mount.sh"], "args": []}],
+    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b": [
+      {"command": ["/usr/local/bin/wait-for-model"], "args": ["--path=/models/dsv4", "--timeout-seconds=900", "--poll-seconds=1", "--expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731", "--expected-revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb", "--revision-metadata=.model-lock-local-manifest.json", "--expected-file=.model-lock-local-manifest.json=cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c", "--expected-file=config.json=6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023", "--expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b", "--expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547", "--gpu-metrics-port=29000", "--gpu-metrics-worker=sglang-0", "--", "python3", "-m", "sglang.launch_server", "--model-path=/models/dsv4", "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731", "--revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb", "--tool-call-parser=deepseekv4", "--tp=4", "--moe-runner-backend=flashinfer_mxfp4", "--speculative-algorithm=DSPARK", "--mem-fraction-static=0.90", "--chunked-prefill-size=4096", "--swa-full-tokens-ratio=0.1", "--trust-remote-code", "--enable-metrics", "--enable-cache-report", "--host=0.0.0.0", "--port=30000"]},
+      {"command": ["/usr/local/bin/wait-for-model"], "args": ["--path=/models/dsv4-1", "--timeout-seconds=900", "--poll-seconds=1", "--expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731", "--expected-revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb", "--revision-metadata=.model-lock-local-manifest.json", "--expected-file=.model-lock-local-manifest.json=cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c", "--expected-file=config.json=6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023", "--expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b", "--expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547", "--gpu-metrics-port=29000", "--gpu-metrics-worker=sglang-1", "--", "python3", "-m", "sglang.launch_server", "--model-path=/models/dsv4-1", "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731", "--revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb", "--tool-call-parser=deepseekv4", "--tp=4", "--moe-runner-backend=flashinfer_mxfp4", "--speculative-algorithm=DSPARK", "--mem-fraction-static=0.90", "--chunked-prefill-size=4096", "--swa-full-tokens-ratio=0.1", "--trust-remote-code", "--enable-metrics", "--enable-cache-report", "--host=0.0.0.0", "--port=30000"]},
+      {"command": ["python3", "-m", "sglang_router.launch_router"], "args": ["--service-discovery", "--service-discovery-namespace=confidential-inference", "--service-discovery-port=30000", "--selector=app.kubernetes.io/component=inference-worker", "--policy=cache_aware", "--cache-threshold=0.3", "--balance-abs-threshold=64", "--balance-rel-threshold=1.5", "--eviction-interval-secs=60", "--max-tree-size=67108864", "--health-check-endpoint=/health", "--worker-startup-timeout-secs=3600", "--host=127.0.0.1", "--port=30000", "--prometheus-host=0.0.0.0", "--prometheus-port=29000"]}
+    ],
+    "ghcr.io/confidential-dot-ai/confidential-inference/kube-state-metrics@sha256:9a661bfe84d567e3934e82c5f4f4e9acc1ab70e790c49e63a90e83ef3f349419": [{"command": ["/kube-state-metrics", "--port=8080", "--telemetry-port=8081"], "args": ["--host=0.0.0.0", "--port=8080", "--resources=deployments,daemonsets,statefulsets,pods,nodes", "--namespaces=confidential-inference"]}],
+    "ghcr.io/confidential-dot-ai/confidential-inference/metrics-collector@sha256:a54b2c88661cb5524913a0a83be54edece40c3f9547d4d0d4475e8b066becd75": [{"command": ["/bin/prometheus"], "args": ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]}],
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723": [
+      {"command": ["/workload-proxy"], "args": ["--mode=client", "--listen=127.0.0.1:30001", "--upstream=sglang-router:9443", "--peer-workload=sglang-router-684393d", "--cert-file=/etc/c8s/certs/tls.crt", "--key-file=/etc/c8s/certs/tls.key", "--ca-file=/etc/c8s/certs/ca.crt"]},
+      {"command": ["/workload-proxy"], "args": ["--mode=server", "--listen=0.0.0.0:9443", "--upstream=127.0.0.1:30000", "--peer-workload=gateway-db0b6ee", "--cert-file=/etc/c8s/certs/tls.crt", "--key-file=/etc/c8s/certs/tls.key", "--ca-file=/etc/c8s/certs/ca.crt"]},
+      {"command": ["/c8s"], "args": ["cds-attest", "--host=0.0.0.0", "--port=8800", "--platform=tdx", "--front-door-mode=webpki", "--expected-workload=gateway-db0b6ee", "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock", "--serving-cert-file=/etc/c8s/certs/tls.crt", "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt", "--mesh-identity-key-file=/etc/c8s/certs/tls.key", "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"]},
+      {"command": ["/c8s"], "args": ["cds-attest", "--host=0.0.0.0", "--port=8801", "--platform=tdx", "--front-door-mode=webpki", "--expected-workload=sglang-router-684393d", "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock", "--serving-cert-file=/etc/c8s/certs/tls.crt", "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt", "--mesh-identity-key-file=/etc/c8s/certs/tls.key", "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"]},
+      {"command": ["/c8s"], "args": ["cds-attest", "--host=0.0.0.0", "--port=8802", "--platform=tdx", "--front-door-mode=webpki", "--nvidia-gpu-evidence", "--expected-workload=inference-worker-0-tool-calls-v1", "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock", "--serving-cert-file=/etc/c8s/certs/tls.crt", "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt", "--mesh-identity-key-file=/etc/c8s/certs/tls.key", "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"]},
+      {"command": ["/c8s"], "args": ["cds-attest", "--host=0.0.0.0", "--port=8802", "--platform=tdx", "--front-door-mode=webpki", "--nvidia-gpu-evidence", "--expected-workload=inference-worker-1-tool-calls-v1", "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock", "--serving-cert-file=/etc/c8s/certs/tls.crt", "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt", "--mesh-identity-key-file=/etc/c8s/certs/tls.key", "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"]},
+      {"command": ["/c8s"], "args": ["cds-attest", "--host=0.0.0.0", "--port=8803", "--platform=tdx", "--front-door-mode=webpki", "--expected-workload=metrics-collector-a941ea9", "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock", "--serving-cert-file=/etc/c8s/certs/tls.crt", "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt", "--mesh-identity-key-file=/etc/c8s/certs/tls.key", "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"]},
+      {"command": ["/c8s"], "args": ["cds-attest", "--host=0.0.0.0", "--port=8804", "--platform=tdx", "--front-door-mode=webpki", "--expected-workload=kube-state-metrics-a941ea9", "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock", "--serving-cert-file=/etc/c8s/certs/tls.crt", "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt", "--mesh-identity-key-file=/etc/c8s/certs/tls.key", "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"]}
+    ]
+  }
+}

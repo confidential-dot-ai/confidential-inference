@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://confidential.ai/schemas/inference-environment.json",
+  "title": "Confidential inference deployment environment",
+  "type": "object",
+  "required": ["environment", "confidentialCompute", "network", "gpu"],
+  "properties": {
+    "environment": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"
+    },
+    "confidentialCompute": {
+      "type": "object",
+      "required": ["nodeBootCdiImage", "nodeBootSourceCommit", "attestationEvidenceArtifact"],
+      "properties": {
+        "nodeBootCdiImage": {"$ref": "#/$defs/image"},
+        "controlPlaneBootCdiImage": {"$ref": "#/$defs/image"},
+        "nodeBootSourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "attestationEvidenceArtifact": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "network": {
+      "type": "object",
+      "required": ["cvmSsh"],
+      "properties": {
+        "cvmSsh": {
+          "const": {"enabled": false, "profileIncluded": false}
+        }
+      }
+    },
+    "gpu": {
+      "type": "object",
+      "required": ["total"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "image": {"type": "string", "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"}
+  }
+}

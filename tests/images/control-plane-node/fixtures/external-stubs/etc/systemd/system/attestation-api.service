@@ -1,0 +1,17 @@
+# STUB, not vendored from c8s: attestation-api.service is baked by a lower
+# image layer (node-guest-base, see contracts/c8s-admission-source-lock.json
+# nodeImage) that this repository does not check out, so its unit text
+# cannot be hash-verified here. This stub exists only so
+# systemd-analyze verify can resolve cred-release.service's
+# After=/Requires=attestation-api.service reference. Keep it in sync with
+# the description at builder-lock.json productionSignedStage.attestationApiSha256
+# if that reference ever needs deeper verification.
+[Unit]
+Description=STUB attestation-api (external layer, not verified against c8s)
+
+[Service]
+Type=simple
+ExecStart=/bin/true
+
+[Install]
+WantedBy=multi-user.target

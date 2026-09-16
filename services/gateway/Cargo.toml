@@ -1,0 +1,53 @@
+[package]
+name = "confidential-gateway"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "The public confidential inference gateway"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1.0.102"
+async-trait = "0.1.89"
+async-stream = "0.3.6"
+axum = { version = "0.8.9", features = ["http1", "json"] }
+axum-server = { version = "0.7.2", features = ["tls-rustls"] }
+base64 = "0.22.1"
+bytes = "1.11.1"
+clap = { version = "4.5.60", features = ["derive", "env"] }
+ed25519-dalek = "2.2.0"
+futures-util = "0.3.31"
+getrandom = "0.3.4"
+hex = "0.4.3"
+hmac = "0.12.1"
+http = "1.4.0"
+hyper-util = { version = "0.1.20", features = ["server-auto", "tokio"] }
+ipnet = "2.11.0"
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "stream", "rustls"] }
+ring = "0.17.14"
+rusqlite = { version = "0.38.0", features = ["bundled"] }
+rustls = "0.23.37"
+rustls-pemfile = "2.2.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10.9"
+subtle = "2.6.1"
+thiserror = "2.0.17"
+time = { version = "0.3.47", features = ["formatting"] }
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+tower = { version = "0.5.2", features = ["util"] }
+tower-http = { version = "0.6.11", features = ["cors", "limit"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+url = "2.5.8"
+uuid = { version = "1.19.0", features = ["v4"] }
+x509-parser = "0.18.1"
+
+[dev-dependencies]
+rcgen = "0.14.7"
+tempfile = "3.26.0"
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "net", "sync"] }
+
+[lints]
+workspace = true

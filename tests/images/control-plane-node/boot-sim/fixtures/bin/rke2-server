@@ -1,0 +1,7 @@
+#!/bin/sh
+# Fake RKE2 server main process. Creates the client-CA key
+# cred-release-bootstrap.service's ExecStartPre waits for, then stays up.
+set -eu
+mkdir -p /var/lib/rancher/rke2/server/tls
+: > /var/lib/rancher/rke2/server/tls/client-ca.key
+exec sleep infinity

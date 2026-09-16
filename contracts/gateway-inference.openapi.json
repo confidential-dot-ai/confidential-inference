@@ -1,0 +1,798 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Confidential Inference Public Gateway API",
+    "version": "1.0.0",
+    "description": "This contract defines the real public API of the Rust gateway in services/gateway. The gateway sits behind the c8s tls-lb, which terminates public TLS inside the TEE and forwards HTTP to the gateway process. `/v1/chat/completions` and `/v1/completions` are OpenAI-compatible: request and response bodies follow the OpenAI chat-completions and legacy-completions shapes. The gateway itself validates only the `model` field on inference requests (services/gateway/src/lib.rs, `proxy_inference`); it forwards the rest of the body to the upstream sglang-router unchanged. Bearer tokens authenticate with `Authorization: Bearer <api-key>` (services/gateway/src/lib.rs, `authenticate`). Every response carries an `X-Request-ID` header (services/gateway/src/lib.rs, `request_id`); a caller may supply this header on the request, and the gateway echoes a valid value back or generates one."
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "servers": [
+    {
+      "url": "https://api.example.invalid",
+      "description": "The c8s tls-lb public entry point"
+    }
+  ],
+  "x-deployment-contract": {
+    "tlsTermination": "c8s-tls-lb",
+    "tlsRequirement": "c8s tls-lb terminates public TLS inside the TEE and sends plain HTTP to the gateway process over the cluster network (services/gateway/src/main.rs, GATEWAY_LISTEN 0.0.0.0:9443).",
+    "inferenceUpstream": "The gateway proxies /v1/chat/completions and /v1/completions to the c8s workload-proxy loopback at http://127.0.0.1:30001, which forwards to the sglang-router workload (services/gateway/src/main.rs, INFERENCE_UPSTREAM_URL).",
+    "authenticationHeader": "Authorization: Bearer <api-key>",
+    "requestIdHeader": "X-Request-ID"
+  },
+  "x-protection-limits": {
+    "source": "services/gateway/src/protection.rs (ProtectionConfig::default) and services/gateway/src/main.rs (Args)",
+    "note": "These are the deployed defaults. Each value is also a configurable environment variable, listed in parentheses.",
+    "maximumRequestBodyBytes": 2097152,
+    "maximumHeaderCount": 64,
+    "maximumHeaderBytes": 16384,
+    "maximumUriBytes": 2048,
+    "requestBodyTimeoutSeconds": 10,
+    "streamIdleTimeoutSeconds": 60,
+    "globalRequestConcurrency": 256,
+    "perClientAddressConcurrency": 16,
+    "requestsPerClientAddressPerSecond": 30,
+    "inferenceConcurrency": 64,
+    "inferenceQueueDepth": 64,
+    "inferenceQueueTimeoutSeconds": 2,
+    "perApiKeyInferenceConcurrency": 4,
+    "attestationConcurrency": 4
+  },
+  "tags": [
+    {"name": "health", "description": "Liveness and readiness."},
+    {"name": "models", "description": "The advertised model catalog."},
+    {"name": "inference", "description": "OpenAI-compatible chat and legacy completions."},
+    {"name": "attestation", "description": "Nonce-bound c8s evidence, produced by the gateway process."},
+    {"name": "tls-lb-static", "description": "Paths that the c8s tls-lb nginx process serves directly. Nginx never forwards these to the gateway process."}
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "tags": ["health"],
+        "summary": "Report that the gateway process runs",
+        "description": "This route makes no upstream call and no availability check (services/gateway/src/lib.rs, `health`).",
+        "responses": {
+          "200": {
+            "description": "The gateway process runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["status"],
+                  "properties": {"status": {"const": "ok"}}
+                },
+                "example": {"status": "ok"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "operationId": "getReady",
+        "tags": ["health"],
+        "summary": "Report whether the gateway can serve inference",
+        "description": "When the gateway state store failed to open, the gateway runs in outage-only mode and reports 503 without calling the upstream. Otherwise the gateway calls the upstream `/health` route and reports the result (services/gateway/src/lib.rs, `ready`).",
+        "responses": {
+          "200": {
+            "description": "The upstream reported healthy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["status"],
+                  "properties": {"status": {"const": "ready"}}
+                },
+                "example": {"status": "ready"}
+              }
+            }
+          },
+          "503": {
+            "description": "Either the gateway runs in outage-only mode (`status: outage_only`), or the upstream health check failed (`status: not_ready`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["status"],
+                  "properties": {"status": {"enum": ["outage_only", "not_ready"]}}
+                },
+                "examples": {
+                  "outageOnly": {"value": {"status": "outage_only"}},
+                  "notReady": {"value": {"status": "not_ready"}}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "operationId": "listModels",
+        "tags": ["models"],
+        "summary": "List the advertised model catalog",
+        "description": "The gateway lists every configured catalog model, not only the model accepted for inference (services/gateway/src/lib.rs, `models`; services/gateway/src/main.rs builds the catalog from `GATEWAY_MODEL` plus a second fixed catalog entry). During an outage the gateway returns an empty `data` array with status 200. This route requires no bearer token.",
+        "responses": {
+          "200": {
+            "description": "The model catalog. `data` is empty when the gateway is unavailable for inference.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ModelList"},
+                "example": {
+                  "object": "list",
+                  "data": [
+                    {"id": "deepseek-ai/DeepSeek-V4-Flash-0731", "object": "model", "owned_by": "confidential.ai"},
+                    {"id": "MiniMaxAI/MiniMax-M3-MXFP8", "object": "model", "owned_by": "confidential.ai"}
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/chat/completions": {
+      "post": {
+        "operationId": "createChatCompletion",
+        "tags": ["inference"],
+        "summary": "Create an OpenAI-compatible chat completion",
+        "description": "This route accepts an OpenAI chat-completions request and proxies it to the sglang-router upstream (services/gateway/src/lib.rs, `chat_completions` calls `proxy_inference`). The gateway itself checks only that the body is valid JSON and that `model` names one authorized model. It does not validate `messages`; the upstream sglang service performs OpenAI request validation. Set `stream: true` for a `text/event-stream` response.",
+        "security": [{"bearerAuth": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ChatCompletionRequest"},
+              "examples": {
+                "nonStreaming": {
+                  "value": {
+                    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+                    "messages": [{"role": "user", "content": "Say hello."}]
+                  }
+                },
+                "streaming": {
+                  "value": {
+                    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+                    "messages": [{"role": "user", "content": "Say hello."}],
+                    "stream": true,
+                    "stream_options": {"include_usage": true}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The non-streaming response is one JSON chat-completion object. The streaming response is a `text/event-stream` of `chat.completion.chunk` events, ending with a literal `data: [DONE]` event.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ChatCompletionResponse"},
+                "example": {
+                  "id": "chatcmpl-example",
+                  "object": "chat.completion",
+                  "created": 0,
+                  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+                  "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": "Hello."}, "finish_reason": "stop"}
+                  ],
+                  "usage": {"prompt_tokens": 1, "completion_tokens": 3, "total_tokens": 4}
+                }
+              },
+              "text/event-stream": {
+                "schema": {"$ref": "#/components/schemas/ChatCompletionChunkStream"},
+                "example": "data: {\"id\":\"chatcmpl-example\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"deepseek-ai/DeepSeek-V4-Flash-0731\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-example\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"deepseek-ai/DeepSeek-V4-Flash-0731\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-example\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"deepseek-ai/DeepSeek-V4-Flash-0731\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidJson"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "408": {"$ref": "#/components/responses/RequestBodyTimeout"},
+          "413": {"$ref": "#/components/responses/RequestTooLarge"},
+          "429": {"$ref": "#/components/responses/InferenceCapacity"},
+          "502": {"$ref": "#/components/responses/UpstreamUnavailable"}
+        }
+      }
+    },
+    "/v1/completions": {
+      "post": {
+        "operationId": "createCompletion",
+        "tags": ["inference"],
+        "summary": "Create an OpenAI-compatible legacy completion",
+        "description": "This is the legacy (non-chat) OpenAI-compatible completions route. It shares the same gateway-side validation, proxy path, and error behavior as `/v1/chat/completions` (services/gateway/src/lib.rs, `completions` calls `proxy_inference`).",
+        "security": [{"bearerAuth": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/CompletionRequest"},
+              "example": {
+                "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+                "prompt": "Say hello.",
+                "stream": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The non-streaming response is one JSON text-completion object. The streaming response is a `text/event-stream`, ending with a literal `data: [DONE]` event.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/CompletionResponse"},
+                "example": {
+                  "id": "cmpl-example",
+                  "object": "text_completion",
+                  "created": 0,
+                  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+                  "choices": [{"index": 0, "text": "Hello.", "finish_reason": "stop"}],
+                  "usage": {"prompt_tokens": 1, "completion_tokens": 3, "total_tokens": 4}
+                }
+              },
+              "text/event-stream": {
+                "schema": {"$ref": "#/components/schemas/CompletionChunkStream"},
+                "example": "data: {\"id\":\"cmpl-example\",\"object\":\"text_completion\",\"created\":0,\"model\":\"deepseek-ai/DeepSeek-V4-Flash-0731\",\"choices\":[{\"index\":0,\"text\":\"Hello.\",\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidJson"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "408": {"$ref": "#/components/responses/RequestBodyTimeout"},
+          "413": {"$ref": "#/components/responses/RequestTooLarge"},
+          "429": {"$ref": "#/components/responses/InferenceCapacity"},
+          "502": {"$ref": "#/components/responses/UpstreamUnavailable"}
+        }
+      }
+    },
+    "/attestation": {
+      "get": {
+        "operationId": "getAttestationCanonical",
+        "tags": ["attestation"],
+        "summary": "Fetch nonce-bound c8s evidence (canonical path)",
+        "description": "Same handler and behavior as `/v1/attestation` (services/gateway/src/lib.rs routes both paths to `attestation_response`).",
+        "parameters": [
+          {"$ref": "#/components/parameters/AttestationNonceQuery"},
+          {"$ref": "#/components/parameters/AttestationNonceHeader"}
+        ],
+        "responses": {
+          "200": {"$ref": "#/components/responses/AttestationOk"},
+          "400": {"$ref": "#/components/responses/AttestationBadNonce"},
+          "409": {"$ref": "#/components/responses/AttestationNonceRejected"},
+          "429": {"$ref": "#/components/responses/AttestationCapacity"},
+          "502": {"$ref": "#/components/responses/AttestationInvalid"},
+          "503": {"$ref": "#/components/responses/AttestationUnavailable"}
+        }
+      }
+    },
+    "/v1/attestation": {
+      "get": {
+        "operationId": "getAttestation",
+        "tags": ["attestation"],
+        "summary": "Fetch nonce-bound c8s evidence",
+        "description": "The caller supplies one fresh, canonical, unpadded base64url-encoded 32-byte nonce, either as the `nonce` query parameter or as the `X-Attestation-Nonce` header, never both (services/gateway/ATTESTATION.md; services/gateway/src/lib.rs, `attestation_response`). The response carries raw evidence for independent, offline verification with `scripts/verify-public-attestation.py`. It proves launch or admission only; see contracts/workload-attestation.schema.json for the full response shape.",
+        "parameters": [
+          {"$ref": "#/components/parameters/AttestationNonceQuery"},
+          {"$ref": "#/components/parameters/AttestationNonceHeader"}
+        ],
+        "responses": {
+          "200": {"$ref": "#/components/responses/AttestationOk"},
+          "400": {"$ref": "#/components/responses/AttestationBadNonce"},
+          "409": {"$ref": "#/components/responses/AttestationNonceRejected"},
+          "429": {"$ref": "#/components/responses/AttestationCapacity"},
+          "502": {"$ref": "#/components/responses/AttestationInvalid"},
+          "503": {"$ref": "#/components/responses/AttestationUnavailable"}
+        }
+      }
+    },
+    "/v1/discovery": {
+      "get": {
+        "operationId": "getV1Discovery",
+        "tags": ["tls-lb-static"],
+        "summary": "Read the static c8s discovery document",
+        "description": "Nginx aliases this path directly to a local file. The gateway process never sees this request. The response is the discovery document that services/gateway/ATTESTATION.md describes as the c8s TLS-LB front door (`GATEWAY_C8S_EVIDENCE_BASE_URL` reads this same document from the internal side).",
+        "responses": {
+          "200": {
+            "description": "The c8s discovery document. Nginx sets `Cache-Control: no-store` and serves it from the local filesystem, not from the gateway.",
+            "content": {"application/json": {"schema": {"type": "object"}}}
+          }
+        }
+      }
+    },
+    "/.well-known/cds-cert.pem": {
+      "get": {
+        "operationId": "getCdsCertificate",
+        "tags": ["tls-lb-static"],
+        "summary": "Read the CDS TLS certificate",
+        "description": "Nginx aliases this path directly to a local PEM file. The gateway process never sees this request.",
+        "responses": {
+          "200": {
+            "description": "The CDS TLS certificate, PEM-encoded.",
+            "content": {"application/x-pem-file": {"schema": {"type": "string"}}}
+          }
+        }
+      }
+    },
+    "/.well-known/mesh-ca.pem": {
+      "get": {
+        "operationId": "getMeshCaCertificate",
+        "tags": ["tls-lb-static"],
+        "summary": "Read the runtime mesh CA certificate",
+        "description": "Nginx aliases this path directly to a local PEM file. The gateway process never sees this request.",
+        "responses": {
+          "200": {
+            "description": "The mesh CA certificate, PEM-encoded.",
+            "content": {"application/x-pem-file": {"schema": {"type": "string"}}}
+          }
+        }
+      }
+    },
+    "/.well-known/c8s/{path}": {
+      "get": {
+        "operationId": "getC8sWellKnown",
+        "tags": ["tls-lb-static"],
+        "summary": "Read a c8s well-known evidence route",
+        "description": "Nginx proxies every `/.well-known/c8s/*` path straight to the internal c8s evidence service on port 8800. It never forwards these to the gateway process. `/.well-known/c8s/attest-lb` is the front-door TLS receipt that services/gateway/ATTESTATION.md describes.",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "description": "The remaining c8s well-known path segment, for example `attest-lb`.",
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The c8s evidence service response for this well-known path.",
+            "content": {"application/json": {"schema": {"type": "object"}}}
+          }
+        }
+      }
+    },
+    "/allowlist": {
+      "get": {
+        "operationId": "getAllowlist",
+        "tags": ["tls-lb-static"],
+        "summary": "Read the active c8s allowlist",
+        "description": "Nginx proxies this path straight to the internal c8s evidence service on port 8801. It never forwards these to the gateway process.",
+        "responses": {
+          "200": {
+            "description": "The active c8s allowlist.",
+            "content": {"application/json": {"schema": {"type": "object"}}}
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "getTlsLbReadyz",
+        "tags": ["tls-lb-static"],
+        "summary": "Read the c8s evidence-service readiness",
+        "description": "Nginx proxies this path to the internal c8s evidence service on port 8800. This is not the gateway's own `/ready` route.",
+        "responses": {
+          "200": {"description": "The c8s evidence service is ready."}
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "operationId": "getTlsLbHealthz",
+        "tags": ["tls-lb-static"],
+        "summary": "Read the tls-lb process health",
+        "description": "Nginx answers this route locally with a fixed `ok` body. This is not the gateway's own `/health` route.",
+        "responses": {
+          "200": {
+            "description": "The tls-lb process runs.",
+            "content": {"text/plain": {"schema": {"const": "ok\n"}}}
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "`Authorization: Bearer <api-key>`. The gateway rejects a missing header, a missing `Bearer ` prefix, an empty token, and a token over 256 bytes, all with the same `invalid_api_key` error, to avoid revealing which check failed (services/gateway/src/lib.rs, `authenticate`)."
+      }
+    },
+    "parameters": {
+      "AttestationNonceQuery": {
+        "name": "nonce",
+        "in": "query",
+        "required": false,
+        "description": "A fresh, canonical, unpadded base64url-encoded 32-byte nonce (43 characters). One nonce is single-use. Supply this parameter or the `X-Attestation-Nonce` header, never both. The endpoint fails with `nonce_required` when neither is present (services/gateway/ATTESTATION.md; services/gateway/src/lib.rs, `attestation_response`).",
+        "schema": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"}
+      },
+      "AttestationNonceHeader": {
+        "name": "X-Attestation-Nonce",
+        "in": "header",
+        "required": false,
+        "description": "An alternative to the `nonce` query parameter. Supply at most one occurrence, and only one of the query parameter or this header, never both.",
+        "schema": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"}
+      }
+    },
+    "schemas": {
+      "ModelList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["object", "data"],
+        "properties": {
+          "object": {"const": "list"},
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "object", "owned_by"],
+              "properties": {
+                "id": {"type": "string"},
+                "object": {"const": "model"},
+                "owned_by": {"const": "confidential.ai"}
+              }
+            }
+          }
+        }
+      },
+      "ChatMessage": {
+        "type": "object",
+        "required": ["role"],
+        "properties": {
+          "role": {"enum": ["system", "user", "assistant", "tool"]},
+          "content": {"type": ["string", "array", "null"]},
+          "tool_calls": {"type": "array", "items": {"$ref": "#/components/schemas/ToolCall"}},
+          "tool_call_id": {"type": "string", "description": "Present on a `tool` role message: the id of the `ToolCall` this message answers."}
+        }
+      },
+      "Tool": {
+        "type": "object",
+        "required": ["type", "function"],
+        "description": "An `OpenAI`-compatible function tool the caller offers the model. Passed through to the upstream unchanged (services/gateway/src/lib.rs, `proxy_inference`); production runs sglang with `--tool-call-parser=deepseekv4`.",
+        "properties": {
+          "type": {"const": "function"},
+          "function": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string"},
+              "description": {"type": "string"},
+              "parameters": {"type": "object", "description": "A JSON Schema object describing the function's arguments."}
+            }
+          }
+        }
+      },
+      "ToolCall": {
+        "type": "object",
+        "required": ["id", "type", "function"],
+        "properties": {
+          "id": {"type": "string"},
+          "type": {"const": "function"},
+          "function": {
+            "type": "object",
+            "required": ["name", "arguments"],
+            "properties": {
+              "name": {"type": "string"},
+              "arguments": {"type": "string", "description": "A JSON-encoded string of the function call arguments."}
+            }
+          }
+        }
+      },
+      "ChatCompletionRequest": {
+        "type": "object",
+        "required": ["model"],
+        "description": "The gateway itself requires only `model` (services/gateway/src/lib.rs, `proxy_inference`). The upstream sglang-router enforces the full OpenAI chat-completions contract, including a `messages` array. `tools` and `tool_choice` pass through to the upstream unchanged.",
+        "properties": {
+          "model": {"type": "string", "description": "Must equal the one model the deployment authorizes for inference. GET /v1/models may list additional catalog entries that are not accepted here."},
+          "messages": {"type": "array", "items": {"$ref": "#/components/schemas/ChatMessage"}},
+          "stream": {"type": "boolean", "default": false},
+          "stream_options": {
+            "type": "object",
+            "properties": {"include_usage": {"type": "boolean"}}
+          },
+          "tools": {"type": "array", "items": {"$ref": "#/components/schemas/Tool"}},
+          "tool_choice": {
+            "description": "\"auto\", \"none\", \"required\", or an object naming one required tool.",
+            "anyOf": [
+              {"const": "auto"},
+              {"const": "none"},
+              {"const": "required"},
+              {"type": "object"}
+            ]
+          }
+        }
+      },
+      "CompletionRequest": {
+        "type": "object",
+        "required": ["model"],
+        "description": "The gateway itself requires only `model`. The upstream enforces the full OpenAI legacy-completions contract, including a `prompt`.",
+        "properties": {
+          "model": {"type": "string"},
+          "prompt": {"type": ["string", "array"]},
+          "stream": {"type": "boolean", "default": false}
+        }
+      },
+      "ChatCompletionResponse": {
+        "type": "object",
+        "required": ["id", "object", "created", "model", "choices"],
+        "properties": {
+          "id": {"type": "string"},
+          "object": {"const": "chat.completion"},
+          "created": {"type": "integer"},
+          "model": {"type": "string"},
+          "choices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["index", "message", "finish_reason"],
+              "properties": {
+                "index": {"type": "integer"},
+                "message": {
+                  "type": "object",
+                  "required": ["role", "content"],
+                  "properties": {
+                    "role": {"const": "assistant"},
+                    "content": {"type": ["string", "null"]},
+                    "reasoning_content": {"type": ["string", "null"], "description": "The model's reasoning text, split out by the upstream `--reasoning-parser=deepseek-v4` flag. Present only when the request asked for reasoning (`chat_template_kwargs.thinking: true`)."},
+                    "tool_calls": {"type": "array", "items": {"$ref": "#/components/schemas/ToolCall"}}
+                  }
+                },
+                "finish_reason": {"enum": ["stop", "length", "tool_calls", "content_filter", null]}
+              }
+            }
+          },
+          "usage": {"$ref": "#/components/schemas/Usage"}
+        }
+      },
+      "ChatCompletionChunk": {
+        "type": "object",
+        "required": ["id", "object", "created", "model", "choices"],
+        "properties": {
+          "id": {"type": "string"},
+          "object": {"const": "chat.completion.chunk"},
+          "created": {"type": "integer"},
+          "model": {"type": "string"},
+          "choices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["index", "delta", "finish_reason"],
+              "properties": {
+                "index": {"type": "integer"},
+                "delta": {
+                  "type": "object",
+                  "properties": {
+                    "role": {"type": "string"},
+                    "content": {"type": ["string", "null"]},
+                    "reasoning_content": {"type": "string"},
+                    "tool_calls": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["index"],
+                        "description": "A streamed tool-call delta: `index` selects the tool call being built; `id` and `function.name` normally arrive on the first delta for that index, with `function.arguments` streamed incrementally afterward.",
+                        "properties": {
+                          "index": {"type": "integer"},
+                          "id": {"type": "string"},
+                          "type": {"const": "function"},
+                          "function": {
+                            "type": "object",
+                            "properties": {
+                              "name": {"type": "string"},
+                              "arguments": {"type": "string"}
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "finish_reason": {"enum": ["stop", "length", "tool_calls", "content_filter", null]}
+              }
+            }
+          },
+          "usage": {"$ref": "#/components/schemas/Usage"}
+        }
+      },
+      "ChatCompletionChunkStream": {
+        "type": "string",
+        "description": "A `text/event-stream` body. Each event is `data: <ChatCompletionChunk JSON>\\n\\n`. The stream ends with a literal `data: [DONE]\\n\\n` event. When the request sets `stream_options.include_usage: true`, one final chunk carries an empty `choices` array and a populated `usage` object."
+      },
+      "CompletionResponse": {
+        "type": "object",
+        "required": ["id", "object", "created", "model", "choices"],
+        "properties": {
+          "id": {"type": "string"},
+          "object": {"const": "text_completion"},
+          "created": {"type": "integer"},
+          "model": {"type": "string"},
+          "choices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["index", "text", "finish_reason"],
+              "properties": {
+                "index": {"type": "integer"},
+                "text": {"type": "string"},
+                "finish_reason": {"type": ["string", "null"]}
+              }
+            }
+          },
+          "usage": {"$ref": "#/components/schemas/Usage"}
+        }
+      },
+      "CompletionChunkStream": {
+        "type": "string",
+        "description": "A `text/event-stream` body carrying `text_completion`-shaped events, ending with a literal `data: [DONE]\\n\\n` event."
+      },
+      "Usage": {
+        "type": "object",
+        "required": ["prompt_tokens", "completion_tokens", "total_tokens"],
+        "properties": {
+          "prompt_tokens": {"type": "integer"},
+          "completion_tokens": {"type": "integer"},
+          "total_tokens": {"type": "integer"},
+          "completion_tokens_details": {
+            "type": "object",
+            "description": "Present when the upstream reports a token breakdown for the completion, including reasoning tokens split out by `--reasoning-parser=deepseek-v4`.",
+            "properties": {
+              "reasoning_tokens": {"type": "integer"}
+            }
+          }
+        }
+      },
+      "GatewayError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error"],
+        "description": "The exact shape the gateway itself emits for a synthesized error (services/gateway/src/lib.rs, `client_error`; services/gateway/src/protection.rs, `error`). This differs from the four-field OpenAI error shape: the gateway sets only `code` and `message`. When the upstream sglang-router itself returns a non-2xx status, the gateway streams that response body through unchanged, in whatever shape the upstream used.",
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "message"],
+            "properties": {
+              "code": {"type": "string"},
+              "message": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "InvalidJson": {
+        "description": "The body is not valid JSON (`invalid_json`), or `model` is missing (`model_required`), or `model` does not name the one authorized inference model (`model_not_authorized`, also returned with status 401).",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/GatewayError"},
+            "examples": {
+              "invalidJson": {"value": {"error": {"code": "invalid_json", "message": "Bad Request"}}},
+              "modelRequired": {"value": {"error": {"code": "model_required", "message": "Bad Request"}}}
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "The bearer token is missing, malformed, unknown, revoked (`invalid_api_key`), or names an unauthorized model (`model_not_authorized`).",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/GatewayError"},
+            "example": {"error": {"code": "invalid_api_key", "message": "Unauthorized"}}
+          }
+        }
+      },
+      "RequestBodyTimeout": {
+        "description": "Reading the request body exceeded the body timeout (10 seconds by default; `GATEWAY_BODY_TIMEOUT_SECONDS`).",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/GatewayError"},
+            "example": {"error": {"code": "request_body_timeout", "message": "Request Timeout"}}
+          }
+        }
+      },
+      "RequestTooLarge": {
+        "description": "The request body exceeded the maximum body size (2097152 bytes by default; `GATEWAY_MAXIMUM_BODY_BYTES`).",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/GatewayError"},
+            "example": {"error": {"code": "request_too_large", "message": "Payload Too Large"}}
+          }
+        }
+      },
+      "InferenceCapacity": {
+        "description": "The gateway rejected the request because a concurrency, queue, or per-key limit was full (`inference_capacity`), or because the gateway state store is unavailable and the gateway runs in outage-only mode (`gateway_state_unavailable`, `Retry-After: 30`).",
+        "headers": {
+          "Retry-After": {
+            "description": "1 second for `inference_capacity`; 30 seconds for `gateway_state_unavailable`.",
+            "schema": {"type": "string"}
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/GatewayError"},
+            "examples": {
+              "inferenceCapacity": {"value": {"error": {"code": "inference_capacity", "message": "Too Many Requests"}}},
+              "gatewayUnavailable": {"value": {"error": {"code": "gateway_state_unavailable", "message": "Inference is temporarily unavailable."}}}
+            }
+          }
+        }
+      },
+      "UpstreamUnavailable": {
+        "description": "The gateway could not reach the sglang-router upstream.",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/GatewayError"},
+            "example": {"error": {"code": "upstream_unavailable", "message": "Bad Gateway"}}
+          }
+        }
+      },
+      "AttestationOk": {
+        "description": "One raw c8s evidence response, bound to the supplied nonce. The gateway sets `Cache-Control: no-store, max-age=0`. This response proves launch or admission only; it does not prove liveness. The full shape is contracts/workload-attestation.schema.json.",
+        "headers": {
+          "Cache-Control": {"schema": {"const": "no-store, max-age=0"}}
+        },
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "workload-attestation.schema.json"}
+          }
+        }
+      },
+      "AttestationBadNonce": {
+        "description": "The caller supplied the nonce in both places (`ambiguous_nonce`), supplied no nonce (`nonce_required`), or supplied a nonce that fails the 43-character canonical unpadded base64url check (`invalid_nonce`).",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/GatewayError"},
+            "examples": {
+              "ambiguous": {"value": {"error": {"code": "ambiguous_nonce", "message": "Bad Request"}}},
+              "required": {"value": {"error": {"code": "nonce_required", "message": "Bad Request"}}},
+              "invalid": {"value": {"error": {"code": "invalid_nonce", "message": "Bad Request"}}}
+            }
+          }
+        }
+      },
+      "AttestationNonceRejected": {
+        "description": "The nonce was already used, or the nonce store is at capacity (`nonce_rejected`). A nonce is single-use only after a successful response; a failed attestation releases the nonce for reuse (services/gateway/src/lib.rs, `release_failed_nonce`).",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/GatewayError"},
+            "example": {"error": {"code": "nonce_rejected", "message": "Conflict"}}
+          }
+        }
+      },
+      "AttestationCapacity": {
+        "description": "The attestation concurrency limit is full (4 concurrent requests by default; `GATEWAY_ATTESTATION_CONCURRENCY`).",
+        "headers": {
+          "Retry-After": {"schema": {"const": "1"}}
+        },
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/GatewayError"},
+            "example": {"error": {"code": "attestation_capacity", "message": "Too Many Requests"}}
+          }
+        }
+      },
+      "AttestationInvalid": {
+        "description": "The c8s evidence collector returned evidence that failed the gateway's own shape checks.",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/GatewayError"},
+            "example": {"error": {"code": "attestation_invalid", "message": "Bad Gateway"}}
+          }
+        }
+      },
+      "AttestationUnavailable": {
+        "description": "The c8s evidence collector was unreachable or timed out.",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/GatewayError"},
+            "example": {"error": {"code": "attestation_unavailable", "message": "Service Unavailable"}}
+          }
+        }
+      }
+    }
+  }
+}

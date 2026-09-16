@@ -1,0 +1,7 @@
+[Unit]
+Description=Boot-sim stub of attestation-api
+[Service]
+Type=simple
+ExecStart=/bin/sleep infinity
+[Install]
+WantedBy=multi-user.target

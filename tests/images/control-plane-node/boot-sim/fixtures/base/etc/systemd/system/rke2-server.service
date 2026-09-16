@@ -1,0 +1,10 @@
+[Unit]
+Description=Boot-sim stub of rke2-server
+ConditionPathExists=/run/confos/role-server
+Requires=rke2-role.service
+After=rke2-role.service
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rke2-server
+[Install]
+WantedBy=multi-user.target

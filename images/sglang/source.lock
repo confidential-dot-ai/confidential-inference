@@ -1,0 +1,301 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "https://github.com/sgl-project/sglang",
+    "commit": "71de97b264b04dcd514cf904003028aefe9775c8",
+    "version": "v0.5.18"
+  },
+  "image": {
+    "reference": "docker.io/lmsysorg/sglang",
+    "digest": "sha256:bde16a8447b19e89056b9eea06c72be6c02801dc89d528c9ea90c53368fd74bf"
+  },
+  "optimizations": {
+    "policy": "official-deepseek-baseline-plus-reviewed-confidential-compute-fixes",
+    "patch": {
+      "path": "images/sglang/patches/cc-optimizations-v0518.patch",
+      "sha256": "da0afb59209a6bce8a910b21c6e63fcde768f5b82675bfa2bd22ae230c978570"
+    },
+    "sglang": {
+      "asyncDeviceToHostCommit": "aea6d45cde342a1455186e7b9e3c3191b8c97f8d",
+      "flashInferConfidentialComputeCommit": "64121c62a8dca7f5d1fdd39c8155ac3b8fc9da70",
+      "simulator": {
+        "pullRequest": 33824,
+        "commit": "5e6af31ae3fe8d95f83bab8c78e4db834142b313",
+        "path": "images/sglang/simulator-upstream",
+        "contentSha256": "1e4f40b001192d5fc07f97ba6626b4c488cc52175c9ea6d443ca762a99860052",
+        "patch": {
+          "path": "images/sglang/patches/sglang-simulator-replay-only.patch",
+          "sha256": "7b9116115b440bcfd6b06ff00e410bc779cabe2e2a86ee75d3d8851a4dbe302e"
+        },
+        "toolCallsPatch": {
+          "path": "images/sglang/patches/sglang-simulator-tool-calls.patch",
+          "sha256": "3348e274f0a22bf4b86531ec44e66faf3ee2f6aa9e46d18c1681232652274c25"
+        },
+        "reasoningPatch": {
+          "path": "images/sglang/patches/sglang-simulator-reasoning.patch",
+          "sha256": "ea8ca140615a74476e99fab6f8b26c822897531b7fe6ca0adebb46b66c4ed8c5"
+        }
+      }
+    },
+    "flashInfer": {
+      "version": "0.6.17",
+      "tagCommit": "a0a6b019b9b27d49d209f85d028a1ae5a9b347d7",
+      "globalTimerMergeCommit": "4f855ff6bd2006611cb45c5e0b46e0275595eba9",
+      "multicastFreeWorkspaceMergeCommit": "cea7f46ffc190cabf82c95a39cd0d2aa6c888c17",
+      "cudaIpcPatch": {
+        "path": "images/sglang/patch_flashinfer_cuda_ipc.py",
+        "sha256": "62d607a31de4662de8e54a70140b72cc7bfd87cdad5d5850e0e0893f0a13bfff"
+      }
+    }
+  },
+  "deploymentImage": {
+    "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang"
+  },
+  "model": {
+    "repository": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+    "mountVerification": {
+      "path": "/models/dsv4",
+      "timeoutSeconds": 900,
+      "pollSeconds": 1,
+      "revisionMetadata": ".model-lock-local-manifest.json",
+      "expectedFiles": {
+        ".model-lock-local-manifest.json": "cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c",
+        "config.json": "6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023",
+        "model.safetensors.index.json": "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
+        "tokenizer_config.json": "6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547"
+      }
+    }
+  },
+  "roles": {
+    "sglang-router": {
+      "argv": [
+        "python3",
+        "-m",
+        "sglang_router.launch_router",
+        "--service-discovery",
+        "--service-discovery-namespace=confidential-inference",
+        "--service-discovery-port=30000",
+        "--selector=app.kubernetes.io/component=inference-worker",
+        "--policy=cache_aware",
+        "--cache-threshold=0.3",
+        "--balance-abs-threshold=64",
+        "--balance-rel-threshold=1.5",
+        "--eviction-interval-secs=60",
+        "--max-tree-size=67108864",
+        "--health-check-endpoint=/health",
+        "--worker-startup-timeout-secs=3600",
+        "--host=127.0.0.1",
+        "--port=30000",
+        "--prometheus-host=0.0.0.0",
+        "--prometheus-port=29000"
+      ]
+    },
+    "inference-worker-0": {
+      "argv": [
+        "/usr/local/bin/wait-for-model",
+        "--path=/models/dsv4",
+        "--timeout-seconds=900",
+        "--poll-seconds=1",
+        "--expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731",
+        "--expected-revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+        "--revision-metadata=.model-lock-local-manifest.json",
+        "--expected-file=.model-lock-local-manifest.json=cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c",
+        "--expected-file=config.json=6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023",
+        "--expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
+        "--expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547",
+        "--gpu-metrics-port=29000",
+        "--gpu-metrics-worker=sglang-0",
+        "--",
+        "python3",
+        "-m",
+        "sglang.launch_server",
+        "--model-path=/models/dsv4",
+        "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
+        "--revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+        "--tool-call-parser=deepseekv4",
+        "--tp=4",
+        "--moe-runner-backend=flashinfer_mxfp4",
+        "--speculative-algorithm=DSPARK",
+        "--mem-fraction-static=0.90",
+        "--chunked-prefill-size=4096",
+        "--swa-full-tokens-ratio=0.1",
+        "--trust-remote-code",
+        "--enable-metrics",
+        "--enable-cache-report",
+        "--host=0.0.0.0",
+        "--port=30000"
+      ]
+    },
+    "inference-worker-1": {
+      "argv": [
+        "/usr/local/bin/wait-for-model",
+        "--path=/models/dsv4-1",
+        "--timeout-seconds=900",
+        "--poll-seconds=1",
+        "--expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731",
+        "--expected-revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+        "--revision-metadata=.model-lock-local-manifest.json",
+        "--expected-file=.model-lock-local-manifest.json=cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c",
+        "--expected-file=config.json=6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023",
+        "--expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
+        "--expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547",
+        "--gpu-metrics-port=29000",
+        "--gpu-metrics-worker=sglang-1",
+        "--",
+        "python3",
+        "-m",
+        "sglang.launch_server",
+        "--model-path=/models/dsv4-1",
+        "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
+        "--revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+        "--tool-call-parser=deepseekv4",
+        "--tp=4",
+        "--moe-runner-backend=flashinfer_mxfp4",
+        "--speculative-algorithm=DSPARK",
+        "--mem-fraction-static=0.90",
+        "--chunked-prefill-size=4096",
+        "--swa-full-tokens-ratio=0.1",
+        "--trust-remote-code",
+        "--enable-metrics",
+        "--enable-cache-report",
+        "--host=0.0.0.0",
+        "--port=30000"
+      ]
+    }
+  },
+  "simulatorRoles": {
+    "inference-worker-0": {
+      "argv": [
+        "python3",
+        "-m",
+        "sglang_simulator.simulation.sglang.launch_server",
+        "--model-path=/opt/confidential-inference/sglang-simulator/test/assets/qwen3-8b",
+        "--tokenizer-path=/opt/confidential-inference/sglang-simulator/examples/assets/tokenizer",
+        "--sim-config-path=/opt/confidential-inference/sglang-simulator/examples/sim_configs/replay.json",
+        "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
+        "--reasoning-parser=deepseek-v4",
+        "--chat-template=chatml",
+        "--max-total-tokens=8192",
+        "--max-running-requests=48",
+        "--random-seed=0",
+        "--enable-metrics",
+        "--enable-cache-report",
+        "--host=0.0.0.0",
+        "--port=30000"
+      ]
+    },
+    "inference-worker-1": {
+      "argv": [
+        "python3",
+        "-m",
+        "sglang_simulator.simulation.sglang.launch_server",
+        "--model-path=/opt/confidential-inference/sglang-simulator/test/assets/qwen3-8b",
+        "--tokenizer-path=/opt/confidential-inference/sglang-simulator/examples/assets/tokenizer",
+        "--sim-config-path=/opt/confidential-inference/sglang-simulator/examples/sim_configs/replay.json",
+        "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
+        "--reasoning-parser=deepseek-v4",
+        "--chat-template=chatml",
+        "--max-total-tokens=8192",
+        "--max-running-requests=48",
+        "--random-seed=1",
+        "--enable-metrics",
+        "--enable-cache-report",
+        "--host=0.0.0.0",
+        "--port=30000"
+      ]
+    },
+    "sglang-router": {
+      "argv": [
+        "python3",
+        "-m",
+        "sglang_router.launch_router",
+        "--service-discovery",
+        "--service-discovery-namespace=confidential-inference-staging",
+        "--service-discovery-port=30000",
+        "--selector=app.kubernetes.io/component=inference-worker",
+        "--policy=cache_aware",
+        "--cache-threshold=0.3",
+        "--balance-abs-threshold=64",
+        "--balance-rel-threshold=1.5",
+        "--eviction-interval-secs=60",
+        "--max-tree-size=67108864",
+        "--health-check-endpoint=/health",
+        "--worker-startup-timeout-secs=3600",
+        "--host=127.0.0.1",
+        "--port=30000",
+        "--prometheus-host=0.0.0.0",
+        "--prometheus-port=29000"
+      ]
+    }
+  },
+  "nodeImage": {
+    "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
+    "digest": "sha256:cdc98a230169ff62599084f8f791c022e983c803c0d950c6f43e38d2009dfe3d",
+    "sourceCommit": "fd6355414f79c6b3d3657e1abca04a6edc90550f"
+  },
+  "nodeEvidenceArtifact": {
+    "digest": "sha256:026e62bf69fe05eecfc8809c6be0539d098f3d42be8a6c8f196200d018b50a7c"
+  },
+  "nodeImages": {
+    "conf-inference-prod": {
+      "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
+      "digest": "sha256:77c30f0ed4cc9c0009de9c7be223e129fa8e10980b6ca5d2d17fe0d0743cd1a8",
+      "sourceCommit": "2ef376a875010ac98542ab5f2f770aeb95b0082f"
+    },
+    "production": {
+      "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
+      "digest": "sha256:cdc98a230169ff62599084f8f791c022e983c803c0d950c6f43e38d2009dfe3d",
+      "sourceCommit": "fd6355414f79c6b3d3657e1abca04a6edc90550f"
+    },
+    "integration-staging": {
+      "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
+      "digest": "sha256:1f0483d38744fa3bef8964ba3fcfe5596db4ba02675dd6eff1a17cacfa488d02",
+      "sourceCommit": "fd6355414f79c6b3d3657e1abca04a6edc90550f"
+    }
+  },
+  "alternateArgvRoles": {
+    "sglang-router": {
+      "argv": [
+        "python3",
+        "-m",
+        "sglang_router.launch_router",
+        "--service-discovery",
+        "--service-discovery-namespace=confidential-inference",
+        "--service-discovery-port=30000",
+        "--selector=app.kubernetes.io/component=inference-worker",
+        "--policy=cache_aware",
+        "--cache-threshold=0.3",
+        "--balance-abs-threshold=64",
+        "--balance-rel-threshold=1.5",
+        "--eviction-interval-secs=60",
+        "--max-tree-size=67108864",
+        "--health-check-endpoint=/health",
+        "--worker-startup-timeout-secs=3600",
+        "--host=0.0.0.0",
+        "--port=30000",
+        "--prometheus-host=0.0.0.0",
+        "--prometheus-port=29000"
+      ]
+    },
+    "inference-worker-0": {
+      "argv": [
+        "python3",
+        "-m",
+        "sglang_simulator.simulation.sglang.launch_server",
+        "--model-path=/opt/confidential-inference/sglang-simulator/test/assets/qwen3-8b",
+        "--tokenizer-path=/opt/confidential-inference/sglang-simulator/examples/assets/tokenizer",
+        "--sim-config-path=/opt/confidential-inference/sglang-simulator/examples/sim_configs/replay.json",
+        "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
+        "--chat-template=chatml",
+        "--max-total-tokens=8192",
+        "--max-running-requests=48",
+        "--random-seed=0",
+        "--enable-metrics",
+        "--enable-cache-report",
+        "--host=0.0.0.0",
+        "--port=30000"
+      ]
+    }
+  }
+}

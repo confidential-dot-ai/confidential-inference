@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://confidential.ai/contracts/maintenance-dns-receipt.schema.json",
+  "title": "Maintenance DNS change receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "receiptId",
+    "operation",
+    "hostname",
+    "actor",
+    "reason",
+    "startedAt",
+    "completedAt",
+    "providerChangeId",
+    "fromRecords",
+    "toRecords",
+    "verification"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "maintenance-dns-receipt/v1"
+    },
+    "receiptId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "operation": {
+      "enum": ["cutover", "rollback"]
+    },
+    "hostname": {
+      "const": "api.example.invalid"
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 512
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "providerChangeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "cutoverReceiptSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "fromRecords": {
+      "$ref": "#/$defs/recordSet"
+    },
+    "toRecords": {
+      "$ref": "#/$defs/recordSet"
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dnsResolvedToExpectedTarget", "tlsCertificateValid", "healthTruthful"],
+      "properties": {
+        "dnsResolvedToExpectedTarget": {
+          "const": true
+        },
+        "tlsCertificateValid": {
+          "const": true
+        },
+        "healthTruthful": {
+          "const": true
+        },
+        "modelsAdvertised": {
+          "const": true
+        },
+        "inferenceReturned429": {
+          "const": true
+        },
+        "attestationDeclaredNoInference": {
+          "const": true
+        },
+        "previousRecordsRestored": {
+          "const": true
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "cutover"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": ["cutoverReceiptSha256"]
+        },
+        "properties": {
+          "verification": {
+            "required": [
+              "dnsResolvedToExpectedTarget",
+              "tlsCertificateValid",
+              "healthTruthful",
+              "modelsAdvertised",
+              "inferenceReturned429",
+              "attestationDeclaredNoInference"
+            ],
+            "not": {
+              "required": ["previousRecordsRestored"]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "rollback"
+          }
+        }
+      },
+      "then": {
+        "required": ["cutoverReceiptSha256"],
+        "properties": {
+          "verification": {
+            "required": [
+              "dnsResolvedToExpectedTarget",
+              "tlsCertificateValid",
+              "healthTruthful",
+              "previousRecordsRestored"
+            ],
+            "not": {
+              "anyOf": [
+                {"required": ["modelsAdvertised"]},
+                {"required": ["inferenceReturned429"]},
+                {"required": ["attestationDeclaredNoInference"]}
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "recordSet": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "value", "ttlSeconds"],
+        "properties": {
+          "type": {
+            "enum": ["A", "AAAA", "CNAME"]
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 253
+          },
+          "ttlSeconds": {
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 86400
+          }
+        }
+      }
+    }
+  }
+}

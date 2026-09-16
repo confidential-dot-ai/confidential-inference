@@ -1,0 +1,115 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: maintenance-gateway
+  labels:
+    app.kubernetes.io/name: maintenance-gateway
+    confidential.ai/environment: {{ .Values.environment | quote }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/name: maintenance-gateway
+  ports:
+    - name: https
+      port: {{ .Values.service.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: maintenance-gateway
+  labels:
+    app.kubernetes.io/name: maintenance-gateway
+    confidential.ai/environment: {{ .Values.environment | quote }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: maintenance-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: maintenance-gateway
+        confidential.ai/environment: {{ .Values.environment | quote }}
+      annotations:
+        confidential.ai/cw: maintenance-gateway
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecretName }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: maintenance-gateway
+          image: {{ required "A digest-pinned maintenance gateway image is required." .Values.image | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MAINTENANCE_GATEWAY_LISTEN
+              value: 0.0.0.0:9443
+            {{- if .Values.trustedProxyCidrs }}
+            - name: MAINTENANCE_GATEWAY_TRUSTED_PROXY_CIDRS
+              value: {{ join "," .Values.trustedProxyCidrs | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 9443
+          readinessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /readiness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 2
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maintenance-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: maintenance-gateway
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 9443
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: c8s-system
+      ports:
+        - protocol: TCP
+          port: 8443
+    # The c8s certificate client verifies the local node through its private API.
+    - ports:
+        - protocol: TCP
+          port: 8400

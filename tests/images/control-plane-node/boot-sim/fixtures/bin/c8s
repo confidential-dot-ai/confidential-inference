@@ -1,0 +1,20 @@
+#!/bin/sh
+# Fake /usr/local/bin/c8s for the boot simulation. Logs its argv, then
+# stays "active" the way the real cred-release binary does while serving.
+set -eu
+mkdir -p /run/boot-sim
+sub="$1"
+port=""
+for arg in "$@"; do
+    case "$arg" in
+        --listen) want_port=1 ;;
+        *)
+            if [ "${want_port:-0}" = 1 ]; then
+                port="${arg#:}"
+                want_port=0
+            fi
+            ;;
+    esac
+done
+echo "$@" > "/run/boot-sim/c8s-${sub}-${port}.argv"
+exec sleep infinity

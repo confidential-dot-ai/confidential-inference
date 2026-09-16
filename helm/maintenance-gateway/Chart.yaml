@@ -1,0 +1,6 @@
+apiVersion: v2
+name: confidential-inference-maintenance-gateway
+description: A stateless fallback gateway for confidential inference.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

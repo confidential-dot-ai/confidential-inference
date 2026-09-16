@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "https://github.com/confidential-dot-ai/confidential-inference",
+    "package": "services/gateway",
+    "binary": "confidential-gateway"
+  },
+  "build": {
+    "image": "docker.io/library/rust",
+    "digest": "sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55",
+    "toolchain": "1.94.1",
+    "buildxVersion": "0.36.1",
+    "buildkitImage": "moby/buildkit",
+    "buildkitDigest": "sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8"
+  },
+  "runtime": {
+    "image": "gcr.io/distroless/cc-debian12",
+    "digest": "sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f",
+    "uid": 65532,
+    "gid": 65532,
+    "entrypoint": [
+      "/usr/local/bin/confidential-gateway"
+    ]
+  }
+}

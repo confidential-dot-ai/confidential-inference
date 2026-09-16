@@ -1,0 +1,12 @@
+[Unit]
+Description=Boot-sim stub of cred-release (mirrors c8s cred-release.service ordering, not its body)
+After=network-online.target rke2-role.service rke2-server.service attestation-api.service
+Wants=network-online.target
+Requires=rke2-role.service attestation-api.service
+ConditionPathExists=/dev/disk/by-label/opkeydata
+ConditionPathExists=/run/confos/role-server
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/c8s cred-release --listen :8443 --attestation-api-url http://127.0.0.1:8400 --platform=${CRED_PLATFORM} --cert-ttl 24h --cert-org system:masters --cert-cn operator
+[Install]
+WantedBy=multi-user.target

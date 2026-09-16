@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "confidential.ai/confos-node-image-publication/v1",
+  "recordedAt": "2026-09-05T18:52:36Z",
+  "buildHost": "GitHub Actions run 33984935178",
+  "sourceLock": "images/control-plane-node/builder-lock.json",
+  "manifest": "images/control-plane-node/manifest-production.json",
+  "manifestSha256": "bbf839fdd02c5ebc55c30c75ede50ab85ff0b836146231f44d2e85cd0832930a",
+  "buildOutputManifestSha256": "8d0afc552405d98084ea064aaa1603fad6734cf8fe33d9efc9ff94d2b7f98282",
+  "build": {
+    "outputPath": "confidential-os-builder/output/rke2-tdx",
+    "rootHash": "97dd4f195a7e94f74cee0c69de106915ea45d59363dfe5be0dc573a44859bdff",
+    "exactCommand": "ATTEST_GPU_BIN=$GITHUB_WORKSPACE/attestation-rs/target/release/attestation-api LIBNVAT=/usr/lib/x86_64-linux-gnu/libnvat.so.1.2.0 C8S_PLATFORM=tdx C8S_REF=079aeb4 C8S_NAME=rke2-tdx C8S_STATIC_ALLOWLIST=$RUNNER_TEMP/static-allowlist.json ../c8s/node-guest-image/build --profile-dir $GITHUB_WORKSPACE/consumer-profile",
+    "productionSafety": {
+      "noGpuValidationMode": false,
+      "moduleLoadingLocked": true,
+      "privateModuleSigningKeyPresentOnBuildHost": false,
+      "signedStageRecoveredFromLockedPublishedImage": false,
+      "builderSourceClean": true,
+      "c8sSourceClean": true
+    }
+  },
+  "profile": {
+    "mkosiConfSha256": "b65d550f0fd78f710aa35272c361622e2e66f9f4e4d7e557ed2d2be4528c03a3",
+    "unitSha256": "45b73534995e0969cd211d186c34f53a003e9a286637d3951cd55d4717ca4103",
+    "rke2ServerDropInSha256": "7a8156b2a27c0e0ec4eaa3518dcb5b729f513854e6715b46c021e2873fe868d7",
+    "mountScriptSha256": "410834fe559970bf9c2e0fd9ca5ecef36439060fa78ab75ae648dd81b9f045e1",
+    "recoveryScriptSha256": "818d2d3b2a4bb272ac359bbaa96c24b22262c3cefae04d408a718c8bf8177ae9",
+    "stateDiskUnitEnableState": "static",
+    "globalPresetPresent": false,
+    "globalEnablementSymlinkPresent": false,
+    "rke2ServerRequiresUnit": true
+  },
+  "artifacts": {
+    "diskSha256": "c87c1bc8873b858c4e80f7152714c36963515a63b7d322eb8fa5de627411fa0c",
+    "initrdSha256": "5d25095fbb9574d181f6e3f9d9d34ee73f7020c7981f19a670934a3c748b26d9",
+    "ukiSha256": "1eebaa0bdb1a5b9bc8342b89a5f661eba2c12ead752c632a40738083fc54365a",
+    "firmwareSha256": "a7edaeff6fc4bef8924461cb0fb68a194c3595d08ccad2720cca926dea12f7cf"
+  },
+  "measurements": {
+    "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
+    "rtmr1": "95f6515ef906192daabd8f203290b788c702f0a963335ec3173aa199e8cf5faad07450485e81af80351bb5593b6486fd",
+    "rtmr2": "cd3b67c1888624ee97af2676dfed59348dd3299094d4f763b6a9ea28e015fa150885ac2551607f1d450c5e24cd827a1d"
+  },
+  "publication": {
+    "tagReference": "ghcr.io/confidential-dot-ai/node-guest-base:rke2-tdx-cdi-079aeb4-cp0659d9c9d377-saff8a857b3744",
+    "digestReference": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:cdc98a230169ff62599084f8f791c022e983c803c0d950c6f43e38d2009dfe3d",
+    "ociManifestDigest": "sha256:cdc98a230169ff62599084f8f791c022e983c803c0d950c6f43e38d2009dfe3d",
+    "ociConfigDigest": "sha256:dc570f145a7f2862c9ef3c30b8d6ae2feaceb0d364e4b2e08e67ae18815427d9",
+    "cdiLayerDigest": "sha256:0f5f017e6185550a9866b5f6856abf8cd1cad3dc1d4ffc9b38c09b554b9d6cf7",
+    "cdiLayerSizeBytes": 2003593200,
+    "orasVersion": "1.3.1",
+    "registryDigestVerified": true
+  },
+  "secretMaterialIncluded": false
+}

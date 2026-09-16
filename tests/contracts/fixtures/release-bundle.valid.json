@@ -1,0 +1,262 @@
+{
+  "schemaVersion": 2,
+  "release": {
+    "name": "v0.0.1",
+    "environment": "production"
+  },
+  "source": {
+    "repository": "https://github.com/confidential-dot-ai/confidential-inference",
+    "commit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "node": {
+    "image": {
+      "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
+      "digest": "sha256:e1440a8fdb54b0d9b259a0dab3ed69e275fdfbd8ce6c2c427f0ba06257cac028"
+    },
+    "sourceCommit": "615bf738bb44a48f3f249aefd2fe823868e035a7",
+    "evidenceArtifactDigest": "sha256:0304da26413b1fabf5223a27070eeddf1d3602ab82e5e37a247b8d16977f71dc"
+  },
+  "c8s": {
+    "sourceCommit": "615bf738bb44a48f3f249aefd2fe823868e035a7",
+    "imageTag": "615bf73",
+    "installInputDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "measurements": {
+      "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
+      "rtmr1": "7c1e546fb176eca5bba4a1de49a2f42d41ca95521c1f3427067e41fbe1828e20f686a0881186dab06de2bc78b30589ca",
+      "rtmr2": "5bb3131f7ed356536f2c63f37ae7bde3ab53abb872469be1451cbea1ecc49017a420d8f8b185063286942754b53671a7"
+    },
+    "operatorPublicKeySha256": "sha256:45363125cde63f66880a4ba62fb4e0b48ae2f21bf1658df1fe1d6f14ec9ebfb7",
+    "operatorKeySetSha256": "sha256:8e4a722def684a9495d9d024e84fdccbbae9cb7ad9f585e863f7e5df575d2355",
+    "frontDoorWorkload": "c8s-tls-lb",
+    "meshCa": {
+      "certificateSha256": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "certificateSecretName": "C8S_MESH_CA_CERT_PEM",
+      "fingerprintSecretName": "C8S_MESH_CA_CERT_SHA256"
+    },
+    "attestationTargets": [
+      {
+        "target": "gateway",
+        "workload": "gateway",
+        "identity": "gateway"
+      },
+      {
+        "target": "inference-worker-0",
+        "workload": "inference-worker-0",
+        "identity": "inference-worker-0"
+      },
+      {
+        "target": "inference-worker-1",
+        "workload": "inference-worker-1",
+        "identity": "inference-worker-1"
+      },
+      {
+        "target": "sglang-router",
+        "workload": "sglang-router",
+        "identity": "sglang-router"
+      }
+    ],
+    "systemFloor": [
+      {
+        "name": "c8s-operator",
+        "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:1468ac37566b0f198c41c56c098c32133c09279c08d549f7a57263d8b09d2b89"
+      },
+      {
+        "name": "cds",
+        "image": "ghcr.io/confidential-dot-ai/cds@sha256:a2b856614e0b1cdd48ffb8335d1ba7a8b987ed92b26613726b6176fb6f531923"
+      },
+      {
+        "name": "nri-image-policy",
+        "image": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:7edba14e351df55dc1d1cf74a38a5545239c6917897c41fb975dc650d4d02e45"
+      },
+      {
+        "name": "ratls-mesh",
+        "image": "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:7b73939c367de2f1912b6b1bb644fc7641f29cac6723893a831affaca2ad6b46"
+      },
+      {
+        "name": "volumed",
+        "image": "ghcr.io/confidential-dot-ai/volumed@sha256:6c3ca327bd628efd7f1241e024d56d7c74744d68b55ee9a80b3d3dc3752249a2"
+      }
+    ]
+  },
+  "allowlistDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "model": {
+    "repository": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+    "dmVerityRoot": "8888888888888888888888888888888888888888888888888888888888888888",
+    "mountVerification": {
+      "path": "/models/dsv4",
+      "timeoutSeconds": 900,
+      "pollSeconds": 1,
+      "revisionMetadata": ".model-lock-local-manifest.json",
+      "expectedFiles": {
+        ".model-lock-local-manifest.json": "cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c",
+        "config.json": "6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023",
+        "model.safetensors.index.json": "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
+        "tokenizer_config.json": "6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547"
+      }
+    }
+  },
+  "workloads": [
+    {
+      "name": "gateway",
+      "image": {
+        "reference": "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "build": {
+        "repository": "https://example.invalid/confidential-inference",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "context": ".",
+        "dockerfile": "images/gateway/Dockerfile",
+        "platform": "linux/amd64"
+      },
+      "argv": [
+        "/usr/local/bin/gateway"
+      ]
+    },
+    {
+      "name": "sglang-router",
+      "image": {
+        "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang",
+        "digest": "sha256:1cc4208add73f4312dd77e2e263d49933242d60103d7503de44b3790e867da84"
+      },
+      "build": {
+        "repository": "https://example.invalid/confidential-inference",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "context": "images/sglang",
+        "dockerfile": "images/sglang/Dockerfile",
+        "platform": "linux/amd64"
+      },
+      "argv": [
+        "python3",
+        "-m",
+        "sglang_router.launch_router",
+        "--service-discovery",
+        "--service-discovery-namespace=confidential-inference",
+        "--service-discovery-port=30000",
+        "--selector=app.kubernetes.io/component=inference-worker",
+        "--policy=cache_aware",
+        "--cache-threshold=0.3",
+        "--balance-abs-threshold=64",
+        "--balance-rel-threshold=1.5",
+        "--eviction-interval-secs=60",
+        "--max-tree-size=67108864",
+        "--health-check-endpoint=/health",
+        "--worker-startup-timeout-secs=3600",
+        "--host=127.0.0.1",
+        "--port=30000",
+        "--prometheus-host=0.0.0.0",
+        "--prometheus-port=29000"
+      ]
+    },
+    {
+      "name": "inference-worker-0",
+      "image": {
+        "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang",
+        "digest": "sha256:96196db3f8d2084e97d9133a6b831860561943eaa6b2ebc090ddea293aad6e28"
+      },
+      "build": {
+        "repository": "https://example.invalid/confidential-inference",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "context": "images/sglang",
+        "dockerfile": "images/sglang/Dockerfile",
+        "platform": "linux/amd64"
+      },
+      "argv": [
+        "/usr/local/bin/wait-for-model",
+        "--path=/models/dsv4",
+        "--timeout-seconds=900",
+        "--poll-seconds=1",
+        "--expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731",
+        "--expected-revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+        "--revision-metadata=.model-lock-local-manifest.json",
+        "--expected-file=.model-lock-local-manifest.json=cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c",
+        "--expected-file=config.json=6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023",
+        "--expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
+        "--expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547",
+        "--gpu-metrics-port=29000",
+        "--gpu-metrics-worker=sglang-0",
+        "--",
+        "python3",
+        "-m",
+        "sglang.launch_server",
+        "--model-path=/models/dsv4",
+        "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
+        "--revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+        "--tool-call-parser=deepseekv4",
+        "--tp=4",
+        "--moe-runner-backend=flashinfer_mxfp4",
+        "--speculative-algorithm=DSPARK",
+        "--mem-fraction-static=0.90",
+        "--chunked-prefill-size=4096",
+        "--swa-full-tokens-ratio=0.1",
+        "--trust-remote-code",
+        "--enable-metrics",
+        "--enable-cache-report",
+        "--host=0.0.0.0",
+        "--port=30000"
+      ],
+      "modelDmVerityRoot": "8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    {
+      "name": "inference-worker-1",
+      "image": {
+        "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang",
+        "digest": "sha256:96196db3f8d2084e97d9133a6b831860561943eaa6b2ebc090ddea293aad6e28"
+      },
+      "build": {
+        "repository": "https://example.invalid/confidential-inference",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "context": "images/sglang",
+        "dockerfile": "images/sglang/Dockerfile",
+        "platform": "linux/amd64"
+      },
+      "argv": [
+        "/usr/local/bin/wait-for-model",
+        "--path=/models/dsv4-1",
+        "--timeout-seconds=900",
+        "--poll-seconds=1",
+        "--expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731",
+        "--expected-revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+        "--revision-metadata=.model-lock-local-manifest.json",
+        "--expected-file=.model-lock-local-manifest.json=cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c",
+        "--expected-file=config.json=6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023",
+        "--expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
+        "--expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547",
+        "--gpu-metrics-port=29000",
+        "--gpu-metrics-worker=sglang-1",
+        "--",
+        "python3",
+        "-m",
+        "sglang.launch_server",
+        "--model-path=/models/dsv4-1",
+        "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
+        "--revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+        "--tool-call-parser=deepseekv4",
+        "--tp=4",
+        "--moe-runner-backend=flashinfer_mxfp4",
+        "--speculative-algorithm=DSPARK",
+        "--mem-fraction-static=0.90",
+        "--chunked-prefill-size=4096",
+        "--swa-full-tokens-ratio=0.1",
+        "--trust-remote-code",
+        "--enable-metrics",
+        "--enable-cache-report",
+        "--host=0.0.0.0",
+        "--port=30000"
+      ],
+      "modelDmVerityRoot": "8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    {
+      "name": "metrics-collector",
+      "image": {
+        "reference": "ghcr.io/example/metrics-collector",
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "argv": [
+        "/collector",
+        "--metrics"
+      ]
+    }
+  ]
+}

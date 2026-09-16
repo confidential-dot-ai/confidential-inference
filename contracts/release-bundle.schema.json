@@ -1,0 +1,295 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://confidential.ai/schemas/release-bundle.v1.json",
+  "title": "Confidential Inference release bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "release", "source", "node", "c8s", "allowlistDigest", "model", "workloads"],
+  "properties": {
+    "schemaVersion": {"enum": [1, 2]},
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "environment"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+        "environment": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"}
+      }
+    },
+    "releaseTrust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policyPath", "policySha256", "signatureType"],
+      "properties": {
+        "policyPath": {"const": "releases/trust/release-signing-policy.json"},
+        "policySha256": {"$ref": "#/$defs/sha256Digest"},
+        "signatureType": {"const": "sigstore-keyless"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit"],
+      "properties": {
+        "repository": {"type": "string", "format": "uri"},
+        "commit": {"$ref": "#/$defs/gitCommit"}
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "sourceCommit", "evidenceArtifactDigest"],
+      "properties": {
+        "image": {"$ref": "#/$defs/ociImage"},
+        "sourceCommit": {"$ref": "#/$defs/gitCommit"},
+        "evidenceArtifactDigest": {"$ref": "#/$defs/sha256Digest"}
+      }
+    },
+    "c8s": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceCommit", "imageTag", "installInputDigest", "measurements", "frontDoorWorkload", "systemFloor"],
+      "properties": {
+        "sourceCommit": {"$ref": "#/$defs/gitCommit"},
+        "imageTag": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
+        "installInputDigest": {"$ref": "#/$defs/sha256Digest"},
+        "policyMode": {"enum": ["operator", "static"]},
+        "measurements": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mrtd", "rtmr1", "rtmr2"],
+          "properties": {
+            "mrtd": {"$ref": "#/$defs/sha384Hex"},
+            "rtmr1": {"$ref": "#/$defs/sha384Hex"},
+            "rtmr2": {"$ref": "#/$defs/sha384Hex"}
+          }
+        },
+        "operatorPublicKeySha256": {"$ref": "#/$defs/sha256Digest"},
+        "operatorKeySetSha256": {"$ref": "#/$defs/sha256Digest"},
+        "frontDoorWorkload": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
+        "meshCa": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["certificateSha256", "certificateSecretName", "fingerprintSecretName"],
+          "properties": {
+            "certificateSha256": {"$ref": "#/$defs/sha256Digest"},
+            "certificateSecretName": {"const": "C8S_MESH_CA_CERT_PEM"},
+            "fingerprintSecretName": {"const": "C8S_MESH_CA_CERT_SHA256"}
+          }
+        },
+        "systemFloor": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "image"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
+              "image": {"type": "string", "pattern": "^[^\\s@:]+(?:/[^\\s@:]+)+@sha256:[a-f0-9]{64}$"}
+            }
+          }
+        },
+        "attestationTargets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["target", "workload"],
+            "properties": {
+              "target": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
+              "workload": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
+              "identity": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"}
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["policyMode"],
+            "properties": {"policyMode": {"const": "static"}}
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {"required": ["operatorPublicKeySha256"]},
+                {"required": ["operatorKeySetSha256"]}
+              ]
+            }
+          },
+          "else": {
+            "required": ["operatorPublicKeySha256", "operatorKeySetSha256", "meshCa"]
+          }
+        }
+      ]
+    },
+    "allowlistDigest": {"$ref": "#/$defs/sha256Digest"},
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "revision", "dmVerityRoot", "mountVerification"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1, "maxLength": 255},
+        "revision": {"$ref": "#/$defs/gitCommit"},
+        "dmVerityRoot": {"$ref": "#/$defs/sha256Hex"},
+        "mountVerification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "timeoutSeconds", "pollSeconds", "revisionMetadata", "expectedFiles"],
+          "properties": {
+            "path": {"type": "string", "pattern": "^/models(?:/[A-Za-z0-9._-]+)+$"},
+            "timeoutSeconds": {"type": "integer", "minimum": 30, "maximum": 3600},
+            "pollSeconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 10},
+            "revisionMetadata": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
+            "expectedFiles": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {"$ref": "#/$defs/sha256Hex"}
+            }
+          }
+        }
+      }
+    },
+    "workloads": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "image", "argv"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
+          "matchedWorkload": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
+          "image": {"$ref": "#/$defs/ociImage"},
+          "build": {"$ref": "#/$defs/imageBuild"},
+          "argv": {"$ref": "#/$defs/argv"},
+          "modelDmVerityRoot": {"$ref": "#/$defs/sha256Hex"}
+          ,"gpu": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["required", "deviceCount", "architectures"],
+            "properties": {
+              "required": {"const": true},
+              "deviceCount": {"type": "integer", "minimum": 1, "maximum": 16},
+              "architectures": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 16,
+                "items": {"type": "string", "pattern": "^[A-Z0-9_-]{1,32}$"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "kettleProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statementDigest"],
+      "properties": {
+        "statementDigest": {"$ref": "#/$defs/sha256Digest"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "c8s": {
+            "required": ["policyMode"],
+            "properties": {"policyMode": {"const": "static"}}
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "c8s": {
+            "not": {
+              "anyOf": [
+                {"required": ["operatorPublicKeySha256"]},
+                {"required": ["operatorKeySetSha256"]}
+              ]
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "c8s": {
+            "required": ["operatorPublicKeySha256", "operatorKeySetSha256"]
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"schemaVersion": {"const": 2}}},
+      "then": {
+        "properties": {
+          "workloads": {
+            "items": {
+              "if": {
+                "properties": {
+                  "image": {
+                    "properties": {
+                      "reference": {
+                        "pattern": "^ghcr\\.io/confidential-dot-ai/confidential-inference/"
+                      }
+                    }
+                  }
+                }
+              },
+              "then": {"required": ["build"]}
+            }
+          },
+          "c8s": {
+            "properties": {
+              "attestationTargets": {
+                "items": {"required": ["identity"]}
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "gitCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256Hex": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sha384Hex": {"type": "string", "pattern": "^[0-9a-f]{96}$"},
+    "sha256Digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {"type": "string", "minLength": 1, "maxLength": 4096}
+    },
+    "ociImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "digest"],
+      "properties": {
+        "reference": {
+          "type": "string",
+          "maxLength": 512,
+          "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+$"
+        },
+        "digest": {"$ref": "#/$defs/sha256Digest"}
+      }
+    },
+    "imageBuild": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "context", "dockerfile", "platform"],
+      "properties": {
+        "repository": {"type": "string", "format": "uri"},
+        "commit": {"$ref": "#/$defs/gitCommit"},
+        "context": {"type": "string", "pattern": "^(?:\\.|[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*)$"},
+        "dockerfile": {"type": "string", "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"},
+        "platform": {"const": "linux/amd64"}
+      }
+    }
+  }
+}

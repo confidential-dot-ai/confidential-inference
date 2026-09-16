@@ -1,0 +1,16 @@
+environment: example-fallback
+replicaCount: 1
+image: ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway@sha256:88a07a341edecf4fa31bcb7344bacbdcf8b64a6f6056782d20db78c62708e626
+imagePullSecretName: fallback-ghcr-pull
+service:
+  type: ClusterIP
+  port: 443
+# Add only an outer proxy which overwrites X-Forwarded-For with one address.
+trustedProxyCidrs: [10.52.0.0/16]
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi

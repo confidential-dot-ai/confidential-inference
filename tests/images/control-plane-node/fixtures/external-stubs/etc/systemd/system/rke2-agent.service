@@ -1,0 +1,13 @@
+# STUB, not vendored from c8s: see rke2-server.service in this same
+# directory for why this main unit is a hand-written stub rather than a
+# vendored, hash-checked fixture.
+[Unit]
+Description=STUB rke2-agent (installed by RKE2, not part of the c8s tree)
+After=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/rke2 agent
+
+[Install]
+WantedBy=multi-user.target

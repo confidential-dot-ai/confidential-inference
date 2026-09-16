@@ -1,0 +1,15 @@
+# STUB, not vendored from c8s: the rke2-server.service main unit is
+# installed by RKE2's own install.sh at image build time, not baked as a
+# file in the c8s repository (c8s ships only *.service.d drop-ins for it).
+# This stub exists only so systemd-analyze verify can resolve the profile's
+# and c8s's drop-ins for this unit name.
+[Unit]
+Description=STUB rke2-server (installed by RKE2, not part of the c8s tree)
+After=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/rke2 server
+
+[Install]
+WantedBy=multi-user.target

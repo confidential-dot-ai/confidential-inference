@@ -1,0 +1,220 @@
+{{- if .Values.inference.enabled }}
+{{- if and (gt (int .Values.inference.gpusPerReplica) 0) (eq (len .Values.inference.gpuArchitectures) 0) }}
+{{- fail "inference.gpuArchitectures is required when inference.gpusPerReplica is greater than zero" }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-workers
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: inference-worker
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "confidential-inference.selector" (dict "root" . "component" "inference-worker") | nindent 4 }}
+  ports:
+    - name: inference
+      port: {{ .Values.inference.port }}
+      targetPort: inference
+    {{- if .Values.attestationReceipts.enabled }}
+    - name: cds-attest
+      port: {{ .Values.attestationReceipts.firstWorkerPort }}
+      targetPort: cds-attest
+    {{- end }}
+{{- range $index := until (int .Values.inference.replicas) }}
+{{- $simulatorMode := eq $.Values.inference.mode "simulator" }}
+{{- $volumeName := "" }}
+{{- if not $simulatorMode }}
+{{- $volumeName = index $.Values.inference.model.volumeNames $index }}
+{{- end }}
+{{- $attestedWorkload := index $.Values.inference.attestedWorkloads $index }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: inference-worker-{{ $index }}
+  labels:
+    {{- include "confidential-inference.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: inference-worker
+    app.kubernetes.io/instance: inference-worker-{{ $index }}
+spec:
+  serviceName: inference-workers
+  replicas: 1
+  updateStrategy:
+    type: OnDelete
+    rollingUpdate: null
+  selector:
+    matchLabels:
+      {{- include "confidential-inference.selector" (dict "root" $ "component" "inference-worker") | nindent 6 }}
+      app.kubernetes.io/instance: inference-worker-{{ $index }}
+  template:
+    metadata:
+      labels:
+        {{- include "confidential-inference.selector" (dict "root" $ "component" "inference-worker") | nindent 8 }}
+        app.kubernetes.io/instance: inference-worker-{{ $index }}
+        confidential.ai/environment: {{ $.Values.environment | quote }}
+      annotations:
+        confidential.ai/cw: inference-worker-{{ $index }}
+        confidential.ai/c8s-renew-interval: {{ $.Values.attestationReceipts.certificateRenewInterval | quote }}
+        {{- if not $simulatorMode }}
+        confidential.ai/c8s-volumes: {{ printf "%s=%s" $volumeName $.Values.inference.model.c8sVolumeSource | quote }}
+        confidential.ai/c8s-volume-dir: {{ $.Values.inference.model.volumeDirectory | quote }}
+        {{- if gt (int $.Values.inference.gpusPerReplica) 0 }}
+        confidential.ai/gpu-architectures: {{ join "," $.Values.inference.gpuArchitectures | quote }}
+        confidential.ai/attested-gpu-count: {{ gt (int $.Values.inference.attestedGpuCount) 0 | ternary (int $.Values.inference.attestedGpuCount) (int $.Values.inference.gpusPerReplica) | quote }}
+        {{- end }}
+        {{- end }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $.Values.inference.port | quote }}
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: {{ $.Values.scheduling.inferenceNodeName | quote }}
+      serviceAccountName: confidential-inference
+      terminationGracePeriodSeconds: {{ $.Values.inference.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- include "confidential-inference.workloadClaimsSupplementalGroup" $ | nindent 8 }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sglang
+          image: {{ $.Values.images.sglangWorker }}
+          imagePullPolicy: IfNotPresent
+          {{- if $simulatorMode }}
+          command: ["python3"]
+          {{- else }}
+          command: ["/usr/local/bin/wait-for-model"]
+          {{- end }}
+          args:
+            {{- if $simulatorMode }}
+            - -m
+            - sglang_simulator.simulation.sglang.launch_server
+            - --model-path=/opt/confidential-inference/sglang-simulator/test/assets/qwen3-8b
+            - --tokenizer-path=/opt/confidential-inference/sglang-simulator/examples/assets/tokenizer
+            - --sim-config-path=/opt/confidential-inference/sglang-simulator/examples/sim_configs/replay.json
+            - --served-model-name={{ $.Values.inference.model.name }}
+            {{- if $.Values.inference.reasoningParser }}
+            - --reasoning-parser={{ $.Values.inference.reasoningParser }}
+            {{- end }}
+            - --chat-template={{ $.Values.inference.simulator.chatTemplate }}
+            - --max-total-tokens={{ $.Values.inference.simulator.maxTotalTokens }}
+            - --max-running-requests={{ $.Values.inference.simulator.maxRunningRequests }}
+            - --random-seed={{ $index }}
+            - --enable-metrics
+            - --enable-cache-report
+            - --host=0.0.0.0
+            - --port={{ $.Values.inference.port }}
+            {{- else }}
+            - --path={{ $.Values.inference.model.volumeDirectory }}/{{ $volumeName }}
+            - --timeout-seconds={{ $.Values.inference.model.mountVerification.timeoutSeconds }}
+            - --poll-seconds={{ $.Values.inference.model.mountVerification.pollSeconds }}
+            - --expected-repository={{ $.Values.inference.model.name }}
+            - --expected-revision={{ $.Values.inference.model.revision }}
+            - --revision-metadata={{ $.Values.inference.model.mountVerification.revisionMetadata }}
+            {{- range $name, $digest := $.Values.inference.model.mountVerification.expectedFiles }}
+            - --expected-file={{ $name }}={{ $digest }}
+            {{- end }}
+            - --gpu-metrics-port={{ $.Values.inference.metricsPort }}
+            - --gpu-metrics-worker=sglang-{{ $index }}
+            - --
+            - python3
+            - -m
+            - sglang.launch_server
+            - --model-path={{ $.Values.inference.model.volumeDirectory }}/{{ $volumeName }}
+            - --served-model-name={{ $.Values.inference.model.name }}
+            - --revision={{ $.Values.inference.model.revision }}
+            - --tool-call-parser=deepseekv4
+            {{- if $.Values.inference.reasoningParser }}
+            - --reasoning-parser={{ $.Values.inference.reasoningParser }}
+            {{- end }}
+            - --tp={{ $.Values.inference.gpusPerReplica }}
+            - --moe-runner-backend=flashinfer_mxfp4
+            - --speculative-algorithm=DSPARK
+            - --mem-fraction-static=0.90
+            - --chunked-prefill-size=4096
+            - --swa-full-tokens-ratio=0.1
+            - --trust-remote-code
+            - --enable-metrics
+            - --enable-cache-report
+            - --host=0.0.0.0
+            - --port={{ $.Values.inference.port }}
+            {{- end }}
+          env:
+            - name: HOME
+              value: /tmp
+            {{- if not $simulatorMode }}
+            - name: WORKER_DRAIN_DEADLINE_SECONDS
+              # wait-for-model reads this to drain in-flight requests on
+              # SIGTERM. It stays well inside terminationGracePeriodSeconds
+              # so the wrapper still has time to stop the child after
+              # draining. The wrapper's own argv never changes; the c8s
+              # allowlist policy allows any container env value.
+              value: {{ sub (int $.Values.inference.terminationGracePeriodSeconds) (int $.Values.inference.drainDeadlineMarginSeconds) | quote }}
+            {{- end }}
+            {{- if $simulatorMode }}
+            - name: CUDA_VISIBLE_DEVICES
+              value: ""
+            - name: SGLANG_USE_CPU_ENGINE
+              value: "1"
+            - name: SGLANG_SIMULATOR_OUTPUT_MODE
+              value: {{ $.Values.inference.simulator.outputMode | quote }}
+            - name: PYTHONPATH
+              value: /opt/confidential-inference/sglang-simulator/src
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: inference
+              containerPort: {{ $.Values.inference.port }}
+            - name: gpu-metrics
+              containerPort: {{ $.Values.inference.metricsPort }}
+          resources:
+            requests:
+              cpu: {{ $.Values.inference.resources.cpu | quote }}
+              memory: {{ $.Values.inference.resources.memory }}
+              {{- if not $simulatorMode }}
+              nvidia.com/gpu: {{ $.Values.inference.gpusPerReplica }}
+              {{- end }}
+            {{- if not $simulatorMode }}
+            limits:
+              nvidia.com/gpu: {{ $.Values.inference.gpusPerReplica }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: inference
+            periodSeconds: 15
+            failureThreshold: 240
+            timeoutSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: inference
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: inference
+            periodSeconds: 30
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+        {{- if $.Values.attestationReceipts.enabled }}
+        {{- include "confidential-inference.cdsAttestSidecar" (dict "root" $ "workload" $attestedWorkload "host" "0.0.0.0" "port" $.Values.attestationReceipts.firstWorkerPort "gpuEvidence" (gt (int $.Values.inference.gpusPerReplica) 0)) | nindent 8 }}
+        {{- end }}
+      volumes:
+        {{- if and $.Values.attestationReceipts.enabled (not $.Values.attestationReceipts.legacyC8s615) }}
+        {{- include "confidential-inference.workloadClaimsVolume" $ | nindent 8 }}
+        {{- end }}
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Gi
+{{- end }}
+{{- end }}

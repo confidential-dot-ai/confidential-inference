@@ -1,0 +1,17 @@
+environment: staging
+
+inference:
+  enabled: true
+  mode: simulator
+  replicas: 2
+  gpusPerReplica: 0
+  reasoningParser: deepseek-v4
+  resources:
+    cpu: "2"
+    memory: 8Gi
+  autoscaling:
+    enabled: false
+    maxReplicas: 2
+  model:
+    name: deepseek-ai/DeepSeek-V4-Flash-0731
+    volumeNames: []

@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""Verify the neutral Helm chart defaults and safety rules."""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import tempfile
+from pathlib import Path
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[2]
+CHART = ROOT / "helm/confidential-inference"
+PINNED = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
+# The chart has no default for inference.mode. Every render must state the
+# mode. This constant marks a render that only needs a chart to succeed, not
+# a specific mode, so it picks the GPU-free simulator backend.
+NEUTRAL_MODE = ("--set", "inference.mode=simulator")
+
+
+def helm(*arguments: str, success: bool = True) -> str:
+    result = subprocess.run(
+        ["helm", *arguments], cwd=ROOT, text=True, capture_output=True, check=False
+    )
+    if (result.returncode == 0) != success:
+        raise AssertionError(result.stderr or result.stdout)
+    return result.stdout
+
+
+def main() -> None:
+    helm("lint", str(CHART), *NEUTRAL_MODE)
+    documents = [
+        item for item in yaml.safe_load_all(
+            helm("template", "example", str(CHART), "--namespace", "inference", *NEUTRAL_MODE)
+        ) if item
+    ]
+    workloads = [
+        item for item in documents
+        if item["kind"] in {"Deployment", "StatefulSet", "DaemonSet"}
+    ]
+    names = {item["metadata"]["name"] for item in workloads}
+    assert {"gateway", "sglang-router", "inference-worker-0", "inference-worker-1"}.issubset(names)
+    assert not any(item["kind"] == "PersistentVolume" for item in documents)
+    expected_claim_mount = {
+        "name": "c8s-workload-claims",
+        "mountPath": "/run/c8s/workload-claims",
+        "readOnly": True,
+    }
+    for workload in workloads:
+        containers = workload["spec"]["template"]["spec"]["containers"]
+        attest = [item for item in containers if item["name"] == "cds-attest"]
+        assert len(attest) == 1
+        attest = attest[0]
+        assert (
+            "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock"
+            in attest["args"]
+        )
+        assert not any(item["name"] == "HOST_IP" for item in attest.get("env", []))
+        assert expected_claim_mount in attest["volumeMounts"]
+        claims_volume = next(
+            item for item in workload["spec"]["template"]["spec"].get("volumes", [])
+            if item["name"] == "c8s-workload-claims"
+        )
+        assert claims_volume["hostPath"] == {
+            "path": "/var/run/nri-image-policy", "type": "Directory"
+        }
+        assert 65532 in workload["spec"]["template"]["spec"]["securityContext"][
+            "supplementalGroups"
+        ]
+        for container in containers:
+            if container is not attest:
+                assert not any(
+                    item["name"] == "c8s-workload-claims"
+                    for item in container.get("volumeMounts", [])
+                )
+    assert not any(
+        item["kind"] == "Service"
+        and item["spec"].get("type", "ClusterIP") in {"LoadBalancer", "NodePort"}
+        for item in documents
+    )
+    gateway = next(
+        item for item in documents
+        if item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway"
+    )
+    gateway_container = next(
+        item for item in gateway["spec"]["template"]["spec"]["containers"]
+        if item["name"] == "gateway"
+    )
+    gateway_env = {item["name"]: item["value"] for item in gateway_container["env"]}
+    assert gateway_env["GATEWAY_ENDPOINT_DRAIN_SECONDS"] == "35"
+    assert gateway_env["GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256"].startswith("sha256:")
+    assert gateway["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 960
+    for workload in workloads:
+        for container in workload["spec"]["template"]["spec"]["containers"]:
+            assert PINNED.fullmatch(container["image"]), container["image"]
+            if container["name"] != "gateway-state-mounter":
+                security = container["securityContext"]
+                assert security["allowPrivilegeEscalation"] is False
+                assert "ALL" in security["capabilities"]["drop"]
+    rendered = yaml.safe_dump_all(documents)
+    assert "nvidia.com/gpu" not in rendered
+    helm(
+        "lint", str(CHART), *NEUTRAL_MODE, "--set-string",
+        "images.gateway=example.invalid/gateway:latest", success=False,
+    )
+    helm(
+        "lint", str(CHART), *NEUTRAL_MODE, "--set", "gateway.service.type=LoadBalancer",
+        success=False,
+    )
+    helm(
+        "template", "example", str(CHART), "--namespace", "inference", *NEUTRAL_MODE,
+        "--set", "gateway.terminationGracePeriodSeconds=935",
+        success=False,
+    )
+    helm(
+        "template", "example", str(CHART), "--namespace", "inference", *NEUTRAL_MODE,
+        "--set", "inference.replicas=1",
+        "--set", "inference.gpusPerReplica=1",
+        "--set", "inference.gpuArchitectures=[]",
+        success=False,
+    )
+
+    inference_documents = [
+        item for item in yaml.safe_load_all(
+            helm(
+                "template", "example", str(CHART), "--namespace", "inference",
+                "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
+            )
+        ) if item
+    ]
+    router = next(
+        item for item in inference_documents
+        if item["kind"] == "Deployment" and item["metadata"]["name"] == "sglang-router"
+    )
+    router_args = next(
+        container["args"]
+        for container in router["spec"]["template"]["spec"]["containers"]
+        if container["name"] == "sglang-router"
+    )
+    assert "--selector=app.kubernetes.io/component=inference-worker" in router_args
+    assert router["spec"]["strategy"]["rollingUpdate"] == {
+        "maxUnavailable": 0,
+        "maxSurge": 1,
+    }
+    router_service = next(
+        item for item in inference_documents
+        if item["kind"] == "Service" and item["metadata"]["name"] == "sglang-router"
+    )
+    assert "publishNotReadyAddresses" not in router_service["spec"]
+    router_role = next(
+        item for item in inference_documents
+        if item["kind"] == "Role" and item["metadata"]["name"] == "sglang-router-pods"
+    )
+    assert router_role["rules"] == [{
+        "apiGroups": [""],
+        "resources": ["pods"],
+        "verbs": ["get", "list", "watch"],
+    }]
+
+    # The attested GPU count annotation defaults to the per-pod allocation and
+    # can be overridden when several workers share one node's GPUs.
+    worker = next(
+        item for item in inference_documents
+        if item["metadata"]["name"] == "inference-worker-0"
+        and item["kind"] in {"Deployment", "StatefulSet"}
+    )
+    worker_annotations = worker["spec"]["template"]["metadata"]["annotations"]
+    assert worker_annotations["confidential.ai/attested-gpu-count"] == "4"
+    override_documents = [
+        item for item in yaml.safe_load_all(
+            helm(
+                "template", "example", str(CHART), "--namespace", "inference",
+                "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
+                "--set", "inference.attestedGpuCount=8",
+            )
+        ) if item
+    ]
+    override_worker = next(
+        item for item in override_documents
+        if item["metadata"]["name"] == "inference-worker-0"
+        and item["kind"] in {"Deployment", "StatefulSet"}
+    )
+    override_annotations = override_worker["spec"]["template"]["metadata"]["annotations"]
+    assert override_annotations["confidential.ai/attested-gpu-count"] == "8"
+    router_network_policy = next(
+        item for item in inference_documents
+        if item["kind"] == "NetworkPolicy" and item["metadata"]["name"] == "router-paths"
+    )
+    router_egress_ports = {
+        port["port"]
+        for rule in router_network_policy["spec"]["egress"]
+        for port in rule.get("ports", [])
+    }
+    assert {443, 6443}.issubset(router_egress_ports)
+
+    workers = [
+        item for item in inference_documents
+        if item["kind"] == "StatefulSet"
+        and item["metadata"]["name"].startswith("inference-worker-")
+    ]
+    assert len(workers) == 2
+    for worker in workers:
+        worker_index = worker["metadata"]["name"].removeprefix("inference-worker-")
+        worker_pod = worker["spec"]["template"]
+        assert 65532 in worker_pod["spec"]["securityContext"]["supplementalGroups"]
+        sglang_args = next(
+            container["args"]
+            for container in worker_pod["spec"]["containers"]
+            if container["name"] == "sglang"
+        )
+        assert sglang_args.count("--tool-call-parser=deepseekv4") == 1
+        cds_attest_args = next(
+            container["args"]
+            for container in worker_pod["spec"]["containers"]
+            if container["name"] == "cds-attest"
+        )
+        assert f"--expected-workload=inference-worker-{worker_index}" in cds_attest_args
+        assert "--nvidia-gpu-evidence" in cds_attest_args
+        cds_attest = next(
+            container
+            for container in worker_pod["spec"]["containers"]
+            if container["name"] == "cds-attest"
+        )
+        assert expected_claim_mount in cds_attest["volumeMounts"]
+        assert {
+            "name": "c8s-workload-claims",
+            "hostPath": {"path": "/var/run/nri-image-policy", "type": "Directory"},
+        } in worker_pod["spec"]["volumes"]
+        assert (
+            worker["spec"]["template"]["metadata"]["annotations"]["confidential.ai/cw"]
+            == f"inference-worker-{worker_index}"
+        )
+
+    simulator_documents = [
+        item for item in yaml.safe_load_all(
+            helm(
+                "template", "example", str(CHART), "--namespace", "inference",
+                "--values", str(ROOT / "tests/contracts/values-sglang-simulator.yaml"),
+            )
+        ) if item
+    ]
+    simulator_workers = [
+        item for item in simulator_documents
+        if item["kind"] == "StatefulSet"
+        and item["metadata"]["name"].startswith("inference-worker-")
+    ]
+    assert len(simulator_workers) == 2
+    for worker in simulator_workers:
+        worker_index = worker["metadata"]["name"].removeprefix("inference-worker-")
+        pod = worker["spec"]["template"]
+        assert "confidential.ai/c8s-volumes" not in pod["metadata"]["annotations"]
+        container = next(
+            item for item in pod["spec"]["containers"] if item["name"] == "sglang"
+        )
+        assert container["command"] == ["python3"]
+        assert "sglang_simulator.simulation.sglang.launch_server" in container["args"]
+        assert "--chat-template=chatml" in container["args"]
+        assert f"--random-seed={worker_index}" in container["args"]
+        assert "nvidia.com/gpu" not in container["resources"].get("requests", {})
+        assert "nvidia.com/gpu" not in container["resources"].get("limits", {})
+        environment = {item["name"]: item["value"] for item in container["env"]}
+        assert environment["CUDA_VISIBLE_DEVICES"] == ""
+        assert environment["SGLANG_USE_CPU_ENGINE"] == "1"
+
+    worker_transition_documents = [
+        item for item in yaml.safe_load_all(
+            helm(
+                "template", "example", str(CHART), "--namespace", "inference",
+                "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
+                "--set-string", "inference.attestedWorkloads[0]=inference-worker-0-release-2",
+                "--set-string", "inference.attestedWorkloads[1]=inference-worker-1-release-2",
+            )
+        ) if item
+    ]
+    transition_workers = [
+        item for item in worker_transition_documents
+        if item["kind"] == "StatefulSet"
+        and item["metadata"]["name"].startswith("inference-worker-")
+    ]
+    for worker in transition_workers:
+        worker_index = worker["metadata"]["name"].removeprefix("inference-worker-")
+        cds_attest_args = next(
+            container["args"]
+            for container in worker["spec"]["template"]["spec"]["containers"]
+            if container["name"] == "cds-attest"
+        )
+        assert (
+            f"--expected-workload=inference-worker-{worker_index}-release-2"
+            in cds_attest_args
+        )
+        assert "--nvidia-gpu-evidence" in cds_attest_args
+        assert (
+            worker["spec"]["template"]["metadata"]["annotations"]["confidential.ai/cw"]
+            == f"inference-worker-{worker_index}"
+        )
+
+    non_worker_attest_args = []
+    for document in inference_documents:
+        if document["kind"] != "Deployment":
+            continue
+        for container in document["spec"]["template"]["spec"]["containers"]:
+            if container["name"] == "cds-attest":
+                non_worker_attest_args.extend(container.get("args", []))
+    assert "--nvidia-gpu-evidence" not in non_worker_attest_args
+
+    default_documents = [
+        item for item in yaml.safe_load_all(
+            helm("template", "example", str(CHART), "--namespace", "inference", *NEUTRAL_MODE)
+        ) if item
+    ]
+    default_attest_args = []
+    for document in default_documents:
+        if document["kind"] not in {"Deployment", "StatefulSet"}:
+            continue
+        for container in document["spec"]["template"]["spec"]["containers"]:
+            if container["name"] == "cds-attest":
+                default_attest_args.extend(container.get("args", []))
+    assert "--nvidia-gpu-evidence" not in default_attest_args
+
+    transition_documents = [
+        item for item in yaml.safe_load_all(
+            helm(
+                "template", "example", str(CHART), "--namespace", "inference", *NEUTRAL_MODE,
+                "--set-string", "gateway.attestedWorkload=gateway-release-2",
+                "--set-string", "router.attestedWorkload=router-release-2",
+                "--set-string", "metricsCollector.attestedWorkload=metrics-collector-release-2",
+                "--set-string", "kubeStateMetrics.attestedWorkload=kube-state-metrics-release-2",
+            )
+        ) if item
+    ]
+    expected = {
+        "gateway": "--expected-workload=gateway-release-2",
+        "sglang-router": "--expected-workload=router-release-2",
+        "metrics-collector": "--expected-workload=metrics-collector-release-2",
+        "kube-state-metrics": "--expected-workload=kube-state-metrics-release-2",
+    }
+    for deployment_name, expected_argument in expected.items():
+        deployment = next(
+            item for item in transition_documents
+            if item["kind"] == "Deployment"
+            and item["metadata"]["name"] == deployment_name
+        )
+        cds_attest = next(
+            container
+            for container in deployment["spec"]["template"]["spec"]["containers"]
+            if container["name"] == "cds-attest"
+        )
+        assert expected_argument in cds_attest["args"]
+        assert (
+            deployment["spec"]["template"]["metadata"]["annotations"]
+            ["confidential.ai/cw"] == deployment_name
+        )
+
+    # The chart has no default for inference.mode, so a values file that
+    # omits the field must fail the render, not silently pick a backend.
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml") as mode_absent_values:
+        yaml.safe_dump({"inference": {"enabled": True}}, mode_absent_values)
+        mode_absent_values.flush()
+        result = subprocess.run(
+            [
+                "helm", "template", "example", str(CHART), "--namespace", "inference",
+                "--values", mode_absent_values.name,
+            ],
+            cwd=ROOT, text=True, capture_output=True, check=False,
+        )
+    assert result.returncode != 0, "a render with no inference.mode must fail"
+    assert "inference" in result.stderr
+    assert "mode" in result.stderr
+
+    # Each committed environment values file must state its own mode, since
+    # the chart will not choose one for it.
+    production_values = yaml.safe_load(
+        (ROOT / "c8s/production-values.yaml").read_text()
+    )
+    assert production_values["inference"]["mode"] == "model"
+    staging_values = yaml.safe_load(
+        (ROOT / "c8s/integration-staging-values.yaml").read_text()
+    )
+    assert staging_values["inference"]["mode"] == "simulator"
+
+    print("Helm neutral-default and safety tests passed.")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,17 @@
+{
+  "environment": "integration-staging",
+  "buildHost": "https://github.com/confidential-dot-ai/c8s/actions/runs/34897271633",
+  "publication": {
+    "ociManifestDigest": "sha256:4f611a8b321570cff6ba880253f3b5649828284c2621a9a86cfda59c9d70cd85",
+    "configDigest": "sha256:dc570f145a7f2862c9ef3c30b8d6ae2feaceb0d364e4b2e08e67ae18815427d9",
+    "cdiLayerDigest": "sha256:806d06dfc3520156991d378d99c28bf6f94695f91ae1dc886dbb18d518045ea4",
+    "cdiLayerSize": 2003588802
+  },
+  "sealedAllowlistSha256": "sha256:ae4ed02814fa5eb52f91130ac638744e6e8bc4efe53a1ff2888954a4eab71cbd",
+  "manifestSha256": "sha256:6693a33feb2d94f78ada36fb8230a61d83925219b53be0ab80c8c433f5c647ab",
+  "measurements": {
+    "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
+    "rtmr1": "fc4ef032ed243db154152854cee3c3c250cf66a33a00a749bc0b409d25c0d121d6bee1743967c2fccfc1032cdf089490",
+    "rtmr2": "27ac042e48993db929ec420b3f520bf55a9c71cddbddb935e714b9e7d862037827302011dd2bcd821b0d7d22649b1d4d"
+  }
+}

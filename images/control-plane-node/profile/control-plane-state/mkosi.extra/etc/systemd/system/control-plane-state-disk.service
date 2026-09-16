@@ -1,0 +1,42 @@
+[Unit]
+Description=Write the confidential-inference node profile at boot (state tmpfs, hardening, cred-release identities)
+DefaultDependencies=no
+Conflicts=umount.target
+# rke2-role.service writes /run/confos/role-server or /run/confos/role-agent
+# and the /etc/rancher/rke2/config.yaml.d/50-role.yaml fragment this script
+# reads the role marker from. Order after it, before either RKE2 role
+# starts, so every write below lands before RKE2 reads it. Every node role
+# runs this unit: it writes the kubelet hardening drop-in on both roles, and
+# gates the server-only writes on the role marker itself.
+After=rke2-role.service
+Requires=rke2-role.service
+# NOT Before=local-fs.target. rke2-role.service keeps systemd's default
+# dependencies, so it is ordered After=basic.target, which is ordered after
+# local-fs.target. An earlier Before=local-fs.target here therefore closed an
+# ordering cycle (this unit -> rke2-role -> basic -> sysinit -> local-fs ->
+# this unit) that systemd breaks by deleting an arbitrary job. The tmpfs
+# mount needs no local-fs.target ordering: the only readers are the two RKE2
+# units named below, and both are ordered after this unit explicitly.
+Before=rke2-server.service rke2-agent.service
+# Order the ExecStop umount before the filesystems go away at shutdown.
+Before=umount.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /usr/local/libexec/confidential-inference/control-plane-state-disk.sh
+ExecStop=-/bin/umount /var/lib/rancher/rke2/server
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
+# The bake-time `systemctl preset-all` turns these into
+# /etc/systemd/system/rke2-{server,agent}.service.requires/ symlinks in the
+# measured image, so BOTH RKE2 roles hard-depend on this generator: a failed
+# generator fails the RKE2 start instead of leaving a node running without
+# the kubelet hardening. The server side is also pinned by the baked
+# rke2-server.service.d/zz-control-plane-state.conf drop-in, and the agent
+# side is pinned a second time by the runtime
+# /run/systemd/system/rke2-agent.service.d/ drop-in the script writes first
+# thing, which does not depend on the bake-time preset at all.
+RequiredBy=rke2-server.service rke2-agent.service

@@ -1,0 +1,589 @@
+{
+  "schema": "confidential.ai/c8s-production-policy/v1",
+  "environment": "conf-inference-prod",
+  "output": "c8s/allowlists/conf-inference-prod.json",
+  "chart": {
+    "path": "helm/confidential-inference",
+    "release": "confidential-inference",
+    "namespace": "confidential-inference",
+    "values": "c8s/conf-inference-prod-values.yaml",
+    "kubeVersion": "1.32.0"
+  },
+  "c8s": {
+    "repository": "https://github.com/confidential-dot-ai/c8s",
+    "sourceCommit": "2ef376a875010ac98542ab5f2f770aeb95b0082f",
+    "imageTag": "2ef376a",
+    "cvmMode": "node",
+    "hardwarePlatform": "tdx",
+    "distro": "rke2",
+    "volumes": true,
+    "attest": true
+  },
+  "systemImages": {
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:a191a0d3a45ba5979456d3b008cd38b55940aca5c8ceff6ae40e4d307d80f120": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:a191a0d3a45ba5979456d3b008cd38b55940aca5c8ceff6ae40e4d307d80f120",
+    "ghcr.io/confidential-dot-ai/cds@sha256:978963858cc61c418e1701d336a3e024c89482525f87f0656638599923f2e821": "ghcr.io/confidential-dot-ai/cds@sha256:978963858cc61c418e1701d336a3e024c89482525f87f0656638599923f2e821",
+    "nginxinc/nginx-unprivileged@sha256:11f3f6249b4ae3d7a4ec2a51797060107b88ead52b33b6ed3c6c33f55ca96200": "nginxinc/nginx-unprivileged@sha256:11f3f6249b4ae3d7a4ec2a51797060107b88ead52b33b6ed3c6c33f55ca96200",
+    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:33ed1eace2a1c903035b92abd50b8b45343cb712d2c45f2eb48a51ac9072e2bd": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:33ed1eace2a1c903035b92abd50b8b45343cb712d2c45f2eb48a51ac9072e2bd",
+    "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:088a305698b49843c3293118ed3a8b56c6cb1f35c6122818e47d21d794fd518e": "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:088a305698b49843c3293118ed3a8b56c6cb1f35c6122818e47d21d794fd518e",
+    "ghcr.io/confidential-dot-ai/volumed@sha256:6b29ebead7667b16db6169a1800725dedf9b481dc1b28a77087b019c212948eb": "ghcr.io/confidential-dot-ai/volumed@sha256:6b29ebead7667b16db6169a1800725dedf9b481dc1b28a77087b019c212948eb"
+  },
+  "workloads": [
+    {
+      "name": "gateway",
+      "controller": "Deployment/gateway",
+      "secretReads": [
+        "/confidential-inference/gateway/api-key-pepper"
+      ]
+    },
+    {
+      "name": "gateway-state-mounter",
+      "controller": "DaemonSet/gateway-state-mounter"
+    },
+    {
+      "name": "inference-worker-0",
+      "controller": "StatefulSet/inference-worker-0"
+    },
+    {
+      "name": "kube-state-metrics",
+      "controller": "Deployment/kube-state-metrics"
+    },
+    {
+      "name": "metrics-collector",
+      "controller": "Deployment/metrics-collector"
+    },
+    {
+      "name": "sglang-router",
+      "controller": "Deployment/sglang-router"
+    }
+  ],
+  "systemWorkloads": {
+    "c8s-tls-lb": {
+      "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:a191a0d3a45ba5979456d3b008cd38b55940aca5c8ceff6ae40e4d307d80f120",
+      "initContainers": [
+        {
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:a191a0d3a45ba5979456d3b008cd38b55940aca5c8ceff6ae40e4d307d80f120",
+          "command": [
+            "/c8s"
+          ],
+          "args": [
+            "get-cert",
+            "--cds-url=https://c8s-cds.c8s-system.svc:8443",
+            "--attestation-api-url=http://$(HOST_IP):8400",
+            "--san=c8s-tls-lb.c8s-system.svc",
+            "--out=/tls/cert.pem",
+            "--key-out=/tls/key.pem",
+            "--ca-out=/tls/ca.pem",
+            "--initial-retry-timeout=2m",
+            "--renew-interval=1h",
+            "--reload-nginx=true",
+            "--continue-on-initial-error",
+            "--discovery-out=/discovery/discovery.json",
+            "--discovery-cds-cert-url=/.well-known/cds-cert.pem",
+            "--discovery-public-tls-mode=cds",
+            "--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
+            "--ca-watch-interval=1m"
+          ]
+        },
+        {
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:a191a0d3a45ba5979456d3b008cd38b55940aca5c8ceff6ae40e4d307d80f120",
+          "command": [
+            "/c8s",
+            "probe-file",
+            "--wait",
+            "--timeout=3m",
+            "/tls/cert.pem"
+          ],
+          "args": []
+        }
+      ],
+      "containers": [
+        {
+          "image": "nginxinc/nginx-unprivileged@sha256:11f3f6249b4ae3d7a4ec2a51797060107b88ead52b33b6ed3c6c33f55ca96200",
+          "command": [
+            "/docker-entrypoint.sh"
+          ],
+          "args": [
+            "nginx",
+            "-g",
+            "daemon off;"
+          ]
+        },
+        {
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:a191a0d3a45ba5979456d3b008cd38b55940aca5c8ceff6ae40e4d307d80f120",
+          "command": [
+            "/c8s"
+          ],
+          "args": [
+            "cds-attest",
+            "--host=127.0.0.1",
+            "--port=8800",
+            "--platform=tdx",
+            "--generation=",
+            "--attestation-api-url=http://$(HOST_IP):8400",
+            "--front-door-mode=cds",
+            "--serving-cert-file=/tls/cert.pem",
+            "--mesh-identity-cert-file=/tls/cert.pem",
+            "--mesh-identity-key-file=/tls/key.pem",
+            "--mesh-identity-ca-file=/tls/ca.pem",
+            "--upstream=http://c8s-gateway.confidential-inference.svc.cluster.local:9443"
+          ]
+        },
+        {
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:a191a0d3a45ba5979456d3b008cd38b55940aca5c8ceff6ae40e4d307d80f120",
+          "command": [
+            "/c8s"
+          ],
+          "args": [
+            "allowlist-proxy",
+            "--host=127.0.0.1",
+            "--port=8801",
+            "--cds-url=https://c8s-cds.c8s-system.svc:8443",
+            "--attestation-api-url=http://$(HOST_IP):8400",
+            "--measurements-config=/etc/c8s-measurements/cds.json"
+          ]
+        }
+      ]
+    }
+  },
+  "imageConfigs": {
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:3f9dc9d291b2177e18763556793c8d33c2fff8ec05f163b9b391df78d34f0ad1": [
+      {
+        "command": [
+          "/usr/local/bin/confidential-gateway"
+        ],
+        "args": []
+      }
+    ],
+    "docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316": [
+      {
+        "command": [
+          "/bin/sh",
+          "/opt/confidential-inference/mount.sh"
+        ],
+        "args": []
+      }
+    ],
+    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b": [
+      {
+        "command": [
+          "python3"
+        ],
+        "args": [
+          "-m",
+          "sglang_simulator.simulation.sglang.launch_server",
+          "--model-path=/opt/confidential-inference/sglang-simulator/test/assets/qwen3-8b",
+          "--tokenizer-path=/opt/confidential-inference/sglang-simulator/examples/assets/tokenizer",
+          "--sim-config-path=/opt/confidential-inference/sglang-simulator/examples/sim_configs/replay.json",
+          "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
+          "--chat-template=chatml",
+          "--max-total-tokens=8192",
+          "--max-running-requests=48",
+          "--random-seed=0",
+          "--enable-metrics",
+          "--enable-cache-report",
+          "--host=0.0.0.0",
+          "--port=30000"
+        ]
+      },
+      {
+        "command": [
+          "python3"
+        ],
+        "args": [
+          "-m",
+          "sglang_simulator.simulation.sglang.launch_server",
+          "--model-path=/opt/confidential-inference/sglang-simulator/test/assets/qwen3-8b",
+          "--tokenizer-path=/opt/confidential-inference/sglang-simulator/examples/assets/tokenizer",
+          "--sim-config-path=/opt/confidential-inference/sglang-simulator/examples/sim_configs/replay.json",
+          "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
+          "--chat-template=chatml",
+          "--max-total-tokens=8192",
+          "--max-running-requests=48",
+          "--random-seed=1",
+          "--enable-metrics",
+          "--enable-cache-report",
+          "--host=0.0.0.0",
+          "--port=30000"
+        ]
+      },
+      {
+        "command": [
+          "python3",
+          "-m",
+          "sglang_router.launch_router"
+        ],
+        "args": [
+          "--service-discovery",
+          "--service-discovery-namespace=confidential-inference",
+          "--service-discovery-port=30000",
+          "--selector=app.kubernetes.io/component=inference-worker",
+          "--policy=cache_aware",
+          "--cache-threshold=0.3",
+          "--balance-abs-threshold=64",
+          "--balance-rel-threshold=1.5",
+          "--eviction-interval-secs=60",
+          "--max-tree-size=67108864",
+          "--health-check-endpoint=/health",
+          "--worker-startup-timeout-secs=3600",
+          "--host=0.0.0.0",
+          "--port=30000",
+          "--prometheus-host=0.0.0.0",
+          "--prometheus-port=29000"
+        ]
+      },
+      {
+        "command": [
+          "python3",
+          "-m",
+          "sglang_router.launch_router"
+        ],
+        "args": [
+          "--service-discovery",
+          "--service-discovery-namespace=confidential-inference",
+          "--service-discovery-port=30000",
+          "--selector=app.kubernetes.io/component=inference-worker",
+          "--policy=cache_aware",
+          "--cache-threshold=0.3",
+          "--balance-abs-threshold=64",
+          "--balance-rel-threshold=1.5",
+          "--eviction-interval-secs=60",
+          "--max-tree-size=67108864",
+          "--health-check-endpoint=/health",
+          "--worker-startup-timeout-secs=3600",
+          "--host=127.0.0.1",
+          "--port=30000",
+          "--prometheus-host=0.0.0.0",
+          "--prometheus-port=29000"
+        ]
+      }
+    ],
+    "registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9": [
+      {
+        "command": [
+          "/kube-state-metrics",
+          "--port=8080",
+          "--telemetry-port=8081"
+        ],
+        "args": [
+          "--host=0.0.0.0",
+          "--port=8080",
+          "--resources=deployments,daemonsets,statefulsets,pods,nodes",
+          "--namespaces=confidential-inference"
+        ]
+      }
+    ],
+    "docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24": [
+      {
+        "command": [
+          "/bin/prometheus"
+        ],
+        "args": [
+          "--config.file=/etc/prometheus/prometheus.yml",
+          "--storage.tsdb.path=/prometheus"
+        ]
+      }
+    ],
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:a191a0d3a45ba5979456d3b008cd38b55940aca5c8ceff6ae40e4d307d80f120": [
+      {
+        "command": [
+          "/c8s"
+        ],
+        "args": [
+          "cds-attest",
+          "--host=0.0.0.0",
+          "--port=8800",
+          "--platform=tdx",
+          "--front-door-mode=webpki",
+          "--expected-workload=gateway",
+          "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+          "--serving-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+          "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
+        ]
+      },
+      {
+        "command": [
+          "/c8s"
+        ],
+        "args": [
+          "cds-attest",
+          "--host=0.0.0.0",
+          "--port=8801",
+          "--platform=tdx",
+          "--front-door-mode=webpki",
+          "--expected-workload=sglang-router",
+          "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+          "--serving-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+          "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
+        ]
+      },
+      {
+        "command": [
+          "/c8s"
+        ],
+        "args": [
+          "cds-attest",
+          "--host=0.0.0.0",
+          "--port=8802",
+          "--platform=tdx",
+          "--front-door-mode=webpki",
+          "--expected-workload=inference-worker-0",
+          "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+          "--serving-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+          "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
+        ]
+      },
+      {
+        "command": [
+          "/c8s"
+        ],
+        "args": [
+          "cds-attest",
+          "--host=0.0.0.0",
+          "--port=8803",
+          "--platform=tdx",
+          "--front-door-mode=webpki",
+          "--expected-workload=metrics-collector",
+          "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+          "--serving-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+          "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
+        ]
+      },
+      {
+        "command": [
+          "/c8s"
+        ],
+        "args": [
+          "cds-attest",
+          "--host=0.0.0.0",
+          "--port=8804",
+          "--platform=tdx",
+          "--front-door-mode=webpki",
+          "--expected-workload=kube-state-metrics",
+          "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+          "--serving-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+          "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
+        ]
+      },
+      {
+        "command": [
+          "/workload-proxy"
+        ],
+        "args": [
+          "--mode=client",
+          "--listen=127.0.0.1:30001",
+          "--upstream=sglang-router:9443",
+          "--peer-workload=sglang-router",
+          "--cert-file=/etc/c8s/certs/tls.crt",
+          "--key-file=/etc/c8s/certs/tls.key",
+          "--ca-file=/etc/c8s/certs/ca.crt"
+        ]
+      },
+      {
+        "command": [
+          "/workload-proxy"
+        ],
+        "args": [
+          "--mode=server",
+          "--listen=0.0.0.0:9443",
+          "--upstream=127.0.0.1:30000",
+          "--peer-workload=gateway",
+          "--cert-file=/etc/c8s/certs/tls.crt",
+          "--key-file=/etc/c8s/certs/tls.key",
+          "--ca-file=/etc/c8s/certs/ca.crt"
+        ]
+      }
+    ],
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:a1ff03a8140fb88bda0ca33ea5ffb086152f781b170fefdec849206160200ea2": [
+      {
+        "command": [
+          "/c8s"
+        ],
+        "args": [
+          "cds-attest",
+          "--host=0.0.0.0",
+          "--port=8800",
+          "--platform=tdx",
+          "--front-door-mode=webpki",
+          "--expected-workload=gateway",
+          "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+          "--serving-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+          "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
+        ]
+      },
+      {
+        "command": [
+          "/c8s"
+        ],
+        "args": [
+          "cds-attest",
+          "--host=0.0.0.0",
+          "--port=8801",
+          "--platform=tdx",
+          "--front-door-mode=webpki",
+          "--expected-workload=sglang-router",
+          "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+          "--serving-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+          "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
+        ]
+      },
+      {
+        "command": [
+          "/c8s"
+        ],
+        "args": [
+          "cds-attest",
+          "--host=0.0.0.0",
+          "--port=8802",
+          "--platform=tdx",
+          "--front-door-mode=webpki",
+          "--expected-workload=inference-worker-0",
+          "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+          "--serving-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+          "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
+        ]
+      },
+      {
+        "command": [
+          "/c8s"
+        ],
+        "args": [
+          "cds-attest",
+          "--host=0.0.0.0",
+          "--port=8803",
+          "--platform=tdx",
+          "--front-door-mode=webpki",
+          "--expected-workload=metrics-collector",
+          "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+          "--serving-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+          "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
+        ]
+      },
+      {
+        "command": [
+          "/c8s"
+        ],
+        "args": [
+          "cds-attest",
+          "--host=0.0.0.0",
+          "--port=8804",
+          "--platform=tdx",
+          "--front-door-mode=webpki",
+          "--expected-workload=kube-state-metrics",
+          "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+          "--serving-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+          "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+          "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
+        ]
+      },
+      {
+        "command": [
+          "/workload-proxy"
+        ],
+        "args": [
+          "--mode=client",
+          "--listen=127.0.0.1:30001",
+          "--upstream=sglang-router:9443",
+          "--peer-workload=sglang-router",
+          "--cert-file=/etc/c8s/certs/tls.crt",
+          "--key-file=/etc/c8s/certs/tls.key",
+          "--ca-file=/etc/c8s/certs/ca.crt"
+        ]
+      },
+      {
+        "command": [
+          "/workload-proxy"
+        ],
+        "args": [
+          "--mode=server",
+          "--listen=0.0.0.0:9443",
+          "--upstream=127.0.0.1:30000",
+          "--peer-workload=gateway",
+          "--cert-file=/etc/c8s/certs/tls.crt",
+          "--key-file=/etc/c8s/certs/tls.key",
+          "--ca-file=/etc/c8s/certs/ca.crt"
+        ]
+      },
+      {
+        "command": [
+          "/c8s"
+        ],
+        "args": [
+          "workload-proxy",
+          "--mode=client",
+          "--listen=127.0.0.1:30001",
+          "--upstream=sglang-router:9443",
+          "--peer-workload=sglang-router",
+          "--cert-file=/etc/c8s/certs/tls.crt",
+          "--key-file=/etc/c8s/certs/tls.key",
+          "--ca-file=/etc/c8s/certs/ca.crt"
+        ]
+      },
+      {
+        "command": [
+          "/c8s"
+        ],
+        "args": [
+          "workload-proxy",
+          "--mode=server",
+          "--listen=0.0.0.0:9443",
+          "--upstream=127.0.0.1:30000",
+          "--peer-workload=gateway",
+          "--cert-file=/etc/c8s/certs/tls.crt",
+          "--key-file=/etc/c8s/certs/tls.key",
+          "--ca-file=/etc/c8s/certs/ca.crt"
+        ]
+      }
+    ],
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:14565224f231ef7f7188324c4ce57ffe58928c0daf72b384c6d072b59628747d": [
+      {
+        "command": [
+          "/usr/local/bin/confidential-gateway"
+        ],
+        "args": []
+      }
+    ],
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:59e4fd9f856f6cd2aea75152b30a22822481d7b272d37a5c153b2ead16505212": [
+      {
+        "command": [
+          "/usr/local/bin/confidential-gateway"
+        ],
+        "args": []
+      }
+    ],
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:13af0676c75a0c1277491b0a125baa7c076b42a275bcf3f3f25de403c09c65bb": [
+      {
+        "command": [
+          "/usr/local/bin/confidential-gateway"
+        ],
+        "args": []
+      }
+    ],
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:c8342fd2d26b8f1316874caf7f7f8069621a5c343408659d2534584848b8b09b": [
+      {
+        "command": [
+          "/usr/local/bin/confidential-gateway"
+        ],
+        "args": []
+      }
+    ]
+  }
+}

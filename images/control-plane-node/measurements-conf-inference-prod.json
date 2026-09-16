@@ -1,0 +1,16 @@
+{
+  "schema_version": "1",
+  "tee": "tdx",
+  "measurements": [
+    {
+      "name": "control-plane-node",
+      "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
+      "rtmr": [
+        null,
+        "effb361cbba34d4489f64cd42bf53025eef3f1e022616fdcbb21ce43edbdd0df766b44b2e4dbdf95d4f3b0dfaca90870",
+        "12b2b20ce62e5ac34aff450c7ff5095d60fab2ae652bfb1fe21a33d0a25162531e81aca27684bac3856fc9a6b527a60d",
+        null
+      ]
+    }
+  ]
+}

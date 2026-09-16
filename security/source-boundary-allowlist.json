@@ -1,0 +1,203 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "rule": "unpinned-remote-artifact",
+      "path": "README.md",
+      "line_sha256": "38f3404e108a8801cb7034a233aea752ffb1c98fe8869e9a937f3e52986dcbf7",
+      "reason": "The next command checks out the exact c8s commit before it builds the verifier."
+    },
+    {
+      "rule": "unpinned-remote-artifact",
+      "path": "README.md",
+      "line_sha256": "8b1b3c229b167a4eb444ec79381214ea9b1d474a87cc7e4b2e4cc1a2d2486c40",
+      "reason": "The verifier checks the live signed allowlist against the digest in the trusted release bundle."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "tests/images/gateway/test_recipe.py",
+      "line_sha256": "25f369b929627d43ee4da9ac9f5772b1b6bcc6d7de342dd402ec45ec01ea216a",
+      "reason": "This exact line tests forbidden gateway dependencies."
+    },
+    {
+      "rule": "systemd-unit",
+      "path": "tests/images/gateway/test_recipe.py",
+      "line_sha256": "25f369b929627d43ee4da9ac9f5772b1b6bcc6d7de342dd402ec45ec01ea216a",
+      "reason": "This exact line tests forbidden gateway dependencies."
+    },
+    {
+      "rule": "kubeconfig",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "381f9bfc69d49d39040a7d5fc3197ce385019a2ba2de649622f841a8c658ed37",
+      "reason": "This file contains scanner test fixtures."
+    },
+    {
+      "rule": "unpinned-remote-artifact",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "4a588a45c0bc969feca0beb91dfad76085a46283ce45047500de1cd06f9030eb",
+      "reason": "This exact line tests remote artifact detection."
+    },
+    {
+      "rule": "plaintext-api-key",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "0bcde12046097e86391afffff969696d87cde7da2bac7e8670df15e9a0878711",
+      "reason": "This exact line tests secret detection."
+    },
+    {
+      "rule": "azure-key-vault-runtime",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "ba9a2b31849854c91c9d78d5dd903a336ea556e6b882a0a5d96331c30cfc289c",
+      "reason": "This exact line tests retired secret-store detection."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "4011f058a97fb4427f862559868e8b97fd146afdddeab6cb9af41e53ef5f6e5e",
+      "reason": "This exact line tests Tailnet traffic detection."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "cb5615417aab79952a3827421ae30ca7b9f2786d2814aa0b16dfc668e1b46d33",
+      "reason": "This exact line tests Tailnet traffic detection."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "8b65529d103e30ebda04ad72e662e3d21a7d31ab6a5a0207e4c877fbf81ec177",
+      "reason": "This exact line tests Tailnet traffic detection."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "47882228b258d23fa99f9059c738ab52fcbb3a9a919f8ea369de175c70213293",
+      "reason": "This exact line tests Tailnet traffic detection."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "c3ac703063628f21beffafb2d6451c4d4542ceab7470833c782d37b8c4fd02ed",
+      "reason": "This exact line tests Tailnet traffic detection."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "a311cfde322ff538204234bf4f10d0425e60bdc120b8233ce2a071a9837ddcca",
+      "reason": "This exact line tests Tailnet traffic detection."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "29e87081628245a0f25b968a4ea0c59e40db1df87e66b39aa0d446653a4af0b0",
+      "reason": "This exact line tests Tailnet traffic detection."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "5abbe0e8c61ac0d4dc3f82bb3f79b04e6b0a66bec3819c114aebe0a43d6fcb0a",
+      "reason": "This exact line tests Tailnet traffic detection."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "e8d19a50116e1d4e30159160cd64a2a35b0bd88eb765aa718ee0a5e1803afce9",
+      "reason": "This exact line tests Tailnet traffic detection."
+    },
+    {
+      "rule": "unpinned-remote-artifact",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "7e1eda073bce73d72d8810a79e32e51d4837b4ce4980efde7f19d6caf724b7bc",
+      "reason": "This exact line tests remote artifact detection."
+    },
+    {
+      "rule": "plaintext-api-key",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "d67ef21ce9dee263d2a5685d62bce8f7144ca4dbca8547bbd9ee5bc2ee805cb8",
+      "reason": "This exact line tests generated secret artifact detection."
+    },
+    {
+      "rule": "unpinned-remote-artifact",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "9cdc897ec98906d2916db10da3681f7c3881f0bbaa68c92cddf1e848ecb1077f",
+      "reason": "This exact line tests generated artifact exclusion."
+    },
+    {
+      "rule": "plaintext-api-key",
+      "path": "tests/source-boundary/test_source_boundary.py",
+      "line_sha256": "3af94a59efdea9a7192e41f91c684c0025adb9d20ebd3e4b4085e1cdd99a6bfa",
+      "reason": "This exact line tests allowlisted negative fixtures."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "tests/attestation-v0/test_staging_control_allowlist.py",
+      "line_sha256": "38313770ed7e7f9e999cc04f97132c8b8669591ee03711006680a4f971a749d0",
+      "reason": "This exact test fixture pins the name of the staging control-plane access workload. It does not send service traffic through a Tailnet."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "tests/attestation-v0/test_staging_control_allowlist.py",
+      "line_sha256": "c3f50e63de6ba7a7594949cec6ab9bee7725335aa475a89548beafbe4eae8d53",
+      "reason": "This exact test fixture pins the Tailscale container image used for control-plane access. It does not route inference traffic."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "tests/attestation-v0/test_staging_control_allowlist.py",
+      "line_sha256": "aa670c31d0932bc96c418958f433442a50dc59b43a376cc7cda9473f1708b488",
+      "reason": "This exact test fixture checks the pinned Tailscale image reference in an attestation release. It does not route inference traffic."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "c8s/integration-staging-policy.json",
+      "line_sha256": "6a3cc56e74801dd19aa7a6fc6214db8ee5e237366d9ea010b3cfadf772a7c259",
+      "reason": "This line names the staging control-plane access workload. It does not send service traffic through a Tailnet."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "c8s/integration-staging-policy.json",
+      "line_sha256": "aadb6f4a665e4c372971f13aac942fcab3d3e9d18ae2e2c40dc35d40e3d82d70",
+      "reason": "This line pins the Tailscale container image used for control-plane access. It does not route inference traffic."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "c8s/integration-staging-policy.json",
+      "line_sha256": "6d8f1bc5a57a3a247021810d9b87b043b71f2ef00790dad92d2424d059df5779",
+      "reason": "This line pins the Tailscale container image used for control-plane access. It does not route inference traffic."
+    },
+    {
+      "rule": "private-ip-address",
+      "path": "c8s/conf-inference-prod-values.yaml",
+      "line_sha256": "e5fc5a64200b776275f0ebd5f27f50441e71efb16a72997d6320e322f751288b",
+      "reason": "The chart's generic pod and service network defaults, 10.52.0.0/16 and 10.53.0.0/16. Every Kubernetes cluster uses a private range here. These two values name no real host and identify no deployment."
+    },
+    {
+      "rule": "private-ip-address",
+      "path": "c8s/integration-staging-values.yaml",
+      "line_sha256": "c61a996ec10117b4953eb8ca77a70cfacb82b6fc43932c24794eea7b80f95da3",
+      "reason": "The chart's generic pod and service network defaults, 10.52.0.0/16 and 10.53.0.0/16. Every Kubernetes cluster uses a private range here. These two values name no real host and identify no deployment."
+    },
+    {
+      "rule": "private-ip-address",
+      "path": "helm/confidential-inference/values.yaml",
+      "line_sha256": "fa15b37551e77ff3a5e63ee86b2bd6044a9eb6a291f50309797bb6a2bf794b6f",
+      "reason": "The chart's generic pod and service network defaults, 10.52.0.0/16 and 10.53.0.0/16. Every Kubernetes cluster uses a private range here. These two values name no real host and identify no deployment."
+    },
+    {
+      "rule": "private-ip-address",
+      "path": "helm/confidential-inference/values.yaml",
+      "line_sha256": "c61a996ec10117b4953eb8ca77a70cfacb82b6fc43932c24794eea7b80f95da3",
+      "reason": "The chart's generic pod and service network defaults, 10.52.0.0/16 and 10.53.0.0/16. Every Kubernetes cluster uses a private range here. These two values name no real host and identify no deployment."
+    },
+    {
+      "rule": "private-ip-address",
+      "path": "helm/confidential-inference/values.yaml",
+      "line_sha256": "e326ce234175db56f838387bb711153c6a4c661cce4e86ce466b0d03012963ac",
+      "reason": "The chart's generic pod and service network defaults, 10.52.0.0/16 and 10.53.0.0/16. Every Kubernetes cluster uses a private range here. These two values name no real host and identify no deployment."
+    },
+    {
+      "rule": "private-ip-address",
+      "path": "helm/maintenance-gateway/values.yaml",
+      "line_sha256": "49b4cc671ccac54b8788c856345868e595a667e3f9669b9c11ace548e579e9d8",
+      "reason": "The chart's generic pod and service network defaults, 10.52.0.0/16 and 10.53.0.0/16. Every Kubernetes cluster uses a private range here. These two values name no real host and identify no deployment."
+    }
+  ]
+}

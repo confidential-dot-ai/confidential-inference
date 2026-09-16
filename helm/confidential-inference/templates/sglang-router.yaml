@@ -1,0 +1,166 @@
+{{- if .Values.router.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: sglang-router
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sglang-router
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "confidential-inference.selector" (dict "root" . "component" "sglang-router") | nindent 4 }}
+  ports:
+    - name: openai
+      {{- if .Values.namedWorkloadProxy.enabled }}
+      port: {{ .Values.router.proxyPort }}
+      targetPort: proxy-tls
+      {{- else }}
+      port: {{ .Values.router.port }}
+      targetPort: openai
+      {{- end }}
+    {{- if .Values.attestationReceipts.enabled }}
+    - name: cds-attest
+      port: {{ .Values.attestationReceipts.routerPort }}
+      targetPort: cds-attest
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sglang-router
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sglang-router
+spec:
+  replicas: {{ .Values.router.replicas }}
+  # Keep the ready router in service until its replacement can reach a worker.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "confidential-inference.selector" (dict "root" . "component" "sglang-router") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "confidential-inference.selector" (dict "root" . "component" "sglang-router") | nindent 8 }}
+        confidential.ai/environment: {{ .Values.environment | quote }}
+      annotations:
+        confidential.ai/cw: sglang-router
+        confidential.ai/c8s-renew-interval: {{ .Values.attestationReceipts.certificateRenewInterval | quote }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.router.metricsPort | quote }}
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.scheduling.inferenceNodeName | quote }}
+      # The router watches Ready worker Pods in this namespace.
+      serviceAccountName: sglang-router
+      securityContext:
+        {{- include "confidential-inference.workloadClaimsSupplementalGroup" . | nindent 8 }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sglang-router
+          image: {{ .Values.images.sglang }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command: ["python3", "-m", "sglang_router.launch_router"]
+          args:
+            - --service-discovery
+            - --service-discovery-namespace={{ .Release.Namespace }}
+            - --service-discovery-port={{ .Values.inference.port }}
+            - --selector=app.kubernetes.io/component=inference-worker
+            - --policy=cache_aware
+            - --cache-threshold=0.3
+            - --balance-abs-threshold=64
+            - --balance-rel-threshold=1.5
+            - --eviction-interval-secs=60
+            - --max-tree-size=67108864
+            - --health-check-endpoint=/health
+            {{- if .Values.inference.enabled }}
+            # Production workers can need more than 30 minutes to load and tune the model.
+            - --worker-startup-timeout-secs=3600
+            {{- end }}
+            - --host={{ ternary "127.0.0.1" "0.0.0.0" .Values.namedWorkloadProxy.enabled }}
+            - --port={{ .Values.router.port }}
+            - --prometheus-host=0.0.0.0
+            - --prometheus-port={{ .Values.router.metricsPort }}
+          ports:
+            - name: openai
+              containerPort: {{ .Values.router.port }}
+            - name: metrics
+              containerPort: {{ .Values.router.metricsPort }}
+          resources:
+            requests:
+              cpu: {{ .Values.router.resources.cpu | quote }}
+              memory: {{ .Values.router.resources.memory }}
+          readinessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:30000/readiness', timeout=3).read()"
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:30000/health', timeout=3).read()"
+            periodSeconds: 30
+            timeoutSeconds: 5
+        {{- if .Values.namedWorkloadProxy.enabled }}
+        # The server side of the named-workload hop accepts only the gateway
+        # workload identity and forwards to the router's loopback listener.
+        - name: gateway-workload-proxy
+          image: {{ .Values.images.c8sOperator }}
+          imagePullPolicy: IfNotPresent
+          command: ["/c8s"]
+          args:
+            - workload-proxy
+            - --mode=server
+            - --listen=0.0.0.0:{{ .Values.router.proxyPort }}
+            - --upstream=127.0.0.1:{{ .Values.router.port }}
+            - --peer-workload={{ .Values.gateway.attestedWorkload }}
+            - --cert-file=/etc/c8s/certs/tls.crt
+            - --key-file=/etc/c8s/certs/tls.key
+            - --ca-file=/etc/c8s/certs/ca.crt
+          ports:
+            - name: proxy-tls
+              containerPort: {{ .Values.router.proxyPort }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          resources:
+            {{- toYaml .Values.attestationReceipts.resources | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: proxy-tls
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: proxy-tls
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+        {{- end }}
+        {{- if .Values.attestationReceipts.enabled }}
+        {{- include "confidential-inference.cdsAttestSidecar" (dict "root" . "workload" .Values.router.attestedWorkload "host" "0.0.0.0" "port" .Values.attestationReceipts.routerPort) | nindent 8 }}
+        {{- end }}
+      {{- if and .Values.attestationReceipts.enabled (not .Values.attestationReceipts.legacyC8s615) }}
+      volumes:
+        {{- include "confidential-inference.workloadClaimsVolume" . | nindent 8 }}
+      {{- end }}
+{{- end }}

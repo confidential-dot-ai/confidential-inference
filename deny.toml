@@ -1,0 +1,44 @@
+# cargo-deny configuration for the Rust workspace in this repository.
+#
+# This check confirms every dependency license is one this project accepts.
+# See https://embarkstudios.github.io/cargo-deny/checks/licenses/cfg.html
+
+[graph]
+all-features = false
+no-default-features = false
+
+[licenses]
+# The list of licenses this project accepts for a dependency.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Zlib",
+    # The ICU crates that `url` pulls in for IDNA use this OSI-approved
+    # permissive license. It is the successor to Unicode-DFS-2016.
+    "Unicode-3.0",
+]
+confidence-threshold = 0.8
+
+# webpki-root-certs ships a plain data file, the Mozilla root CA list. It
+# uses the Community Data License Agreement, a data license, not a code
+# license. This exception allows it for that one crate only.
+exceptions = [
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-root-certs" },
+]
+
+[licenses.private]
+ignore = false
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

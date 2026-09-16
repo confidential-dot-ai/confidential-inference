@@ -1,0 +1,153 @@
+environment: integration-staging
+imagePullSecret:
+  name: staging-ghcr-pull
+# The node names below are placeholders. The real node names are
+# infrastructure values. They live in the confidential-inference-internal
+# repository, in its environments files, and the deployment reads them from
+# there. The chart renders them into a pod nodeSelector only, so they are
+# not an input to the c8s allowlist.
+scheduling:
+  gatewayNodeName: gateway-node-1
+  inferenceNodeName: inference-node-1
+images:
+  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:6e7d59895e09c4936bc13241708f2499d0d1194b78c836ad2e6d748d6e27ac9f
+  sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
+  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
+  sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
+  metricsCollector: docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24
+  dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
+  nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
+  kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723
+  stateMounter: docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
+namedWorkloadProxy:
+  enabled: true
+attestationReceipts:
+  enabled: true
+  # Placeholder documentation address (RFC 5737). The real egress address is
+  # an infrastructure value in the confidential-inference-internal repository.
+  # The chart renders it into a NetworkPolicy only, so it is not an input to
+  # the c8s allowlist.
+  evidenceEgressCidrs:
+  - 192.0.2.1/32
+  legacyC8s615: false
+  evidenceBaseUrl: https://staging.api.confidential.ai
+  releaseId: integration-staging-v20
+  releaseBundleSha256: sha256:4e0d1d696ef0080c26213fd89e946f109b40070baff5b1d83d4a209ea6ed30ed
+  policyMode: static
+  expectedStaticAllowlistSha256: sha256:625b878170cc2e12a36843f591c40112ee82c9b2a0184572a239296a4bf4a906
+  targets:
+  - target: gateway
+    workload: gateway
+    identity: gateway
+    url: http://127.0.0.1:8800
+  - target: sglang-router
+    workload: sglang-router
+    identity: sglang-router
+    url: http://sglang-router:8801
+  - target: inference-worker-0
+    workload: inference-worker-0
+    identity: inference-worker-0
+    url: http://inference-worker-0-0.inference-workers:8802
+  - target: inference-worker-1
+    workload: inference-worker-1
+    identity: inference-worker-1
+    url: http://inference-worker-1-0.inference-workers:8802
+  - target: metrics-collector
+    workload: metrics-collector
+    identity: metrics-collector
+    url: http://metrics-collector:8803
+  - target: kube-state-metrics
+    workload: kube-state-metrics
+    identity: kube-state-metrics
+    url: http://kube-state-metrics:8804
+  certificateRenewInterval: 30s
+  gatewayPort: 8800
+  routerPort: 8801
+  firstWorkerPort: 8802
+  metricsCollectorPort: 8803
+  kubeStateMetricsPort: 8804
+  platform: tdx
+  attestationApiPort: 8400
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+gateway:
+  attestedWorkload: gateway
+  c8sSecrets:
+    apiKeyPepper:
+      sourcePath: /confidential-inference/gateway/api-key-pepper
+  protection:
+    trustedProxyCidrs:
+    - 10.52.0.0/16
+    inferenceConcurrency: 48
+    inferenceQueue: 0
+    queueTimeoutSeconds: 2
+    perKeyConcurrency: 128
+  state:
+    enabled: true
+    storageResources:
+      create: true
+    absencePolicy: fail-closed
+    startupTimeoutSeconds: 60
+    databasePath: /var/lib/confidential-gateway/gateway.sqlite3
+    mountPath: /var/lib/confidential-gateway
+    claimName: gateway-state
+    persistentVolumeName: gateway-state
+    storageClassName: confidential-inference-gateway-state
+    storageNamespace: kube-system
+    size: 4Gi
+    nodeName: gateway-node-1
+    hostStateRootPath: /var/lib/confidential-inference/gateway-state-root
+    hostMountPath: /var/lib/confidential-inference/gateway-state-root/data
+    devicePath: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_confai-gateway-state
+    diskSerial: confai-gateway-state
+    allowFormat: true
+inference:
+  enabled: true
+  mode: simulator
+  replicas: 2
+  gpusPerReplica: 0
+  gpuArchitectures: []
+  attestedWorkloads:
+  - inference-worker-0
+  - inference-worker-1
+  reasoningParser: deepseek-v4
+  model:
+    name: deepseek-ai/DeepSeek-V4-Flash-0731
+    revision: 9e165c30e2704aec5d9d593cce3eebd58bbef1cb
+    c8sVolumeSource: /confidential-inference/volumes/dsv4
+    volumeNames: []
+    volumeDirectory: /models
+    mountVerification:
+      timeoutSeconds: 900
+      pollSeconds: 1
+      revisionMetadata: .model-lock-local-manifest.json
+      expectedFiles:
+        .model-lock-local-manifest.json: cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c
+        config.json: 6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023
+        model.safetensors.index.json: 98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b
+        tokenizer_config.json: 6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
+  resources:
+    cpu: 250m
+    memory: 512Mi
+  simulator:
+    outputMode: BLOCKING
+    maxTotalTokens: 8192
+    maxRunningRequests: 48
+    chatTemplate: chatml
+router:
+  attestedWorkload: sglang-router
+  enabled: true
+  resources:
+    cpu: 250m
+    memory: 512Mi
+metricsCollector:
+  enabled: true
+  attestedWorkload: metrics-collector
+kubeStateMetrics:
+  attestedWorkload: kube-state-metrics

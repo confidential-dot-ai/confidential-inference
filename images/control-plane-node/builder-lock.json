@@ -1,0 +1,27 @@
+{
+  "schema": "confidential.ai/confos-builder-lock/v1",
+  "repository": "https://github.com/confidential-dot-ai/confidential-os-builder.git",
+  "commit": "f5a9c24643450ef6cbb857156e77acf3e76d5cee",
+  "c8sSourceCommit": "fd6355414f79c6b3d3657e1abca04a6edc90550f",
+  "c8sImageTag": "079aeb4",
+  "mkosi": {
+    "repository": "https://github.com/systemd/mkosi.git",
+    "commit": "84af20892b61c8e177e391f997ded8b4cb5514f2"
+  },
+  "productionSignedStage": {
+    "source": "ghcr.io/confidential-dot-ai/node-guest-base:rke2-tdx-079aeb4-cp0659d9c9d377-saff8a857b3744",
+    "digest": "sha256:e14c502a4efe0c88da8b47f9c84f9a6d82940f777bc7d5eb34a9131d5b773636",
+    "moduleSigningCertificateSha256": "7c9f63b0206dc794e5be126b86ce50c68cd33d1c22ecd5979984614c476a986e",
+    "attestationApiSha256": "1bfd19eed8fec3e4a8a0ae8b0c62fc4835558395d9137d51df3ede6f590037c1",
+    "libnvatSha256": "1dd6c5429632c8c9ae59aa687cf96593f01c5597afe342f72ec3d8d5ddb0bbae"
+  },
+  "platform": "tdx",
+  "profile": "images/control-plane-node/profile/control-plane-state",
+  "integrationStagingSignedStage": {
+    "source": "ghcr.io/confidential-dot-ai/node-guest-base:rke2-tdx-079aeb4-cpd7d608446a88-saae4ed02814fa",
+    "digest": "sha256:4f611a8b321570cff6ba880253f3b5649828284c2621a9a86cfda59c9d70cd85",
+    "moduleSigningCertificateSha256": "7c9f63b0206dc794e5be126b86ce50c68cd33d1c22ecd5979984614c476a986e",
+    "attestationApiSha256": "1bfd19eed8fec3e4a8a0ae8b0c62fc4835558395d9137d51df3ede6f590037c1",
+    "libnvatSha256": "1dd6c5429632c8c9ae59aa687cf96593f01c5597afe342f72ec3d8d5ddb0bbae"
+  }
+}

@@ -1,0 +1,516 @@
+name: V0 image and release builds
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/v0-images.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - "images/gateway/**"
+      - "images/sglang/**"
+      - "services/gateway/**"
+      - "services/maintenance-gateway/**"
+      - "images/maintenance-gateway/**"
+      - "images/metrics-collector/**"
+      - "images/kube-state-metrics/**"
+      - "helm/**"
+      - "scripts/**"
+      - "tests/image-workflow/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/v0-images.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - "images/gateway/**"
+      - "images/sglang/**"
+      - "services/gateway/**"
+      - "services/maintenance-gateway/**"
+      - "images/maintenance-gateway/**"
+      - "images/metrics-collector/**"
+      - "images/kube-state-metrics/**"
+      - "helm/**"
+      - "scripts/**"
+      - "tests/image-workflow/**"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Build each selected image once and publish it to GHCR
+        required: true
+        type: boolean
+        default: false
+      rebuild_audit:
+        description: Separately rebuild each selected image twice and compare it
+        required: true
+        type: boolean
+        default: false
+      publish_target:
+        description: Publish all images or one selected image
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - gateway
+          - sglang
+          - maintenance-gateway
+          - metrics-collector
+          - kube-state-metrics
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v0-images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  BUILDX_VERSION: v0.36.1
+  BUILDKIT_IMAGE: moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validate the image workflow
+        run: |
+          python3 scripts/validate-image-workflow.py
+          python3 -m unittest discover -s tests/image-workflow -p 'test_*.py'
+          python3 -m unittest discover -s tests/images/gateway -p 'test_*.py'
+          cargo test --locked --package maintenance-gateway
+          shellcheck scripts/check-image-build-output.sh
+          shellcheck images/gateway/build.sh
+
+  reproducibility:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.rebuild_audit
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: gateway
+            context: .
+            dockerfile: images/gateway/Dockerfile
+            title: Confidential Inference gateway
+          - image: maintenance-gateway
+            context: .
+            dockerfile: images/maintenance-gateway/Dockerfile
+            title: Confidential Inference maintenance gateway
+          - image: metrics-collector
+            context: images/metrics-collector
+            dockerfile: images/metrics-collector/Dockerfile
+            title: Confidential Inference metrics collector
+          - image: kube-state-metrics
+            context: images/kube-state-metrics
+            dockerfile: images/kube-state-metrics/Dockerfile
+            title: Confidential Inference kube-state metrics
+    steps:
+      - name: Check out the repository
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Prove clean source and get its epoch
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        id: source
+        run: |
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test -f "${{ matrix.dockerfile }}"
+          printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
+      - name: Choose an OCI output directory
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        id: oci-dir
+        run: |
+          dir=/tmp
+          printf 'dir=%s\n' "$dir" >> "$GITHUB_OUTPUT"
+
+      - name: Set up the first isolated builder
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        id: first-builder
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          name: v0-first-${{ github.run_id }}-${{ matrix.image }}
+          driver: docker-container
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+
+      - name: Run the first clean build
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          builder: ${{ steps.first-builder.outputs.name }}
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
+          platforms: linux/amd64
+          no-cache: true
+          push: false
+          outputs: type=oci,dest=${{ steps.oci-dir.outputs.dir }}/${{ matrix.image }}-first.tar,rewrite-timestamp=true
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=sha-${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Set up the second isolated builder
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        id: second-builder
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          name: v0-second-${{ github.run_id }}-${{ matrix.image }}
+          driver: docker-container
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+
+      - name: Run the second clean build
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          builder: ${{ steps.second-builder.outputs.name }}
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
+          platforms: linux/amd64
+          no-cache: true
+          push: false
+          outputs: type=oci,dest=${{ steps.oci-dir.outputs.dir }}/${{ matrix.image }}-second.tar,rewrite-timestamp=true
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=sha-${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Prove equal platform manifests
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        run: |
+          digest=$(python3 scripts/verify-reproducible-oci.py \
+            ${{ steps.oci-dir.outputs.dir }}/${{ matrix.image }}-first.tar \
+            ${{ steps.oci-dir.outputs.dir }}/${{ matrix.image }}-second.tar \
+            --platform linux/amd64 \
+            --revision "${{ github.sha }}" \
+            --source-date-epoch "${{ steps.source.outputs.epoch }}" | awk '{print $NF}')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '%s\n' "$digest" > /tmp/${{ matrix.image }}.platform-digest
+
+      - name: Save the verified platform digest
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v0-platform-digest-${{ matrix.image }}
+          path: /tmp/${{ matrix.image }}.platform-digest
+          if-no-files-found: error
+          retention-days: 1
+
+  # The sglang image is ~20 GB. Building it clean twice in one job, even
+  # after relocating Docker's data root and the OCI output to /mnt, still
+  # exhausts the runner's root disk (`No space left on device` writing the
+  # runner's own _diag log during the first build; see PRs #16 and #21,
+  # which freed more root space and still failed identically). One clean
+  # sglang build fits on a runner (the single-build publish job proves
+  # this); two in sequence do not. Give each clean build its own runner
+  # instead: two independent jobs record a small manifest/digest each,
+  # and a third job compares the two recordings.
+  reproducibility-sglang-build:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.rebuild_audit &&
+      (inputs.publish_target == 'all' || inputs.publish_target == 'sglang')
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        pass: [1, 2]
+    env:
+      TMPDIR: /mnt/tmp
+      DOCKER_TMPDIR: /mnt/tmp
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Prove clean source and get its epoch
+        id: source
+        run: |
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test -f "images/sglang/Dockerfile"
+          printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
+      - name: Free runner storage for SGLang
+        run: |
+          echo "--- disk before cleanup ---"
+          df -h / /mnt || true
+          sudo rm -rf -- /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache \
+            /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell /usr/local/julia* \
+            /usr/local/lib/heroku /opt/az /usr/local/share/boost /usr/share/miniconda \
+            /usr/lib/jvm /opt/microsoft /usr/local/share/chromium /usr/local/lib/node_modules \
+            /usr/local/aws-cli /usr/share/google-cloud-sdk /usr/local/games \
+            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" \
+            2>/dev/null || true
+          sudo apt-get purge -y --auto-remove \
+            '^ghc-.*' '^dotnet-.*' '^llvm-.*' '^mysql-.*' '^php.*' azure-cli \
+            google-cloud-cli google-chrome-stable firefox powershell mono-devel \
+            libgl1-mesa-dri '^temurin-.*' \
+            2>/dev/null || true
+          sudo apt-get clean
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile /swapfile 2>/dev/null || true
+          sudo service docker stop
+          sudo mkdir -p /mnt/docker-data /mnt/tmp /mnt/v0-oci
+          sudo chown "$(id -u):$(id -g)" /mnt/tmp /mnt/v0-oci
+          printf '{"data-root":"/mnt/docker-data"}\n' | sudo tee /etc/docker/daemon.json
+          sudo rm -rf /var/lib/docker
+          sudo service docker start
+          echo "--- disk after cleanup ---"
+          df -h / /mnt
+          echo "--- confirm the Docker data root actually moved ---"
+          root_dir=$(docker info --format '{{.DockerRootDir}}')
+          echo "DockerRootDir=$root_dir"
+          test "$root_dir" = /mnt/docker-data
+
+      - name: Set up an isolated builder
+        id: builder
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          name: v0-sglang-${{ github.run_id }}-${{ matrix.pass }}
+          driver: docker-container
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+
+      - name: Watch disk usage during the build
+        run: |
+          (while true; do
+            printf '\n--- %s ---\n' "$(date -u +%FT%TZ)"
+            df -h / /mnt
+            sleep 30
+          done) > /mnt/disk-usage-${{ matrix.pass }}.log 2>&1 &
+          echo "watcher_pid=$!" >> "$GITHUB_OUTPUT"
+        id: disk-watch
+
+      - name: Run a clean build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          builder: ${{ steps.builder.outputs.name }}
+          context: images/sglang
+          file: images/sglang/Dockerfile
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
+          platforms: linux/amd64
+          no-cache: true
+          push: false
+          outputs: type=oci,dest=/mnt/v0-oci/sglang-${{ matrix.pass }}.tar,rewrite-timestamp=true
+          labels: |
+            org.opencontainers.image.title=Confidential Inference stock SGLang
+            org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=sha-${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Stop the disk usage watcher
+        if: always()
+        run: kill "${{ steps.disk-watch.outputs.watcher_pid }}" 2>/dev/null || true
+
+      - name: Save the disk usage log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v0-sglang-disk-usage-${{ matrix.pass }}
+          path: /mnt/disk-usage-${{ matrix.pass }}.log
+          if-no-files-found: ignore
+          retention-days: 1
+
+      - name: Record the platform manifest
+        run: |
+          python3 scripts/verify-reproducible-oci.py \
+            /mnt/v0-oci/sglang-${{ matrix.pass }}.tar \
+            --platform linux/amd64 \
+            --revision "${{ github.sha }}" \
+            --source-date-epoch "${{ steps.source.outputs.epoch }}" \
+            --record /tmp/sglang-${{ matrix.pass }}.record.json
+          digest=$(python3 -c "import json;print(json.load(open('/tmp/sglang-${{ matrix.pass }}.record.json'))['digest'])")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+      - name: Save the recorded manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v0-sglang-record-${{ matrix.pass }}
+          path: /tmp/sglang-${{ matrix.pass }}.record.json
+          if-no-files-found: error
+          retention-days: 1
+
+  reproducibility-sglang-compare:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.rebuild_audit &&
+      (inputs.publish_target == 'all' || inputs.publish_target == 'sglang')
+    needs: reproducibility-sglang-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download the first recorded manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: v0-sglang-record-1
+          path: /tmp/sglang-1
+
+      - name: Download the second recorded manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: v0-sglang-record-2
+          path: /tmp/sglang-2
+
+      - name: Prove equal platform manifests
+        run: |
+          digest=$(python3 scripts/verify-reproducible-oci.py \
+            --compare-records \
+            /tmp/sglang-1/sglang-1.record.json \
+            /tmp/sglang-2/sglang-2.record.json | awk '{print $NF}')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '%s\n' "$digest" > /tmp/sglang.platform-digest
+
+      - name: Save the verified platform digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v0-platform-digest-sglang
+          path: /tmp/sglang.platform-digest
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-images:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: ghcr-production
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: sglang
+            context: images/sglang
+            dockerfile: images/sglang/Dockerfile
+            title: Confidential Inference stock SGLang
+          - image: gateway
+            context: .
+            dockerfile: images/gateway/Dockerfile
+            title: Confidential Inference gateway
+          - image: maintenance-gateway
+            context: .
+            dockerfile: images/maintenance-gateway/Dockerfile
+            title: Confidential Inference maintenance gateway
+          - image: metrics-collector
+            context: images/metrics-collector
+            dockerfile: images/metrics-collector/Dockerfile
+            title: Confidential Inference metrics collector
+          - image: kube-state-metrics
+            context: images/kube-state-metrics
+            dockerfile: images/kube-state-metrics/Dockerfile
+            title: Confidential Inference kube-state metrics
+    steps:
+      - name: Check out the repository
+        if: inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Get the stable source epoch
+        if: inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        id: source
+        run: printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
+      - name: Free runner storage for SGLang
+        if: matrix.image == 'sglang' && (inputs.publish_target == 'all' || inputs.publish_target == matrix.image)
+        run: |
+          echo "--- disk before cleanup ---"
+          df -h / /mnt || true
+          sudo rm -rf -- /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache \
+            /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell /usr/local/julia* \
+            /usr/local/lib/heroku /opt/az /usr/local/share/boost /usr/share/miniconda \
+            2>/dev/null || true
+          sudo apt-get clean
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile /swapfile 2>/dev/null || true
+          sudo service docker stop
+          sudo mkdir -p /mnt/docker-data
+          printf '{"data-root":"/mnt/docker-data"}\n' | sudo tee /etc/docker/daemon.json
+          sudo rm -rf /var/lib/docker
+          sudo service docker start
+          echo "--- disk after cleanup ---"
+          df -h / /mnt
+
+      - name: Set up Docker Buildx
+        if: inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+
+      - name: Log in to GHCR
+        if: inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish the image
+        if: inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
+          platforms: linux/amd64
+          outputs: type=image,name=ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}:sha-${{ github.sha }},push=true,rewrite-timestamp=true
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=sha-${{ github.sha }}
+          provenance: mode=max
+          # The sglang image is a ~20 GB Python/CUDA image. Its generated
+          # SBOM exceeds BuildKit's hard-coded 40 MiB attestation cap and
+          # fails the build. Disable the SBOM attestation for sglang only;
+          # every other image keeps it. Provenance stays on for all images:
+          # only the SBOM step hit the cap.
+          sbom: ${{ matrix.image != 'sglang' }}
+
+      - name: Record the immutable image digest
+        if: inputs.publish_target == 'all' || inputs.publish_target == matrix.image
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}
+        run: |
+          scripts/check-image-build-output.sh "$IMAGE_DIGEST"
+          printf "### %s\n\n\`%s@%s\`\n" "$IMAGE_NAME" "$IMAGE_NAME" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"

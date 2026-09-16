@@ -1,0 +1,29 @@
+[package]
+name = "maintenance-gateway"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "The stateless Confidential Inference maintenance gateway"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1.0.102"
+axum = { version = "0.8.9", features = ["http1", "json"] }
+axum-server = { version = "0.7.2", features = ["tls-rustls"] }
+clap = { version = "4.5.60", features = ["derive", "env"] }
+hyper-util = { version = "0.1.20", features = ["server-auto", "tokio"] }
+ipnet = "2.11.0"
+serde_json = "1.0.149"
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tower = { version = "0.5.2", features = ["limit", "timeout", "util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
+[dev-dependencies]
+rcgen = "0.14.7"
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
+tempfile = "3.26.0"
+
+[lints]
+workspace = true

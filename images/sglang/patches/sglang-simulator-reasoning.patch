@@ -1,0 +1,226 @@
+diff --git a/src/sglang_simulator/simulation/sglang/hook_bootstrap.py b/src/sglang_simulator/simulation/sglang/hook_bootstrap.py
+index 622d0d0..4dd62bc 100644
+--- a/src/sglang_simulator/simulation/sglang/hook_bootstrap.py
++++ b/src/sglang_simulator/simulation/sglang/hook_bootstrap.py
+@@ -8,6 +8,7 @@ from sglang_simulator.simulation.sglang import (
+     mem_cache_allocator,
+     mem_pool_host,
+     model_runner,
++    openai_reasoning,
+     openai_tool_calls,
+     scheduler,
+     sgl_kernel_hook,
+@@ -39,6 +40,7 @@ def install_simulator_hooks() -> None:
+             scheduler.C_SchedulerRequestReceiver,
+             model_runner.C_ModelRunnerHook,
+             model_runner.C_KVCacheConfiguratorHook,
++            openai_reasoning.C_OpenAIServingChatReasoningHook,
+             openai_tool_calls.C_OpenAIServingChatHook,
+             hicache_storage.C_StorageBackendFactory,
+             cache_controller.C_HiCacheController,
+diff --git a/src/sglang_simulator/simulation/sglang/openai_reasoning.py b/src/sglang_simulator/simulation/sglang/openai_reasoning.py
+new file mode 100644
+index 0000000..19fcb09
+--- /dev/null
++++ b/src/sglang_simulator/simulation/sglang/openai_reasoning.py
+@@ -0,0 +1,44 @@
++"""Flag chat completion requests that ask for DeepSeek-V4 thinking mode.
++
++reasoning_replay.py reads this flag, via `sampling_params.custom_params`, in
++the scheduler process, to pick the simulator's canned "<think>...</think>..."
++generation for that one request. See that module's docstring for why: the
++simulator's real, unmodified OpenAI serving layer (serving_chat.py) and its
++DeepSeekV4Detector reasoning parser must run against this generated text
++unchanged, so this hook only ever changes what text the fake engine
++"generates" -- never how it is served or parsed.
++
++This hook is a no-op unless the worker was launched with
++`--reasoning-parser=deepseek-v4` (`self.reasoning_parser == "deepseek-v4"`),
++so it never affects a simulator worker running any other model.
++"""
++
++from sglang_simulator.hook import BaseHook
++from sglang_simulator.simulation.sglang.reasoning_replay import CUSTOM_PARAM_KEY
++
++
++class C_OpenAIServingChatReasoningHook(BaseHook):
++    HOOK_CLASS_NAME = "OpenAIServingChat"
++    HOOK_MODULE_NAME = "sglang.srt.entrypoints.openai.serving_chat"
++
++    @classmethod
++    def hook(cls, target):
++        original_convert = target._convert_to_internal_request
++
++        def wrapped_convert(self, request, raw_request=None):
++            adapted_request, processed_request = original_convert(
++                self, request, raw_request
++            )
++            if self.reasoning_parser == "deepseek-v4":
++                chat_template_kwargs = request.chat_template_kwargs or {}
++                if chat_template_kwargs.get("thinking"):
++                    sampling_params = adapted_request.sampling_params
++                    if isinstance(sampling_params, dict):
++                        custom_params = dict(
++                            sampling_params.get("custom_params") or {}
++                        )
++                        custom_params[CUSTOM_PARAM_KEY] = True
++                        sampling_params["custom_params"] = custom_params
++            return adapted_request, processed_request
++
++        target._convert_to_internal_request = wrapped_convert
+diff --git a/src/sglang_simulator/simulation/sglang/reasoning_replay.py b/src/sglang_simulator/simulation/sglang/reasoning_replay.py
+new file mode 100644
+index 0000000..44196b5
+--- /dev/null
++++ b/src/sglang_simulator/simulation/sglang/reasoning_replay.py
+@@ -0,0 +1,126 @@
++"""Deterministic DeepSeek-V4 reasoning replay for the SGLang simulator.
++
++The GPU-free simulator does not load model weights, so by default it answers
++every decode step with a fixed token id (see model_runner.py's wrapped_sample)
++regardless of what the request asked for. That means a normal request never
++exercises SGLang's real DeepSeekV4Detector reasoning parser
++(sglang.srt.parser.reasoning_parser), because the parser has nothing shaped
++like "<think>...</think>..." to split.
++
++This module adds one deterministic path for one kind of request: when
++openai_reasoning.py records that a request's `chat_template_kwargs.thinking`
++was true (only possible when the worker was launched with
++`--reasoning-parser=deepseek-v4`), the scheduler hook in scheduler.py asks
++this module for the next canned token id instead of the constant default. The
++canned token ids decode, via the simulator's own fixed tokenizer, to
++"<think>{REASONING_TEXT}</think>{ANSWER_TEXT}". SGLang's real, unmodified
++serving layer (serving_chat.py) and DeepSeekV4Detector then split that text
++into `reasoning_content` and `content` exactly as they would for a real
++model's output, in both streaming and non-streaming responses.
++
++Every request that does not ask for thinking keeps the simulator's existing
++constant-token-id replay unchanged: this module and its caller only ever
++touch requests flagged by openai_reasoning.py.
++
++The `custom_params` flag this reads survives the msgpack IPC hop from the
++HTTP process (where the request's chat_template_kwargs are visible) to the
++scheduler process (where token ids are sampled) -- see
++`sglang.srt.sampling.sampling_params.SamplingParams.custom_params`, which
++exists for exactly this kind of per-request out-of-band signal.
++"""
++
++import threading
++from typing import Dict, List, Optional
++
++REASONING_TEXT = (
++    "The user asked a question. I will restate what is being asked, "
++    "consider the most direct way to answer it, and check that answer "
++    "for correctness before responding."
++)
++ANSWER_TEXT = "This is a simulated answer."
++
++CANNED_TEXT = f"<think>{REASONING_TEXT}</think>{ANSWER_TEXT}"
++
++# A request is flagged for replay by setting this key in
++# SamplingParams.custom_params to True.
++CUSTOM_PARAM_KEY = "reasoning_thinking"
++
++_lock = threading.Lock()
++_token_ids: Optional[List[int]] = None
++_eos_token_id: Optional[int] = None
++_cursor_by_rid: Dict[str, int] = {}
++
++# Bounds how many in-flight/recently-finished requests' cursors are kept.
++# A request's cursor is never needed again once process_batch_result has
++# retired it, so this is a safety net against unbounded growth in a
++# long-running staging process, not a correctness requirement.
++_MAX_TRACKED_REQUESTS = 4096
++
++
++def _load_token_ids(tokenizer_path: str) -> List[int]:
++    global _token_ids, _eos_token_id
++    if _token_ids is not None:
++        return _token_ids
++    with _lock:
++        if _token_ids is not None:
++            return _token_ids
++        from transformers import AutoTokenizer
++
++        tokenizer = AutoTokenizer.from_pretrained(
++            tokenizer_path, trust_remote_code=True
++        )
++        _token_ids = tokenizer.encode(CANNED_TEXT, add_special_tokens=False)
++        _eos_token_id = tokenizer.eos_token_id
++        return _token_ids
++
++
++def wants_reasoning_replay(req) -> bool:
++    """True when `req` was flagged, via sampling_params.custom_params, for
++    the canned reasoning replay instead of the simulator's usual constant
++    token id."""
++    sampling_params = getattr(req, "sampling_params", None)
++    custom_params = getattr(sampling_params, "custom_params", None) or {}
++    return bool(custom_params.get(CUSTOM_PARAM_KEY))
++
++
++def next_token_id(req, tokenizer_path: str) -> int:
++    """Return the next canned token id for `req`, advancing its cursor.
++
++    Once the canned text is exhausted, returns EOS (or repeats the last
++    token, if the tokenizer has none) so generation ends with
++    finish_reason "stop" instead of running to max_new_tokens.
++    """
++    token_ids = _load_token_ids(tokenizer_path)
++    rid = req.rid
++    cursor = _cursor_by_rid.get(rid, 0)
++    if cursor < len(token_ids):
++        chosen = token_ids[cursor]
++    elif _eos_token_id is not None:
++        chosen = _eos_token_id
++    else:
++        chosen = token_ids[-1]
++    _cursor_by_rid[rid] = cursor + 1
++    if len(_cursor_by_rid) > _MAX_TRACKED_REQUESTS:
++        _cursor_by_rid.pop(next(iter(_cursor_by_rid)))
++    return chosen
++
++
++def apply_reasoning_replay(batch, ret, tokenizer_path: str) -> None:
++    """Overwrite `ret.next_token_ids` in place for every request in `batch`
++    that `wants_reasoning_replay`. A no-op for every other request, and a
++    no-op entirely when `ret.next_token_ids` is not the plain per-row tensor
++    the simulator's synchronous (non-overlap) event loop always produces.
++    """
++    next_token_ids = getattr(ret, "next_token_ids", None)
++    if next_token_ids is None:
++        return
++    try:
++        length = len(next_token_ids)
++    except TypeError:
++        return
++    if length != len(batch.reqs):
++        return
++    for index, req in enumerate(batch.reqs):
++        if not wants_reasoning_replay(req):
++            continue
++        next_token_ids[index] = next_token_id(req, tokenizer_path)
+diff --git a/src/sglang_simulator/simulation/sglang/scheduler.py b/src/sglang_simulator/simulation/sglang/scheduler.py
+index 96f8b0f..e195427 100644
+--- a/src/sglang_simulator/simulation/sglang/scheduler.py
++++ b/src/sglang_simulator/simulation/sglang/scheduler.py
+@@ -10,6 +10,7 @@ from sglang_simulator.compat import validate_simulator_server_args
+ from sglang_simulator.hook import BaseHook
+ from sglang_simulator.hook.utils import get_obj_from_args
+ from sglang_simulator.simulation.manager import ConfigManager, Envs, StateManager
++from sglang_simulator.simulation.sglang.reasoning_replay import apply_reasoning_replay
+ from sglang_simulator.simulation.sglang.req_stats_manager import request_stats_manager
+ from sglang_simulator.simulation.sglang.utils import (
+     resolve_model_info,
+@@ -406,6 +407,11 @@ class C_SchedulerHook(BaseHook):
+             )
+ 
+             if ret.__class__.__name__ == "GenerationBatchResult":
++                # Overwrite the sampled token id for any request flagged (via
++                # sampling_params.custom_params) for the DeepSeek-V4 reasoning
++                # replay. A no-op for every other request. See
++                # reasoning_replay.py.
++                apply_reasoning_replay(batch, ret, self.server_args.tokenizer_path)
+                 simulation_batch = SimulationScheduleBatch(reqs=[])
+                 if batch.forward_mode.is_extend():
+                     for req in batch.reqs:

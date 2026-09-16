@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://confidential.ai/schemas/c8s-production-policy.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "environment", "output", "chart", "c8s", "systemImages", "workloads", "systemWorkloads", "imageConfigs"],
+  "properties": {
+    "schema": {"const": "confidential.ai/c8s-production-policy/v1"},
+    "environment": {"enum": ["production", "integration-staging", "conf-inference-prod"]},
+    "output": {"enum": ["c8s/allowlists/production.json", "c8s/allowlists/integration-staging.json", "c8s/allowlists/conf-inference-prod.json"]},
+    "chart": {"type": "object", "additionalProperties": false, "required": ["path", "release", "namespace", "values", "kubeVersion"], "properties": {"path": {"const": "helm/confidential-inference"}, "release": {"type": "string"}, "namespace": {"type": "string"}, "values": {"enum": ["c8s/production-values.yaml", "c8s/integration-staging-values.yaml", "c8s/conf-inference-prod-values.yaml"]}, "kubeVersion": {"type": "string", "pattern": "^1\\.[0-9]+\\.[0-9]+$"}}},
+    "c8s": {"type": "object", "additionalProperties": false, "required": ["repository", "sourceCommit", "imageTag", "cvmMode", "hardwarePlatform", "distro", "volumes", "attest"], "properties": {"repository": {"const": "https://github.com/confidential-dot-ai/c8s"}, "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "imageTag": {"type": "string"}, "cvmMode": {"const": "node"}, "hardwarePlatform": {"const": "tdx"}, "distro": {"enum": ["k8s", "rke2"]}, "volumes": {"const": true}, "attest": {"const": true}}},
+    "systemImages": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}},
+    "workloads": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "object", "additionalProperties": false, "required": ["name", "controller"], "properties": {"name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"}, "controller": {"type": "string", "pattern": "^(Deployment|StatefulSet|DaemonSet)/[a-z0-9-]+$"}, "secretReads": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^/[A-Za-z0-9._/-]+$"}}}}},
+    "systemWorkloads": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "object", "additionalProperties": false, "required": ["label", "initContainers", "containers"], "properties": {"label": {"type": "string"}, "initContainers": {"$ref": "#/$defs/containers"}, "containers": {"$ref": "#/$defs/containers", "minItems": 1}}}},
+    "imageConfigs": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["command", "args"], "properties": {"command": {"type": "array", "items": {"type": "string"}}, "args": {"type": "array", "items": {"type": "string"}}}}}}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"environment": {"const": "production"}}, "required": ["environment"]},
+      "then": {"properties": {"output": {"const": "c8s/allowlists/production.json"}, "chart": {"properties": {"values": {"const": "c8s/production-values.yaml"}}}}}
+    },
+    {
+      "if": {"properties": {"environment": {"const": "integration-staging"}}, "required": ["environment"]},
+      "then": {"properties": {"output": {"const": "c8s/allowlists/integration-staging.json"}, "chart": {"properties": {"values": {"const": "c8s/integration-staging-values.yaml"}}}}}
+    },
+    {
+      "if": {"properties": {"environment": {"const": "conf-inference-prod"}}, "required": ["environment"]},
+      "then": {"properties": {"output": {"const": "c8s/allowlists/conf-inference-prod.json"}, "chart": {"properties": {"values": {"const": "c8s/conf-inference-prod-values.yaml"}}}}}
+    }
+  ],
+  "$defs": {
+    "containers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["image", "command", "args"],
+        "properties": {
+          "image": {"type": "string", "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"},
+          "command": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+          "args": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}

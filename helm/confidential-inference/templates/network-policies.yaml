@@ -1,0 +1,392 @@
+# Start from denial. The following policies document the minimum v0 paths.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: gateway
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: c8s-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tls-lb
+      ports:
+        - {protocol: TCP, port: {{ .Values.gateway.containerPorts.public }}}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: metrics-collector
+      ports:
+        - {protocol: TCP, port: {{ .Values.gateway.containerPorts.metrics }}}
+---
+# c8s injects certificate and secret clients into confidential workloads.
+# They must reach the c8s certificate service before the main containers start.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: workloads-to-c8s-cds
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [gateway, sglang-router, inference-worker, metrics-collector, kube-state-metrics]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: c8s-system
+      ports:
+        - {protocol: TCP, port: 8443}
+    # CDS verifies the requesting CVM through that CVM's local attestation API.
+    # Cilium classifies node addresses as host identities, not CIDR peers.
+    - ports:
+        - {protocol: TCP, port: {{ .Values.attestationReceipts.attestationApiPort }}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-to-router
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: gateway
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: sglang-router
+      ports:
+        - {protocol: TCP, port: {{ ternary .Values.router.proxyPort .Values.router.port .Values.namedWorkloadProxy.enabled }}}
+    {{- if .Values.attestationReceipts.enabled }}
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [inference-worker]
+      ports:
+        - {protocol: TCP, port: {{ .Values.attestationReceipts.firstWorkerPort }}}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: metrics-collector
+      ports:
+        - {protocol: TCP, port: {{ .Values.attestationReceipts.metricsCollectorPort }}}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: kube-state-metrics
+      ports:
+        - {protocol: TCP, port: {{ .Values.attestationReceipts.kubeStateMetricsPort }}}
+    {{- range .Values.attestationReceipts.evidenceEgressCidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+      ports:
+        - {protocol: TCP, port: 443}
+    {{- end }}
+    # The front-door evidence fetch (discovery/allowlist/attest-lb) targets the
+    # c8s tls-lb. Selectors, not ipBlock: Cilium evaluates egress ipBlock
+    # against post-DNAT pod IPs, so a ClusterIP rule would not match.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: c8s-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tls-lb
+      ports:
+        - {protocol: TCP, port: 443}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: router-paths
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: sglang-router
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: gateway
+      ports:
+        - {protocol: TCP, port: {{ ternary .Values.router.proxyPort .Values.router.port .Values.namedWorkloadProxy.enabled }}}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: metrics-collector
+      ports:
+        - {protocol: TCP, port: {{ .Values.router.metricsPort }}}
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [inference-worker]
+      ports:
+        {{- if .Values.inference.enabled }}
+        - {protocol: TCP, port: {{ .Values.inference.port }}}
+        {{- end }}
+    # Pod discovery watches the Kubernetes API. Cilium can enforce either the
+    # Service port or the translated API-server port.
+    - ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: {{ .Values.metricsCollector.kubeApi.port }}}
+---
+{{- if .Values.attestationReceipts.enabled }}
+# Receipt collection is a separate control path. Inference uses only the
+# authenticated proxy on 9443 and never the router application port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-to-router-attestation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: gateway
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: sglang-router
+      ports:
+        - {protocol: TCP, port: {{ .Values.attestationReceipts.routerPort }}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: router-attestation-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: sglang-router
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: gateway
+      ports:
+        - {protocol: TCP, port: {{ .Values.attestationReceipts.routerPort }}}
+---
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-ingress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [inference-worker]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: sglang-router
+      ports:
+        {{- if .Values.inference.enabled }}
+        - {protocol: TCP, port: {{ .Values.inference.port }}}
+        {{- end }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: metrics-collector
+      ports:
+        {{- if .Values.inference.enabled }}
+        - {protocol: TCP, port: {{ .Values.inference.port }}}
+        - {protocol: TCP, port: {{ .Values.inference.metricsPort }}}
+        {{- end }}
+    {{- if .Values.attestationReceipts.enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: gateway
+      ports:
+        - {protocol: TCP, port: {{ .Values.attestationReceipts.firstWorkerPort }}}
+    {{- end }}
+---
+{{- if .Values.dcgmExporter.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dcgm-metrics-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: dcgm-exporter
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: metrics-collector
+      ports:
+        - {protocol: TCP, port: {{ .Values.dcgmExporter.port }}}
+---
+{{- end }}
+{{- if .Values.nodeExporter.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: node-metrics-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: node-exporter
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: metrics-collector
+      ports:
+        - {protocol: TCP, port: {{ .Values.nodeExporter.port }}}
+---
+{{- end }}
+{{- if .Values.kubeStateMetrics.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kube-state-metrics-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: kube-state-metrics
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: metrics-collector
+      ports:
+        - {protocol: TCP, port: {{ .Values.kubeStateMetrics.port }}}
+    {{- if .Values.attestationReceipts.enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: gateway
+      ports:
+        - {protocol: TCP, port: {{ .Values.attestationReceipts.kubeStateMetricsPort }}}
+    {{- end }}
+---
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: metrics-collector-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: metrics-collector
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [gateway, sglang-router, inference-worker, dcgm-exporter, node-exporter, kube-state-metrics]
+      ports:
+        - {protocol: TCP, port: {{ .Values.gateway.containerPorts.metrics }}}
+        - {protocol: TCP, port: {{ .Values.router.metricsPort }}}
+        {{- if .Values.inference.enabled }}
+        - {protocol: TCP, port: {{ .Values.inference.port }}}
+        - {protocol: TCP, port: {{ .Values.inference.metricsPort }}}
+        {{- end }}
+        - {protocol: TCP, port: {{ .Values.dcgmExporter.port }}}
+        - {protocol: TCP, port: {{ .Values.nodeExporter.port }}}
+        - {protocol: TCP, port: {{ .Values.kubeStateMetrics.port }}}
+    {{- if .Values.metricsCollector.remoteWrite.enabled }}
+    - to:
+        {{- range .Values.metricsCollector.remoteWrite.destinationCidrs }}
+        - ipBlock: {cidr: {{ . | quote }} }
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 9443}
+    {{- end }}
+    # Cilium can enforce either the Service port or the translated API-server
+    # port. Standard NetworkPolicy cannot select the kube-apiserver entity.
+    - ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: {{ .Values.metricsCollector.kubeApi.port }}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kube-state-metrics-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: kube-state-metrics
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: {{ .Values.metricsCollector.kubeApi.port }}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: metrics-collector-admin-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: metrics-collector
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range .Values.network.adminMtlsCidrs }}
+        - ipBlock: {cidr: {{ . | quote }} }
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 9090}
+    {{- if .Values.attestationReceipts.enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: gateway
+      ports:
+        - {protocol: TCP, port: {{ .Values.attestationReceipts.metricsCollectorPort }}}
+    {{- end }}

@@ -1,0 +1,261 @@
+{{- if le (int .Values.gateway.terminationGracePeriodSeconds) (add (int .Values.gateway.shutdownGraceSeconds) (int .Values.gateway.endpointDrainSeconds)) }}
+{{- fail "gateway.terminationGracePeriodSeconds must exceed gateway.shutdownGraceSeconds plus gateway.endpointDrainSeconds" }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  type: {{ .Values.gateway.service.type }}
+  selector:
+    {{- include "confidential-inference.selector" (dict "root" . "component" "gateway") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.gateway.service.publicPort }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  # Keep the ready gateway in service until its replacement passes readiness.
+  # Both pods stay on the gateway node, so the RWO state volume remains a
+  # single-node mount. SQLite WAL coordinates the short rollout overlap.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "confidential-inference.selector" (dict "root" . "component" "gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "confidential-inference.selector" (dict "root" . "component" "gateway") | nindent 8 }}
+        confidential.ai/environment: {{ .Values.environment | quote }}
+      annotations:
+        confidential.ai/cw: gateway
+        confidential.ai/c8s-renew-interval: {{ .Values.attestationReceipts.certificateRenewInterval | quote }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.gateway.containerPorts.metrics | quote }}
+        # c8s releases the pepper only after workload attestation. The value
+        # is delivered through the c8s memory-backed secret directory. It
+        # never enters a Kubernetes Secret, ConfigMap, image, or persistent
+        # volume.
+        confidential.ai/c8s-secrets: {{ printf "%s=%s" .Values.gateway.c8sSecrets.apiKeyPepper.name .Values.gateway.c8sSecrets.apiKeyPepper.sourcePath | quote }}
+        confidential.ai/c8s-secret-dir: /run/c8s/secrets
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.scheduling.gatewayNodeName | quote }}
+      serviceAccountName: confidential-inference
+      terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        supplementalGroups: [65532]
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: {{ .Values.images.gateway }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          env:
+            - name: GATEWAY_LISTEN
+              value: 0.0.0.0:{{ .Values.gateway.containerPorts.public }}
+            - name: GATEWAY_METRICS_LISTEN
+              value: 0.0.0.0:{{ .Values.gateway.containerPorts.metrics }}
+            - name: GATEWAY_INFERENCE_URL
+              {{- if .Values.namedWorkloadProxy.enabled }}
+              value: http://127.0.0.1:30001
+              {{- else }}
+              value: http://sglang-router:{{ .Values.router.port }}
+            - name: GATEWAY_ALLOW_DIRECT_INFERENCE_URL
+              value: "true"
+              {{- end }}
+            - name: GATEWAY_MAXIMUM_HEADERS
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.maximumHeaders) | quote }}
+            - name: GATEWAY_MAXIMUM_HEADER_BYTES
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.maximumHeaderBytes) | quote }}
+            - name: GATEWAY_MAXIMUM_URI_BYTES
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.maximumUriBytes) | quote }}
+            - name: GATEWAY_MAXIMUM_BODY_BYTES
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.maximumBodyBytes) | quote }}
+            - name: GATEWAY_HEADER_TIMEOUT_SECONDS
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.headerTimeoutSeconds) | quote }}
+            - name: GATEWAY_BODY_TIMEOUT_SECONDS
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.bodyTimeoutSeconds) | quote }}
+            - name: GATEWAY_UPSTREAM_TIMEOUT_SECONDS
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.upstreamTimeoutSeconds) | quote }}
+            - name: GATEWAY_STREAM_IDLE_TIMEOUT_SECONDS
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.streamIdleTimeoutSeconds) | quote }}
+            - name: GATEWAY_GLOBAL_REQUEST_CONCURRENCY
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.globalRequestConcurrency) | quote }}
+            - name: GATEWAY_PER_ADDRESS_CONCURRENCY
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.perAddressConcurrency) | quote }}
+            - name: GATEWAY_INFERENCE_CONCURRENCY
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.inferenceConcurrency) | quote }}
+            - name: GATEWAY_INFERENCE_QUEUE
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.inferenceQueue) | quote }}
+            - name: GATEWAY_QUEUE_TIMEOUT_SECONDS
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.queueTimeoutSeconds) | quote }}
+            - name: GATEWAY_PER_KEY_CONCURRENCY
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.perKeyConcurrency) | quote }}
+            - name: GATEWAY_ATTESTATION_CONCURRENCY
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.attestationConcurrency) | quote }}
+            - name: GATEWAY_REQUESTS_PER_ADDRESS_PER_SECOND
+              value: {{ printf "%.0f" (float64 .Values.gateway.protection.requestsPerAddressPerSecond) | quote }}
+            - name: GATEWAY_SHUTDOWN_GRACE_SECONDS
+              value: {{ printf "%.0f" (float64 .Values.gateway.shutdownGraceSeconds) | quote }}
+            - name: GATEWAY_ENDPOINT_DRAIN_SECONDS
+              value: {{ printf "%.0f" (float64 .Values.gateway.endpointDrainSeconds) | quote }}
+            {{- if .Values.gateway.protection.trustedProxyCidrs }}
+            - name: GATEWAY_TRUSTED_PROXY_CIDRS
+              value: {{ join "," .Values.gateway.protection.trustedProxyCidrs | quote }}
+            {{- end }}
+            - name: GATEWAY_MODEL
+              value: {{ .Values.inference.model.name | quote }}
+            {{- $receiptTargets := list }}
+            {{- range $item := .Values.attestationReceipts.targets }}
+            {{- if $.Values.attestationReceipts.legacyC8s615 }}
+            {{- $receiptTargets = append $receiptTargets (printf "%s|%s=%s" $item.target $item.workload $item.url) }}
+            {{- else }}
+            {{- $receiptTargets = append $receiptTargets (printf "%s|%s|%s=%s" $item.target $item.workload $item.identity $item.url) }}
+            {{- end }}
+            {{- end }}
+            - name: GATEWAY_C8S_RECEIPT_TARGETS
+              value: {{ join "," $receiptTargets | quote }}
+            - name: GATEWAY_C8S_EVIDENCE_BASE_URL
+              value: {{ .Values.attestationReceipts.evidenceBaseUrl | quote }}
+            - name: GATEWAY_RELEASE_ID
+              value: {{ .Values.attestationReceipts.releaseId | quote }}
+            - name: GATEWAY_RELEASE_BUNDLE_SHA256
+              value: {{ .Values.attestationReceipts.releaseBundleSha256 | quote }}
+            - name: GATEWAY_C8S_POLICY_MODE
+              value: {{ .Values.attestationReceipts.policyMode | quote }}
+            - name: GATEWAY_EXPECTED_OPERATOR_PUBLIC_KEY_SHA256
+              value: {{ .Values.attestationReceipts.expectedOperatorPublicKeySha256 | quote }}
+            - name: GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256
+              value: {{ .Values.attestationReceipts.expectedOperatorKeySetSha256 | quote }}
+            {{- if eq .Values.attestationReceipts.policyMode "static" }}
+            - name: GATEWAY_EXPECTED_STATIC_ALLOWLIST_SHA256
+              value: {{ .Values.attestationReceipts.expectedStaticAllowlistSha256 | quote }}
+            {{- end }}
+            - name: GATEWAY_STATE_DATABASE
+              value: {{ .Values.gateway.state.databasePath | quote }}
+            - name: GATEWAY_STATE_ABSENCE_POLICY
+              value: {{ .Values.gateway.state.absencePolicy | quote }}
+            - name: GATEWAY_STATE_DISK_SERIAL
+              value: {{ .Values.gateway.state.diskSerial | quote }}
+            - name: GATEWAY_STATE_STARTUP_TIMEOUT_SECONDS
+              value: {{ .Values.gateway.state.startupTimeoutSeconds | quote }}
+            - name: GATEWAY_STATE_ENABLED
+              value: {{ .Values.gateway.state.enabled | quote }}
+            - name: GATEWAY_API_KEY_PEPPER_FILE
+              value: {{ printf "/run/c8s/secrets/%s" .Values.gateway.c8sSecrets.apiKeyPepper.name | quote }}
+            - name: GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE
+              value: /run/confidential-inference/admin-auth/client.crt
+            - name: DEPLOYMENT_ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            - name: GATEWAY_METRICS_API_KEY_LABEL_ALLOWLIST
+              value: {{ join "," .Values.metricsCollector.approvedApiKeyLabels | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.gateway.containerPorts.public }}
+            - name: metrics
+              containerPort: {{ .Values.gateway.containerPorts.metrics }}
+          resources:
+            requests:
+              cpu: {{ .Values.gateway.resources.cpu | quote }}
+              memory: {{ .Values.gateway.resources.memory }}
+          readinessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: admin-auth
+              mountPath: /run/confidential-inference/admin-auth/client.crt
+              subPath: client.crt
+              readOnly: true
+            - name: run
+              mountPath: /run/confidential-gateway
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.gateway.state.enabled }}
+            - name: gateway-state
+              mountPath: {{ .Values.gateway.state.mountPath }}
+            {{- end }}
+        {{- if .Values.namedWorkloadProxy.enabled }}
+        # The c8s candidate image exposes this alias for the named-workload
+        # proxy. The final candidate image digest must replace the current
+        # source-lock pin before this workload is deployed.
+        - name: router-workload-proxy
+          image: {{ .Values.images.c8sOperator }}
+          imagePullPolicy: IfNotPresent
+          command: ["/c8s"]
+          args:
+            - workload-proxy
+            - --mode=client
+            - --listen=127.0.0.1:30001
+            - --upstream=sglang-router:{{ .Values.router.proxyPort }}
+            - --peer-workload={{ .Values.router.attestedWorkload }}
+            - --cert-file=/etc/c8s/certs/tls.crt
+            - --key-file=/etc/c8s/certs/tls.key
+            - --ca-file=/etc/c8s/certs/ca.crt
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          resources:
+            {{- toYaml .Values.attestationReceipts.resources | nindent 12 }}
+        {{- end }}
+        {{- if .Values.attestationReceipts.enabled }}
+        {{- include "confidential-inference.cdsAttestSidecar" (dict "root" . "workload" .Values.gateway.attestedWorkload "host" "0.0.0.0" "port" .Values.attestationReceipts.gatewayPort) | nindent 8 }}
+        {{- end }}
+      volumes:
+        {{- if and .Values.attestationReceipts.enabled (not .Values.attestationReceipts.legacyC8s615) }}
+        {{- include "confidential-inference.workloadClaimsVolume" . | nindent 8 }}
+        {{- end }}
+        - name: admin-auth
+          secret:
+            secretName: {{ .Values.gateway.secrets.adminSigner.secretName }}
+            items:
+              - key: {{ .Values.gateway.secrets.adminSigner.certificateKey }}
+                path: client.crt
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.gateway.state.enabled }}
+        - name: gateway-state
+          persistentVolumeClaim:
+            claimName: {{ .Values.gateway.state.claimName }}
+        {{- end }}
