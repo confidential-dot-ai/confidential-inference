@@ -1,0 +1,39 @@
+{
+  "schema": "confidential-inference.c8s-attestation-protocol-manifest/v1",
+  "commit": "466ce79e77c2fb6c014620b770066f275e889df6",
+  "attestationProtocol": "c8s/attest-pq/v1+xwing",
+  "sharedWithCommits": [
+    "2ef376a875010ac98542ab5f2f770aeb95b0082f"
+  ],
+  "sharedWithCommitsNote": "2ef376a8 registers the identical route table and pkg/types/verify.go field set as 466ce79; the two c8s commits differ only in doc comments (internal/cmds/cdsattest/server.go, pkg/types/verify.go). Read-only diff confirmed at capture time.",
+  "capturedFrom": {
+    "cdsattestRoutes": "internal/cmds/cdsattest/server.go",
+    "bundleTypes": "pkg/types/verify.go",
+    "cdsAllowlistRoutes": "internal/cmds/cds/routes.go"
+  },
+  "cdsattestRoutes": [
+    {"method": "POST", "path": "/.well-known/c8s/attest-pq"},
+    {"method": "GET", "path": "/.well-known/c8s/attest-pq", "note": "always 400 invalid_request (client-first POST only)"},
+    {"method": "GET", "path": "/.well-known/c8s/attest-lb"},
+    {"method": "GET", "path": "/.well-known/c8s/attestation", "note": "always 400 (gone)"},
+    {"method": "POST", "path": "/.well-known/c8s/handshake", "note": "always 400 (removed)"},
+    {"method": "POST", "path": "/.well-known/c8s/tunnel"}
+  ],
+  "attestPqRequest": {"method": "POST", "bodyFields": ["nonce", "xwing_ek"]},
+  "attestationBundleFields": [
+    "version", "platform", "generation", "nonce", "evidence",
+    "cds_cert_pem", "front_door_mode",
+    "xwing_ek", "xwing_ct", "session_id",
+    "identity_proof", "serving_leaf_sha256"
+  ],
+  "identityProofFields": ["algorithm", "leaf_sha256", "mesh_ca_sha256", "signature"],
+  "cdsRoutes": [
+    {"method": "GET", "path": "/allowlist"},
+    {"method": "PUT", "path": "/allowlist"},
+    {"method": "PUT", "path": "/allowlist/workloads/{name}"},
+    {"method": "DELETE", "path": "/allowlist/workloads/{name}"},
+    {"method": "GET", "path": "/ca"},
+    {"method": "GET", "path": "/operator-keys"}
+  ],
+  "allowlistDocumentTopLevelFields": ["schema", "workloads"]
+}
