@@ -121,12 +121,15 @@ and the known gaps under remediation.
 ## Verify one live attestation
 
 Install Python 3, `jsonschema`, and `cryptography`. Build the c8s command from
-the exact public c8s commit in
-`contracts/c8s-admission-source-lock.json`:
+the exact public c8s commit your target release records
+(`release-bundle.json`'s `c8s.sourceCommit`). `contracts/c8s-admission-source-lock.json`
+pins one entry per trusted c8s commit — its top-level entry, plus one entry per
+commit in its `commits` list. The verifier fails closed if the release names a
+c8s commit that is not one of these entries:
 
 ```sh
 git clone https://github.com/confidential-dot-ai/c8s /tmp/c8s
-git -C /tmp/c8s checkout 079aeb48c4d523aa7500b4bd78f0283b2d12e317
+git -C /tmp/c8s checkout <the c8s commit your release records>
 make -C /tmp/c8s VERSION="$(git -C /tmp/c8s rev-parse HEAD)" build
 ```
 

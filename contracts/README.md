@@ -6,6 +6,18 @@
 
 `environment-spec.schema.json` defines the shape of one confidential inference deployment environment, including its confidential-compute boot images, network settings, and GPU count.
 
+`c8s-admission-source-lock.json` pins the c8s source commit a signed release may
+use. Each environment can cut its release from a different c8s commit, so the
+lock keeps its original single-entry shape at the top level (one commit, its
+digest-pinned node and operator images, its required verifier flags, and its
+per-file source hashes) and adds an optional `commits` list of further entries
+in the same shape. The verifier selects the entry whose `commit` field equals
+the release bundle's recorded `c8s.sourceCommit`, and fails closed if no entry
+matches — an unlisted c8s commit must never verify. `scripts/verify-c8s-admission-source.py`
+accepts `--commit` to check the c8s source tree against one specific pinned
+entry (the top-level one, or one from `commits`); without it, it checks the
+top-level entry, as before.
+
 Use `scripts/verify-public-attestation.py` for the complete public verification flow.
 
 The command fetches the HTTPS endpoint with a fresh nonce. It verifies the exact

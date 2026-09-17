@@ -51,8 +51,9 @@ the request to one of the sglang inference workers.
   attestation-rs verifiers.
 - The measured ConfOS node image (`images/control-plane-node/README.md`).
 - The Sigstore-signed release bundle (`releases/README.md`, "Trust limits").
-- The c8s verifier at the pinned commit
-  (`contracts/c8s-admission-source-lock.json`).
+- The c8s verifier at a pinned commit
+  (`contracts/c8s-admission-source-lock.json`, which lists one entry per
+  trusted c8s commit; a release naming any other c8s commit fails closed).
 
 ## 3. What a verified attestation proves, and does not prove
 
