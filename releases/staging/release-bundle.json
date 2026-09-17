@@ -1,5 +1,5 @@
 {
-  "allowlistDigest": "sha256:fef7f1e539144b0ce95ceaa11b79257d675f39f0a6cf60e836df4b6012a60f30",
+  "allowlistDigest": "sha256:f8a89153028d852e0c14425ac18b57d1bb4ed5b22a1537409cda53ac8e6eb6d0",
   "c8s": {
     "attestationTargets": [
       {
@@ -30,7 +30,7 @@
     ],
     "frontDoorWorkload": "c8s-tls-lb",
     "imageTag": "466ce79",
-    "installInputDigest": "sha256:d01d89e3c5404550bfc50a8d3ecadab7ce1381329ed6a3814e3895e231d17a7f",
+    "installInputDigest": "sha256:13a82e97fa5988f49177e1f2fd54ffee8f0df311e7f7e143df1e0b531da0653f",
     "measurements": {
       "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
       "rtmr1": "36533e26f764256f2683865906bc3c6de4db51f260fe7edbc392773650e52c27a756dc27dc84a062ac2a34b5033101ba",
@@ -99,7 +99,7 @@
   },
   "release": {
     "environment": "staging",
-    "name": "staging-v4"
+    "name": "staging-v5"
   },
   "releaseTrust": {
     "policyPath": "releases/trust/release-signing-policy.json",
@@ -108,7 +108,7 @@
   },
   "schemaVersion": 2,
   "source": {
-    "commit": "16dea0b0a60efbb05d7f909389d2399ff34e7f82",
+    "commit": "3e9550d0fc4befccc73201eacf6081e78a36ad20",
     "repository": "https://github.com/confidential-dot-ai/confidential-inference"
   },
   "workloads": [
@@ -117,14 +117,14 @@
         "/usr/local/bin/confidential-gateway"
       ],
       "build": {
-        "commit": "d03291904236e3e91d11df6698f02a8fb79a7c4b",
+        "commit": "f7893916c9ef4150486e6a333330416dba54fb3d",
         "context": ".",
         "dockerfile": "images/gateway/Dockerfile",
         "platform": "linux/amd64",
         "repository": "https://github.com/confidential-dot-ai/confidential-inference"
       },
       "image": {
-        "digest": "sha256:5aba24f623cbbde47c91ff8d436f946e4b502ecbf05b91a2d191e068e14c9c21",
+        "digest": "sha256:5b255f500d1f1a13fea2125945f4b4a234d55a0f497ca9cf6a784bc9ccaca9b0",
         "reference": "ghcr.io/confidential-dot-ai/confidential-inference/gateway"
       },
       "name": "gateway"
@@ -138,7 +138,7 @@
         "--platform=tdx",
         "--front-door-mode=webpki",
         "--expected-workload=gateway",
-        "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+        "--attestation-api-url=http://$(HOST_IP):8400",
         "--serving-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
@@ -203,7 +203,7 @@
         "--platform=tdx",
         "--front-door-mode=webpki",
         "--expected-workload=inference-worker-0",
-        "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+        "--attestation-api-url=http://$(HOST_IP):8400",
         "--serving-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
@@ -241,7 +241,7 @@
         "--platform=tdx",
         "--front-door-mode=webpki",
         "--expected-workload=kube-state-metrics",
-        "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+        "--attestation-api-url=http://$(HOST_IP):8400",
         "--serving-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
@@ -274,7 +274,7 @@
         "--platform=tdx",
         "--front-door-mode=webpki",
         "--expected-workload=metrics-collector",
-        "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+        "--attestation-api-url=http://$(HOST_IP):8400",
         "--serving-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
@@ -330,7 +330,7 @@
         "--platform=tdx",
         "--front-door-mode=webpki",
         "--expected-workload=sglang-router",
-        "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+        "--attestation-api-url=http://$(HOST_IP):8400",
         "--serving-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
