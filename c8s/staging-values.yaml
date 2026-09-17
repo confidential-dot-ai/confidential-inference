@@ -57,6 +57,10 @@ attestationReceipts:
   evidenceEgressCidrs:
     - 192.0.2.1/32
   legacyC8s615: false
+  # This c8s install runs no in-cluster attestation-api Deployment, so c8s
+  # injects get-cert and get-secret with http://$(HOST_IP):8400 and serves no
+  # workload-claims socket. The cds-attest sidecar must use the same endpoint.
+  useNodeAttestationApi: true
   evidenceBaseUrl: https://staging.api.confidential.ai
   # The staging cluster on c8s v0.20.4 is a fresh cluster, not an upgrade of
   # the previous staging cluster, so the release counter restarts.

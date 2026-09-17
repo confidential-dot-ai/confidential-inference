@@ -380,6 +380,49 @@ def main() -> None:
     )
     assert staging_values["inference"]["mode"] == "simulator"
 
+    # The cds-attest sidecar must read TEE evidence from the same attestation
+    # API that c8s injects into its own get-cert and get-secret sidecars. A
+    # c8s install with no in-cluster attestation-api Deployment serves the
+    # node HTTP endpoint only, and the Unix socket then has no server behind
+    # it: the sidecar answers 502 and /attestation answers 503.
+    node_api_documents = [
+        item for item in yaml.safe_load_all(
+            helm(
+                "template", "example", str(CHART), "--namespace", "inference",
+                *NEUTRAL_MODE,
+                "--set", "attestationReceipts.useNodeAttestationApi=true",
+            )
+        ) if item
+    ]
+    node_api_sidecars = [
+        container
+        for document in node_api_documents
+        if document["kind"] in {"Deployment", "StatefulSet"}
+        for container in document["spec"]["template"]["spec"]["containers"]
+        if container["name"] == "cds-attest"
+    ]
+    assert node_api_sidecars
+    for container in node_api_sidecars:
+        assert "--attestation-api-url=http://$(HOST_IP):8400" in container["args"]
+        assert [
+            item for item in container.get("env", []) if item["name"] == "HOST_IP"
+        ], "the node attestation API URL needs the HOST_IP field reference"
+    # The default keeps the workload-claims socket, so no environment changes
+    # behaviour without setting the value.
+    default_sidecars = [
+        container
+        for document in default_documents
+        if document["kind"] in {"Deployment", "StatefulSet"}
+        for container in document["spec"]["template"]["spec"]["containers"]
+        if container["name"] == "cds-attest"
+    ]
+    assert default_sidecars
+    for container in default_sidecars:
+        assert (
+            "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock"
+            in container["args"]
+        )
+
     print("Helm neutral-default and safety tests passed.")
 
 
