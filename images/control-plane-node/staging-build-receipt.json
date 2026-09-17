@@ -7,7 +7,7 @@
     "cdiLayerDigest": "sha256:c35ab119c67c574ae78c8dae5d1295bfe016fa1e36d67b386d0a355b3fb9b777",
     "cdiLayerSize": 1925716631
   },
-  "sealedAllowlistSha256": "sha256:cdab49dfc44392e77f8313606019437a472f50fc9e1e0e109b5c5ba4a2782c12",
+  "sealedAllowlistSha256": "sha256:ac84f651e2170fcbe7b0dc535339133e0b1301c11b45055b96ba91d1ecbc8cc5",
   "manifestSha256": "sha256:6a861df96889a2094fb9aee4fe705a5640c4535e83ab1663fef0dc683106a5d7",
   "measurements": {
     "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
