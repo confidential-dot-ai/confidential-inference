@@ -182,6 +182,10 @@ pub struct C8sAttestationConfig<'a> {
 #[derive(Clone)]
 pub struct C8sAttestationProvider {
     http: reqwest::Client,
+    /// Client for the RA-TLS read of the c8s operator key set. Absent when
+    /// the key set is read from the evidence base URL with the ordinary
+    /// client.
+    operator_http: Option<reqwest::Client>,
     targets: Vec<ReceiptTarget>,
     evidence_base_url: Url,
     operator_key_set_url: Url,
@@ -250,27 +254,46 @@ impl C8sAttestationProvider {
             .connect_timeout(config.timeout.min(Duration::from_secs(10)))
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none());
-        if let Ok(mesh_ca_pem) = std::fs::read("/etc/c8s/certs/ca.crt") {
-            let mut added = 0usize;
-            let mut rest: &[u8] = &mesh_ca_pem;
-            while !rest.is_empty() {
-                let (remaining, pem) = x509_parser::pem::parse_x509_pem(rest)
-                    .map_err(|_| "the c8s mesh CA bundle is invalid".to_owned())?;
-                let cert = reqwest::Certificate::from_der(&pem.contents)
-                    .map_err(|_| "the c8s mesh CA certificate is invalid".to_owned())?;
-                client_builder = client_builder.add_root_certificate(cert);
-                added += 1;
-                rest = remaining;
-            }
-            if added == 0 {
-                return Err("the c8s mesh CA bundle is empty".to_owned());
-            }
+        let mesh_ca = mesh_ca_certificates()?;
+        for cert in mesh_ca.clone() {
+            client_builder = client_builder.add_root_certificate(cert);
         }
         let http = client_builder
             .build()
             .map_err(|_| "the c8s evidence HTTP client is invalid".to_owned())?;
+        // CDS serves the operator key set over RA-TLS. Its leaf carries the
+        // TEE evidence extension and no subject alternative name at all
+        // (read live from the staging CDS: `O=Confidential, CN=RA-TLS
+        // Workload`), exactly as c8s's own clients expect. So this one client
+        // trusts the mesh CA and nothing else — no platform root can stand in
+        // for CDS — and it does not check the server name, which the leaf
+        // never carries. The read itself is still pinned twice over: the key
+        // set digest must equal `expected_operator_key_set_sha256`, and one
+        // pinned fingerprint must appear in it. A host that answers here with
+        // any other key set fails closed.
+        let operator_http = if config.operator_key_set_base_url.is_empty() {
+            None
+        } else {
+            if mesh_ca.is_empty() {
+                return Err(
+                    "the c8s mesh CA bundle is required to read the operator key set from CDS"
+                        .to_owned(),
+                );
+            }
+            Some(
+                reqwest::Client::builder()
+                    .connect_timeout(config.timeout.min(Duration::from_secs(10)))
+                    .timeout(config.timeout)
+                    .redirect(reqwest::redirect::Policy::none())
+                    .tls_certs_only(mesh_ca)
+                    .tls_danger_accept_invalid_hostnames(true)
+                    .build()
+                    .map_err(|_| "the c8s operator key set HTTP client is invalid".to_owned())?,
+            )
+        };
         Ok(Self {
             http,
+            operator_http,
             targets,
             evidence_base_url,
             operator_key_set_url,
@@ -357,7 +380,9 @@ impl C8sAttestationProvider {
             .join("operator-keys")
             .map_err(|_| attestation_invalid!("the operator-keys URL is unusable"))?;
         let response = self
-            .http
+            .operator_http
+            .as_ref()
+            .unwrap_or(&self.http)
             .get(url)
             .send()
             .await
@@ -766,6 +791,32 @@ fn parse_targets(targets: &str) -> Result<Vec<ReceiptTarget>, String> {
     }
     parsed.sort_by(|left, right| left.target.cmp(&right.target));
     Ok(parsed)
+}
+
+/// Read the c8s mesh CA bundle every c8s workload pod carries.
+///
+/// The `get-cert` init container writes it to `/etc/c8s/certs/ca.crt`. An
+/// absent file yields an empty list: a `WebPKI` front door needs no extra root,
+/// and the evidence client only ever ADDS these roots.
+fn mesh_ca_certificates() -> Result<Vec<reqwest::Certificate>, String> {
+    let Ok(mesh_ca_pem) = std::fs::read("/etc/c8s/certs/ca.crt") else {
+        return Ok(Vec::new());
+    };
+    let mut certificates = Vec::new();
+    let mut rest: &[u8] = &mesh_ca_pem;
+    while !rest.is_empty() {
+        let (remaining, pem) = x509_parser::pem::parse_x509_pem(rest)
+            .map_err(|_| "the c8s mesh CA bundle is invalid".to_owned())?;
+        certificates.push(
+            reqwest::Certificate::from_der(&pem.contents)
+                .map_err(|_| "the c8s mesh CA certificate is invalid".to_owned())?,
+        );
+        rest = remaining;
+    }
+    if certificates.is_empty() {
+        return Err("the c8s mesh CA bundle is empty".to_owned());
+    }
+    Ok(certificates)
 }
 
 fn parse_evidence_base_url(value: &str) -> Result<Url, String> {
