@@ -1,5 +1,5 @@
 {
-  "allowlistDigest": "sha256:76e6f0005e6cbdce2b959b75dc332d2b5315802d6e9b873cb6e3b8514f820709",
+  "allowlistDigest": "sha256:b6aff53354faa51debfc6db4f8931a3e7ee3e89009df6bfe3cebf3f28e16ae0e",
   "c8s": {
     "attestationTargets": [
       {
@@ -28,9 +28,9 @@
         "workload": "sglang-router"
       }
     ],
-    "frontDoorWorkload": "c8s-tls-lb",
+    "frontDoorWorkload": "c8s-router",
     "imageTag": "466ce79",
-    "installInputDigest": "sha256:1debafda81577aaf324c5a958f506b66796b1aa783a0bd1a3f56b05df7ae6bbe",
+    "installInputDigest": "sha256:27fb631a5ca8b04c20799a93e8068fa846d6dd476578bf9011c0b3f60f954461",
     "measurements": {
       "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
       "rtmr1": "36533e26f764256f2683865906bc3c6de4db51f260fe7edbc392773650e52c27a756dc27dc84a062ac2a34b5033101ba",
@@ -99,7 +99,7 @@
   },
   "release": {
     "environment": "staging",
-    "name": "staging-v6"
+    "name": "staging-v7"
   },
   "releaseTrust": {
     "policyPath": "releases/trust/release-signing-policy.json",
@@ -108,7 +108,7 @@
   },
   "schemaVersion": 2,
   "source": {
-    "commit": "929d1dbaabb52ea5c09a1561bb6f0566b32ea4dc",
+    "commit": "4b928ea6bebc2b75ec9b686db18e58f356f7b76c",
     "repository": "https://github.com/confidential-dot-ai/confidential-inference"
   },
   "workloads": [
