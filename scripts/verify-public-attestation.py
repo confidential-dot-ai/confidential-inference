@@ -32,6 +32,12 @@ from release_signature import (
     verify_release_signature,
 )
 
+# Import the sibling module by absolute path rather than relying on the
+# caller (direct script execution, runpy.run_path, or a test harness) to
+# have already put this file's directory on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import c8s_allowlist_canonical
+
 
 ROOT = Path(__file__).resolve().parents[1]
 RESPONSE_SCHEMA = ROOT / "contracts/workload-attestation.schema.json"
@@ -358,23 +364,76 @@ def expected_targets(
     return tuple(pairs)
 
 
+# Set by canonicalize_allowlist on every call, for the final report and for
+# scripts/ci-validate.sh output: which method produced the canonical bytes
+# the verifier trusted. Not thread-safe, but this script is single-threaded.
+CANONICALIZATION_METHODS_USED: set[str] = set()
+
+
 def canonicalize_allowlist(
     executable: str, path: Path, timeout: int, label: str,
+    capabilities: dict[str, Any] | None = None,
 ) -> bytes:
-    """Use the pinned c8s schema implementation as the canonicalization authority."""
+    """Produce the canonical allowlist bytes c8s would sign off on.
+
+    c8s commit 75af991a removed the offline `c8s allowlist canonicalize
+    <file>` command (see scripts/c8s_allowlist_canonical.py); every c8s tag
+    after that commit needs a live CDS connection to turn a file into
+    canonical bytes via `c8s allowlist export`, which this offline verifier
+    cannot use. capabilities (the matched contracts/c8s-admission-source-lock.json
+    entry's "capabilities" object) says which case applies:
+
+    - {"allowlistCanonicalize": true} (or capabilities omitted, for backward
+      compatibility with older lock entries): shell out to the pinned c8s
+      binary, unchanged from before this function grew capability branching.
+    - {"allowlistCanonicalize": false}: reproduce the canonical bytes in
+      Python via c8s_allowlist_canonical.canonicalize_mainline(), verified
+      byte-identical against pkg/allowlist.Canonical() at c8s 466ce79
+      (v0.20.4) for every allowlist this repository pins. This is a genuine
+      independent canonicalization, not a weakened check: validate_allowlist
+      still requires the file's bytes to equal these bytes and their SHA-256
+      to equal the release's pinned allowlistDigest.
+
+    A document shape the Python reproduction cannot cover (see that module's
+    docstring) fails closed with VerificationError, not a silent pass.
+    """
+    can_use_native = capabilities is None or capabilities.get("allowlistCanonicalize", True)
+    if can_use_native:
+        try:
+            result = subprocess.run(
+                [executable, "allowlist", "canonicalize", str(path)],
+                capture_output=True,
+                timeout=timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise VerificationError(f"the c8s canonicalizer did not run for the {label}") from error
+        if result.returncode != 0 or not result.stdout:
+            raise VerificationError(f"c8s rejected the {label}")
+        if len(result.stdout) > MAX_ALLOWLIST_BYTES:
+            raise VerificationError(f"the canonical {label} is too large")
+        CANONICALIZATION_METHODS_USED.add("c8s-cli")
+        return result.stdout
+
+    print(
+        f"note: the pinned c8s binary has no offline 'allowlist canonicalize' "
+        f"(capability allowlistCanonicalize=false); canonicalizing the {label} "
+        "with the verified Python reproduction of pkg/allowlist.Canonical() instead "
+        "(scripts/c8s_allowlist_canonical.py)",
+        file=sys.stderr,
+    )
+    document = read_json(path, label)
     try:
-        result = subprocess.run(
-            [executable, "allowlist", "canonicalize", str(path)],
-            capture_output=True,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise VerificationError(f"the c8s canonicalizer did not run for the {label}") from error
-    if result.returncode != 0 or not result.stdout:
-        raise VerificationError(f"c8s rejected the {label}")
-    if len(result.stdout) > MAX_ALLOWLIST_BYTES:
+        canonical = c8s_allowlist_canonical.canonicalize_mainline(document)
+    except c8s_allowlist_canonical.UnsupportedAllowlistShape as error:
+        raise VerificationError(
+            f"skipped: the {label} cannot be canonicalized without the pinned c8s "
+            f"binary (capability allowlistCanonicalize=false) and the Python "
+            f"reproduction does not cover its shape: {error}"
+        ) from error
+    if len(canonical) > MAX_ALLOWLIST_BYTES:
         raise VerificationError(f"the canonical {label} is too large")
-    return result.stdout
+    CANONICALIZATION_METHODS_USED.add("python-mainline-reproduction")
+    return canonical
 
 
 def validate_allowlist(
@@ -425,7 +484,7 @@ def allowlist_matches_target(
 def trusted_allowlists(
     release: dict[str, Any], expected: tuple[tuple[str, str, str], ...],
     current_path: Path, history_directory: Path | None, current: tuple[str, bytes],
-    c8s: str, timeout: int,
+    c8s: str, timeout: int, capabilities: dict[str, Any] | None = None,
 ) -> list[tuple[str, bytes, dict[str, Any]]]:
     """Load the current and retained allowlists used by still-running pods."""
     current_digest, current_bytes = current
@@ -438,7 +497,9 @@ def trusted_allowlists(
         document = read_json(path, "historical allowlist")
         if document.get("schema") != "c8s.allowlist/v1":
             raise VerificationError("a historical allowlist has the wrong schema")
-        canonical = canonicalize_allowlist(c8s, path, timeout, "historical allowlist")
+        canonical = canonicalize_allowlist(
+            c8s, path, timeout, "historical allowlist", capabilities
+        )
         if raw not in (canonical, canonical + b"\n"):
             raise VerificationError("a historical allowlist differs from c8s canonical bytes")
         digest = sha256(canonical)
@@ -1185,8 +1246,10 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         args.c8s, source_lock_entry["commit"], args.verifier_timeout_seconds,
         tag=entry_tag if isinstance(entry_tag, str) else None,
     )
+    allowlist_capabilities = source_lock_entry.get("capabilities")
     canonical_from_c8s = canonicalize_allowlist(
-        args.c8s, args.allowlist, args.verifier_timeout_seconds, "canonical allowlist"
+        args.c8s, args.allowlist, args.verifier_timeout_seconds, "canonical allowlist",
+        allowlist_capabilities,
     )
     allowlist_digest, canonical_allowlist = validate_allowlist(
         release, allowlist, allowlist_bytes, canonical_from_c8s, targets
@@ -1194,6 +1257,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     allowlist_documents = trusted_allowlists(
         release, targets, args.allowlist, args.allowlist_history,
         (allowlist_digest, canonical_allowlist), args.c8s, args.verifier_timeout_seconds,
+        allowlist_capabilities,
     )
     model_root = validate_model_policy(release)
     release_digest = sha256(release_bytes)
@@ -1301,6 +1365,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "activeOperatorKeySetVerified": args.policy_mode == "operator",
         "meshCaSha256": mesh_ca_der_digest,
         "currentAllowlistSha256": allowlist_digest,
+        "allowlistCanonicalizationMethods": sorted(CANONICALIZATION_METHODS_USED),
         "trustedAllowlistSha256s": [item[0] for item in allowlist_documents],
         "publicTlsSpkiSha256": public_spki,
         "publicTlsKeyAttested": public_tls_attested,
