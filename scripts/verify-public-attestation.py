@@ -157,6 +157,23 @@ PUBLIC_KEY_BLOCK_RE = re.compile(
 )
 
 
+def key_set_digest(fingerprints: list[bytes]) -> str:
+    """Return c8s's canonical operator key-set commitment.
+
+    This is `pkg/operatorauth.KeySetDigest` (c8s 466ce79): SHA-256 over the
+    domain separator, then over the sorted, de-duplicated SHA-256 fingerprints
+    of each key's PKIX/SPKI DER. The commitment is independent of PEM
+    formatting, key order, and duplicates, so a PEM bundle and a plain list of
+    fingerprints digest identically. Both callers below use this one function,
+    so a bundle read locally and a key set read over an attested CDS session
+    can never disagree by formula.
+    """
+    ordered = sorted(set(fingerprints))
+    return "sha256:" + hashlib.sha256(
+        OPERATOR_KEY_SET_DOMAIN + b"".join(ordered)
+    ).hexdigest()
+
+
 def canonical_operator_key_set(data: bytes, label: str) -> tuple[bytes, str, set[str]]:
     """Return c8s's canonical PEM, key-set commitment, and member fingerprints."""
     if not data or len(data) > 256 * 1024:
@@ -178,7 +195,7 @@ def canonical_operator_key_set(data: bytes, label: str) -> tuple[bytes, str, set
     if not ders:
         raise VerificationError(f"the {label} contains no public keys")
     fingerprints = sorted({hashlib.sha256(der).digest() for der in ders})
-    commitment = hashlib.sha256(OPERATOR_KEY_SET_DOMAIN + b"".join(fingerprints)).hexdigest()
+    commitment = key_set_digest(fingerprints)
     blocks = []
     for der in sorted(set(ders), key=lambda value: hashlib.sha256(value).digest()):
         encoded = base64.b64encode(der)
@@ -187,9 +204,110 @@ def canonical_operator_key_set(data: bytes, label: str) -> tuple[bytes, str, set
     canonical = b"".join(blocks)
     return (
         canonical,
-        "sha256:" + commitment,
+        commitment,
         {"sha256:" + fingerprint.hex() for fingerprint in fingerprints},
     )
+
+
+#: The one CDS route that serves the c8s operator key set. The gateway names
+#: it in c8s.operatorTrust.cdsAttestedReadHint; the verifier requires exactly
+#: this value, so a response can never steer the reader at another route.
+CDS_OPERATOR_KEY_SET_ROUTE = "/operator-keys"
+
+
+def validate_cds_url(value: str) -> str:
+    """Accept only a bare HTTPS base URL for the CDS RA-TLS endpoint."""
+    parts = urlsplit(value)
+    if (
+        parts.scheme != "https"
+        or not parts.hostname
+        or parts.path not in ("", "/")
+        or parts.query
+        or parts.fragment
+        or parts.username
+        or parts.password
+    ):
+        raise VerificationError(
+            "--cds-url must be a bare https://host:port base URL for the CDS RA-TLS endpoint"
+        )
+    return value.rstrip("/")
+
+
+def read_attested_operator_key_set(
+    args: argparse.Namespace,
+) -> tuple[str, set[str], str]:
+    """Read the c8s operator key set over an attested CDS session.
+
+    The gateway cannot make this read. CDS serves `GET /operator-keys` over
+    RA-TLS behind a self-signed certificate whose trust comes from a TEE
+    evidence extension and a pinned launch measurement, not from a certificate
+    authority, so no CA-trusting TLS client can verify it. The pinned c8s CLI
+    is that client: `c8s verify <cds-url> --kind cds --mode ratls-cert` dials
+    the RA-TLS certificate, verifies its evidence against the hardware
+    signature chain, pins the launch measurement against the node image
+    manifest, and reports the `/operator-keys` set it read over that same
+    session (`internal/cmds/verify/operatorkeys.go`, c8s 466ce79).
+
+    Returns the c8s key-set commitment, the member fingerprints, and the
+    attested launch measurement, so the caller can compare all three.
+    """
+    command = [
+        args.c8s, "verify", args.cds_url,
+        "--kind", "cds",
+        "--mode", "ratls-cert",
+        "--image-manifest", str(args.node_manifest),
+        "-o", "json",
+    ]
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True,
+            timeout=args.verifier_timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise VerificationError(
+            "the attested CDS operator-key read did not run"
+        ) from error
+    if result.returncode != 0:
+        raise VerificationError(
+            "the attested CDS operator-key read failed: c8s verify exited "
+            f"{result.returncode}"
+        )
+    try:
+        verdict = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise VerificationError(
+            "the attested CDS operator-key read returned invalid JSON"
+        ) from error
+    required = {
+        "verified": True,
+        "backend": "attestation-go",
+        "platform": "tdx",
+        "measurement_pinned": True,
+        "debug": False,
+    }
+    for field, expected in required.items():
+        if verdict.get(field) != expected:
+            raise VerificationError(
+                f"the attested CDS session is not trustworthy: {field} is not {expected!r}"
+            )
+    note = verdict.get("operator_keys_note")
+    if isinstance(note, str) and note:
+        raise VerificationError(
+            "the attested CDS read returned no operator key set: " + note
+        )
+    served = verdict.get("operator_keys")
+    if not isinstance(served, list) or not served:
+        raise VerificationError("the attested CDS read returned no operator keys")
+    fingerprints: list[bytes] = []
+    for item in served:
+        if not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item):
+            raise VerificationError("the attested CDS read returned a malformed fingerprint")
+        fingerprints.append(bytes.fromhex(item))
+    measurement = verdict.get("measurement")
+    if not isinstance(measurement, str) or not re.fullmatch(r"[0-9a-f]{96}", measurement):
+        raise VerificationError("the attested CDS session reports no launch measurement")
+    members = {"sha256:" + fingerprint.hex() for fingerprint in fingerprints}
+    return key_set_digest(fingerprints), members, measurement
 
 
 def operator_key_set_from_path(path: Path) -> tuple[bytes, str, set[str]]:
@@ -594,6 +712,7 @@ def validate_response_evidence(
     allowlist: dict[str, Any], canonical_allowlist: bytes, operator_digest: str | None,
     operator_key_set_digest: str | None, mesh_ca_der_digest: str,
     attestation_protocol: str, gpu_required: bool,
+    attested_key_set: tuple[str, set[str], str] | None = None,
 ) -> None:
     """Bind the gateway envelope to the held public release inputs."""
     if response["release"] != {
@@ -645,16 +764,6 @@ def validate_response_evidence(
         raise VerificationError("the release does not pin the expected operator key set")
     if operator.get("expectedKeySetSha256") != expected_key_set:
         raise VerificationError("the response operator key-set expectation differs from the release")
-    active_pem = operator.get("activeKeySetPem")
-    if not isinstance(active_pem, str):
-        raise VerificationError("the response does not expose the active operator key set")
-    try:
-        active_pem_bytes = active_pem.encode("ascii")
-    except UnicodeEncodeError as error:
-        raise VerificationError("the active operator key set is not ASCII PEM") from error
-    _, active_digest, active_members = canonical_operator_key_set(
-        active_pem_bytes, "active operator key set"
-    )
     # c8s binds this key set to no hardware evidence at either protocol (see
     # docs/ratls.md), so the new protocol may only ever claim the honest
     # requires-attested-cds-read status. A response that claims the stronger
@@ -665,13 +774,57 @@ def validate_response_evidence(
         if attestation_protocol == XWING_ATTESTATION_PROTOCOL
         else "evidence-present-and-release-matched"
     )
-    if (
-        operator.get("status", operator.get("activeKeySetStatus")) != required_status
-        or operator.get("activeKeySetSha256") != active_digest
-        or active_digest != expected_key_set
-        or operator_digest not in active_members
-    ):
+    if operator.get("status", operator.get("activeKeySetStatus")) != required_status:
         raise VerificationError("the active operator key set is not the pinned policy")
+    if attestation_protocol == XWING_ATTESTATION_PROTOCOL:
+        # The gateway cannot read the key set: the CDS leaf is self-signed and
+        # is trusted through TEE evidence, not a certificate chain. So the
+        # response must claim no active key set at all, must name the CDS
+        # route, and the verifier must have made that attested read itself.
+        for field in ("activeKeySetSha256", "activeKeySetPem", "activeKeySetC8sSha256"):
+            if field in operator:
+                raise VerificationError(
+                    "the response claims a live operator key set the gateway cannot read"
+                )
+        if operator.get("cdsAttestedReadHint") != CDS_OPERATOR_KEY_SET_ROUTE:
+            raise VerificationError(
+                "the response does not name the CDS operator-key route to read"
+            )
+        if attested_key_set is None:
+            raise VerificationError(
+                "this protocol requires an attested CDS read of the operator key set: "
+                "pass --cds-url with the CDS RA-TLS endpoint reachable to this verifier"
+            )
+        active_digest, active_members, _ = attested_key_set
+        if active_digest != expected_key_set:
+            raise VerificationError(
+                "the attested CDS operator key set differs from the release key-set commitment"
+            )
+        if active_digest != operator.get("expectedKeySetSha256"):
+            raise VerificationError(
+                "the attested CDS operator key set differs from the response key-set expectation"
+            )
+        if operator_digest not in active_members:
+            raise VerificationError(
+                "the held operator key is not a member of the attested CDS key set"
+            )
+    else:
+        active_pem = operator.get("activeKeySetPem")
+        if not isinstance(active_pem, str):
+            raise VerificationError("the response does not expose the active operator key set")
+        try:
+            active_pem_bytes = active_pem.encode("ascii")
+        except UnicodeEncodeError as error:
+            raise VerificationError("the active operator key set is not ASCII PEM") from error
+        _, active_digest, active_members = canonical_operator_key_set(
+            active_pem_bytes, "active operator key set"
+        )
+        if (
+            operator.get("activeKeySetSha256") != active_digest
+            or active_digest != expected_key_set
+            or operator_digest not in active_members
+        ):
+            raise VerificationError("the active operator key set is not the pinned policy")
     if response["c8s"]["meshCaSha256"] != mesh_ca_der_digest:
         raise VerificationError("the response mesh CA fingerprint differs from the held mesh CA")
     if response["tls"]["mode"] != response["c8s"]["discovery"]["public_tls"]["mode"]:
@@ -1332,6 +1485,12 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     response, public_spki, public_leaf_der_sha256, public_leaf_der = fetch_response(args)
     validate_schema(response, RESPONSE_SCHEMA, "public attestation response")
     required_c8s_flags: set[str] = set(source_lock_entry.get("requiredVerifierFlags", []))
+    if (
+        args.policy_mode == "operator"
+        and source_lock_entry.get("attestationProtocol") == XWING_ATTESTATION_PROTOCOL
+    ):
+        # The attested CDS operator-key read needs all four of these.
+        required_c8s_flags.update({"--kind", "--mode", "--image-manifest", "--operator-keys"})
     if args.policy_mode == "static":
         required_c8s_flags.add("--static-allowlist")
     if response.get("tls", {}).get("mode") in {"tee-webpki", "cds", "acme"}:
@@ -1364,10 +1523,26 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         if operator_digest not in operator_key_set_members:
             raise VerificationError("the held operator key is not a member of the expected key set")
     attestation_protocol = expected_attestation_protocol(source_lock_entry)
+    # On the new protocol the gateway publishes only its pinned key-set
+    # expectation, so the verifier must read the live key set for itself over
+    # an attested CDS session. Without --cds-url there is nothing to compare
+    # the pin against, and the run fails closed rather than skipping the check.
+    attested_key_set: tuple[str, set[str], str] | None = None
+    if args.policy_mode == "operator" and attestation_protocol == XWING_ATTESTATION_PROTOCOL:
+        if args.cds_url is None:
+            raise VerificationError(
+                "this release speaks " + XWING_ATTESTATION_PROTOCOL + ", on which the gateway "
+                "cannot read the c8s operator key set (CDS serves GET /operator-keys over "
+                "RA-TLS behind a self-signed certificate). Pass --cds-url with the CDS RA-TLS "
+                "base URL reachable to this verifier, so the operator key set is read here "
+                "over an attested session and compared with the pinned key-set commitment"
+            )
+        args.cds_url = validate_cds_url(args.cds_url)
+        attested_key_set = read_attested_operator_key_set(args)
     validate_response_evidence(
         response, release, release_digest, allowlist, canonical_allowlist,
         operator_digest, operator_key_set_digest, mesh_ca_der_digest,
-        attestation_protocol, gpu_required,
+        attestation_protocol, gpu_required, attested_key_set,
     )
     for item in response["receipts"]:
         if item["admittedLaunch"] != expected_admitted_launch(allowlist, item["workload"]):
@@ -1433,6 +1608,12 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "operatorPublicKeySha256": operator_digest,
         "operatorKeySetSha256": operator_key_set_digest,
         "activeOperatorKeySetVerified": args.policy_mode == "operator",
+        "operatorKeySetSource": (
+            "attested-cds-read" if attested_key_set is not None else "response-reported"
+        ),
+        "attestedCdsLaunchMeasurement": (
+            attested_key_set[2] if attested_key_set is not None else None
+        ),
         "meshCaSha256": mesh_ca_der_digest,
         "currentAllowlistSha256": allowlist_digest,
         "allowlistCanonicalizationMethods": sorted(CANONICALIZATION_METHODS_USED),
@@ -1457,7 +1638,12 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             "This receipt does not prove current workload liveness.",
             "The model root is a release policy check, not proof of current model use.",
             (
-                "The active operator key set is checked against the release key-set commitment and held key."
+                (
+                    "The active operator key set was read from CDS over an attested session "
+                    "and checked against the release key-set commitment and held key."
+                    if attested_key_set is not None
+                    else "The active operator key set is checked against the release key-set commitment and held key."
+                )
                 if args.policy_mode == "operator"
                 else "The c8s verifier checks the sealed allowlist digest in the attested mesh CA."
             ),
@@ -1501,6 +1687,15 @@ def parser() -> argparse.ArgumentParser:
         "--attestation-cli",
         type=Path,
         help="attestation-cli built from the attestation-rs commit pinned by c8s",
+    )
+    result.add_argument(
+        "--cds-url",
+        help=(
+            "CDS RA-TLS base URL reachable to this verifier (for example "
+            "https://127.0.0.1:30808). Required on " + XWING_ATTESTATION_PROTOCOL + ": "
+            "the operator key set is read from " + CDS_OPERATOR_KEY_SET_ROUTE + " over an "
+            "attested session with the pinned c8s CLI"
+        ),
     )
     result.add_argument("--endpoint-ca", type=Path)
     result.add_argument(

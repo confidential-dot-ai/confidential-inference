@@ -68,7 +68,6 @@ attestationReceipts:
   # gateway's own admin API with 401 missing_signature. The gateway reads it
   # from CDS over RA-TLS instead. The NetworkPolicy workloads-to-c8s-cds
   # already permits egress to c8s-system on port 8443.
-  operatorKeySetBaseUrl: https://c8s-cds.c8s-system.svc:8443
   # The staging cluster on c8s v0.20.4 is a fresh cluster, not an upgrade of
   # the previous staging cluster, so the release counter restarts.
   releaseId: staging-v1

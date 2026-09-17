@@ -1191,18 +1191,24 @@ print(json.dumps(result))
                     "sha256": module["sha256"](canonical_allowlist),
                     "document": allowlist,
                 },
-                "operatorTrust": {
-                    "expectedPublicKeySpkiSha256": self.operator_digest,
-                    "expectedKeySetSha256": self.operator_key_set_digest,
-                    "activeKeySetStatus": (
-                        "requires-attested-cds-read"
-                        if protocol == module["XWING_ATTESTATION_PROTOCOL"]
-                        else "evidence-present-and-release-matched"
-                    ),
-                    "activeKeySetSha256": self.operator_key_set_digest,
-                    "activeKeySetPem": active_pem,
-                    "reason": "test",
-                },
+                "operatorTrust": (
+                    {
+                        "expectedPublicKeySpkiSha256": self.operator_digest,
+                        "expectedKeySetSha256": self.operator_key_set_digest,
+                        "activeKeySetStatus": "requires-attested-cds-read",
+                        "cdsAttestedReadHint": "/operator-keys",
+                        "reason": "test",
+                    }
+                    if protocol == module["XWING_ATTESTATION_PROTOCOL"]
+                    else {
+                        "expectedPublicKeySpkiSha256": self.operator_digest,
+                        "expectedKeySetSha256": self.operator_key_set_digest,
+                        "activeKeySetStatus": "evidence-present-and-release-matched",
+                        "activeKeySetSha256": self.operator_key_set_digest,
+                        "activeKeySetPem": active_pem,
+                        "reason": "test",
+                    }
+                ),
                 "meshCaSha256": "sha256:" + "8" * 64,
                 "discovery": {"public_tls": {"mode": "webpki"}},
             },
@@ -1223,11 +1229,14 @@ print(json.dumps(result))
         response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
             module, XWING
         )
-        # The honest status passes.
+        attested = (
+            self.operator_key_set_digest, {self.operator_digest}, "a" * 96,
+        )
+        # The honest status passes, given the verifier's own attested read.
         module["validate_response_evidence"](
             response, release, release_digest, allowlist, canonical,
             self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
-            XWING, False,
+            XWING, False, attested,
         )
         # c8s proves no hardware binding for this key set at either protocol,
         # so claiming the stronger release-matched status on the new
@@ -1237,8 +1246,144 @@ print(json.dumps(result))
             module["validate_response_evidence"](
                 response, release, release_digest, allowlist, canonical,
                 self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
-                XWING, False,
+                XWING, False, attested,
             )
+
+    def test_new_protocol_fails_closed_without_the_attested_cds_read(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
+            module, XWING
+        )
+        # No attested read was made, so there is nothing to compare the pin
+        # against. The verifier must never treat that as a pass.
+        with self.assertRaisesRegex(module["VerificationError"], "--cds-url"):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                XWING, False, None,
+            )
+
+    def test_new_protocol_rejects_a_claimed_live_key_set(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        attested = (
+            self.operator_key_set_digest, {self.operator_digest}, "a" * 96,
+        )
+        for field, value in (
+            ("activeKeySetSha256", self.operator_key_set_digest),
+            ("activeKeySetPem", self.operator_key.read_text()),
+            ("activeKeySetC8sSha256", "b" * 64),
+        ):
+            response, release, release_digest, allowlist, canonical = (
+                self._minimal_response_and_release(module, XWING)
+            )
+            response["c8s"]["operatorTrust"][field] = value
+            with self.assertRaisesRegex(module["VerificationError"], "cannot read"):
+                module["validate_response_evidence"](
+                    response, release, release_digest, allowlist, canonical,
+                    self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                    XWING, False, attested,
+                )
+
+    def test_new_protocol_requires_the_cds_read_hint(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        attested = (
+            self.operator_key_set_digest, {self.operator_digest}, "a" * 96,
+        )
+        for hint in (None, "/allowlist", ""):
+            response, release, release_digest, allowlist, canonical = (
+                self._minimal_response_and_release(module, XWING)
+            )
+            if hint is None:
+                del response["c8s"]["operatorTrust"]["cdsAttestedReadHint"]
+            else:
+                response["c8s"]["operatorTrust"]["cdsAttestedReadHint"] = hint
+            with self.assertRaisesRegex(module["VerificationError"], "CDS operator-key route"):
+                module["validate_response_evidence"](
+                    response, release, release_digest, allowlist, canonical,
+                    self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                    XWING, False, attested,
+                )
+
+    def test_new_protocol_rejects_a_differing_attested_key_set(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
+            module, XWING
+        )
+        # CDS serves a key set that is not the pinned one.
+        other = ("sha256:" + "c" * 64, {"sha256:" + "d" * 64}, "a" * 96)
+        with self.assertRaisesRegex(
+            module["VerificationError"], "differs from the release key-set commitment"
+        ):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                XWING, False, other,
+            )
+        # CDS serves the pinned set, but not the key this verifier holds.
+        stranger = (self.operator_key_set_digest, {"sha256:" + "d" * 64}, "a" * 96)
+        with self.assertRaisesRegex(module["VerificationError"], "not a member"):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                XWING, False, stranger,
+            )
+
+    def test_the_key_set_formula_matches_the_gateway_test_vector(self):
+        """The Python formula must reproduce c8s pkg/operatorauth.KeySetDigest.
+
+        This vector is the gateway's own committed test vector
+        (`services/gateway/tests/attestation_producer.rs`,
+        TEST_OPERATOR_KEY_SHA256 / TEST_OPERATOR_KEY_SET_SHA256), so the two
+        implementations are checked against one another byte for byte.
+        """
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        pem = (
+            b"-----BEGIN PUBLIC KEY-----\n"
+            b"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEnJMsKPXWyf5ZDLsU9OV/wKCWhvRJ\n"
+            b"Hk/K2mRdVZoDNgtuvdFkNh9CDp2ekMIfY3wnJvQ7CbQkD+I/3XYobrFIWQ==\n"
+            b"-----END PUBLIC KEY-----\n"
+        )
+        fingerprint = "sha256:45363125cde63f66880a4ba62fb4e0b48ae2f21bf1658df1fe1d6f14ec9ebfb7"
+        key_set = "sha256:8e4a722def684a9495d9d024e84fdccbbae9cb7ad9f585e863f7e5df575d2355"
+        _, digest, members = module["canonical_operator_key_set"](pem, "test key set")
+        self.assertEqual(digest, key_set)
+        self.assertEqual(members, {fingerprint})
+        # The attested-read path starts from bare hex fingerprints, exactly as
+        # `c8s verify --kind cds -o json` reports them, and must land on the
+        # same commitment.
+        self.assertEqual(
+            module["key_set_digest"]([bytes.fromhex(fingerprint[7:])]), key_set
+        )
+        # Order and duplicates must not change the commitment.
+        other = bytes.fromhex("11" * 32)
+        one = module["key_set_digest"]([bytes.fromhex(fingerprint[7:]), other])
+        two = module["key_set_digest"]([other, bytes.fromhex(fingerprint[7:]), other])
+        self.assertEqual(one, two)
+        self.assertNotEqual(one, key_set)
 
     def test_old_protocol_rejects_the_honest_new_protocol_status(self):
         sys.path.insert(0, str(SCRIPT.parent))
@@ -1286,18 +1431,21 @@ print(json.dumps(result))
         response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
             module, XWING, gpu_status="not-exposed-by-c8s"
         )
+        attested = (
+            self.operator_key_set_digest, {self.operator_digest}, "a" * 96,
+        )
         # No release workload requires GPU evidence: the honest c8s gap is fine.
         module["validate_response_evidence"](
             response, release, release_digest, allowlist, canonical,
             self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
-            XWING, False,
+            XWING, False, attested,
         )
         # A release that requires GPU evidence must not accept the gap.
         with self.assertRaisesRegex(module["VerificationError"], "GPU evidence"):
             module["validate_response_evidence"](
                 response, release, release_digest, allowlist, canonical,
                 self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
-                XWING, True,
+                XWING, True, attested,
             )
 
 
@@ -1359,8 +1507,7 @@ class WorkloadAttestationSchemaTests(unittest.TestCase):
                     "expectedPublicKeySpkiSha256": "sha256:" + "4" * 64,
                     "expectedKeySetSha256": "sha256:" + "7" * 64,
                     "activeKeySetStatus": "requires-attested-cds-read",
-                    "activeKeySetSha256": "sha256:" + "7" * 64,
-                    "activeKeySetPem": "-----BEGIN PUBLIC KEY-----\nAQ==\n-----END PUBLIC KEY-----\n",
+                    "cdsAttestedReadHint": "/operator-keys",
                     "reason": "not exposed",
                 },
                 "meshCaSha256": "sha256:" + "5" * 64,

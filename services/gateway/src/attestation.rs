@@ -1,7 +1,7 @@
 //! The fail-closed c8s evidence collector.
 
 use std::{
-    io::{BufReader, Cursor},
+    io::Cursor,
     time::Duration,
 };
 
@@ -11,16 +11,13 @@ use ml_kem::{FromSeed as _, kem::KeyExport as _};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use url::Url;
-use x509_parser::{
-    prelude::{FromDer, SubjectPublicKeyInfo},
-    public_key::PublicKey,
-};
-
 use crate::{AttestationError, AttestationProvider};
 
 const MAX_METADATA_BYTES: usize = 1_048_576;
-const OPERATOR_KEY_SET_DOMAIN: &[u8] = b"c8s-operator-key-set-v1\0";
-const MAX_OPERATOR_KEY_SET_BYTES: usize = 256 * 1_024;
+/// CDS route a verifier must read over its own attested session to learn the
+/// active c8s operator key set. The gateway cannot read it: the CDS leaf is
+/// self-signed and is trusted through TEE evidence, not a certificate chain.
+const C8S_OPERATOR_KEY_SET_ROUTE: &str = "/operator-keys";
 const MAX_PROTOCOL_ERROR_BYTES: usize = 8 * 1_024;
 const MAX_PROTOCOL_DETAIL_CHARACTERS: usize = 200;
 
@@ -124,14 +121,6 @@ impl XWingEncapsulationKey {
 }
 
 #[derive(Clone, Debug)]
-struct OperatorKeySet {
-    canonical_pem: String,
-    digest: String,
-    c8s_digest: String,
-    fingerprints: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
 struct ReceiptTarget {
     target: String,
     /// Exact allowlist entry selected by c8s admission.
@@ -157,14 +146,6 @@ enum PolicyMode {
 pub struct C8sAttestationConfig<'a> {
     pub targets: &'a str,
     pub evidence_base_url: &'a str,
-    /// Base URL the c8s operator key set is read from.
-    ///
-    /// c8s serves `GET /operator-keys` on CDS, not on the public front door.
-    /// The front door has no such location, so a gateway that reads the key
-    /// set from `evidence_base_url` reaches whatever the front door's
-    /// catch-all serves instead. An empty value keeps the front-door URL, so
-    /// an environment that does not set it behaves as before.
-    pub operator_key_set_base_url: &'a str,
     pub release_id: &'a str,
     pub release_bundle_sha256: &'a str,
     pub expected_operator_public_key_sha256: &'a str,
@@ -182,13 +163,8 @@ pub struct C8sAttestationConfig<'a> {
 #[derive(Clone)]
 pub struct C8sAttestationProvider {
     http: reqwest::Client,
-    /// Client for the RA-TLS read of the c8s operator key set. Absent when
-    /// the key set is read from the evidence base URL with the ordinary
-    /// client.
-    operator_http: Option<reqwest::Client>,
     targets: Vec<ReceiptTarget>,
     evidence_base_url: Url,
-    operator_key_set_url: Url,
     release_id: String,
     release_bundle_sha256: String,
     expected_operator_public_key_sha256: String,
@@ -238,11 +214,6 @@ impl C8sAttestationProvider {
             }
         }
         let evidence_base_url = parse_evidence_base_url(config.evidence_base_url)?;
-        let operator_key_set_url = if config.operator_key_set_base_url.is_empty() {
-            evidence_base_url.clone()
-        } else {
-            parse_evidence_base_url(config.operator_key_set_base_url)?
-        };
         let targets = parse_targets(config.targets)?;
         // When the front door terminates TLS in cds mode, its serving
         // certificate is issued by the cluster's own mesh CA — WebPKI cannot
@@ -254,49 +225,16 @@ impl C8sAttestationProvider {
             .connect_timeout(config.timeout.min(Duration::from_secs(10)))
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none());
-        let mesh_ca = mesh_ca_certificates()?;
-        for cert in mesh_ca.clone() {
+        for cert in mesh_ca_certificates()? {
             client_builder = client_builder.add_root_certificate(cert);
         }
         let http = client_builder
             .build()
             .map_err(|_| "the c8s evidence HTTP client is invalid".to_owned())?;
-        // CDS serves the operator key set over RA-TLS. Its leaf carries the
-        // TEE evidence extension and no subject alternative name at all
-        // (read live from the staging CDS: `O=Confidential, CN=RA-TLS
-        // Workload`), exactly as c8s's own clients expect. So this one client
-        // trusts the mesh CA and nothing else — no platform root can stand in
-        // for CDS — and it does not check the server name, which the leaf
-        // never carries. The read itself is still pinned twice over: the key
-        // set digest must equal `expected_operator_key_set_sha256`, and one
-        // pinned fingerprint must appear in it. A host that answers here with
-        // any other key set fails closed.
-        let operator_http = if config.operator_key_set_base_url.is_empty() {
-            None
-        } else {
-            if mesh_ca.is_empty() {
-                return Err(
-                    "the c8s mesh CA bundle is required to read the operator key set from CDS"
-                        .to_owned(),
-                );
-            }
-            Some(
-                reqwest::Client::builder()
-                    .connect_timeout(config.timeout.min(Duration::from_secs(10)))
-                    .timeout(config.timeout)
-                    .redirect(reqwest::redirect::Policy::none())
-                    .tls_certs_only(mesh_ca)
-                    .tls_danger_accept_invalid_hostnames(true)
-                    .build()
-                    .map_err(|_| "the c8s operator key set HTTP client is invalid".to_owned())?,
-            )
-        };
         Ok(Self {
             http,
-            operator_http,
             targets,
             evidence_base_url,
-            operator_key_set_url,
             release_id: config.release_id.to_owned(),
             release_bundle_sha256: config.release_bundle_sha256.to_owned(),
             expected_operator_public_key_sha256: config
@@ -366,30 +304,6 @@ impl C8sAttestationProvider {
             Some(encapsulation_key.as_str()),
         )?;
         Ok(receipt)
-    }
-
-    /// Read the c8s operator key set from CDS over the attested channel.
-    ///
-    /// c8s binds this key set to no hardware evidence at the pinned commit. The
-    /// receipt no longer carries it either. An attested read of `/operator-keys`
-    /// is therefore the strongest available claim, and the response labels it
-    /// as such.
-    async fn fetch_operator_key_set(&self) -> Result<OperatorKeySet, AttestationError> {
-        let url = self
-            .operator_key_set_url
-            .join("operator-keys")
-            .map_err(|_| attestation_invalid!("the operator-keys URL is unusable"))?;
-        let response = self
-            .operator_http
-            .as_ref()
-            .unwrap_or(&self.http)
-            .get(url)
-            .send()
-            .await
-            .map_err(|_| attestation_unavailable!("GET operator-keys did not connect"))?;
-        require_success(&response, "GET operator-keys")?;
-        let body = read_bounded(response, MAX_OPERATOR_KEY_SET_BYTES).await?;
-        canonical_operator_key_set(&body)
     }
 
     async fn fetch_front_door_receipt(&self, nonce: &str) -> Result<Value, AttestationError> {
@@ -514,9 +428,13 @@ impl AttestationProvider for C8sAttestationProvider {
             .await?;
 
         // c8s removed the operator key set from the receipt at the pinned
-        // commit, so the gateway reads it from CDS over the attested channel.
-        // That read proves CDS holds the key set now. It does not prove the
-        // node launched with it, and the status says so.
+        // commit, and the gateway cannot read it either: CDS serves
+        // `GET /operator-keys` over RA-TLS behind a self-signed certificate
+        // whose trust comes from a TEE evidence extension and a pinned launch
+        // measurement, not from any certificate authority. No CA-trusting TLS
+        // client can verify that certificate. So the gateway publishes only
+        // the pinned expectation and names the route the verifier must read
+        // for itself, over its own attested CDS session.
         let mut trust = match self.policy_mode {
             PolicyMode::Static => json!({
                 "policyTrust": {
@@ -527,30 +445,15 @@ impl AttestationProvider for C8sAttestationProvider {
                     "reason": "verify the sealed allowlist extension and embedded TEE evidence in the returned mesh CA chain",
                 }
             }),
-            PolicyMode::Operator => {
-                let operator_keys = self.fetch_operator_key_set().await?;
-                if operator_keys.digest != self.expected_operator_key_set_sha256
-                    || !operator_keys
-                        .fingerprints
-                        .iter()
-                        .any(|fingerprint| fingerprint == &self.expected_operator_public_key_sha256)
-                {
-                    return Err(attestation_invalid!(
-                        "the c8s operator key set does not match the operator key set this deployment pins"
-                    ));
+            PolicyMode::Operator => json!({
+                "operatorTrust": {
+                    "expectedPublicKeySpkiSha256": self.expected_operator_public_key_sha256,
+                    "expectedKeySetSha256": self.expected_operator_key_set_sha256,
+                    "activeKeySetStatus": "requires-attested-cds-read",
+                    "cdsAttestedReadHint": C8S_OPERATOR_KEY_SET_ROUTE,
+                    "reason": "c8s binds this key set to no hardware evidence and serves it only on the CDS RA-TLS route named by cdsAttestedReadHint; read that route yourself over an attested CDS session with a pinned launch measurement, compute the c8s key-set digest, and compare it with expectedKeySetSha256",
                 }
-                json!({
-                    "operatorTrust": {
-                        "expectedPublicKeySpkiSha256": self.expected_operator_public_key_sha256,
-                        "expectedKeySetSha256": self.expected_operator_key_set_sha256,
-                        "activeKeySetStatus": "requires-attested-cds-read",
-                        "activeKeySetSha256": operator_keys.digest,
-                        "activeKeySetPem": operator_keys.canonical_pem,
-                        "activeKeySetC8sSha256": operator_keys.c8s_digest,
-                        "reason": "c8s serves this key set on /operator-keys and binds it to no hardware evidence; verify it by reading /operator-keys yourself over the attested CDS channel and comparing this digest",
-                    }
-                })
-            }
+            }),
         };
 
         let mut c8s = json!({
@@ -870,93 +773,6 @@ fn validate_discovery(value: &Value) -> Result<(), AttestationError> {
         ));
     }
     Ok(())
-}
-
-/// Parse and commit to c8s's canonical operator public-key set.
-///
-/// c8s hashes each PKIX/SPKI DER key, sorts and de-duplicates those hashes,
-/// then hashes the domain separator and the resulting hashes. The PEM text is
-/// only a transport format and is canonicalized before it is returned.
-fn canonical_operator_key_set(bytes: &[u8]) -> Result<OperatorKeySet, AttestationError> {
-    if bytes.is_empty() || bytes.len() > MAX_OPERATOR_KEY_SET_BYTES {
-        return Err(attestation_invalid!(
-            "the operator key set PEM failed its shape check"
-        ));
-    }
-    let mut reader = BufReader::new(bytes);
-    let items = rustls_pemfile::read_all(&mut reader)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| attestation_invalid!("the operator key set PEM failed its shape check"))?;
-    let mut ders = Vec::<Vec<u8>>::new();
-    for item in items {
-        let der = match item {
-            rustls_pemfile::Item::SubjectPublicKeyInfo(key) => key.as_ref().to_vec(),
-            // c8s ignores other PEM blocks. In particular, do not copy a
-            // certificate or private-key block into the public policy.
-            _ => continue,
-        };
-        let (remaining, spki) = SubjectPublicKeyInfo::from_der(&der)
-            .map_err(|_| attestation_invalid!("the operator key set PEM failed its shape check"))?;
-        if !remaining.is_empty() || !matches!(spki.parsed(), Ok(PublicKey::EC(_))) {
-            return Err(attestation_invalid!(
-                "the operator key set PEM failed its shape check"
-            ));
-        }
-        ders.push(der);
-    }
-    if ders.is_empty() {
-        return Err(attestation_invalid!(
-            "the operator key set PEM failed its shape check"
-        ));
-    }
-
-    let mut fingerprints = ders
-        .iter()
-        .map(|der| Sha256::digest(der).to_vec())
-        .collect::<Vec<_>>();
-    fingerprints.sort();
-    fingerprints.dedup();
-    let mut commitment = Sha256::new();
-    commitment.update(OPERATOR_KEY_SET_DOMAIN);
-    for fingerprint in &fingerprints {
-        commitment.update(fingerprint);
-    }
-
-    // Sort the public PEM output by the same fingerprint order. This makes
-    // the raw evidence stable across c8s and gateway implementations.
-    let mut indexed = ders
-        .into_iter()
-        .map(|der| (Sha256::digest(&der).to_vec(), der))
-        .collect::<Vec<_>>();
-    indexed.sort_by(|left, right| left.0.cmp(&right.0));
-    indexed.dedup_by(|left, right| left.0 == right.0);
-    let canonical_pem = indexed
-        .iter()
-        .map(|(_, der)| pem_public_key(der))
-        .collect::<String>();
-    let digest_bytes = commitment.finalize();
-    let digest_hex = hex::encode(digest_bytes);
-    Ok(OperatorKeySet {
-        canonical_pem,
-        digest: format!("sha256:{digest_hex}"),
-        c8s_digest: digest_hex,
-        fingerprints: fingerprints
-            .into_iter()
-            .map(|fingerprint| format!("sha256:{}", hex::encode(fingerprint)))
-            .collect(),
-    })
-}
-
-fn pem_public_key(der: &[u8]) -> String {
-    let encoded = base64::engine::general_purpose::STANDARD.encode(der);
-    let mut pem = String::from("-----BEGIN PUBLIC KEY-----\n");
-    for chunk in encoded.as_bytes().chunks(64) {
-        // STANDARD encoding only emits ASCII.
-        pem.push_str(std::str::from_utf8(chunk).unwrap_or_default());
-        pem.push('\n');
-    }
-    pem.push_str("-----END PUBLIC KEY-----\n");
-    pem
 }
 
 fn validate_allowlist(value: &Value, bytes: &[u8]) -> Result<Vec<u8>, AttestationError> {

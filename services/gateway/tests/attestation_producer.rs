@@ -8,7 +8,7 @@ use axum::{
     Json, Router,
     body::{Body, to_bytes},
     extract::{Query, State},
-    http::{Request, StatusCode, header},
+    http::{Request, StatusCode},
     response::{IntoResponse as _, Response},
     routing::{get, post},
 };
@@ -24,10 +24,11 @@ use sha2::{Digest as _, Sha256};
 use tokio::{net::TcpListener, task::JoinHandle};
 use tower::ServiceExt as _;
 
-const TEST_OPERATOR_KEY: &str = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEnJMsKPXWyf5ZDLsU9OV/wKCWhvRJ\nHk/K2mRdVZoDNgtuvdFkNh9CDp2ekMIfY3wnJvQ7CbQkD+I/3XYobrFIWQ==\n-----END PUBLIC KEY-----\n";
-/// A second, valid operator key. Its key set digest differs from the pinned
-/// one, so a CDS that serves it must fail closed.
-const OTHER_OPERATOR_KEY: &str = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAWsKDZtld071+6SZjbN+SlfXanJd\nYE9q1iiW2e/0wTDAbqui7IsViuNbtrPFqMEk9k5eyR806HZCyd0iC6M+9w==\n-----END PUBLIC KEY-----\n";
+/// The pinned operator key set this test deployment declares. These are the
+/// SPKI fingerprint and the c8s key-set commitment of one EC public key. The
+/// same vector is reproduced in
+/// `tests/attestation-v0/test_verify_public_attestation.py`, which is where
+/// the canonical key-set formula now lives.
 const TEST_OPERATOR_KEY_SHA256: &str =
     "sha256:45363125cde63f66880a4ba62fb4e0b48ae2f21bf1658df1fe1d6f14ec9ebfb7";
 const TEST_OPERATOR_KEY_SET_SHA256: &str =
@@ -47,9 +48,6 @@ enum FakeMode {
     FailedReceipt,
     WrongNonce,
     MissingChain,
-    MissingOperatorKeys,
-    MalformedOperatorKeys,
-    MismatchedOperatorKeys,
     WrongXwingEcho,
     LegacyProtocol,
     Cds,
@@ -206,34 +204,6 @@ async fn front_door_receipt(
     (StatusCode::OK, Json(body))
 }
 
-/// CDS serves the operator key set as raw PEM on `/operator-keys`. c8s binds it
-/// to no hardware evidence, so an attested read is the strongest claim.
-async fn operator_keys(State(state): State<FakeState>) -> Response {
-    match state.mode {
-        FakeMode::MissingOperatorKeys => {
-            (StatusCode::NOT_FOUND, "no operator keys").into_response()
-        }
-        FakeMode::MalformedOperatorKeys => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/x-pem-file")],
-            "not-a-public-key",
-        )
-            .into_response(),
-        FakeMode::MismatchedOperatorKeys => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/x-pem-file")],
-            OTHER_OPERATOR_KEY,
-        )
-            .into_response(),
-        _ => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/x-pem-file")],
-            TEST_OPERATOR_KEY,
-        )
-            .into_response(),
-    }
-}
-
 async fn discovery(State(state): State<FakeState>) -> Json<Value> {
     Json(json!({
         "version": "v1",
@@ -331,7 +301,6 @@ async fn fake_sidecar_serving(mode: FakeMode, main_line_allowlist: bool) -> Fake
         .route("/.well-known/c8s/attest-lb", get(front_door_receipt))
         .route("/v1/discovery", get(discovery))
         .route("/allowlist", get(allowlist))
-        .route("/operator-keys", get(operator_keys))
         .with_state(FakeState {
             mode,
             nonces: nonces.clone(),
@@ -378,7 +347,6 @@ fn provider(base_url: &str) -> C8sAttestationProvider {
             ],
         ),
         evidence_base_url: base_url,
-        operator_key_set_base_url: "",
         release_id: "test-release",
         release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
         expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
@@ -403,7 +371,6 @@ fn staging_provider(base_url: &str) -> C8sAttestationProvider {
             ],
         ),
         evidence_base_url: base_url,
-        operator_key_set_base_url: "",
         release_id: "test-release",
         release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
         expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
@@ -430,7 +397,6 @@ fn static_provider(base_url: &str, expected_digest: &str) -> C8sAttestationProvi
             ],
         ),
         evidence_base_url: base_url,
-        operator_key_set_base_url: "",
         release_id: "test-release",
         release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
         expected_operator_public_key_sha256: "",
@@ -526,8 +492,12 @@ async fn one_nonce_collects_each_production_workload_receipt_once() {
         "requires-attested-cds-read"
     );
     assert_eq!(
-        response["c8s"]["operatorTrust"]["activeKeySetSha256"],
+        response["c8s"]["operatorTrust"]["expectedKeySetSha256"],
         TEST_OPERATOR_KEY_SET_SHA256
+    );
+    assert_eq!(
+        response["c8s"]["operatorTrust"]["cdsAttestedReadHint"],
+        "/operator-keys"
     );
     assert_eq!(
         response["c8s"]["attestationProtocol"],
@@ -810,7 +780,6 @@ async fn configured_identity_cannot_replace_the_allowlist_identity() {
     let provider = C8sAttestationProvider::from_config(C8sAttestationConfig {
         targets: &targets,
         evidence_base_url: &sidecar.url,
-        operator_key_set_base_url: "",
         release_id: "test-release",
         release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
         expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
@@ -842,33 +811,6 @@ async fn any_failed_or_invalid_receipt_fails_closed() {
             StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE
         ));
     }
-}
-
-#[tokio::test]
-async fn operator_policy_is_required_and_fails_closed() {
-    for mode in [
-        FakeMode::MissingOperatorKeys,
-        FakeMode::MalformedOperatorKeys,
-    ] {
-        let sidecar = fake_sidecar(mode).await;
-        let (status, _) = request(gateway(provider(&sidecar.url)), &[11_u8; 32]).await;
-        sidecar.task.abort();
-        assert!(matches!(
-            status,
-            StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE
-        ));
-    }
-}
-
-#[tokio::test]
-async fn a_different_cds_operator_key_set_fails_closed() {
-    let sidecar = fake_sidecar(FakeMode::MismatchedOperatorKeys).await;
-    let (status, _) = request(gateway(provider(&sidecar.url)), &[14_u8; 32]).await;
-    sidecar.task.abort();
-    assert!(matches!(
-        status,
-        StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE
-    ));
 }
 
 #[tokio::test]
@@ -945,7 +887,12 @@ async fn an_old_protocol_node_reports_a_protocol_mismatch() {
 }
 
 #[tokio::test]
-async fn the_operator_key_set_digest_comes_from_an_attested_cds_read() {
+async fn the_operator_key_set_is_published_as_a_pin_and_a_read_hint() {
+    // CDS serves GET /operator-keys over RA-TLS behind a self-signed
+    // certificate. Its trust comes from a TEE evidence extension and a pinned
+    // launch measurement, so no CA-trusting TLS client can verify it and the
+    // gateway must not try. The gateway publishes the pinned expectation and
+    // the route name, and the verifier performs the attested read itself.
     let sidecar = fake_sidecar(FakeMode::Valid).await;
     let response = provider(&sidecar.url)
         .response(&[27_u8; 32])
@@ -955,19 +902,38 @@ async fn the_operator_key_set_digest_comes_from_an_attested_cds_read() {
 
     let trust = &response["c8s"]["operatorTrust"];
     assert_eq!(trust["expectedKeySetSha256"], TEST_OPERATOR_KEY_SET_SHA256);
-    assert_eq!(trust["activeKeySetSha256"], TEST_OPERATOR_KEY_SET_SHA256);
     assert_eq!(
-        trust["activeKeySetC8sSha256"],
-        TEST_OPERATOR_KEY_SET_SHA256
-            .strip_prefix("sha256:")
-            .unwrap_or_default()
+        trust["expectedPublicKeySpkiSha256"],
+        TEST_OPERATOR_KEY_SHA256
     );
-    assert_eq!(trust["activeKeySetPem"], TEST_OPERATOR_KEY);
     assert_eq!(trust["activeKeySetStatus"], "requires-attested-cds-read");
+    assert_eq!(trust["cdsAttestedReadHint"], "/operator-keys");
+    assert!(trust["reason"].as_str().is_some_and(|value| !value.is_empty()));
+    // The gateway never reports a live key set. A claimed active value would
+    // read as proof the gateway cannot obtain.
+    assert!(trust.get("activeKeySetSha256").is_none());
+    assert!(trust.get("activeKeySetPem").is_none());
+    assert!(trust.get("activeKeySetC8sSha256").is_none());
     // The weaker claim must never be reported as a hardware-bound match.
     assert_ne!(
         trust["activeKeySetStatus"],
         "evidence-present-and-release-matched"
+    );
+}
+
+#[tokio::test]
+async fn the_gateway_never_requests_the_cds_operator_key_route() {
+    // A live read is the defect this release removes. The fake sidecar
+    // registers no /operator-keys route, so any request would 404 and the
+    // response would fail closed. A success proves no request is made.
+    let sidecar = fake_sidecar(FakeMode::Valid).await;
+    let (status, body) = request(gateway(provider(&sidecar.url)), &[14_u8; 32]).await;
+    sidecar.task.abort();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["c8s"]["operatorTrust"]["activeKeySetStatus"],
+        "requires-attested-cds-read"
     );
 }
 
@@ -987,7 +953,11 @@ async fn the_folded_allowlist_needs_no_digests_key() {
 }
 
 #[tokio::test]
-async fn operator_policy_digest_mismatch_fails_closed() {
+async fn the_published_key_set_pin_is_the_configured_pin_verbatim() {
+    // The gateway makes no live claim about the key set, so it can make no
+    // comparison either. It must publish the configured pin unchanged, so
+    // the verifier compares that value against both the release bundle and
+    // its own attested CDS read.
     let sidecar = fake_sidecar(FakeMode::Valid).await;
     let targets = targets(
         &sidecar.url,
@@ -1003,7 +973,6 @@ async fn operator_policy_digest_mismatch_fails_closed() {
     let provider = C8sAttestationProvider::from_config(C8sAttestationConfig {
         targets: &targets,
         evidence_base_url: &sidecar.url,
-        operator_key_set_base_url: "",
         release_id: "test-release",
         release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
         expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
@@ -1014,8 +983,16 @@ async fn operator_policy_digest_mismatch_fails_closed() {
         maximum_receipt_bytes: 1_048_576,
     })
     .unwrap_or_else(|error| panic!("provider: {error}"));
-    assert!(provider.response(&[12_u8; 32]).await.is_err());
+    let response = provider.response(&[12_u8; 32]).await;
     sidecar.task.abort();
+
+    let response = response.unwrap_or_else(|error| panic!("response: {error:?}"));
+    let trust = &response["c8s"]["operatorTrust"];
+    assert_eq!(
+        trust["expectedKeySetSha256"],
+        format!("sha256:{}", "0".repeat(64))
+    );
+    assert_eq!(trust["activeKeySetStatus"], "requires-attested-cds-read");
 }
 
 #[tokio::test]
@@ -1044,8 +1021,7 @@ fn target_configuration_rejects_malformed_or_unsafe_entries() {
             C8sAttestationProvider::from_config(C8sAttestationConfig {
                 targets: invalid,
                 evidence_base_url: "https://api.example.test",
-                operator_key_set_base_url: "",
-                release_id: "test-release",
+                        release_id: "test-release",
                 release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
                 expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
                 expected_operator_key_set_sha256: TEST_OPERATOR_KEY_SET_SHA256,
@@ -1118,32 +1094,6 @@ async fn a_failing_attest_pq_endpoint_names_the_attest_pq_step() {
 }
 
 #[tokio::test]
-async fn a_rejected_operator_key_set_names_the_operator_key_check() {
-    let sidecar = fake_sidecar(FakeMode::MismatchedOperatorKeys).await;
-    let (status, body) = request(gateway(provider(&sidecar.url)), &[23_u8; 32]).await;
-    sidecar.task.abort();
-
-    assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert_eq!(body["error"]["code"], "attestation_invalid");
-    let detail = error_detail(&body);
-    assert!(detail.contains("operator key set"), "detail: {detail}");
-}
-
-#[tokio::test]
-async fn a_missing_operator_key_route_names_the_operator_keys_request() {
-    let sidecar = fake_sidecar(FakeMode::MissingOperatorKeys).await;
-    let (status, body) = request(gateway(provider(&sidecar.url)), &[24_u8; 32]).await;
-    sidecar.task.abort();
-
-    assert!(matches!(
-        status,
-        StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE
-    ));
-    let detail = error_detail(&body);
-    assert!(detail.contains("operator"), "detail: {detail}");
-}
-
-#[tokio::test]
 async fn the_error_detail_never_carries_the_nonce_or_evidence_bytes() {
     let nonce = [25_u8; 32];
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce);
@@ -1167,49 +1117,3 @@ async fn the_error_detail_never_carries_the_nonce_or_evidence_bytes() {
     );
 }
 
-#[tokio::test]
-async fn a_separate_operator_key_set_url_needs_the_mesh_ca_bundle() {
-    // c8s serves GET /operator-keys on CDS over RA-TLS, and the CDS leaf
-    // carries no subject alternative name. The producer therefore reads it
-    // with a client that trusts the mesh CA and nothing else. Without that
-    // bundle on disk the producer must refuse to start, never fall back to
-    // the platform roots.
-    let sidecar = fake_sidecar(FakeMode::Valid).await;
-    let result = C8sAttestationProvider::from_config(C8sAttestationConfig {
-        targets: &targets(&sidecar.url, &["gateway"]),
-        evidence_base_url: &sidecar.url,
-        operator_key_set_base_url: "https://c8s-cds.c8s-system.svc:8443",
-        release_id: "test-release",
-        release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
-        expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
-        expected_operator_key_set_sha256: TEST_OPERATOR_KEY_SET_SHA256,
-        policy_mode: "operator",
-        expected_static_allowlist_sha256: "",
-        timeout: Duration::from_secs(2),
-        maximum_receipt_bytes: 1_048_576,
-    });
-    sidecar.task.abort();
-
-    // This test host carries no /etc/c8s/certs/ca.crt, so the build must fail
-    // closed and say why.
-    let Err(message) = result else {
-        panic!("a CDS operator key set URL without a mesh CA must fail closed");
-    };
-    assert!(message.contains("mesh CA bundle"), "message: {message}");
-}
-
-#[tokio::test]
-async fn an_empty_operator_key_set_url_keeps_the_evidence_base_url() {
-    // The value defaults to empty, so an environment that does not set it
-    // behaves exactly as it did before the value existed.
-    let sidecar = fake_sidecar(FakeMode::Valid).await;
-    let provider = provider(&sidecar.url);
-    let response = provider.response(&[27_u8; 32]).await;
-    sidecar.task.abort();
-
-    let response = response.unwrap_or_else(|error| panic!("response: {error:?}"));
-    assert_eq!(
-        response["c8s"]["operatorTrust"]["activeKeySetStatus"],
-        "requires-attested-cds-read"
-    );
-}
