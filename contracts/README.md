@@ -18,6 +18,17 @@ accepts `--commit` to check the c8s source tree against one specific pinned
 entry (the top-level one, or one from `commits`); without it, it checks the
 top-level entry, as before.
 
+The top-level entry (`079aeb48`) pins only the legacy baked production
+cluster's branch build, on the old `c8s/attest-pq/v1` protocol and static
+policy mode. It is the retired path: keep it only until that cluster is
+taken down, and add no new environment to it. Every current and future
+environment belongs in `commits[]`, on the shared `c8s/attest-pq/v1+xwing`
+protocol and the shared `requiredVerifierFlags` list -- staging (`466ce79`)
+and conf-inference-prod (`2ef376a8`) already carry identical
+`requiredVerifierFlags`, and `scripts/verify-public-attestation.py` picks
+its branch from that field, never from a hard-coded environment name, so
+no environment needs its own copy of this entry's shape.
+
 ### The two c8s attestation protocols
 
 c8s serves two `attest-pq` protocols, both with the receipt `version` string
