@@ -657,9 +657,34 @@ def c8s_release_input(
             "certificateSecretName": value["meshCa"]["certificateSecretName"],
             "fingerprintSecretName": value["meshCa"]["fingerprintSecretName"],
         }
-    # c8s creates this workload for the TLS-LB evidence front door. It is
-    # separate from the application gateway receipt.
-    result["frontDoorWorkload"] = "c8s-tls-lb"
+    # c8s creates one workload for the front-door evidence endpoint,
+    # separate from the application gateway receipt. Its allowlist name
+    # follows the c8s chart's own component name -- "c8s-tls-lb" on the
+    # older tlsLb chart key, "c8s-router" since c8s PR #606 renamed it to
+    # "router" -- so read it from the install input's own
+    # externalWorkloadMappings instead of hard-coding either string. The
+    # front-door entry is the one the c8s chart itself renders
+    # (source.type == "c8s-chart"); every other externalWorkloadMappings
+    # entry (for example a Tailscale sidecar) comes from a plain manifest.
+    front_door_entries = [
+        item for item in value.get("externalWorkloadMappings", [])
+        if isinstance(item, dict) and item.get("source", {}).get("type") == "c8s-chart"
+    ]
+    if len(front_door_entries) > 1:
+        raise BundleError(
+            "the c8s install input must name at most one c8s-chart front-door "
+            f"workload in externalWorkloadMappings, found {len(front_door_entries)}"
+        )
+    if front_door_entries:
+        front_door_name = front_door_entries[0].get("allowlistName")
+        if not isinstance(front_door_name, str) or not front_door_name:
+            raise BundleError("the front-door externalWorkloadMappings entry has no allowlistName")
+    else:
+        # No install input declares its front door this way yet. Fall back to
+        # the legacy default so older/fixture inputs keep building; every
+        # install input this repository ships should declare one instead.
+        front_door_name = "c8s-tls-lb"
+    result["frontDoorWorkload"] = front_door_name
     return result
 
 

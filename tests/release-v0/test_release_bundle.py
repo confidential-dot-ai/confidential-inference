@@ -260,6 +260,99 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertNotIn("operatorKeySetSha256", result)
         self.assertNotIn("meshCa", result)
 
+    def test_front_door_workload_follows_the_c8s_chart_mapping(self) -> None:
+        # c8s PR #606 renamed the front-door component from tls-lb to
+        # router; an install input whose externalWorkloadMappings names the
+        # new "c8s-router" allowlist entry (as staging's real install input
+        # does since the ACME switch) must produce that name, not the older
+        # "c8s-tls-lb" default -- otherwise the front-door gate names a
+        # workload the allowlist does not hold.
+        module = runpy.run_path(str(SCRIPT))
+        install = json.loads(INSTALL.read_text())
+        install["externalWorkloadMappings"] = [
+            {
+                "allowlistName": "c8s-router",
+                "confidentialWorkloadId": "c8s-router",
+                "controller": "Deployment/c8s-router",
+                "source": {"type": "c8s-chart"},
+            },
+            {
+                "allowlistName": "tailscale-staging-control-plane",
+                "confidentialWorkloadId": "tailscale-staging-control-plane",
+                "controller": "Deployment/tailscale-staging-control-plane",
+                "source": {"type": "manifest", "file": "workload.yaml"},
+            },
+        ]
+        allowlist_digest = "sha256:" + hashlib.sha256(
+            (ROOT / "tests/release-v0/allowlist.fixture.json").read_bytes().rstrip(b"\n")
+        ).hexdigest()
+        install["allowlist"]["digest"] = allowlist_digest
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        install_path = Path(temporary.name) / "install.json"
+        install_path.write_text(json.dumps(install))
+        result = module["c8s_release_input"](
+            install_path,
+            ROOT / "tests/release-v0/allowlist.fixture.json",
+            allowlist_digest,
+            "sha256:" + "6" * 64,
+            False,
+            "production",
+        )
+        self.assertEqual(result["frontDoorWorkload"], "c8s-router")
+
+    def test_front_door_workload_defaults_when_undeclared(self) -> None:
+        # No install input in this fixture set declares its front door
+        # through externalWorkloadMappings yet, so the legacy default keeps
+        # those inputs building.
+        module = runpy.run_path(str(SCRIPT))
+        result = module["c8s_release_input"](
+            INSTALL,
+            ROOT / "tests/release-v0/allowlist.fixture.json",
+            "sha256:" + hashlib.sha256(
+                (ROOT / "tests/release-v0/allowlist.fixture.json").read_bytes().rstrip(b"\n")
+            ).hexdigest(),
+            "sha256:" + "6" * 64,
+            False,
+            "production",
+        )
+        self.assertEqual(result["frontDoorWorkload"], "c8s-tls-lb")
+
+    def test_front_door_workload_rejects_ambiguous_mapping(self) -> None:
+        module = runpy.run_path(str(SCRIPT))
+        install = json.loads(INSTALL.read_text())
+        install["externalWorkloadMappings"] = [
+            {
+                "allowlistName": "c8s-tls-lb",
+                "confidentialWorkloadId": "c8s-tls-lb",
+                "controller": "Deployment/c8s-tls-lb",
+                "source": {"type": "c8s-chart"},
+            },
+            {
+                "allowlistName": "c8s-router",
+                "confidentialWorkloadId": "c8s-router",
+                "controller": "Deployment/c8s-router",
+                "source": {"type": "c8s-chart"},
+            },
+        ]
+        allowlist_digest = "sha256:" + hashlib.sha256(
+            (ROOT / "tests/release-v0/allowlist.fixture.json").read_bytes().rstrip(b"\n")
+        ).hexdigest()
+        install["allowlist"]["digest"] = allowlist_digest
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        install_path = Path(temporary.name) / "install.json"
+        install_path.write_text(json.dumps(install))
+        with self.assertRaisesRegex(module["BundleError"], "at most one c8s-chart front-door"):
+            module["c8s_release_input"](
+                install_path,
+                ROOT / "tests/release-v0/allowlist.fixture.json",
+                allowlist_digest,
+                "sha256:" + "6" * 64,
+                False,
+                "production",
+            )
+
     def test_release_schema_static_mode_forbids_operator_commitments(self) -> None:
         bundle = json.loads(
             (ROOT / "tests/contracts/fixtures/release-bundle.valid.json").read_text()
