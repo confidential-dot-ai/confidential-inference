@@ -16,12 +16,5 @@
     "libnvatSha256": "1dd6c5429632c8c9ae59aa687cf96593f01c5597afe342f72ec3d8d5ddb0bbae"
   },
   "platform": "tdx",
-  "profile": "images/control-plane-node/profile/control-plane-state",
-  "integrationStagingSignedStage": {
-    "source": "ghcr.io/confidential-dot-ai/node-guest-base:rke2-tdx-079aeb4-cpd7d608446a88-saae4ed02814fa",
-    "digest": "sha256:4f611a8b321570cff6ba880253f3b5649828284c2621a9a86cfda59c9d70cd85",
-    "moduleSigningCertificateSha256": "7c9f63b0206dc794e5be126b86ce50c68cd33d1c22ecd5979984614c476a986e",
-    "attestationApiSha256": "1bfd19eed8fec3e4a8a0ae8b0c62fc4835558395d9137d51df3ede6f590037c1",
-    "libnvatSha256": "1dd6c5429632c8c9ae59aa687cf96593f01c5597afe342f72ec3d8d5ddb0bbae"
-  }
+  "profile": "images/control-plane-node/profile/control-plane-state"
 }

@@ -168,7 +168,7 @@ class SGLangImageRecipeTests(unittest.TestCase):
         simulator_roles = LOCK["simulatorRoles"]
         worker_simulator_roles = {"inference-worker-0", "inference-worker-1"}
         # simulatorRoles also carries the sglang-router role's one alternate
-        # argv, for the integration-staging service-discovery namespace.
+        # argv, for the staging service-discovery namespace.
         self.assertEqual(
             worker_simulator_roles | {"sglang-router"},
             set(simulator_roles),

@@ -38,7 +38,7 @@ readonly RUNTIME_SYSTEMD="/run/systemd/system"
 # here, which would be a second source of truth and wrong on an SNP build.
 readonly CRED_PLATFORM_DROPIN="/etc/systemd/system/cred-release.service.d/10-platform.conf"
 # The bootstrap credential-release window. A single variable: change only
-# here. An integration-staging measurement gave 25 minutes 39 seconds from
+# here. A staging measurement gave 25 minutes 39 seconds from
 # control-plane VMI Running to helm-apply finish. See
 # images/control-plane-node/README.md for the full measurement and margin.
 readonly BOOTSTRAP_WINDOW="1h"
@@ -354,7 +354,11 @@ subjects:
 # images/control-plane-node/README.md), so this AddOn bakes a Role for each
 # known application namespace: "confidential-inference" (production, see
 # releases/production/release-bundle.json) and "confidential-inference-staging"
-# (integration-staging, see releases/integration-staging/release-bundle.json).
+# (staging's sealed-image builds, when it ran one; staging has run
+# policyMode: operator on a stock, pull-mode node image since its c8s
+# v0.21.2 move, so this Role is currently unused, but the profile keeps it
+# in case a sealed staging build returns; see
+# images/control-plane-node/README.md).
 # RKE2 reconciles this AddOn continuously, so the Role for a namespace that
 # does not exist yet on this cluster simply waits until helm-apply or
 # secret-release creates that namespace; it grants nothing before then.

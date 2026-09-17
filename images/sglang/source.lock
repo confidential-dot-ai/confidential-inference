@@ -248,10 +248,10 @@
       "digest": "sha256:cdc98a230169ff62599084f8f791c022e983c803c0d950c6f43e38d2009dfe3d",
       "sourceCommit": "fd6355414f79c6b3d3657e1abca04a6edc90550f"
     },
-    "integration-staging": {
+    "staging": {
       "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
-      "digest": "sha256:1f0483d38744fa3bef8964ba3fcfe5596db4ba02675dd6eff1a17cacfa488d02",
-      "sourceCommit": "fd6355414f79c6b3d3657e1abca04a6edc90550f"
+      "digest": "sha256:d8071e74b64d3e952d29bc5f80ead762fbe6375f4c1af88a5ad09513575a9796",
+      "sourceCommit": "01dd665d412f16665f97eb0cf5e59a47b8a281d9"
     }
   },
   "alternateArgvRoles": {

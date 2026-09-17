@@ -299,7 +299,7 @@ class ReleaseBundleTests(unittest.TestCase):
         )
 
     def test_real_release_bundles_hash_the_committed_canonical_bytes(self) -> None:
-        for environment in ("production", "integration-staging"):
+        for environment in ("production", "conf-inference-prod"):
             with self.subTest(environment=environment):
                 allowlist = (
                     ROOT / "c8s/allowlists" / f"{environment}.json"
@@ -622,16 +622,16 @@ class SourceLockNodeImageTests(unittest.TestCase):
             "nodeImage": self.entry("1"),
             "nodeImages": {
                 "production": self.entry("1"),
-                "integration-staging": self.entry("2"),
+                "staging": self.entry("2"),
             },
         }
         self.assertEqual(self.select(lock, "production"), self.entry("1"))
-        self.assertEqual(self.select(lock, "integration-staging"), self.entry("2"))
+        self.assertEqual(self.select(lock, "staging"), self.entry("2"))
 
     def test_an_old_lock_without_per_environment_entries_still_reads(self):
         lock = {"nodeImage": self.entry("3")}
         self.assertEqual(self.select(lock, "production"), self.entry("3"))
-        self.assertEqual(self.select(lock, "integration-staging"), self.entry("3"))
+        self.assertEqual(self.select(lock, "staging"), self.entry("3"))
 
     def test_an_unpinned_environment_fails_closed(self):
         lock = {
@@ -639,7 +639,7 @@ class SourceLockNodeImageTests(unittest.TestCase):
             "nodeImages": {"production": self.entry("1")},
         }
         with self.assertRaises(Exception):
-            self.select(lock, "integration-staging")
+            self.select(lock, "staging")
 
     def test_a_lock_with_no_node_image_fails_closed(self):
         with self.assertRaises(Exception):
@@ -648,6 +648,6 @@ class SourceLockNodeImageTests(unittest.TestCase):
     def test_the_committed_lock_pins_both_environments(self):
         lock = json.loads((ROOT / "images/sglang/source.lock").read_text())
         production = self.select(lock, "production")
-        staging = self.select(lock, "integration-staging")
+        staging = self.select(lock, "staging")
         self.assertNotEqual(production["digest"], staging["digest"])
         self.assertEqual(production, lock["nodeImage"])

@@ -1697,7 +1697,7 @@ mod tests {
             GatewayState::open_persistent_with_mountinfo(
                 &database_path,
                 pepper.clone(),
-                "integration-staging",
+                "staging",
                 STATE_DISK_SERIAL,
                 &mountinfo_path,
             )

@@ -376,7 +376,7 @@ def main() -> None:
     )
     assert production_values["inference"]["mode"] == "model"
     staging_values = yaml.safe_load(
-        (ROOT / "c8s/integration-staging-values.yaml").read_text()
+        (ROOT / "c8s/staging-values.yaml").read_text()
     )
     assert staging_values["inference"]["mode"] == "simulator"
 

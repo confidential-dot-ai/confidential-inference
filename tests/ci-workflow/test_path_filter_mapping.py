@@ -82,8 +82,8 @@ class PathFilterMappingTests(unittest.TestCase):
         # test and lint job, which cannot fail on this change.
         self.assert_categories(
             [
-                "releases/integration-staging/release-bundle.json",
-                "c8s/integration-staging-values.yaml",
+                "releases/staging/release-bundle.json",
+                "c8s/staging-values.yaml",
                 "images/sglang/source.lock",
             ],
             {"release-bundle"},

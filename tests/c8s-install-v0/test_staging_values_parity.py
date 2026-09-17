@@ -1,6 +1,6 @@
 """Check that the public staging values stay in step with the deployed ones.
 
-`c8s/integration-staging-values.yaml` is the public, reviewable file. The
+`c8s/staging-values.yaml` is the public, reviewable file. The
 file the deployment actually reads is `environments/values-staging.yaml`
 in the confidential-inference-internal repository. The two files must
 agree on every field the allowlist generator reads and on every field
@@ -25,7 +25,7 @@ from typing import Any
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-PUBLIC_VALUES_PATH = ROOT / "c8s/integration-staging-values.yaml"
+PUBLIC_VALUES_PATH = ROOT / "c8s/staging-values.yaml"
 BASE_VALUES_PATH = ROOT / "helm/confidential-inference/values.yaml"
 INTERNAL_REPO_ENV = "CONFIDENTIAL_INFERENCE_INTERNAL"
 INTERNAL_VALUES_RELATIVE_PATH = "environments/values-staging.yaml"
@@ -99,7 +99,8 @@ COMPARED_FIELDS = [
     "attestationReceipts.policyMode",
     "attestationReceipts.releaseId",
     "attestationReceipts.releaseBundleSha256",
-    "attestationReceipts.expectedStaticAllowlistSha256",
+    "attestationReceipts.expectedOperatorPublicKeySha256",
+    "attestationReceipts.expectedOperatorKeySetSha256",
     "attestationReceipts.evidenceBaseUrl",
     "attestationReceipts.gatewayPort",
     "attestationReceipts.routerPort",
@@ -118,7 +119,7 @@ COMPARED_FIELDS = [
 ]
 
 
-class IntegrationStagingValuesParityTests(unittest.TestCase):
+class StagingValuesParityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.internal_repo = find_internal_repo()
@@ -155,7 +156,7 @@ class IntegrationStagingValuesParityTests(unittest.TestCase):
                 self.assertEqual(
                     get_path(self.public, field),
                     get_path(self.internal, field),
-                    f"c8s/integration-staging-values.yaml and the internal "
+                    f"c8s/staging-values.yaml and the internal "
                     f"{INTERNAL_VALUES_RELATIVE_PATH} disagree on {field!r}; "
                     "either fix the drift or add the field to "
                     "ALLOWED_DIFFERENCES with a reason",

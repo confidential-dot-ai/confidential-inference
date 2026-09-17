@@ -316,21 +316,23 @@ def test_prechange_allowlists_are_retained_by_canonical_digest() -> None:
         json.loads(path.read_text())
 
 
-def test_active_staging_allowlist_uses_two_simulator_workers() -> None:
+def test_active_staging_allowlist_uses_one_simulator_worker() -> None:
+    # Staging moved to c8s v0.21.2 and one inference node (no GPU): a single
+    # inference-worker-0, unlike the old two-worker staging cluster.
     workloads = json.loads(
-        (ROOT / "c8s/allowlists/integration-staging.json").read_text()
+        (ROOT / "c8s/allowlists/staging.json").read_text()
     )["workloads"]
-    for index in range(2):
-        containers = workloads[f"inference-worker-{index}"]["containers"]
-        # The c8s runtime injects an attestation sidecar ahead of the app
-        # container, so find the sglang container by its command instead of
-        # by a fixed index.
-        policy = next(
-            item for item in containers if item["command"]["argv"] == ["python3"]
-        )
-        argv = policy["command"]["argv"] + policy["args"]["argv"]
-        assert argv[:3] == ["python3", "-m", "sglang_simulator.simulation.sglang.launch_server"]
-        assert f"--random-seed={index}" in argv
+    assert "inference-worker-1" not in workloads
+    containers = workloads["inference-worker-0"]["containers"]
+    # The c8s runtime injects an attestation sidecar ahead of the app
+    # container, so find the sglang container by its command instead of
+    # by a fixed index.
+    policy = next(
+        item for item in containers if item["command"]["argv"] == ["python3"]
+    )
+    argv = policy["command"]["argv"] + policy["args"]["argv"]
+    assert argv[:3] == ["python3", "-m", "sglang_simulator.simulation.sglang.launch_server"]
+    assert "--random-seed=0" in argv
 
 
 def test_internal_volume_overlay_renders_if_present() -> None:
@@ -358,7 +360,7 @@ def main() -> None:
     test_proxy_uses_exact_c8s_workload_names_when_policy_names_change()
     test_environment_overlay_uses_production_policy_names()
     test_prechange_allowlists_are_retained_by_canonical_digest()
-    test_active_staging_allowlist_uses_two_simulator_workers()
+    test_active_staging_allowlist_uses_one_simulator_worker()
     test_internal_volume_overlay_renders_if_present()
 
 
