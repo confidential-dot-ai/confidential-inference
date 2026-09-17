@@ -77,6 +77,12 @@ operator public key must be a member of the set the attested read returned.
 Without `--cds-url` the verifier fails closed on the new protocol. It never
 skips the check.
 
+The response schema accepts exactly three receipt-set shapes: all six
+targets; the same six without `inference-worker-1` (staging, which runs one
+inference worker and both observability workloads); and the four core targets
+without `metrics-collector` and `kube-state-metrics`. Any other subset fails
+closed.
+
 `scripts/check-c8s-protocol-lockstep.py` guards the pairing itself. For each
 lock entry it reads the matching manifest under
 `contracts/c8s-attestation-protocols/<commit>.json` (the `cdsattest` route
