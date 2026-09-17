@@ -54,15 +54,6 @@ struct Args {
     model: String,
     #[arg(long, env = "GATEWAY_C8S_RECEIPT_TARGETS")]
     c8s_receipt_targets: String,
-    // c8s serves GET /operator-keys on CDS, not on the public front door.
-    // Leave this empty to keep reading the key set from the evidence base
-    // URL; set it to the CDS base URL to read the key set from CDS itself.
-    #[arg(
-        long,
-        env = "GATEWAY_C8S_OPERATOR_KEY_SET_BASE_URL",
-        default_value = ""
-    )]
-    c8s_operator_key_set_base_url: String,
     #[arg(long, env = "GATEWAY_C8S_EVIDENCE_BASE_URL")]
     c8s_evidence_base_url: String,
     #[arg(long, env = "GATEWAY_RELEASE_ID")]
@@ -248,7 +239,6 @@ async fn main() -> Result<()> {
     let attestation = C8sAttestationProvider::from_config(C8sAttestationConfig {
         targets: &args.c8s_receipt_targets,
         evidence_base_url: &args.c8s_evidence_base_url,
-        operator_key_set_base_url: &args.c8s_operator_key_set_base_url,
         release_id: &args.release_id,
         release_bundle_sha256: &args.release_bundle_sha256,
         expected_operator_public_key_sha256: &args.expected_operator_public_key_sha256,
@@ -461,7 +451,6 @@ fn validate_args(args: &Args) -> Result<()> {
     C8sAttestationProvider::from_config(C8sAttestationConfig {
         targets: &args.c8s_receipt_targets,
         evidence_base_url: &args.c8s_evidence_base_url,
-        operator_key_set_base_url: &args.c8s_operator_key_set_base_url,
         release_id: &args.release_id,
         release_bundle_sha256: &args.release_bundle_sha256,
         expected_operator_public_key_sha256: &args.expected_operator_public_key_sha256,
@@ -521,7 +510,6 @@ mod tests {
             expected_operator_public_key_sha256: format!("sha256:{}", "2".repeat(64)),
             expected_operator_key_set_sha256: format!("sha256:{}", "3".repeat(64)),
             c8s_policy_mode: "operator".to_owned(),
-            c8s_operator_key_set_base_url: String::new(),
             c8s_attestation_protocol: PINNED_C8S_ATTESTATION_PROTOCOL.to_owned(),
             expected_static_allowlist_sha256: String::new(),
             attestation_timeout_seconds: 30,

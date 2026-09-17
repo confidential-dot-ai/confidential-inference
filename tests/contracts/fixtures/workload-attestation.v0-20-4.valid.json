@@ -28,13 +28,11 @@
     },
     "meshCaSha256": "sha256:0b969f8b357d44e27434bf1a3f145c171ad5eabb96c68ff55f0c78a12dfafc00",
     "operatorTrust": {
-      "activeKeySetC8sSha256": "da48ed35c867a55a8e70ef09efd69aca239b7a050e6890be91fc91f88e6e2878",
-      "activeKeySetPem": "-----BEGIN PUBLIC KEY-----\nAQ==\n-----END PUBLIC KEY-----\n",
-      "activeKeySetSha256": "sha256:51c31131c2b98bad7a58604b034518d60b63575ebe429a9e3a57045ced25c5f0",
       "activeKeySetStatus": "requires-attested-cds-read",
+      "cdsAttestedReadHint": "/operator-keys",
       "expectedKeySetSha256": "sha256:51c31131c2b98bad7a58604b034518d60b63575ebe429a9e3a57045ced25c5f0",
       "expectedPublicKeySpkiSha256": "sha256:4f6dc591a9177840b63020e2b959bdbbe5721e3f624a474c4b10a53c9b32e212",
-      "reason": "c8s binds no hardware evidence to the allowlist-write key set; this is an attested CDS read, not a launch-time proof"
+      "reason": "c8s binds this key set to no hardware evidence and serves it only on the CDS RA-TLS route named by cdsAttestedReadHint; read that route yourself over an attested CDS session with a pinned launch measurement, compute the c8s key-set digest, and compare it with expectedKeySetSha256"
     }
   },
   "frontDoor": null,

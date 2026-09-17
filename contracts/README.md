@@ -43,8 +43,39 @@ c8s never binds the allowlist-write operator key set to hardware evidence at
 either commit (see `docs/ratls.md`), so on the new protocol the gateway can
 only report `requires-attested-cds-read` in `c8s.operatorTrust.activeKeySetStatus`
 — never `evidence-present-and-release-matched`, which the verifier now
-rejects outright on that protocol. The verifier still requires the response's
-`activeKeySetSha256` to equal the release's pinned `operatorKeySetSha256`.
+rejects outright on that protocol.
+
+The gateway also does not read the key set. c8s serves it on the CDS route
+`GET /operator-keys`, and CDS presents a self-signed RA-TLS certificate whose
+trust comes from a TEE evidence extension and a pinned launch measurement, not
+from any certificate authority. No CA-trusting TLS client can verify that
+certificate, so a gateway read cannot work at all. On the new protocol the
+gateway therefore publishes two fields and no live value:
+`expectedKeySetSha256`, the pinned c8s key-set commitment this deployment was
+built against, and `cdsAttestedReadHint`, the CDS route the reader must fetch.
+A `requires-attested-cds-read` response must carry `cdsAttestedReadHint` and
+must carry none of `activeKeySetSha256`, `activeKeySetPem` or
+`activeKeySetC8sSha256`. The schema enforces both halves.
+
+The verifier performs that read itself. `scripts/verify-public-attestation.py
+--cds-url <CDS RA-TLS base URL>` runs the pinned c8s CLI:
+
+    c8s verify <cds-url> --kind cds --mode ratls-cert \
+        --image-manifest <node manifest> -o json
+
+That command dials the CDS RA-TLS certificate, verifies its TEE evidence
+against the hardware signature chain, pins the launch measurement to the node
+image manifest, and returns the `/operator-keys` set it read over that same
+attested session as `operator_keys` — one SHA-256 SPKI fingerprint per key.
+The verifier recomputes the c8s key-set commitment from those fingerprints
+with the canonical formula (`pkg/operatorauth.KeySetDigest`: SHA-256 over
+`c8s-operator-key-set-v1\0` followed by the sorted, de-duplicated
+fingerprints) and requires it to equal **both** the release bundle's
+`operatorKeySetSha256` and the response's `expectedKeySetSha256`. The held
+operator public key must be a member of the set the attested read returned.
+
+Without `--cds-url` the verifier fails closed on the new protocol. It never
+skips the check.
 
 `scripts/check-c8s-protocol-lockstep.py` guards the pairing itself. For each
 lock entry it reads the matching manifest under

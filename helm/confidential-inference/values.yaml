@@ -55,7 +55,6 @@ attestationReceipts:
   # this empty to read the operator key set from evidenceBaseUrl, which is the
   # behaviour every environment had before this value existed. Set it to the
   # CDS base URL to read the key set from CDS itself.
-  operatorKeySetBaseUrl: ""
   # Permit only the public c8s front-door addresses that evidenceBaseUrl can
   # use. Keep this empty until an environment supplies its reviewed CIDRs.
   evidenceEgressCidrs: []

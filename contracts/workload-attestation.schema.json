@@ -91,16 +91,32 @@
         "operatorTrust": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["expectedPublicKeySpkiSha256", "expectedKeySetSha256", "activeKeySetStatus", "activeKeySetSha256", "activeKeySetPem", "reason"],
+          "required": ["expectedPublicKeySpkiSha256", "expectedKeySetSha256", "activeKeySetStatus", "reason"],
           "properties": {
             "expectedPublicKeySpkiSha256": {"$ref": "#/$defs/sha256Digest"},
             "expectedKeySetSha256": {"$ref": "#/$defs/sha256Digest"},
             "activeKeySetStatus": {"enum": ["evidence-present-and-release-matched", "requires-attested-cds-read"]},
+            "cdsAttestedReadHint": {"enum": ["/operator-keys"]},
             "activeKeySetSha256": {"$ref": "#/$defs/sha256Digest"},
             "activeKeySetC8sSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "activeKeySetPem": {"type": "string", "minLength": 1, "maxLength": 262144},
             "reason": {"type": "string", "minLength": 1}
-          }
+          },
+          "allOf": [
+            {
+              "comment": "requires-attested-cds-read is the honest status for a gateway that cannot read the key set: CDS serves GET /operator-keys over RA-TLS behind a self-signed certificate. Such a response must name the route the verifier reads for itself, and must claim no active key set at all.",
+              "if": {"properties": {"activeKeySetStatus": {"const": "requires-attested-cds-read"}}, "required": ["activeKeySetStatus"]},
+              "then": {
+                "required": ["cdsAttestedReadHint"],
+                "not": {"anyOf": [
+                  {"required": ["activeKeySetSha256"]},
+                  {"required": ["activeKeySetPem"]},
+                  {"required": ["activeKeySetC8sSha256"]}
+                ]}
+              },
+              "else": {"required": ["activeKeySetSha256", "activeKeySetPem"]}
+            }
+          ]
         },
         "meshCaSha256": {"$ref": "#/$defs/sha256Digest"},
         "attestationProtocol": {"enum": ["c8s/attest-pq/v1", "c8s/attest-pq/v1+xwing"]},
