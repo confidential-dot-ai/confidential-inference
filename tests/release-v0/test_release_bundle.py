@@ -479,14 +479,45 @@ class ReleaseBundleTests(unittest.TestCase):
         )
 
     def test_workload_label_can_select_any_rendered_container(self) -> None:
-        rendered, install, allowlist, module = self.generated_allowlist_fixture()
-        gateway_records = allowlist["workloads"]["gateway"]["containers"]
-        self.assertGreaterEqual(len(gateway_records), 2)
-        allowlist["workloads"]["gateway"]["label"] = gateway_records[-1]["image"]
-        module["validate_rendered_allowlist"](
-            rendered, install, allowlist,
-            json.loads(CONFIGS.read_text())["images"], False,
+        # A synthetic two-real-container pod, deliberately not sharing any
+        # digest with the c8s floor: neither container is one c8s injects
+        # (see validate_rendered_allowlist's floor-digest exclusion), so both
+        # are expected main containers and the label may name either.
+        module = runpy.run_path(str(SCRIPT))
+        app_image = "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64
+        sidecar_image = "example.invalid/sidecar@sha256:" + "2" * 64
+        rendered = json.dumps({
+            "kind": "Deployment",
+            "metadata": {"name": "gateway"},
+            "spec": {"template": {"metadata": {"annotations": {"confidential.ai/cw": "gateway"}}, "spec": {
+                "containers": [
+                    {"image": app_image, "command": ["/usr/local/bin/confidential-gateway"], "args": []},
+                    {"image": sidecar_image, "command": ["/sidecar"], "args": ["--role=aux"]},
+                ],
+            }}},
+        })
+        install = json.loads(INSTALL.read_text())
+        install["workloadMappings"] = [{
+            "allowlistName": "gateway",
+            "confidentialWorkloadId": "gateway",
+            "controllers": ["Deployment/gateway"],
+        }]
+        configs = json.loads(CONFIGS.read_text())["images"]
+        floor = set(item["image"].rpartition("@")[2] for item in install["systemFloor"])
+        records = module["rendered_mapping_records"](
+            rendered, install["workloadMappings"], configs, floor, False,
         )
+        gateway_records = records["gateway"]["containers"]
+        self.assertEqual(len(gateway_records), 2)
+        allowlist = {
+            "digests": {item["image"].rpartition("@")[2]: item["image"] for item in install["systemFloor"]},
+            "workloads": {"gateway": {
+                "label": gateway_records[-1]["image"],
+                "initContainers": [],
+                "containers": gateway_records,
+            }},
+        }
+        module["validate_rendered_allowlist"](rendered, install, allowlist, configs, False)
 
     def test_extra_rendered_attestation_target_fails_closed(self) -> None:
         validate = runpy.run_path(str(SCRIPT))["validate_proxy_identity_bindings"]

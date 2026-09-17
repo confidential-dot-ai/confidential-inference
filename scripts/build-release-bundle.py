@@ -330,11 +330,18 @@ def rendered_mapping_records(
                     # Named proxies are application policy even when the
                     # candidate image is also present in the c8s floor.
                     is_proxy = record["command"].get("argv") == ["/workload-proxy"]
-                    is_receipt_server = (
-                        record["command"].get("argv") == ["/c8s"]
-                        and record["args"].get("argv", [None])[0] == "cds-attest"
-                    )
-                    if record["digest"] not in floor_digests or is_proxy or is_receipt_server:
+                    # cds-attest is not: it runs on the c8s-operator image
+                    # under InjectedEntrypoints ("/c8s"). When that image's
+                    # digest is a floor entry (admitted under any argv), c8s's
+                    # own WorkloadContainers drops it before workload matching
+                    # runs, so it must not be declared as a main container
+                    # here either -- declaring it made every one of these
+                    # entries permanently unmatchable in staging. See
+                    # "Allowlist: do not emit the cds-attest sidecar as a main
+                    # container" (confidential-inference PR #6) and the
+                    # 2026-09-17 staging mesh diagnosis / staging-v2 release
+                    # deployment receipts.
+                    if record["digest"] not in floor_digests or is_proxy:
                         records[field].append(record)
             controller_records.append(records)
         first = controller_records[0]
@@ -371,23 +378,38 @@ def validate_rendered_allowlist(
     if not isinstance(policies, dict) or not isinstance(digests, dict):
         raise BundleError("the active public allowlist is not a generated policy")
     if folded_floor:
-        policies = {
-            name: policy
-            for name, policy in policies.items()
-            if not (
-                isinstance(policy, dict)
-                and [
-                    container
-                    for field in ("initContainers", "containers")
-                    for container in (policy.get(field) or [])
-                ]
-                and all(
-                    (container.get("command") or {}).get("policy") == "any"
-                    and (container.get("args") or {}).get("policy") == "any"
-                    for field in ("initContainers", "containers")
-                    for container in (policy.get(field) or [])
-                )
+        def is_floor_policy(policy: Any) -> bool:
+            if not isinstance(policy, dict):
+                return False
+            containers = [
+                container
+                for field in ("initContainers", "containers")
+                for container in (policy.get(field) or [])
+            ]
+            return bool(containers) and all(
+                (container.get("command") or {}).get("policy") == "any"
+                and (container.get("args") or {}).get("policy") == "any"
+                for container in containers
             )
+
+        # A folded-floor document has no top-level "digests" map (see above),
+        # but every-argv-admitted floor entries are still present, one per
+        # digest, among the workloads themselves (pkg/allowlist.DigestEntry).
+        # floor_digests must come from THOSE, not from the empty `digests`
+        # dict, or a floor digest is never recognized here and an injected
+        # sidecar sharing that digest (cds-attest, on c8s-operator) never
+        # gets excluded from the rendered comparison below -- see the
+        # 2026-09-17 staging mesh diagnosis and staging-v2 release
+        # deployment receipts.
+        digests = {
+            container["digest"]: container.get("image", "")
+            for policy in policies.values()
+            if is_floor_policy(policy)
+            for field in ("initContainers", "containers")
+            for container in (policy.get(field) or [])
+        }
+        policies = {
+            name: policy for name, policy in policies.items() if not is_floor_policy(policy)
         }
     if not isinstance(mappings, list) or not isinstance(external_mappings, list):
         raise BundleError("the c8s workload mappings are invalid")
