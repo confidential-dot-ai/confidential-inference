@@ -256,7 +256,7 @@ This table shows each category:
 | Category | Paths | Job that runs |
 | --- | --- | --- |
 | `rust` | `services/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, the gateway and maintenance-gateway Dockerfiles and build script | `rust`. Runs `cargo test` and `cargo clippy` for both packages. Also checks dependency licenses. |
-| `helm-and-contracts` | `helm/**`, `contracts/**`, `scripts/**`, `tests/**` (except `tests/images/control-plane-node/**`) | `helm-and-contracts`. Runs the contract, deployment, attestation, image-workflow, and other Python test suites. Also runs `helm lint`, `helm template`, and the Kubernetes and router validation scripts. |
+| `helm-and-contracts` | `helm/**`, `contracts/**`, `scripts/**`, `tests/**` (except `tests/images/control-plane-node/**`) | `helm-and-contracts`. Runs the contract, deployment, attestation, image-workflow, and other Python test suites. Also runs `helm lint`, `helm template`, and the Kubernetes and router validation scripts. Also runs `c8s-protocol-lockstep` (a `rust` change runs it too), because `scripts/check-c8s-protocol-lockstep.py` reads both `contracts/c8s-attestation-protocols/**` and the gateway's own Rust test fixtures. |
 | `node-image-profile` | `images/control-plane-node/**`, `tests/images/control-plane-node/**` | `control-plane-node-boot-sim`. Runs the systemd unit verification test and the boot simulation. |
 | `release-bundle` | `releases/**`, `c8s/**`, `images/*/source.lock` | `helm-and-contracts`. This category also runs that job, because its suites check release bundles and image pins. |
 | `docs-only` | `**/*.md` | `docs-only`. Runs a Markdown link check. |

@@ -1,0 +1,220 @@
+{
+  "c8s": {
+    "activeAllowlist": {
+      "document": {
+        "digests": {},
+        "schema": "c8s.allowlist/v1",
+        "workloads": {}
+      },
+      "sha256": "sha256:bcd475104a873a42ffaaed1aca9434981ce857adba97ebec4adc9e74e4d852f4"
+    },
+    "discovery": {
+      "attestation": {
+        "evidence": {
+          "quote": "test-quote"
+        },
+        "platform": "tdx"
+      },
+      "cds_tls": {
+        "certificate_pem": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n",
+        "certificate_sha256": "sha256:a5e1d6b68eeeb753d516906ffb7f2b43c5249b4ed164c799e38f1a8eb0a2c888"
+      },
+      "generated_at": "2026-09-17T09:55:54Z",
+      "public_tls": {
+        "hostname": "staging.api.confidential.ai",
+        "mode": "webpki"
+      },
+      "version": "v1"
+    },
+    "meshCaSha256": "sha256:0b969f8b357d44e27434bf1a3f145c171ad5eabb96c68ff55f0c78a12dfafc00",
+    "operatorTrust": {
+      "activeKeySetPem": "-----BEGIN PUBLIC KEY-----\nAQ==\n-----END PUBLIC KEY-----\n",
+      "activeKeySetSha256": "sha256:51c31131c2b98bad7a58604b034518d60b63575ebe429a9e3a57045ced25c5f0",
+      "activeKeySetStatus": "evidence-present-and-release-matched",
+      "expectedKeySetSha256": "sha256:51c31131c2b98bad7a58604b034518d60b63575ebe429a9e3a57045ced25c5f0",
+      "expectedPublicKeySpkiSha256": "sha256:4f6dc591a9177840b63020e2b959bdbbe5721e3f624a474c4b10a53c9b32e212",
+      "reason": "operator key set matches the pinned release"
+    }
+  },
+  "frontDoor": null,
+  "gpuEvidence": {
+    "evidence": [],
+    "reason": "no GPU policy attached",
+    "status": "raw-receipt-evidence"
+  },
+  "nonce": "eDd7UldXtJRCf4kBT5fXmSjzk40U61HiD7XeyYNOswQ",
+  "operationalStatus": "not-verified",
+  "receipts": [
+    {
+      "admittedLaunch": {
+        "containers": [
+          {
+            "argv": [
+              "/bin/gateway-db0b6ee"
+            ],
+            "digest": "sha256:4ea5ee68fea05586106890ded5733820bb77d919cda27bc4b8139b7cd33b8889",
+            "image": "ghcr.io/example/gateway-db0b6ee@sha256:4ea5ee68fea05586106890ded5733820bb77d919cda27bc4b8139b7cd33b8889"
+          }
+        ],
+        "initContainers": [],
+        "policyName": "gateway-db0b6ee"
+      },
+      "identity": "gateway",
+      "receipt": {
+        "cds_cert_pem": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n",
+        "evidence": {
+          "quote": "test-quote"
+        },
+        "front_door_mode": "webpki",
+        "generation": "",
+        "identity_proof": {
+          "algorithm": "ecdsa-sha384",
+          "leaf_sha256": "IguwPOGvuvR-VCvHkdYsb7BboF4F93OSbL0JC9xE_Z8",
+          "mesh_ca_sha256": "ihHk9EH7YhBxzhxgGATWhpct46D0O_KUg-qpXavSS6E",
+          "signature": "2dMigUDdY-jldd5Ljc7p9yu7PRTU1MqQRZcpUOmS4zpkeaE1DBY6Zl_WIdU6jv3ktsp4E06QStgtHIEVM6nk4A"
+        },
+        "nonce": "eDd7UldXtJRCf4kBT5fXmSjzk40U61HiD7XeyYNOswQ",
+        "platform": "tdx",
+        "session_pubkey": {
+          "mlkem768": "9pwpaVJdEZkENVop7_UHfI-A8uCG4UnfUkz6DA1qEjLTC2qE72r1BPGryNurfkTse2Lq-rUD92GAsQDrElDGIcdCtoXttWevDgBnZzNMpyizK56dOrQuxNcY63jB0uXfP8FFG-I59b0okCSnxMqwY6gFFs7RmT8Z8JTGD9OaUEDZ2VL9IIU58n4ek0qRPRQbBOmm5qCBpDmKXsTu-MWHwvr9TuOGYBOq4OxZOAsSZUeMeRfryGFBE5-k4lsKaBIzABxd8xt12SwFIuqsuRZuRA5V4eyJShj2a0UUa0wv9StDI_upu3XW1kR54MeFwYl6Kr2eMtU_7uV8u2y4r-fN-n0GqDe2KXG2L3Dv_69-PgPFrQuEzFxEUtyzkFW2Pa2iUGfP1jJMdp0GIhtjS4iQ8ZrwYYudheTr98XwO-goCkzSgCCPHW4RKIycatyCtdqAXdG5a7UcLR4zXt1c26KgweA44DpgtNhMivpMKEAJDkwU0sJLyDV0-fJjUSJiXTDkZNlqJg6DV9iB4BsU_3QwmKCSCHR7FMWUFonZ21yPJ-Kza-ALwwiKqStGWHh9IR7CosVNtfaY6sip-Ee9AQ6zs4jV6nY-igIr-GDmZjt-SZ08IOxS5QzELJ-q95QvvIc92FVsRHNlK9ZbmmyH19wAig9bYjSo_VWiR_h5DlihPMGCD7i-XiynsAsIKCPwpnmYBcRQG8CU1xQbW44bC8AdflVUa4V8dD8-kL6P-_SpmcPk3974h8AeZHneBjca4Io2zNGLbngycBUwjEI5r08bSRrh6GW9G8Ej_KYIjzxn053vygzenRjqW7Hiwa067froWxgLYZFyn7RxbCsrsCc3tyRi92Akibb6GcVteC0VdY6zcHwFFOxvMnFtPLfI3lPIJzweDCwHOnvX4dFu_8HS0ATMB9ZCnMoHydv1p1Wj2H3GxmqeKx2eS1BNCN_xX9a-jE6gdSwbLgM-oXgbuLchf2Bsa562SsmLWL-rIq-s7gQJsO5b5o4Q-nuc9Ty-Fbptxhu2m58NQXoSl_caQxosQDfRRPqtTuMW-OW_Txz0IOcODBlVVWYxzP9YPuZ_nrydPyB3y83eMRy9c7LY92_wZ2Frmo0-vHNwLGHm3sN25h3sgSi4Qtra2aRNLeuoolzWx5lPntPI1dvOpU2SYtmuILY3VXcAJzWmqLZNt2GD446G8MISxer3iUs7aJ5xxYRUEx3yA-rK_aWQo0uMCPM_-9E50KpFwQ-Oh3S7elnGKDJyXDsZgKGwUl0hX4uAeFDFZAd4paZI4SXzP1Z9FCsUhlDvd-tve40dKv3kLg9mAR4rV6R4sRnGdCoAqowhoOlOwY3K_I1ZzRjeXPBYcpuvmouS0Im_mkxinfA3vFlME4vXVmh5dkl4u6N_COPwXshc-VWZlJvgPwzURrVF4HgY0ZhLZJmZbCznWhpQ1kKazvI",
+          "x25519": "oCkbj4JlsS3f0oKLA5klPVvk4drpdzWfh4nL2thcGbE"
+        },
+        "version": "c8s/attest-pq/v1"
+      },
+      "target": "gateway",
+      "workload": "gateway-db0b6ee"
+    },
+    {
+      "admittedLaunch": {
+        "containers": [
+          {
+            "argv": [
+              "/bin/sglang-router-684393d"
+            ],
+            "digest": "sha256:d6805f437cba14a8039a975fd4a160a0be39ae3fd22022fb98509e6b8174d658",
+            "image": "ghcr.io/example/sglang-router-684393d@sha256:d6805f437cba14a8039a975fd4a160a0be39ae3fd22022fb98509e6b8174d658"
+          }
+        ],
+        "initContainers": [],
+        "policyName": "sglang-router-684393d"
+      },
+      "identity": "sglang-router",
+      "receipt": {
+        "cds_cert_pem": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n",
+        "evidence": {
+          "quote": "test-quote"
+        },
+        "front_door_mode": "webpki",
+        "generation": "",
+        "identity_proof": {
+          "algorithm": "ecdsa-sha384",
+          "leaf_sha256": "to14iZN_bQETl5w2oC-AlwYR8_aRWeG8wMBtvHDdtfM",
+          "mesh_ca_sha256": "eIRg_klLwLf5coPdM_ydPaHdPIXOXbmKzfME1LFip9s",
+          "signature": "GAC6EmT2vQPx0PYQDLWf1DOBVNyMjO0PE0oxvRAf3n-UPeYo3DLV6VPnBOsVPKM-VqyAzWG7lQ0hPFYQwOoV-A"
+        },
+        "nonce": "eDd7UldXtJRCf4kBT5fXmSjzk40U61HiD7XeyYNOswQ",
+        "platform": "tdx",
+        "session_pubkey": {
+          "mlkem768": "EHNJwY1M1zYcojaHZImJci_sy19uBjqASrJO_ZNdwU22YuTo5zKTQe0f8W55gkC_7UIETyDWLaeCQL71plpOHVsabWTIRyr68uXGRWVolp7E_ep42IhYF6xYKg9lJuMV3cEDXpy_qa_vKbzW6MCaxsxahNWnCV5ucVBvwmX9RYALZqqejVAKZbpruOUJ-9bbwS51mMmqMF0qtCc-yRtL85aLIhAkCMdiSQMy1NadS17xh483Eh67SVK1X29CiBsnljJ05f-jjlyp557F6eKu65JwtChqL2T2wDHVzNu1qQL20SqKo7aHqqfuxLBH2shdoFx3eltUjo0dfLzHIaCHv3ViyFPyyJHazCVe7uChIee0GKK8zQiiE-OGsMu-0Ua1mpZJkMmX6b30rY-1-Q3QlE2VoPOYmmKZBKrVRRcjf7XMDsq7VAqSmbX_g8QT_HYElCplZUdkeHAaydi52_Z9C7_y5ySxHhw_tQrTo7OBHejkYHZiWVbEmMrz2moFjZHpkCuIbOE5kE8z46raw7thkNqskGn1r44MUOGdp_x4FpfU7OYqMzti0KY1xizSYTZeqJ6-QAnvuanwBpandJP7Od76QsC1dcS9GTKpQ_kGiKLBcVCndOT9-A_NkVmPj143x--kzAPlhU2ty0Bu34V72qL9fbmCRudvLvJ-snHlWhcVyh-yVIreoJrLgVi4j24lQdyBb3kNKmXarEwawxHBkNOtzE7JDfP5nOy--vGrPdi8o0vPaoDil3Z1LTQaj4ZngR3uEpRhg7NXrpFJK5UgAz0IjYJ5qf28p_mDN0hfTx7fG9QdabMQvHTNTrniYf67mU0FLqw-IVc4vpK39BzlC_eU_Xoct-ILqHaiYKtV4noB6Q04rgWKNp0iObruGSA9fq-8KzVjitqC-BRA1vom3SGydCSiogIRyeK3UxCyFgG6FwgJTvHUZqtYuxR_9tMQ9wzcE3myC-bLHbrfxOH8XAmvYh-pLzBC4da6EuJ8hqyo6Uq95t12r5PPKoKjsNrg_HyMMLqzgKm5aSvkQTfxlen8lzrEcJbb7JwT6NWgHKJx6J6DiOQ5xta9kOeGre5NK0L8vfXfhawY2KQk_6_e1LsA_UEH8WTitYuoxeMDQYzoWU_EdDqTPZM_wFHAaWSzF18cKWjaPIgYtYhsIzDKsqd9iI8_BLE4VeGym5k3mds1riM8WC-lrCEN8AGzyk-4z0KsufiNXmNUmeoT2JamQANVXci8Rl5qM3cYNPSrx1zgQA79LO7Op9WPxv6okJqdcT4ywiNANLCx7fO-NEtvyPMP9WNKoI_JcGRHrxgxKwF-vLOuQqXDNTwNc2Q5h5Iy7FgNsv_7FX00-uba_bOFJr6NpyBwy6BIYYxjxgo2-5nnLUekgv_5t8dVYRe0Pn_0VKVyvXIHDuiObIjytSbodAxUhFvC-ZbHuh-iyWmlb-c",
+          "x25519": "aC5PNn-8bRns2OjAhjVS3GpnzJ9olrobVQKIOj7GTDw"
+        },
+        "version": "c8s/attest-pq/v1"
+      },
+      "target": "sglang-router",
+      "workload": "sglang-router-684393d"
+    },
+    {
+      "admittedLaunch": {
+        "containers": [
+          {
+            "argv": [
+              "/bin/inference-worker-0-tool-calls-v1"
+            ],
+            "digest": "sha256:e24b37b3c1a0b57e08fcd426e6dc74557bb8311ce6ba77ba6191b9388d16fd6c",
+            "image": "ghcr.io/example/inference-worker-0-tool-calls-v1@sha256:e24b37b3c1a0b57e08fcd426e6dc74557bb8311ce6ba77ba6191b9388d16fd6c"
+          }
+        ],
+        "initContainers": [],
+        "policyName": "inference-worker-0-tool-calls-v1"
+      },
+      "identity": "inference-worker-0",
+      "receipt": {
+        "cds_cert_pem": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n",
+        "evidence": {
+          "quote": "test-quote"
+        },
+        "front_door_mode": "webpki",
+        "generation": "",
+        "identity_proof": {
+          "algorithm": "ecdsa-sha384",
+          "leaf_sha256": "SqAUpzEYipey4mjj03Kjr3vl_eaATBjRTo3g01EuS5o",
+          "mesh_ca_sha256": "HYKoVEtr2CnMoNulVGtIOt_S1swilDTIy9t5kYG6V1o",
+          "signature": "B8VelS6x1MirDE06Xyf5qtzzNe5pjSOOoroSZCrHasAZWP2nq760wKD2wO89icrRL1slhMIWAyJospKTXWX8Fg"
+        },
+        "nonce": "eDd7UldXtJRCf4kBT5fXmSjzk40U61HiD7XeyYNOswQ",
+        "platform": "tdx",
+        "session_pubkey": {
+          "mlkem768": "nSDDggUu38RY7ZRxyshmLEurWoPZChWoRezHhm9diSOAJTJzR3dfrVPedIo6PzSAuK0CgJvZWQUaq_3DhQ3lQvWC2jyo55Slfn2UqDpQyHYfA04GsbztDsVeCoIQw5H3xt_d1Eyhf1MTtWLz5O3gb7PoW8SvMmsfo69nQwNYGEvtN-MH3WGP4yJe4-jflpulPUI-2qN-xl1zWExH2EzCFGgygXc9jaAZRhPsn3T7_9YlIVfd0lvdJsQ94EqTP-MlRf3rQfpr3LXw_f532OomtFmkf54JLK_rs_ZNiLgrkbYEeEWN0V2MBm_dt2BdGHvAvxJHJgAWdWD-GcymnmivOHIsdLrhbsrwFbCgH3RvfcuQHFZcZimcumuPsSPy7hQpGXP7qVVxdVw11AJcbQEoETOBgs39-1EVjF656WmwC9uUhx7aK0aZJEz-2N897JRmvGG2ky5NXnsQHh3lhwobDX58YkM1A6uaRBfKgLmTDkdW-zfTtrcws_sFAl0fMqmETLBwId4qkHc2J5B8rqGjh3OSbl3MNmoig4LWpNGqnm5bBX0xTroXVF1HOy5hGte1cScucb4Qa7s63PSAb4TpLMTP4NvV_KNO2Bl930qZ1eCcDbXsnZmW_Iojeq8nXeOo2x9qPzpNolqBtW09pdVBKSN6RKQGeUx8kaY2R72SDfsyEhKfZxU1RHOl6US3h0_qL4i3mKjcwl3IMx0iVYEa7HhUjWoc2IWwKgBwOXq6Ghp6tkq7zNJFraYFx4-eug9YeUhrI-H_bEa57LDQTcJNgyEycpW1JqB4tJ_BBzc5YrqQxakkr36sG20NtkhaYFlurCmHxIqHwAqVY95rK-ASoqIvWYyjtcvqY-BUkRrXfG4xVlbUmutluTxQ7L875IE6SngmQwE0Pr4twQE63D5hv0UaGizrKNS9KI1bNDdxOnAsi7mooK_Ne-WE41jkafWlgNguhjmetmY89FNNppzyh9wTfKzcoFMy4g0g-fJcdMjGdbEb0yBeG6OBtm4aLpRq1n8pZPtY1UdxC2bcDKNRY9xScJk102dzi9XyDuQhvqhuvEzivse8LVME2OIfUNitOAuARj7TMxPQVVXU9TyNaaYf6l5XMfJ2x6o22f1QIEWjDpmBABdrEBd6feFIhlj8Y6nkw7dwW-HDX9hGBlzYG2EZavosnmuds-42_-53Gih_Jqsrtmz3UFIvAei1Mp3mk5mTsKmbNpWRsXS82qVhuu9-03qgZzxByfHgFfssJrwU_ZRQhqLdgh9M_0Fb5oUWVq6pupHqYZzU-P0KPISW7fW7Ao1YRVLVyKO-sHsHidyI6TLZVK7rvqngH6HnPcejglVAUDrzLRBdpJhRwILYZD3xm4c2RMbqvynyXAaTBrzv8QxV_byM3MN5VP2n3J0sdmzZu0SUKvi0IJ5pgI-jizGzkOFN3hkZG17NGIccv6E",
+          "x25519": "Flm6ZpoPy4W5zW9a1sUK3gClqKZfxsUODmDwn33kX74"
+        },
+        "version": "c8s/attest-pq/v1"
+      },
+      "target": "inference-worker-0",
+      "workload": "inference-worker-0-tool-calls-v1"
+    },
+    {
+      "admittedLaunch": {
+        "containers": [
+          {
+            "argv": [
+              "/bin/inference-worker-1-tool-calls-v1"
+            ],
+            "digest": "sha256:a0e9405a36c45099a506a86b49fcae662b663384dcc975c3fbb0ba85b2c97d7b",
+            "image": "ghcr.io/example/inference-worker-1-tool-calls-v1@sha256:a0e9405a36c45099a506a86b49fcae662b663384dcc975c3fbb0ba85b2c97d7b"
+          }
+        ],
+        "initContainers": [],
+        "policyName": "inference-worker-1-tool-calls-v1"
+      },
+      "identity": "inference-worker-1",
+      "receipt": {
+        "cds_cert_pem": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n",
+        "evidence": {
+          "quote": "test-quote"
+        },
+        "front_door_mode": "webpki",
+        "generation": "",
+        "identity_proof": {
+          "algorithm": "ecdsa-sha384",
+          "leaf_sha256": "yDRKTCG0ONhrLKyaN2yy3OTR1dgWGlm2q1YmwMbp-ic",
+          "mesh_ca_sha256": "NG4ZovCouzXPLPNNYtkNL1Os6na4MLTNBBccgzv_e2k",
+          "signature": "p5LygfvD6B0GjW21co6NRmTBSZBQHFTlG9D_LjWzKA8u2Im91EAtZxCm-hAuWDxGPZVQOm3lUCxuGemBGpn5Mw"
+        },
+        "nonce": "eDd7UldXtJRCf4kBT5fXmSjzk40U61HiD7XeyYNOswQ",
+        "platform": "tdx",
+        "session_pubkey": {
+          "mlkem768": "6WBwL13mluxPQWm-S1YuZYSbV4ktCIV1Q9tgV98rUUXiAmkwGzAIc86qdIV_Scwoboyn9gdxYF1YY60N4e_J5Zkbhov8gMXtHVPDYO5UJ_YxcOSjPYk1q5U-sc_8-MinAmJagFjzliw-9qmgCFGDRaULhGeCqQySTq8smSkBf7-nYy_SNLqSqcx10wLy0uwCw9WDPERZXVvdT61y7PgnSg1Noq_oJVbI8iUbwHiRa-B8caLbmdKkXlk_R4YMWC2S7uQpQhyxwD62iNeTWHiHcXIXbRUWp-FT3uSNrEtX6WcUmWqy5H5UYoLTu9nvF_eguaYnqVC_ne6Hs_GMRLTT9PexUbAsSd-SrHpaYhP1rUujwZb69Y1CJQC6RhgHiYk5PHqCEkV6NDkotal3m3YmF-d7NkQIy34WeztxSwogDJ53zIcng3DujYn4y4dt8K29Nbos-7lCTszk-f4sXDOGgndINtYIF7P5o-XDn1TAZaAhBcBXD9MUW254Gy5aSJfJw7ShOkFjhD2gvPUKBTexs5jHJSWaXOMu-LCkXvgYAGwkw067d4Kws-HknY8wSOJJg-HoHjEtg5iyt1xm_2ZGXQ8ms7TiPIP0N1GNaIQS4ZMJfBTHSS7z6aS2jDsHVrGCYXYxlczvn9nLah8dqcA44eA9BuR5F3IDkori6osGfp__-BCq1GulRQuV7mshhnjCfu8OFtee3hbXWT0L8zLQ_8BQKKVHJqidAFmpYSc3V9_vSMSqr6FYEPWgeDhWjLgisVCdo2b9F5JG9vQPm7k2msdofx2iWfQMDm9J3OYCSOVgfDArnlye5cMx7aOoJ7XluMY9PhWVn9nS_fhZHUS1A_8so7aIugnuKp7zflrHpP6bFXRgsp7zx1VwPhd6PKsRwZNso3v2d0FC9X3CKgdhkeuRH00qMhS5JsXgpp9tK7p5OKbJSoKXA9tnfqdPWIDP57uZ2HIgEeyCc0vAnpy3USC3e7gh7CZ-flJ6Vs5yrns_FunM26MoQqGSjnxcu3eonFdX1Pa7Klz-8aqbFxKAdXjOqur_EM_dQXaVtepfgJzM-ay2wxo79kzT_JdfGNjmQA0d6ptsBkHVP2rYOAA5QXcGn4wEvZSBuqJgAqImcJ_dOpR2ofX86V5-Mb060iRrD3ZEIRV8iUIP5M3oFP9ykiEQ4Fa0He6LnGNItgmtGas9CoiPn5_XCg7hW7RKXXsLQndzhLwoxxngUz9rn7fkjfFxEdlQlH3mZuYLOHLlBlS7RmTeLtxzl9vucxd-9SPvTOujsoLUdCBbqx8S1SCNKMrtozzDHzgDJhK4xMDy3mRRTXQMbiVqC-x44FEVi7JaAV-xSjOOWeKwWaHo-p68DyDgjtYrrUPjs8V1nBqWK_qoXOlIYJqovvr7rWMyIOrzt6w0zNE1oSMGevK1x3JCjMgdKBsen4uxdqNC2FTrhGA",
+          "x25519": "Ln0CUURxWUWbN86K9VYw7Vb6Rua2MRK04X3kbVVrEys"
+        },
+        "version": "c8s/attest-pq/v1"
+      },
+      "target": "inference-worker-1",
+      "workload": "inference-worker-1-tool-calls-v1"
+    }
+  ],
+  "release": {
+    "bundleSha256": "sha256:a4d451ec23463726f72c43d64c710968f6b602cd653b4de8adee1b556240a829",
+    "id": "test-release",
+    "source": "operator-selected-public-release"
+  },
+  "schemaVersion": 2,
+  "scope": "launch-or-admission-only",
+  "tls": {
+    "binding": {
+      "publicKeySha256": null,
+      "reason": "webpki mode is not bound",
+      "status": "not-proven"
+    },
+    "mode": "webpki"
+  }
+}

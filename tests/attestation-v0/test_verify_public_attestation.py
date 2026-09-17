@@ -1148,6 +1148,158 @@ print(json.dumps(result))
         wrong_ca.write_bytes(pem_certificate(ca))
         self.assert_rejected(extra=["--endpoint-ca", str(wrong_ca)])
 
+    def test_lock_entry_selects_the_expected_attestation_protocol(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+            expected_attestation_protocol = module["expected_attestation_protocol"]
+            OLD = module["OLD_ATTESTATION_PROTOCOL"]
+            XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        finally:
+            sys.path.pop(0)
+        # The production top-level entry has no attestationProtocol field and
+        # must still resolve to the old protocol.
+        self.assertEqual(expected_attestation_protocol({"commit": "a" * 40}), OLD)
+        self.assertEqual(
+            expected_attestation_protocol({"commit": "a" * 40, "attestationProtocol": OLD}), OLD
+        )
+        self.assertEqual(
+            expected_attestation_protocol({"commit": "a" * 40, "attestationProtocol": XWING}),
+            XWING,
+        )
+        for entry in SOURCE_LOCK.get("commits", []):
+            self.assertEqual(expected_attestation_protocol(entry), XWING)
+
+    def _minimal_response_and_release(self, module, protocol, gpu_status="raw-receipt-evidence"):
+        """Build the small subset validate_response_evidence actually reads."""
+        active_pem = self.operator_key.read_text()
+        allowlist = {"schema": "c8s.allowlist/v1", "workloads": {}}
+        canonical_allowlist = json.dumps(allowlist, separators=(",", ":")).encode()
+        release = {
+            "release": {"name": "test-release"},
+            "c8s": {"operatorKeySetSha256": self.operator_key_set_digest},
+        }
+        release_digest = "sha256:" + "9" * 64
+        response = {
+            "release": {
+                "id": "test-release",
+                "bundleSha256": release_digest,
+                "source": "operator-selected-public-release",
+            },
+            "c8s": {
+                "activeAllowlist": {
+                    "sha256": module["sha256"](canonical_allowlist),
+                    "document": allowlist,
+                },
+                "operatorTrust": {
+                    "expectedPublicKeySpkiSha256": self.operator_digest,
+                    "expectedKeySetSha256": self.operator_key_set_digest,
+                    "activeKeySetStatus": (
+                        "requires-attested-cds-read"
+                        if protocol == module["XWING_ATTESTATION_PROTOCOL"]
+                        else "evidence-present-and-release-matched"
+                    ),
+                    "activeKeySetSha256": self.operator_key_set_digest,
+                    "activeKeySetPem": active_pem,
+                    "reason": "test",
+                },
+                "meshCaSha256": "sha256:" + "8" * 64,
+                "discovery": {"public_tls": {"mode": "webpki"}},
+            },
+            "tls": {"mode": "webpki"},
+            "gpuEvidence": {"status": gpu_status, "evidence": [], "reason": "test"},
+        }
+        if protocol is not None:
+            response["c8s"]["attestationProtocol"] = protocol
+        return response, release, release_digest, allowlist, canonical_allowlist
+
+    def test_new_protocol_rejects_a_release_matched_operator_claim(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
+            module, XWING
+        )
+        # The honest status passes.
+        module["validate_response_evidence"](
+            response, release, release_digest, allowlist, canonical,
+            self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+            XWING, False,
+        )
+        # c8s proves no hardware binding for this key set at either protocol,
+        # so claiming the stronger release-matched status on the new
+        # protocol must fail closed even though the digest itself matches.
+        response["c8s"]["operatorTrust"]["activeKeySetStatus"] = "evidence-present-and-release-matched"
+        with self.assertRaisesRegex(module["VerificationError"], "active operator key set"):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                XWING, False,
+            )
+
+    def test_old_protocol_rejects_the_honest_new_protocol_status(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        OLD = module["OLD_ATTESTATION_PROTOCOL"]
+        response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
+            module, None
+        )
+        response["c8s"]["operatorTrust"]["activeKeySetStatus"] = "requires-attested-cds-read"
+        with self.assertRaisesRegex(module["VerificationError"], "active operator key set"):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                OLD, False,
+            )
+
+    def test_response_protocol_must_match_the_pinned_lock_entry(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        OLD = module["OLD_ATTESTATION_PROTOCOL"]
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
+            module, XWING
+        )
+        with self.assertRaisesRegex(module["VerificationError"], "attestation protocol"):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                OLD, False,
+            )
+
+    def test_gpu_not_exposed_by_c8s_requires_no_gpu_policy(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
+            module, XWING, gpu_status="not-exposed-by-c8s"
+        )
+        # No release workload requires GPU evidence: the honest c8s gap is fine.
+        module["validate_response_evidence"](
+            response, release, release_digest, allowlist, canonical,
+            self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+            XWING, False,
+        )
+        # A release that requires GPU evidence must not accept the gap.
+        with self.assertRaisesRegex(module["VerificationError"], "GPU evidence"):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                XWING, True,
+            )
+
 
 class WorkloadAttestationSchemaTests(unittest.TestCase):
     def test_versioned_inference_worker_policy_names_are_valid(self):

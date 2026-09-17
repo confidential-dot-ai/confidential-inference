@@ -548,10 +548,33 @@ def policy_verifier_flags(args: argparse.Namespace) -> list[str]:
     return ["--operator-pkey", str(args.operator_public_key)]
 
 
+#: Old c8s (079aeb48): the receipt carries session_pubkey, and c8s never
+#: proves the allowlist-write operator key set. The gateway omits
+#: c8s.attestationProtocol on this protocol.
+OLD_ATTESTATION_PROTOCOL = "c8s/attest-pq/v1"
+#: New c8s (466ce79 and 2ef376a8): the receipt carries xwing_ek/xwing_ct/
+#: session_id instead of session_pubkey, and serves no GPU field.
+XWING_ATTESTATION_PROTOCOL = "c8s/attest-pq/v1+xwing"
+
+
+def expected_attestation_protocol(source_lock_entry: dict[str, Any]) -> str:
+    """Return the c8s attestation protocol the pinned source lock entry speaks.
+
+    A lock entry with no attestationProtocol field pins the old protocol, so
+    an unlisted (and thus untested) c8s commit can never silently pass as the
+    new one.
+    """
+    protocol = source_lock_entry.get("attestationProtocol", OLD_ATTESTATION_PROTOCOL)
+    if protocol not in (OLD_ATTESTATION_PROTOCOL, XWING_ATTESTATION_PROTOCOL):
+        raise VerificationError("the source lock names an unknown c8s attestation protocol")
+    return protocol
+
+
 def validate_response_evidence(
     response: dict[str, Any], release: dict[str, Any], release_digest: str,
     allowlist: dict[str, Any], canonical_allowlist: bytes, operator_digest: str | None,
     operator_key_set_digest: str | None, mesh_ca_der_digest: str,
+    attestation_protocol: str, gpu_required: bool,
 ) -> None:
     """Bind the gateway envelope to the held public release inputs."""
     if response["release"] != {
@@ -563,6 +586,16 @@ def validate_response_evidence(
     active = response["c8s"]["activeAllowlist"]
     if active["document"] != allowlist or active["sha256"] != sha256(canonical_allowlist):
         raise VerificationError("the active c8s allowlist differs from the trusted release")
+    response_protocol = response["c8s"].get("attestationProtocol", OLD_ATTESTATION_PROTOCOL)
+    if response_protocol != attestation_protocol:
+        raise VerificationError(
+            "the response c8s attestation protocol differs from the pinned source lock entry"
+        )
+    gpu_status = response["gpuEvidence"]["status"]
+    if gpu_status == "not-exposed-by-c8s" and gpu_required:
+        raise VerificationError(
+            "the response claims c8s exposes no GPU evidence, but the release requires it"
+        )
     mode = release_policy_mode(release)
     policy = response["c8s"].get("policyTrust")
     if mode == "static":
@@ -579,7 +612,7 @@ def validate_response_evidence(
             raise VerificationError("the response mesh CA fingerprint differs from the held mesh CA")
         if response["tls"]["mode"] != response["c8s"]["discovery"]["public_tls"]["mode"]:
             raise VerificationError("the response TLS mode differs from c8s discovery")
-        if response["gpuEvidence"]["status"] == "verified":
+        if gpu_status == "verified":
             raise VerificationError("the response claims GPU verification without a c8s GPU verifier")
         return
 
@@ -603,8 +636,18 @@ def validate_response_evidence(
     _, active_digest, active_members = canonical_operator_key_set(
         active_pem_bytes, "active operator key set"
     )
+    # c8s binds this key set to no hardware evidence at either protocol (see
+    # docs/ratls.md), so the new protocol may only ever claim the honest
+    # requires-attested-cds-read status. A response that claims the stronger
+    # evidence-present-and-release-matched status on this protocol is lying
+    # about what c8s can prove, and must fail closed here.
+    required_status = (
+        "requires-attested-cds-read"
+        if attestation_protocol == XWING_ATTESTATION_PROTOCOL
+        else "evidence-present-and-release-matched"
+    )
     if (
-        operator.get("status", operator.get("activeKeySetStatus")) != "evidence-present-and-release-matched"
+        operator.get("status", operator.get("activeKeySetStatus")) != required_status
         or operator.get("activeKeySetSha256") != active_digest
         or active_digest != expected_key_set
         or operator_digest not in active_members
@@ -614,7 +657,7 @@ def validate_response_evidence(
         raise VerificationError("the response mesh CA fingerprint differs from the held mesh CA")
     if response["tls"]["mode"] != response["c8s"]["discovery"]["public_tls"]["mode"]:
         raise VerificationError("the response TLS mode differs from c8s discovery")
-    if response["gpuEvidence"]["status"] == "verified":
+    if gpu_status == "verified":
         raise VerificationError("the response claims GPU verification without a c8s GPU verifier")
 
 
@@ -1295,9 +1338,11 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             raise VerificationError("the release operator key-set commitment differs from the held key")
         if operator_digest not in operator_key_set_members:
             raise VerificationError("the held operator key is not a member of the expected key set")
+    attestation_protocol = expected_attestation_protocol(source_lock_entry)
     validate_response_evidence(
         response, release, release_digest, allowlist, canonical_allowlist,
         operator_digest, operator_key_set_digest, mesh_ca_der_digest,
+        attestation_protocol, gpu_required,
     )
     for item in response["receipts"]:
         if item["admittedLaunch"] != expected_admitted_launch(allowlist, item["workload"]):
@@ -1369,6 +1414,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "trustedAllowlistSha256s": [item[0] for item in allowlist_documents],
         "publicTlsSpkiSha256": public_spki,
         "publicTlsKeyAttested": public_tls_attested,
+        "attestationProtocol": attestation_protocol,
         # Non-GPU workloads are expected in the receipt set. Check GPU
         # evidence only for the targets whose trusted release policy requires
         # it. Each such target must have passed verify_gpu_receipt above.

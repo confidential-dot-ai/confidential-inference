@@ -163,7 +163,8 @@
       },
       "capabilities": {
         "allowlistCanonicalize": false
-      }
+      },
+      "attestationProtocol": "c8s/attest-pq/v1+xwing"
     },
     {
       "commit": "2ef376a875010ac98542ab5f2f770aeb95b0082f",
@@ -242,10 +243,12 @@
       },
       "capabilities": {
         "allowlistCanonicalize": false
-      }
+      },
+      "attestationProtocol": "c8s/attest-pq/v1+xwing"
     }
   ],
   "capabilities": {
     "allowlistCanonicalize": true
-  }
+  },
+  "attestationProtocol": "c8s/attest-pq/v1"
 }

@@ -18,6 +18,43 @@ accepts `--commit` to check the c8s source tree against one specific pinned
 entry (the top-level one, or one from `commits`); without it, it checks the
 top-level entry, as before.
 
+### The two c8s attestation protocols
+
+c8s serves two `attest-pq` protocols, both with the receipt `version` string
+`c8s/attest-pq/v1`, so the response cannot say which one it used. The gateway
+declares it instead, in the optional `c8s.attestationProtocol` field:
+
+- `c8s/attest-pq/v1` (old, production only, c8s `079aeb48`): the receipt
+  carries `session_pubkey`. The gateway must not send this value; its absence
+  means the old protocol.
+- `c8s/attest-pq/v1+xwing` (new, c8s `466ce79` and `2ef376a8`): the receipt
+  carries `xwing_ek`, `xwing_ct`, and `session_id` instead of
+  `session_pubkey`. c8s also removed `gpu_attested`/`nvidia_gpu` from the
+  receipt, so `gpuEvidence.status` may be `not-exposed-by-c8s`, and it folded
+  `GET /allowlist`, so `c8s.activeAllowlist.document` may omit `digests`.
+
+`contracts/c8s-admission-source-lock.json` names the protocol each pinned c8s
+commit speaks in a new `attestationProtocol` field on the top-level entry and
+on each `commits` entry. `scripts/verify-public-attestation.py` reads that
+field, not the response, to pick its branch, and then checks that the
+response's own `c8s.attestationProtocol` agrees.
+
+c8s never binds the allowlist-write operator key set to hardware evidence at
+either commit (see `docs/ratls.md`), so on the new protocol the gateway can
+only report `requires-attested-cds-read` in `c8s.operatorTrust.activeKeySetStatus`
+— never `evidence-present-and-release-matched`, which the verifier now
+rejects outright on that protocol. The verifier still requires the response's
+`activeKeySetSha256` to equal the release's pinned `operatorKeySetSha256`.
+
+`scripts/check-c8s-protocol-lockstep.py` guards the pairing itself. For each
+lock entry it reads the matching manifest under
+`contracts/c8s-attestation-protocols/<commit>.json` (the `cdsattest` route
+table and the `AttestationBundle`/receipt field names at that c8s commit,
+captured read-only from the `c8s` source) and fails the build if those fields
+disagree with the gateway's own declared protocol constant and test fixture
+field set. It runs offline, from files already committed to this repo, in
+`.github/workflows/v0-validation.yml`.
+
 Use `scripts/verify-public-attestation.py` for the complete public verification flow.
 
 The command fetches the HTTPS endpoint with a fresh nonce. It verifies the exact
