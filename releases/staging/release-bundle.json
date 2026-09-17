@@ -1,5 +1,5 @@
 {
-  "allowlistDigest": "sha256:d7bdcc06f290a66413e2e88c9cb6743a7b4211d5821e599f1fe370d2b33e6b22",
+  "allowlistDigest": "sha256:0fd8b7c3ad6d3babfc4ab3fb0f3d9cc87b130355aa65b9e0ccc5ee4bfb435cbf",
   "c8s": {
     "attestationTargets": [
       {
@@ -30,7 +30,7 @@
     ],
     "frontDoorWorkload": "c8s-tls-lb",
     "imageTag": "466ce79",
-    "installInputDigest": "sha256:6c59128f92dda8c914268dd0fcd271a103ef014e15b9759d0e8bb7a627e21d58",
+    "installInputDigest": "sha256:89775f988dee032ce2b513c0605bc8c8f64f3aedcd9eff40752e5f9ff4156a31",
     "measurements": {
       "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
       "rtmr1": "36533e26f764256f2683865906bc3c6de4db51f260fe7edbc392773650e52c27a756dc27dc84a062ac2a34b5033101ba",
@@ -38,7 +38,7 @@
     },
     "meshCa": {
       "certificateSecretName": "C8S_MESH_CA_CERT_PEM",
-      "certificateSha256": "sha256:0b34a9a9b9c5f8df7d81fbca5ec2747b94bd3393b6f5de6cc7831d76ca28fdcd",
+      "certificateSha256": "sha256:d65f71e68aa9cb98a3f7b5cc37ef63c9d251ba873ce527be9ff847560269b630",
       "fingerprintSecretName": "C8S_MESH_CA_CERT_SHA256"
     },
     "operatorKeySetSha256": "sha256:1899ce71bec3104e8ada101f22f2f6f27154691bbbed572b94d974e264174111",
@@ -99,7 +99,7 @@
   },
   "release": {
     "environment": "staging",
-    "name": "staging-v1"
+    "name": "staging-v2"
   },
   "releaseTrust": {
     "policyPath": "releases/trust/release-signing-policy.json",
@@ -108,7 +108,7 @@
   },
   "schemaVersion": 2,
   "source": {
-    "commit": "31818be803f143ab501926f972d0bd78c43db97a",
+    "commit": "589b05519b4de5631fa990271c86c30f71aac4ec",
     "repository": "https://github.com/confidential-dot-ai/confidential-inference"
   },
   "workloads": [
