@@ -225,15 +225,42 @@ def source_lock_node_image(
     return node_image
 
 
+def source_lock_entries(source_lock: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return every c8s commit the source lock pins, as full entries.
+
+    The lock keeps its original single-entry shape at the top level (so an
+    older reader, and every pin except `commit` itself, is unaffected), and
+    adds an optional `commits` list of further entries with the same shape.
+    A signed release may use the c8s commit any one of these entries names;
+    no other c8s commit is trusted.
+    """
+    entries = [source_lock]
+    extra = source_lock.get("commits", [])
+    if isinstance(extra, list):
+        entries.extend(entry for entry in extra if isinstance(entry, dict))
+    return entries
+
+
+def select_source_lock_entry(
+    source_lock: dict[str, Any], release_commit: str,
+) -> dict[str, Any]:
+    for entry in source_lock_entries(source_lock):
+        commit = entry.get("commit")
+        if not isinstance(commit, str) or SOURCE_COMMIT_RE.fullmatch(commit) is None:
+            continue
+        if commit == release_commit:
+            return entry
+    raise VerificationError("the release uses a different c8s source commit")
+
+
 def validate_source_policy(
     release: dict[str, Any], manifest: dict[str, Any], source_lock: dict[str, Any],
     node_source_lock: dict[str, Any],
-) -> None:
-    commit = source_lock.get("commit")
-    if not isinstance(commit, str) or SOURCE_COMMIT_RE.fullmatch(commit) is None:
-        raise VerificationError("the c8s source lock commit is invalid")
-    if release["c8s"]["sourceCommit"] != commit:
-        raise VerificationError("the release uses a different c8s source commit")
+) -> dict[str, Any]:
+    release_commit = release["c8s"]["sourceCommit"]
+    if not isinstance(release_commit, str) or SOURCE_COMMIT_RE.fullmatch(release_commit) is None:
+        raise VerificationError("the release c8s source commit is invalid")
+    selected_entry = select_source_lock_entry(source_lock, release_commit)
     expected_node = source_lock_node_image(
         node_source_lock, release["release"]["environment"]
     )
@@ -257,6 +284,7 @@ def validate_source_policy(
         raise VerificationError("the node manifest lacks the TDX image tuple") from error
     if measured != release["c8s"]["measurements"]:
         raise VerificationError("the node manifest differs from the release measurements")
+    return selected_entry
 
 
 def argv_from_allowlist(container: dict[str, Any], label: str) -> list[str]:
@@ -1124,7 +1152,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         environment = os.environ.copy()
         environment["PATH"] = str(attestation_cli.parent) + os.pathsep + environment.get("PATH", "")
         args.gpu_verifier_environment = environment
-    validate_source_policy(release, manifest, source_lock, node_source_lock)
+    source_lock_entry = validate_source_policy(release, manifest, source_lock, node_source_lock)
     if args.operator_public_key is None:
         raise VerificationError(
             "verification requires --operator-public-key: c8s pins RTMR[3] to "
@@ -1142,7 +1170,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         mesh_ca_digest = release["c8s"]["meshCa"]["certificateSha256"]
         if mesh_ca_digest not in {mesh_ca_der_digest, mesh_ca_file_digest}:
             raise VerificationError("the held mesh CA differs from the release")
-    version = verify_c8s_version(args.c8s, source_lock["commit"], args.verifier_timeout_seconds)
+    version = verify_c8s_version(args.c8s, source_lock_entry["commit"], args.verifier_timeout_seconds)
     canonical_from_c8s = canonicalize_allowlist(
         args.c8s, args.allowlist, args.verifier_timeout_seconds, "canonical allowlist"
     )
@@ -1157,7 +1185,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     release_digest = sha256(release_bytes)
     response, public_spki, public_leaf_der_sha256, public_leaf_der = fetch_response(args)
     validate_schema(response, RESPONSE_SCHEMA, "public attestation response")
-    required_c8s_flags: set[str] = set(source_lock.get("requiredVerifierFlags", []))
+    required_c8s_flags: set[str] = set(source_lock_entry.get("requiredVerifierFlags", []))
     if args.policy_mode == "static":
         required_c8s_flags.add("--static-allowlist")
     if response.get("tls", {}).get("mode") in {"tee-webpki", "cds", "acme"}:

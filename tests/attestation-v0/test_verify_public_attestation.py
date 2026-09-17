@@ -962,6 +962,33 @@ print(json.dumps(result))
     def test_old_c8s_capabilities_fail_closed(self):
         self.assert_rejected(env={"FAKE_C8S_OLD": "1"})
 
+    def test_each_pinned_c8s_commit_resolves_to_its_own_lock_entry(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            select_source_lock_entry = runpy.run_path(str(SCRIPT))["select_source_lock_entry"]
+        finally:
+            sys.path.pop(0)
+        top_entry = {"commit": "a" * 40, "files": {"top.go": "sha256:" + "1" * 64}}
+        other_entry = {"commit": "b" * 40, "files": {"other.go": "sha256:" + "2" * 64}}
+        source_lock = {**top_entry, "commits": [other_entry]}
+        self.assertEqual(select_source_lock_entry(source_lock, "a" * 40), source_lock)
+        self.assertEqual(select_source_lock_entry(source_lock, "b" * 40), other_entry)
+
+    def test_unlisted_c8s_commit_fails_closed(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+            select_source_lock_entry = module["select_source_lock_entry"]
+            VerificationError = module["VerificationError"]
+        finally:
+            sys.path.pop(0)
+        source_lock = {
+            "commit": "a" * 40,
+            "commits": [{"commit": "b" * 40}],
+        }
+        with self.assertRaisesRegex(VerificationError, "different c8s source commit"):
+            select_source_lock_entry(source_lock, "c" * 40)
+
     def test_untrusted_public_tls_fails_closed(self):
         wrong_ca = self.directory / "wrong-ca.pem"
         _, ca, _, _ = make_ca_and_leaf("wrong")
