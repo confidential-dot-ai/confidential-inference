@@ -19,6 +19,18 @@ TRUSTED_ROOT = ROOT / "releases/trust/sigstore-public-good-trusted-root.json"
 WORKFLOW = ROOT / ".github/workflows/release-bundle.yml"
 RELEASE_SIGNATURE = ROOT / "scripts/release_signature.py"
 LOCK = ROOT / "scripts/requirements-release-signing.txt"
+PRE_HISTORY_RELEASES = ROOT / "releases/pre-history-releases.json"
+
+
+def pre_history_bundle_paths() -> set[Path]:
+    """Bundles this repository cannot check for source-commit ancestry.
+
+    These bundles were built from a source history that predates this
+    repository's recreation, so their recorded commit is genuinely absent.
+    See `releases/pre-history-releases.json` for the reason each is listed.
+    """
+    entries = json.loads(PRE_HISTORY_RELEASES.read_text())["bundles"]
+    return {(ROOT / entry["path"]).resolve() for entry in entries}
 
 
 class ReleaseSignatureTests(unittest.TestCase):
@@ -44,9 +56,25 @@ class ReleaseSignatureTests(unittest.TestCase):
         self.assertIn("release-bundle.yml@refs/tags/{release}", policy["certificateIdentityTemplate"])
 
     def test_prepare_keeps_the_exact_release_bytes(self) -> None:
+        pre_history = pre_history_bundle_paths()
+        validate_release_schema = runpy.run_path(str(RELEASE_SIGNATURE))[
+            "validate_release_schema"
+        ]
         for source in (PRODUCTION, INTEGRATION_STAGING):
             with self.subTest(source=source):
                 release = json.loads(source.read_text())
+                if source.resolve() in pre_history:
+                    # `prepare-signed-release.py` cannot check this bundle's
+                    # source-commit ancestry: the commit predates this
+                    # repository's recreation and is genuinely absent from
+                    # its history. Check everything else the script would
+                    # have checked instead of running it.
+                    validate_release_schema(release)
+                    self.assertEqual(
+                        release["source"]["repository"],
+                        "https://github.com/confidential-dot-ai/confidential-inference",
+                    )
+                    continue
                 with tempfile.TemporaryDirectory() as temporary:
                     output = Path(temporary) / "release-bundle.json"
                     tag_commit = Path(temporary) / "release-tag-commit.txt"
@@ -159,15 +187,25 @@ class ReleaseSignatureTests(unittest.TestCase):
             self.assertIn("release-bundle schema", result.stderr)
 
     def test_prepare_rejects_a_dangling_output_symlink(self) -> None:
+        # This exercises the output-symlink check, which runs only after the
+        # source-commit ancestry check passes. `PRODUCTION` is a pre-history
+        # bundle (see `releases/pre-history-releases.json`) whose recorded
+        # commit cannot pass that check here, so this test repoints the
+        # commit at the checked-out HEAD to reach the code path under test.
         release = json.loads(PRODUCTION.read_text())
+        release["source"]["commit"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip()
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
+            source = directory / "source-release-bundle.json"
+            source.write_text(json.dumps(release))
             output = directory / "release.json"
             output.symlink_to(directory / "missing-target")
             result = subprocess.run(
                 [
                     "python3", str(PREPARE),
-                    "--source", str(PRODUCTION),
+                    "--source", str(source),
                     "--output", str(output),
                     "--tag", release["release"]["name"],
                 ],

@@ -99,3 +99,7 @@ source commit, but the user must install it from a trusted source.
 The trusted root is a frozen public Sigstore root. A root rotation requires a
 reviewed update to the trusted-root file, its policy digest, and each new
 release bundle. Never rewrite a prior signed release.
+
+The bundles listed in `releases/pre-history-releases.json` were built from a
+source history that is not in this repository; the next release is the first
+that rebuilds from here.
