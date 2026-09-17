@@ -161,7 +161,7 @@ after all checks pass.
 
 The example above verifies production, which seals its allowlist into its
 own measured node image. Not every environment seals an allowlist:
-`conf-inference-prod` and `staging` (since its c8s v0.21.2 move) run
+`conf-inference-prod` and `staging` (since its c8s v0.20.4 move) run
 `policyMode: operator` on a stock, pull-mode node image instead, and upload
 the allowlist to CDS after `c8s install`. Pass
 `--node-manifest images/control-plane-node/manifest-conf-inference-prod.json`

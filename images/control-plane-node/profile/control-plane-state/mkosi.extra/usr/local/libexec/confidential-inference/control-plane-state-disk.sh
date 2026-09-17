@@ -356,7 +356,7 @@ subjects:
 # releases/production/release-bundle.json) and "confidential-inference-staging"
 # (staging's sealed-image builds, when it ran one; staging has run
 # policyMode: operator on a stock, pull-mode node image since its c8s
-# v0.21.2 move, so this Role is currently unused, but the profile keeps it
+# v0.20.4 move, so this Role is currently unused, but the profile keeps it
 # in case a sealed staging build returns; see
 # images/control-plane-node/README.md).
 # RKE2 reconciles this AddOn continuously, so the Role for a namespace that

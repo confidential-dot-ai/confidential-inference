@@ -53,11 +53,11 @@ The private deployment repository selects the public Git commit, allowlist
 path, and canonical digest. It supplies infrastructure values and secrets, but
 it does not keep another editable allowlist.
 
-Staging moved off static policy mode when it moved to c8s v0.21.2. It now
+Staging moved off static policy mode when it moved to c8s v0.20.4. It now
 uses `policyMode: operator`, the same mode as `conf-inference-prod`: the
 node image is a stock, pull-mode image with no allowlist baked in, and the
 allowlist is uploaded to CDS after `c8s install` instead. `staging-policy.json`
-still pins `c8s.cvmMode: bare-metal` (the v0.21.2 name for the mode
+still pins `c8s.cvmMode: bare-metal` (the v0.20.4 name for the mode
 `production` still calls `node`) and still generates a committed
 `allowlists/staging.json`: an operator-mode cluster starts from this file as
 its floor and extends it with signed operator uploads afterward, so the

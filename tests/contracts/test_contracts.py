@@ -113,7 +113,7 @@ class ContractTests(unittest.TestCase):
         self.assertNotEqual(pins["production"], pins["conf-inference-prod"])
 
     def test_staging_allowlist_reproduces_from_the_committed_policy(self):
-        """Staging moved to operator mode on c8s v0.21.2: no sealed release
+        """Staging moved to operator mode on c8s v0.20.4: no sealed release
         bundle is committed yet (the release flow builds and signs it), but
         the generated allowlist must still match the committed policy."""
         allowlist_path = ROOT / "c8s/allowlists/staging.json"

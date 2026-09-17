@@ -10,7 +10,7 @@ sealed allowlist. Production seals `c8s/allowlists/production.json`. See
 "Build inputs" below for the file table.
 
 Not every environment seals an allowlist. Under `policyMode: operator`
-(`conf-inference-prod`, and `staging` since its c8s v0.21.2 move), the node
+(`conf-inference-prod`, and `staging` since its c8s v0.20.4 move), the node
 image is a stock, pull-mode image: no allowlist is baked in, and the
 allowlist is uploaded to CDS after `c8s install` instead. Those environments
 have no build receipt, node manifest, or measurements config here.

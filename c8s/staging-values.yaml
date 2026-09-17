@@ -30,18 +30,20 @@ images:
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
-  # c8s v0.21.2, main-line ghcr image (rke2-tdx-cdi-v0.21.2 node image family).
-  # No branch code baked in, so no /workload-proxy binary (see
-  # namedWorkloadProxy below).
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:d192e812c4e9d5c5502ef1cdb568c5474273ff592706e050d453daaab3c87197
+  # c8s v0.20.4, main-line ghcr image (rke2-tdx-cdi-v0.20.4 node image family;
+  # the last image proven by c8s tdx-metal-e2e -- v0.21.x's node image is
+  # broken, scratch-enforce.sh reads the virtio serial at the wrong sysfs
+  # path and powers the guest off). No branch code baked in, so no
+  # /workload-proxy binary (see namedWorkloadProxy below).
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:73235c2cb307647e35e3b0b6747e246b0272116865696870e7222b7ce11e431e
   stateMounter: docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
 
 namedWorkloadProxy:
-  # OFF on c8s v0.21.2: workload-proxy is branch-only c8s code, absent from
+  # OFF on c8s v0.20.4: workload-proxy is branch-only c8s code, absent from
   # every main-line c8s-operator image (/c8s has no such subcommand at
-  # v0.21.2 and no /workload-proxy binary ships in the image). The previous
+  # v0.20.4 and no /workload-proxy binary ships in the image). The previous
   # staging cluster ran a branch build (079aeb4) that carried the proxy;
-  # the v0.21.2 bump drops it, same as conf-inference-prod. The
+  # the c8s bump drops it, same as conf-inference-prod. The
   # gateway<->router hop is direct inside the TEE boundary until the proxy
   # lands on main and the images pin it.
   enabled: false
@@ -56,7 +58,7 @@ attestationReceipts:
     - 192.0.2.1/32
   legacyC8s615: false
   evidenceBaseUrl: https://staging.api.confidential.ai
-  # The staging cluster on c8s v0.21.2 is a fresh cluster, not an upgrade of
+  # The staging cluster on c8s v0.20.4 is a fresh cluster, not an upgrade of
   # the previous staging cluster, so the release counter restarts.
   releaseId: staging-v1
   # TODO(release-flow): sha256 of the final signed release-bundle.json. Filled

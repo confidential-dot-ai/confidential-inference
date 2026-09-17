@@ -51,7 +51,7 @@ class StagingControlAllowlistTests(unittest.TestCase):
 
     def test_policy_pins_only_the_named_exact_launch(self) -> None:
         self.assertTrue(self.matches(self.allowlist))
-        # Staging moved to c8s v0.21.2 and operator mode: there is no signed
+        # Staging moved to c8s v0.20.4 and operator mode: there is no signed
         # releases/staging/release-bundle.json committed yet (the release
         # flow builds and signs one), so this test checks the generated
         # allowlist directly instead of cross-checking it against a release
@@ -61,7 +61,7 @@ class StagingControlAllowlistTests(unittest.TestCase):
             ROOT / "c8s/allowlists/staging.json"
         ).read_bytes()
         self.assertTrue(allowlist_bytes.endswith(b"\n"))
-        # The c8s v0.21.2 main-line allowlist shape carries no top-level
+        # The c8s v0.20.4 main-line allowlist shape carries no top-level
         # "digests" convenience map (only "schema" and "workloads"), unlike
         # the older sealed-image format the previous staging cluster used.
         self.assertNotIn("digests", self.allowlist)

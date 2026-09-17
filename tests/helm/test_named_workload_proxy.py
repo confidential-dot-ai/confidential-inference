@@ -317,7 +317,7 @@ def test_prechange_allowlists_are_retained_by_canonical_digest() -> None:
 
 
 def test_active_staging_allowlist_uses_one_simulator_worker() -> None:
-    # Staging moved to c8s v0.21.2 and one inference node (no GPU): a single
+    # Staging moved to c8s v0.20.4 and one inference node (no GPU): a single
     # inference-worker-0, unlike the old two-worker staging cluster.
     workloads = json.loads(
         (ROOT / "c8s/allowlists/staging.json").read_text()
