@@ -19,6 +19,7 @@ repository.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -52,12 +53,24 @@ def read_json(path: Path, label: str) -> Any:
         raise LockstepError(f"cannot read valid JSON from {label} ({path})") from error
 
 
-def lock_entries(source_lock: dict[str, Any]) -> list[dict[str, Any]]:
-    entries = [source_lock]
+def lock_entries(source_lock: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Split the source lock into its frozen top-level entry and active commits.
+
+    The top-level entry pins whatever c8s commit the already-shipped,
+    frozen production gateway image was built and verified against (see
+    `docs/plans/gateway-attestation-c8s-v0.20.4.md` section 4: "Only
+    production runs the old protocol, and production is frozen on its
+    current gateway image. No environment needs both."). This repository's
+    current gateway source speaks exactly one protocol at a time
+    (lockstep, not dual), so it can never satisfy a frozen historical
+    entry's fixture requirements again — that entry was validated once,
+    when its own image shipped. Only `commits` entries name c8s versions
+    the *current* gateway build is meant to interoperate with, so only
+    those get checked against today's gateway test fixtures.
+    """
     extra = source_lock.get("commits", [])
-    if isinstance(extra, list):
-        entries.extend(entry for entry in extra if isinstance(entry, dict))
-    return entries
+    active = [entry for entry in extra if isinstance(entry, dict)] if isinstance(extra, list) else []
+    return source_lock, active
 
 
 def load_manifests() -> dict[str, dict[str, Any]]:
@@ -87,6 +100,20 @@ def load_manifests() -> dict[str, dict[str, Any]]:
     return by_commit
 
 
+def field_is_constructed(field: str, text: str) -> bool:
+    """True only where `field` appears as a JSON object key being built.
+
+    A fixture that asserts a field's *absence* (for example
+    `response["receipt"]["session_pubkey"].is_null()`, proving the gateway
+    does NOT build the old shape) contains the field name as a bracket
+    index, not as a `"field": value` key. Only the latter is evidence the
+    gateway actually constructs that field, so the marker search must
+    require the colon, or a regression test asserting absence of the other
+    protocol's field reads as if the gateway still built it.
+    """
+    return re.search(rf'"{re.escape(field)}"\s*:', text) is not None
+
+
 def gateway_fixture_text() -> str:
     if not GATEWAY_TESTS.is_dir():
         raise LockstepError(f"{GATEWAY_TESTS} does not exist")
@@ -97,7 +124,11 @@ def gateway_fixture_text() -> str:
 
 
 def check_entry(
-    entry: dict[str, Any], manifests: dict[str, dict[str, Any]], fixture_text: str,
+    entry: dict[str, Any],
+    manifests: dict[str, dict[str, Any]],
+    fixture_text: str,
+    *,
+    require_fixture_match: bool,
 ) -> str:
     commit = entry.get("commit")
     if not isinstance(commit, str):
@@ -122,7 +153,9 @@ def check_entry(
             f"commit {commit}: the {protocol!r} manifest omits its own marker field(s) "
             f"{missing_from_manifest}"
         )
-    missing_from_gateway = [f for f in markers if f"\"{f}\"" not in fixture_text]
+    if not require_fixture_match:
+        return f"commit {commit}: protocol {protocol!r} matches its manifest (frozen entry, not checked against gateway fixtures)"
+    missing_from_gateway = [f for f in markers if not field_is_constructed(f, fixture_text)]
     if missing_from_gateway:
         raise LockstepError(
             f"commit {commit} pins protocol {protocol!r}, which the gateway's own test "
@@ -135,7 +168,7 @@ def check_entry(
     for other_protocol, other_markers in PROTOCOL_MARKER_FIELDS.items():
         if other_protocol == protocol:
             continue
-        if all(f'"{f}"' in fixture_text for f in other_markers):
+        if all(field_is_constructed(f, fixture_text) for f in other_markers):
             raise LockstepError(
                 f"the gateway test fixtures build both {protocol!r} and "
                 f"{other_protocol!r} receipt shapes; c8s's identical `version` "
@@ -149,10 +182,12 @@ def main() -> int:
         source_lock = read_json(SOURCE_LOCK, "c8s admission source lock")
         manifests = load_manifests()
         fixture_text = gateway_fixture_text()
-        verdicts = [
-            check_entry(entry, manifests, fixture_text)
-            for entry in lock_entries(source_lock)
-        ]
+        frozen_entry, active_entries = lock_entries(source_lock)
+        verdicts = [check_entry(frozen_entry, manifests, fixture_text, require_fixture_match=False)]
+        verdicts.extend(
+            check_entry(entry, manifests, fixture_text, require_fixture_match=True)
+            for entry in active_entries
+        )
     except LockstepError as error:
         print(f"c8s protocol lockstep check failed: {error}", file=sys.stderr)
         return 1

@@ -36,13 +36,17 @@ class C8sProtocolLockstepTests(unittest.TestCase):
             result["attestationProtocol"] = protocol
         return result
 
-    def test_old_protocol_fixtures_pass_for_the_production_commit(self):
-        fixture_text = 'let receipt = json!({"session_pubkey": {"x25519": "a", "mlkem768": "b"}});'
+    def test_the_frozen_production_commit_is_not_checked_against_fixtures(self):
+        # Production is frozen on its already-shipped gateway image
+        # (docs/plans/gateway-attestation-c8s-v0.20.4.md section 4): the
+        # current gateway source speaks only the new protocol, so the
+        # frozen entry must pass even against unrelated fixture text.
+        fixture_text = 'let receipt = json!({"xwing_ek": "a", "xwing_ct": "b", "session_id": "c"});'
         verdict = self.module["check_entry"](
             self.entry("079aeb48c4d523aa7500b4bd78f0283b2d12e317"),
-            self.manifests, fixture_text,
+            self.manifests, fixture_text, require_fixture_match=False,
         )
-        self.assertIn("c8s/attest-pq/v1'", verdict)
+        self.assertIn("frozen entry", verdict)
 
     def test_xwing_commit_fails_closed_without_gateway_fixtures(self):
         fixture_text = 'let receipt = json!({"session_pubkey": {"x25519": "a", "mlkem768": "b"}});'
@@ -52,7 +56,7 @@ class C8sProtocolLockstepTests(unittest.TestCase):
                     "466ce79e77c2fb6c014620b770066f275e889df6",
                     "c8s/attest-pq/v1+xwing",
                 ),
-                self.manifests, fixture_text,
+                self.manifests, fixture_text, require_fixture_match=True,
             )
 
     def test_xwing_commit_passes_once_the_gateway_builds_the_new_shape(self):
@@ -61,7 +65,7 @@ class C8sProtocolLockstepTests(unittest.TestCase):
         )
         verdict = self.module["check_entry"](
             self.entry("466ce79e77c2fb6c014620b770066f275e889df6", "c8s/attest-pq/v1+xwing"),
-            self.manifests, fixture_text,
+            self.manifests, fixture_text, require_fixture_match=True,
         )
         self.assertIn("v1+xwing", verdict)
 
@@ -71,7 +75,7 @@ class C8sProtocolLockstepTests(unittest.TestCase):
         )
         verdict = self.module["check_entry"](
             self.entry("2ef376a875010ac98542ab5f2f770aeb95b0082f", "c8s/attest-pq/v1+xwing"),
-            self.manifests, fixture_text,
+            self.manifests, fixture_text, require_fixture_match=True,
         )
         self.assertIn("v1+xwing", verdict)
 
@@ -85,7 +89,7 @@ class C8sProtocolLockstepTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module["LockstepError"], "speak exactly one"):
             self.module["check_entry"](
                 self.entry("466ce79e77c2fb6c014620b770066f275e889df6", "c8s/attest-pq/v1+xwing"),
-                self.manifests, fixture_text,
+                self.manifests, fixture_text, require_fixture_match=True,
             )
 
     def test_an_unlisted_commit_fails_closed(self):
@@ -93,8 +97,22 @@ class C8sProtocolLockstepTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module["LockstepError"], "no protocol manifest"):
             self.module["check_entry"](
                 self.entry("c" * 40, "c8s/attest-pq/v1"),
-                self.manifests, fixture_text,
+                self.manifests, fixture_text, require_fixture_match=True,
             )
+
+    def test_asserting_a_fields_absence_is_not_evidence_the_gateway_builds_it(self):
+        # A regression test that proves the OLD field is gone (bracket-index
+        # access, e.g. `response["receipt"]["session_pubkey"].is_null()`)
+        # must not be read as the gateway constructing that field.
+        fixture_text = (
+            'let receipt = json!({"xwing_ek": "a", "xwing_ct": "b", "session_id": "c"});'
+            'assert!(response["receipt"]["session_pubkey"].is_null());'
+        )
+        verdict = self.module["check_entry"](
+            self.entry("466ce79e77c2fb6c014620b770066f275e889df6", "c8s/attest-pq/v1+xwing"),
+            self.manifests, fixture_text, require_fixture_match=True,
+        )
+        self.assertIn("v1+xwing", verdict)
 
 
 if __name__ == "__main__":
