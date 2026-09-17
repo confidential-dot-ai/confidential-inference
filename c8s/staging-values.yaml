@@ -22,10 +22,10 @@ scheduling:
   inferenceNodeName: inference-node-1
 
 images:
-  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:6e7d59895e09c4936bc13241708f2499d0d1194b78c836ad2e6d748d6e27ac9f
-  sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
-  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
-  sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
+  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:eea9c3de0b6069c2deeef757882218e68fbeb663aba4ff17d444f3afa04ef1e1
+  sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895
+  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895
+  sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895
   metricsCollector: docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
@@ -71,8 +71,8 @@ attestationReceipts:
   # sha256("c8s-operator-key-set-v1\0" + the 32 raw bytes of
   # expectedOperatorPublicKeySha256), the same single-key-set formula
   # conf-inference-prod uses.
-  expectedOperatorPublicKeySha256: sha256:58b38923c5309156759dbb2c3333dd77831d19ffae256b2ce69094e014d4bc15
-  expectedOperatorKeySetSha256: sha256:e2c90bb06aaa32260ac84921d4837e49ab72576032209bc19c057a8e069c9588
+  expectedOperatorPublicKeySha256: sha256:aa03435a600e84035333fcc2dbb7dcc0c694b6a16674d28aa297c9ad5bcf1431
+  expectedOperatorKeySetSha256: sha256:1899ce71bec3104e8ada101f22f2f6f27154691bbbed572b94d974e264174111
   targets:
     - {target: gateway, workload: gateway, identity: gateway, url: http://127.0.0.1:8800}
     - {target: sglang-router, workload: sglang-router, identity: sglang-router, url: http://sglang-router:8801}

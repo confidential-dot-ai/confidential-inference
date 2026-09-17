@@ -12,7 +12,7 @@
   "c8s": {
     "repository": "https://github.com/confidential-dot-ai/c8s",
     "sourceCommit": "466ce79e77c2fb6c014620b770066f275e889df6",
-    "imageTag": "v0.20.4",
+    "imageTag": "466ce79",
     "cvmMode": "bare-metal",
     "hardwarePlatform": "tdx",
     "distro": "rke2",
@@ -161,14 +161,6 @@
     }
   },
   "imageConfigs": {
-    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:6e7d59895e09c4936bc13241708f2499d0d1194b78c836ad2e6d748d6e27ac9f": [
-      {
-        "command": [
-          "/usr/local/bin/confidential-gateway"
-        ],
-        "args": []
-      }
-    ],
     "docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316": [
       {
         "command": [
@@ -176,102 +168,6 @@
           "/opt/confidential-inference/mount.sh"
         ],
         "args": []
-      }
-    ],
-    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b": [
-      {
-        "command": [
-          "python3"
-        ],
-        "args": [
-          "-m",
-          "sglang_simulator.simulation.sglang.launch_server",
-          "--model-path=/opt/confidential-inference/sglang-simulator/test/assets/qwen3-8b",
-          "--tokenizer-path=/opt/confidential-inference/sglang-simulator/examples/assets/tokenizer",
-          "--sim-config-path=/opt/confidential-inference/sglang-simulator/examples/sim_configs/replay.json",
-          "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
-          "--reasoning-parser=deepseek-v4",
-          "--chat-template=chatml",
-          "--max-total-tokens=8192",
-          "--max-running-requests=48",
-          "--random-seed=0",
-          "--enable-metrics",
-          "--enable-cache-report",
-          "--host=0.0.0.0",
-          "--port=30000"
-        ]
-      },
-      {
-        "command": [
-          "python3"
-        ],
-        "args": [
-          "-m",
-          "sglang_simulator.simulation.sglang.launch_server",
-          "--model-path=/opt/confidential-inference/sglang-simulator/test/assets/qwen3-8b",
-          "--tokenizer-path=/opt/confidential-inference/sglang-simulator/examples/assets/tokenizer",
-          "--sim-config-path=/opt/confidential-inference/sglang-simulator/examples/sim_configs/replay.json",
-          "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
-          "--reasoning-parser=deepseek-v4",
-          "--chat-template=chatml",
-          "--max-total-tokens=8192",
-          "--max-running-requests=48",
-          "--random-seed=1",
-          "--enable-metrics",
-          "--enable-cache-report",
-          "--host=0.0.0.0",
-          "--port=30000"
-        ]
-      },
-      {
-        "command": [
-          "python3",
-          "-m",
-          "sglang_router.launch_router"
-        ],
-        "args": [
-          "--service-discovery",
-          "--service-discovery-namespace=confidential-inference-staging",
-          "--service-discovery-port=30000",
-          "--selector=app.kubernetes.io/component=inference-worker",
-          "--policy=cache_aware",
-          "--cache-threshold=0.3",
-          "--balance-abs-threshold=64",
-          "--balance-rel-threshold=1.5",
-          "--eviction-interval-secs=60",
-          "--max-tree-size=67108864",
-          "--health-check-endpoint=/health",
-          "--worker-startup-timeout-secs=3600",
-          "--host=0.0.0.0",
-          "--port=30000",
-          "--prometheus-host=0.0.0.0",
-          "--prometheus-port=29000"
-        ]
-      },
-      {
-        "command": [
-          "python3",
-          "-m",
-          "sglang_router.launch_router"
-        ],
-        "args": [
-          "--service-discovery",
-          "--service-discovery-namespace=confidential-inference-staging",
-          "--service-discovery-port=30000",
-          "--selector=app.kubernetes.io/component=inference-worker",
-          "--policy=cache_aware",
-          "--cache-threshold=0.3",
-          "--balance-abs-threshold=64",
-          "--balance-rel-threshold=1.5",
-          "--eviction-interval-secs=60",
-          "--max-tree-size=67108864",
-          "--health-check-endpoint=/health",
-          "--worker-startup-timeout-secs=3600",
-          "--host=127.0.0.1",
-          "--port=30000",
-          "--prometheus-host=0.0.0.0",
-          "--prometheus-port=29000"
-        ]
       }
     ],
     "registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9": [
@@ -417,6 +313,110 @@
           "--cert-file=/etc/c8s/certs/tls.crt",
           "--key-file=/etc/c8s/certs/tls.key",
           "--ca-file=/etc/c8s/certs/ca.crt"
+        ]
+      }
+    ],
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:eea9c3de0b6069c2deeef757882218e68fbeb663aba4ff17d444f3afa04ef1e1": [
+      {
+        "command": [
+          "/usr/local/bin/confidential-gateway"
+        ],
+        "args": []
+      }
+    ],
+    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895": [
+      {
+        "command": [
+          "python3"
+        ],
+        "args": [
+          "-m",
+          "sglang_simulator.simulation.sglang.launch_server",
+          "--model-path=/opt/confidential-inference/sglang-simulator/test/assets/qwen3-8b",
+          "--tokenizer-path=/opt/confidential-inference/sglang-simulator/examples/assets/tokenizer",
+          "--sim-config-path=/opt/confidential-inference/sglang-simulator/examples/sim_configs/replay.json",
+          "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
+          "--reasoning-parser=deepseek-v4",
+          "--chat-template=chatml",
+          "--max-total-tokens=8192",
+          "--max-running-requests=48",
+          "--random-seed=0",
+          "--enable-metrics",
+          "--enable-cache-report",
+          "--host=0.0.0.0",
+          "--port=30000"
+        ]
+      },
+      {
+        "command": [
+          "python3"
+        ],
+        "args": [
+          "-m",
+          "sglang_simulator.simulation.sglang.launch_server",
+          "--model-path=/opt/confidential-inference/sglang-simulator/test/assets/qwen3-8b",
+          "--tokenizer-path=/opt/confidential-inference/sglang-simulator/examples/assets/tokenizer",
+          "--sim-config-path=/opt/confidential-inference/sglang-simulator/examples/sim_configs/replay.json",
+          "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
+          "--reasoning-parser=deepseek-v4",
+          "--chat-template=chatml",
+          "--max-total-tokens=8192",
+          "--max-running-requests=48",
+          "--random-seed=1",
+          "--enable-metrics",
+          "--enable-cache-report",
+          "--host=0.0.0.0",
+          "--port=30000"
+        ]
+      },
+      {
+        "command": [
+          "python3",
+          "-m",
+          "sglang_router.launch_router"
+        ],
+        "args": [
+          "--service-discovery",
+          "--service-discovery-namespace=confidential-inference-staging",
+          "--service-discovery-port=30000",
+          "--selector=app.kubernetes.io/component=inference-worker",
+          "--policy=cache_aware",
+          "--cache-threshold=0.3",
+          "--balance-abs-threshold=64",
+          "--balance-rel-threshold=1.5",
+          "--eviction-interval-secs=60",
+          "--max-tree-size=67108864",
+          "--health-check-endpoint=/health",
+          "--worker-startup-timeout-secs=3600",
+          "--host=0.0.0.0",
+          "--port=30000",
+          "--prometheus-host=0.0.0.0",
+          "--prometheus-port=29000"
+        ]
+      },
+      {
+        "command": [
+          "python3",
+          "-m",
+          "sglang_router.launch_router"
+        ],
+        "args": [
+          "--service-discovery",
+          "--service-discovery-namespace=confidential-inference-staging",
+          "--service-discovery-port=30000",
+          "--selector=app.kubernetes.io/component=inference-worker",
+          "--policy=cache_aware",
+          "--cache-threshold=0.3",
+          "--balance-abs-threshold=64",
+          "--balance-rel-threshold=1.5",
+          "--eviction-interval-secs=60",
+          "--max-tree-size=67108864",
+          "--health-check-endpoint=/health",
+          "--worker-startup-timeout-secs=3600",
+          "--host=127.0.0.1",
+          "--port=30000",
+          "--prometheus-host=0.0.0.0",
+          "--prometheus-port=29000"
         ]
       }
     ]

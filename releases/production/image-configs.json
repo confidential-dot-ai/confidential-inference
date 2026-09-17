@@ -235,6 +235,19 @@
         "/usr/local/bin/confidential-gateway"
       ]
     },
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:eea9c3de0b6069c2deeef757882218e68fbeb663aba4ff17d444f3afa04ef1e1": {
+      "build": {
+        "commit": "7d51025c271e1f4c522002153977578360b37f81",
+        "context": ".",
+        "dockerfile": "images/gateway/Dockerfile",
+        "platform": "linux/amd64",
+        "repository": "https://github.com/confidential-dot-ai/confidential-inference"
+      },
+      "cmd": [],
+      "entrypoint": [
+        "/usr/local/bin/confidential-gateway"
+      ]
+    },
     "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:f1513aa6be4cf944fea6cb040e5a725e307cdcd1662d83ee454ec1c4e92a9da0": {
       "build": {
         "commit": "db0b6ee2178f53bc7352770c8d05cc5eb3e31964",
@@ -287,6 +300,19 @@
         "platform": "linux/amd64",
         "repository": "https://github.com/confidential-dot-ai/confidential-inference"
       }
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895": {
+      "build": {
+        "commit": "7d51025c271e1f4c522002153977578360b37f81",
+        "context": "images/sglang",
+        "dockerfile": "images/sglang/Dockerfile",
+        "platform": "linux/amd64",
+        "repository": "https://github.com/confidential-dot-ai/confidential-inference"
+      },
+      "cmd": [],
+      "entrypoint": [
+        "python3"
+      ]
     },
     "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:f0281673a9b63d59a585979a5984602e3fab4ccfc6e7b585f111d7a2a3021d22": {
       "build": {

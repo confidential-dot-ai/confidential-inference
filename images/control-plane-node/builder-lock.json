@@ -16,5 +16,8 @@
     "libnvatSha256": "1dd6c5429632c8c9ae59aa687cf96593f01c5597afe342f72ec3d8d5ddb0bbae"
   },
   "platform": "tdx",
-  "profile": "images/control-plane-node/profile/control-plane-state"
+  "profile": "images/control-plane-node/profile/control-plane-state",
+  "stagingSignedStage": {
+    "digest": "sha256:efdd1643057f7b9333267ee042d93281c8956275219cd6f6464040d1f3861518"
+  }
 }
