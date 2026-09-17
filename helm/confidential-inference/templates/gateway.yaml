@@ -143,6 +143,8 @@ spec:
               value: {{ join "," $receiptTargets | quote }}
             - name: GATEWAY_C8S_EVIDENCE_BASE_URL
               value: {{ .Values.attestationReceipts.evidenceBaseUrl | quote }}
+            - name: GATEWAY_C8S_OPERATOR_KEY_SET_BASE_URL
+              value: {{ .Values.attestationReceipts.operatorKeySetBaseUrl | default "" | quote }}
             - name: GATEWAY_RELEASE_ID
               value: {{ .Values.attestationReceipts.releaseId | quote }}
             - name: GATEWAY_RELEASE_BUNDLE_SHA256

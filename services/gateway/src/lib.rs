@@ -133,8 +133,12 @@ pub trait AttestationProvider: Send + Sync + 'static {
 
 #[derive(Debug)]
 pub enum AttestationError {
-    Unavailable,
-    Invalid,
+    /// The producer could not reach or read an upstream evidence source. The
+    /// string names the step that failed and carries no evidence bytes.
+    Unavailable(String),
+    /// The producer read the evidence and rejected it. The string names the
+    /// check that refused it and carries no evidence bytes.
+    Invalid(String),
     /// The c8s node speaks a different attestation protocol than this build.
     /// The string names the cause and comes from the c8s error body.
     ProtocolMismatch(String),
@@ -145,7 +149,9 @@ pub struct UnavailableAttestation;
 #[async_trait::async_trait]
 impl AttestationProvider for UnavailableAttestation {
     async fn response(&self, _: &[u8; 32]) -> Result<Value, AttestationError> {
-        Err(AttestationError::Unavailable)
+        Err(AttestationError::Unavailable(
+            "this gateway build has no attestation producer configured".to_owned(),
+        ))
     }
 }
 
@@ -703,13 +709,21 @@ async fn attestation_response(
             );
             response
         }
-        Err(AttestationError::Invalid) => {
+        // Every 5xx this handler emits names the step that failed. The
+        // gateway runs where kubelet logs and exec are disabled, so the
+        // response body is the only diagnosis channel. The detail never
+        // carries evidence bytes, key material, or a nonce.
+        Err(AttestationError::Invalid(detail)) => {
             release_failed_nonce(&state, &nonce);
-            client_error(StatusCode::BAD_GATEWAY, "attestation_invalid")
+            detailed_client_error(StatusCode::BAD_GATEWAY, "attestation_invalid", &detail)
         }
-        Err(AttestationError::Unavailable) => {
+        Err(AttestationError::Unavailable(detail)) => {
             release_failed_nonce(&state, &nonce);
-            client_error(StatusCode::SERVICE_UNAVAILABLE, "attestation_unavailable")
+            detailed_client_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "attestation_unavailable",
+                &detail,
+            )
         }
         // A protocol mismatch is version skew between this gateway and c8s.
         // It is not failed attestation, and it gets its own code and a detail

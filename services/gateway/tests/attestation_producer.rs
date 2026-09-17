@@ -378,6 +378,7 @@ fn provider(base_url: &str) -> C8sAttestationProvider {
             ],
         ),
         evidence_base_url: base_url,
+        operator_key_set_base_url: "",
         release_id: "test-release",
         release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
         expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
@@ -402,6 +403,7 @@ fn staging_provider(base_url: &str) -> C8sAttestationProvider {
             ],
         ),
         evidence_base_url: base_url,
+        operator_key_set_base_url: "",
         release_id: "test-release",
         release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
         expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
@@ -428,6 +430,7 @@ fn static_provider(base_url: &str, expected_digest: &str) -> C8sAttestationProvi
             ],
         ),
         evidence_base_url: base_url,
+        operator_key_set_base_url: "",
         release_id: "test-release",
         release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
         expected_operator_public_key_sha256: "",
@@ -807,6 +810,7 @@ async fn configured_identity_cannot_replace_the_allowlist_identity() {
     let provider = C8sAttestationProvider::from_config(C8sAttestationConfig {
         targets: &targets,
         evidence_base_url: &sidecar.url,
+        operator_key_set_base_url: "",
         release_id: "test-release",
         release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
         expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
@@ -999,6 +1003,7 @@ async fn operator_policy_digest_mismatch_fails_closed() {
     let provider = C8sAttestationProvider::from_config(C8sAttestationConfig {
         targets: &targets,
         evidence_base_url: &sidecar.url,
+        operator_key_set_base_url: "",
         release_id: "test-release",
         release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
         expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
@@ -1039,6 +1044,7 @@ fn target_configuration_rejects_malformed_or_unsafe_entries() {
             C8sAttestationProvider::from_config(C8sAttestationConfig {
                 targets: invalid,
                 evidence_base_url: "https://api.example.test",
+                operator_key_set_base_url: "",
                 release_id: "test-release",
                 release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
                 expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
@@ -1064,4 +1070,136 @@ async fn response_does_not_claim_workload_liveness() {
     assert!(!text.contains("\"running\""));
     assert!(!text.contains("\"liveness\""));
     assert!(!text.contains("\"live\""));
+}
+
+/// Read the `detail` string out of one gateway error body.
+fn error_detail(body: &Value) -> String {
+    body.pointer("/error/detail")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+// The gateway runs where kubelet logs and exec are disabled, so the response
+// body is the only channel that can name the step that failed. Each test below
+// drives one failing step and asserts the public error names it.
+
+#[tokio::test]
+async fn a_not_ready_sidecar_names_the_readyz_step_and_its_status() {
+    let sidecar = fake_sidecar(FakeMode::NotReady).await;
+    let (status, body) = request(gateway(provider(&sidecar.url)), &[21_u8; 32]).await;
+    sidecar.task.abort();
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"]["code"], "attestation_unavailable");
+    let detail = error_detail(&body);
+    assert!(detail.contains("readyz"), "detail: {detail}");
+    assert!(detail.contains("503"), "detail: {detail}");
+    assert!(
+        detail.contains("gateway attestation.rs:"),
+        "detail: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn a_failing_attest_pq_endpoint_names_the_attest_pq_step() {
+    let sidecar = fake_sidecar(FakeMode::FailedReceipt).await;
+    let (status, body) = request(gateway(provider(&sidecar.url)), &[22_u8; 32]).await;
+    sidecar.task.abort();
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let detail = error_detail(&body);
+    assert!(detail.contains("attest-pq"), "detail: {detail}");
+    assert!(detail.contains("502"), "detail: {detail}");
+    assert!(
+        detail.contains("attestation_unavailable"),
+        "the c8s error code is copied: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_operator_key_set_names_the_operator_key_check() {
+    let sidecar = fake_sidecar(FakeMode::MismatchedOperatorKeys).await;
+    let (status, body) = request(gateway(provider(&sidecar.url)), &[23_u8; 32]).await;
+    sidecar.task.abort();
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(body["error"]["code"], "attestation_invalid");
+    let detail = error_detail(&body);
+    assert!(detail.contains("operator key set"), "detail: {detail}");
+}
+
+#[tokio::test]
+async fn a_missing_operator_key_route_names_the_operator_keys_request() {
+    let sidecar = fake_sidecar(FakeMode::MissingOperatorKeys).await;
+    let (status, body) = request(gateway(provider(&sidecar.url)), &[24_u8; 32]).await;
+    sidecar.task.abort();
+
+    assert!(matches!(
+        status,
+        StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE
+    ));
+    let detail = error_detail(&body);
+    assert!(detail.contains("operator"), "detail: {detail}");
+}
+
+#[tokio::test]
+async fn the_error_detail_never_carries_the_nonce_or_evidence_bytes() {
+    let nonce = [25_u8; 32];
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce);
+    let sidecar = fake_sidecar(FakeMode::FailedReceipt).await;
+    let (_, body) = request(gateway(provider(&sidecar.url)), &nonce).await;
+    sidecar.task.abort();
+
+    let detail = error_detail(&body);
+    assert!(!detail.is_empty());
+    assert!(!detail.contains(&encoded), "detail carries the nonce");
+    assert!(
+        !detail.contains("BEGIN CERTIFICATE"),
+        "detail carries certificate bytes"
+    );
+    assert!(detail.len() <= 220, "detail is unbounded: {}", detail.len());
+    assert!(
+        detail
+            .chars()
+            .all(|value| value.is_ascii_graphic() || value == ' '),
+        "detail is not printable ASCII: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn the_operator_key_set_base_url_can_name_a_different_host() {
+    // c8s serves GET /operator-keys on CDS, not on the public front door. The
+    // producer must read the key set from the URL this value names, so an
+    // environment can point it at CDS without moving the evidence base URL.
+    let sidecar = fake_sidecar(FakeMode::Valid).await;
+    let keys = fake_sidecar(FakeMode::MismatchedOperatorKeys).await;
+    let mut config_provider = C8sAttestationProvider::from_config(C8sAttestationConfig {
+        targets: &targets(&sidecar.url, &["gateway"]),
+        evidence_base_url: &sidecar.url,
+        operator_key_set_base_url: &keys.url,
+        release_id: "test-release",
+        release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
+        expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
+        expected_operator_key_set_sha256: TEST_OPERATOR_KEY_SET_SHA256,
+        policy_mode: "operator",
+        expected_static_allowlist_sha256: "",
+        timeout: Duration::from_secs(2),
+        maximum_receipt_bytes: 1_048_576,
+    })
+    .unwrap_or_else(|error| panic!("provider: {error}"));
+    let result = config_provider.response(&[26_u8; 32]).await;
+    sidecar.task.abort();
+    keys.task.abort();
+
+    // The second host serves a key set that does not match the pin, so the
+    // producer must fail on that host's answer, not on the first host's.
+    let Err(error) = result else {
+        panic!("the mismatched key set must fail closed");
+    };
+    assert!(
+        format!("{error:?}").contains("operator key set"),
+        "error: {error:?}"
+    );
+    let _ = &mut config_provider;
 }
