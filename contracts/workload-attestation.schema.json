@@ -204,6 +204,16 @@
             {"contains": {"properties": {"target": {"const": "gateway"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1},
             {"contains": {"properties": {"target": {"const": "sglang-router"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1},
             {"contains": {"properties": {"target": {"const": "inference-worker-0"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"target": {"const": "inference-worker-1"}}, "required": ["target"]}, "minContains": 0, "maxContains": 0}
+            ,{"contains": {"properties": {"target": {"const": "metrics-collector"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1}
+            ,{"contains": {"properties": {"target": {"const": "kube-state-metrics"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1}
+          ]
+        },
+        {
+          "allOf": [
+            {"contains": {"properties": {"target": {"const": "gateway"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"target": {"const": "sglang-router"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"target": {"const": "inference-worker-0"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1},
             {"contains": {"properties": {"target": {"const": "inference-worker-1"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1}
             ,{"contains": {"properties": {"target": {"const": "metrics-collector"}}, "required": ["target"]}, "minContains": 0, "maxContains": 0}
             ,{"contains": {"properties": {"target": {"const": "kube-state-metrics"}}, "required": ["target"]}, "minContains": 0, "maxContains": 0}

@@ -1547,6 +1547,23 @@ class WorkloadAttestationSchemaTests(unittest.TestCase):
         }
         jsonschema.Draft202012Validator(schema).validate(response)
 
+        # Staging runs one inference worker and both observability
+        # workloads, so its receipt set is five targets: the full set
+        # without inference-worker-1. Measured live on staging-v6.
+        five = [item for item in response["receipts"] if item["target"] != "inference-worker-1"]
+        five_target = dict(response, receipts=five)
+        jsonschema.Draft202012Validator(schema).validate(five_target)
+
+        # Every other subset of the same set must still fail closed. A
+        # missing router, a missing worker, or exactly one of the two
+        # observability workloads is a receipt set no environment runs.
+        for dropped in ("sglang-router", "inference-worker-0", "kube-state-metrics"):
+            broken = [item for item in five if item["target"] != dropped]
+            with self.assertRaises(jsonschema.ValidationError):
+                jsonschema.Draft202012Validator(schema).validate(
+                    dict(response, receipts=broken)
+                )
+
     def test_tee_webpki_requires_a_separate_front_door_receipt(self):
         schema = json.loads(
             (ROOT / "contracts/workload-attestation.schema.json").read_text()
