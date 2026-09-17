@@ -26,13 +26,14 @@ OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 C8S_MODULE = "github.com/confidential-dot-ai/c8s/cmd/c8s"
 
-# Mirrors c8s's internal/secrets/handler.go:53 InjectedEntrypoints. CDS drops a
-# reported container from workload matching (WorkloadContainers,
-# internal/secrets/handler.go:471-478) when its image is a floor entry (any
-# argv admitted) AND its command is one of these. A tenant workload entry must
-# not declare such a container as a main container: it will never be present
-# in the running set MatchWorkload sees, so declaring it there makes the
-# entry unmatchable (see receipts/deployments/2026-09-17-staging-mesh-diagnosis.md).
+# Mirrors c8s's secrets handler package InjectedEntrypoints (handler.go:53 in
+# that package). CDS drops a reported container from workload matching
+# (WorkloadContainers, that package's handler.go:471-478) when its image is a
+# floor entry (any argv admitted) AND its command is one of these. A tenant
+# workload entry must not declare such a container as a main container: it
+# will never be present in the running set MatchWorkload sees, so declaring
+# it there makes the entry unmatchable (see the 2026-09-17 staging mesh
+# diagnosis deployment receipt).
 INJECTED_ENTRYPOINTS = ("get-cert", "get-secret", "get-volume", "/c8s")
 
 
@@ -202,7 +203,7 @@ def volume_reads(document: dict[str, Any]) -> list[str]:
 
 
 def is_injected_container(container: dict[str, Any], system_images: dict[str, Any]) -> bool:
-    """Mirror c8s's isInjected (internal/secrets/handler.go:471-478).
+    """Mirror c8s's isInjected (its secrets handler package, handler.go:471-478).
 
     A rendered container is one c8s injects when its image is a system-floor
     entry (admitted under any argv) AND its command is one of

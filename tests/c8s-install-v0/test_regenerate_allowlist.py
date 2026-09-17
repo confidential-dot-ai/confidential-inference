@@ -130,8 +130,8 @@ class RegenerateAllowlistTests(unittest.TestCase):
         # container before workload matching runs, so a tenant workload entry
         # must not declare it as a main container either -- declaring it
         # there makes the entry permanently unmatchable (ErrNoMatch), because
-        # the container c8s reports never includes it. See
-        # receipts/deployments/2026-09-17-staging-mesh-diagnosis.md.
+        # the container c8s reports never includes it. See the 2026-09-17
+        # staging mesh diagnosis deployment receipt.
         sidecar_image = "example.invalid/c8s-operator@sha256:" + "2" * 64
         app_image = "example.invalid/gateway@sha256:" + "3" * 64
         sidecar_args = ["cds-attest", "--expected-workload=gateway"]
