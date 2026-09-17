@@ -277,9 +277,9 @@ class ReleaseBundleTests(unittest.TestCase):
                 "source": {"type": "c8s-chart"},
             },
             {
-                "allowlistName": "tailscale-staging-control-plane",
-                "confidentialWorkloadId": "tailscale-staging-control-plane",
-                "controller": "Deployment/tailscale-staging-control-plane",
+                "allowlistName": "node-agent-staging-control-plane",
+                "confidentialWorkloadId": "node-agent-staging-control-plane",
+                "controller": "Deployment/node-agent-staging-control-plane",
                 "source": {"type": "manifest", "file": "workload.yaml"},
             },
         ]

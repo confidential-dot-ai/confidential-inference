@@ -665,7 +665,7 @@ def c8s_release_input(
     # externalWorkloadMappings instead of hard-coding either string. The
     # front-door entry is the one the c8s chart itself renders
     # (source.type == "c8s-chart"); every other externalWorkloadMappings
-    # entry (for example a Tailscale sidecar) comes from a plain manifest.
+    # entry (for example a node-agent sidecar) comes from a plain manifest.
     front_door_entries = [
         item for item in value.get("externalWorkloadMappings", [])
         if isinstance(item, dict) and item.get("source", {}).get("type") == "c8s-chart"

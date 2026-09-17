@@ -137,7 +137,6 @@
             "--attestation-api-url=http://$(HOST_IP):8400",
             "--front-door-mode=acme",
             "--serving-cert-file=/etc/c8s-acme-tls/cert.pem",
-            "--expected-workload=c8s-router",
             "--mesh-identity-cert-file=/tls/cert.pem",
             "--mesh-identity-key-file=/tls/key.pem",
             "--mesh-identity-ca-file=/tls/ca.pem",
