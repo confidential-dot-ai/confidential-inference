@@ -962,6 +962,113 @@ print(json.dumps(result))
     def test_old_c8s_capabilities_fail_closed(self):
         self.assert_rejected(env={"FAKE_C8S_OLD": "1"})
 
+    def test_canonicalize_allowlist_uses_native_cli_when_capability_true(self):
+        # capabilities omitted (None) must behave exactly as before this
+        # function grew capability branching: it always shells out.
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            canonicalize_allowlist = runpy.run_path(str(SCRIPT))["canonicalize_allowlist"]
+        finally:
+            sys.path.pop(0)
+        document = {"schema": "c8s.allowlist/v1", "workloads": {}}
+        path = self.directory / "allowlist-native.json"
+        path.write_text(json.dumps(document))
+        for capabilities in (None, {"allowlistCanonicalize": True}):
+            with self.subTest(capabilities=capabilities):
+                canonical = canonicalize_allowlist(
+                    str(self.fake_c8s), path, 5, "canonical allowlist", capabilities,
+                )
+                # The fake c8s's canonicalize branch echoes back compact JSON.
+                self.assertEqual(json.loads(canonical), document)
+
+    def test_canonicalize_allowlist_falls_back_to_python_when_capability_false(self):
+        # Model a c8s v0.20.4-like binary: `allowlist canonicalize` is not a
+        # subcommand, so cobra prints help to stdout and exits 0. With
+        # capabilities.allowlistCanonicalize false the verifier must not
+        # mistake that help text for canonical bytes; it must reproduce the
+        # canonical bytes in Python instead, byte-identical to
+        # c8s_allowlist_canonical.canonicalize_mainline.
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+            canonicalize_allowlist = module["canonicalize_allowlist"]
+        finally:
+            sys.path.pop(0)
+        import c8s_allowlist_canonical
+
+        no_canonicalize_c8s = self.directory / "c8s-no-canonicalize"
+        no_canonicalize_c8s.write_text(
+            "#!/bin/sh\n"
+            "echo 'Available Commands:'\n"
+            "echo '  export  Write the full allowlist as canonical JSON'\n"
+            "exit 0\n"
+        )
+        no_canonicalize_c8s.chmod(0o755)
+        document = {
+            "schema": "c8s.allowlist/v1",
+            "workloads": {
+                "gateway": {
+                    "containers": [
+                        {
+                            "digest": "sha256:" + "a" * 64,
+                            "command": {"policy": "any"},
+                            "args": {"policy": "any"},
+                        }
+                    ],
+                },
+            },
+        }
+        path = self.directory / "allowlist-mainline.json"
+        path.write_text(json.dumps(document))
+        canonical = canonicalize_allowlist(
+            str(no_canonicalize_c8s), path, 5, "canonical allowlist",
+            {"allowlistCanonicalize": False},
+        )
+        self.assertEqual(canonical, c8s_allowlist_canonical.canonicalize_mainline(document))
+        # The native path must not even be attempted: the fake binary would
+        # have printed help (not canonical bytes) had it been called with
+        # "allowlist canonicalize" and this must not have been treated as
+        # a success.
+        self.assertNotIn(b"Available Commands", canonical)
+
+    def test_canonicalize_allowlist_skips_unsupported_shape_instead_of_guessing(self):
+        # An "exact" env policy serializes differently across c8s tags (see
+        # c8s_allowlist_canonical's docstring); the Python reproduction must
+        # fail closed with an explicit "skipped" message, never emit bytes
+        # it cannot vouch for.
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+            canonicalize_allowlist = module["canonicalize_allowlist"]
+            VerificationError = module["VerificationError"]
+        finally:
+            sys.path.pop(0)
+        no_canonicalize_c8s = self.directory / "c8s-no-canonicalize-2"
+        no_canonicalize_c8s.write_text("#!/bin/sh\necho 'Available Commands:'\nexit 0\n")
+        no_canonicalize_c8s.chmod(0o755)
+        document = {
+            "schema": "c8s.allowlist/v1",
+            "workloads": {
+                "gateway": {
+                    "containers": [
+                        {
+                            "digest": "sha256:" + "a" * 64,
+                            "command": {"policy": "any"},
+                            "args": {"policy": "any"},
+                            "env": {"policy": "exact", "values": {"FOO": "bar"}},
+                        }
+                    ],
+                },
+            },
+        }
+        path = self.directory / "allowlist-unsupported.json"
+        path.write_text(json.dumps(document))
+        with self.assertRaisesRegex(VerificationError, "skipped:.*allowlistCanonicalize=false"):
+            canonicalize_allowlist(
+                str(no_canonicalize_c8s), path, 5, "canonical allowlist",
+                {"allowlistCanonicalize": False},
+            )
+
     def test_each_pinned_c8s_commit_resolves_to_its_own_lock_entry(self):
         sys.path.insert(0, str(SCRIPT.parent))
         try:

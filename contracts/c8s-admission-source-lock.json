@@ -160,6 +160,9 @@
         "pkg/workloadclaims/peercred_other.go": "sha256:0914dbb738427e2fed520502c9ef5444d91a6a6b0715ab278bb7fb3ce47f1f85",
         "pkg/workloadclaims/sandboxtoken.go": "sha256:765dc342c8ffed44f607fd74cc7961930cd4e630c60b603c30d0c3d4c96c49d4",
         "pkg/workloadclaims/workloadclaims.go": "sha256:3d7ca8c82acf31db9aea5464237086dc43f27773484ff1043ff5d041e95f784a"
+      },
+      "capabilities": {
+        "allowlistCanonicalize": false
       }
     },
     {
@@ -236,7 +239,13 @@
         "pkg/workloadclaims/sandboxtoken.go": "sha256:765dc342c8ffed44f607fd74cc7961930cd4e630c60b603c30d0c3d4c96c49d4",
         "pkg/workloadclaims/signerholder.go": "sha256:222168945c4a995a74a74cf163e2f892c97b771ba22d05e3d5edfefaddc4d316",
         "pkg/workloadclaims/workloadclaims.go": "sha256:ffaff1eb5273ac9d71d1686cb8ee04f6ae8da51b927705fa4a778dc8e8695537"
+      },
+      "capabilities": {
+        "allowlistCanonicalize": false
       }
     }
-  ]
+  ],
+  "capabilities": {
+    "allowlistCanonicalize": true
+  }
 }
