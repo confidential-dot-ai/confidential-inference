@@ -26,6 +26,16 @@ OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 C8S_MODULE = "github.com/confidential-dot-ai/c8s/cmd/c8s"
 
+# Mirrors c8s's secrets handler package InjectedEntrypoints (handler.go:53 in
+# that package). CDS drops a reported container from workload matching
+# (WorkloadContainers, that package's handler.go:471-478) when its image is a
+# floor entry (any argv admitted) AND its command is one of these. A tenant
+# workload entry must not declare such a container as a main container: it
+# will never be present in the running set MatchWorkload sees, so declaring
+# it there makes the entry unmatchable (see the 2026-09-17 staging mesh
+# diagnosis deployment receipt).
+INJECTED_ENTRYPOINTS = ("get-cert", "get-secret", "get-volume", "/c8s")
+
 
 class RegenerationError(ValueError):
     """The public production policy cannot be reproduced safely."""
@@ -192,11 +202,27 @@ def volume_reads(document: dict[str, Any]) -> list[str]:
     return sorted(reads)
 
 
+def is_injected_container(container: dict[str, Any], system_images: dict[str, Any]) -> bool:
+    """Mirror c8s's isInjected (its secrets handler package, handler.go:471-478).
+
+    A rendered container is one c8s injects when its image is a system-floor
+    entry (admitted under any argv) AND its command is one of
+    InjectedEntrypoints. Such a container never survives WorkloadContainers,
+    so a workload entry must not declare it as a main container.
+    """
+    image = container.get("image")
+    if image not in system_images:
+        return False
+    command = container.get("command") or []
+    return bool(command) and command[0] in INJECTED_ENTRYPOINTS
+
+
 def application_allowlist(policy: dict[str, Any], documents: list[dict[str, Any]]) -> dict[str, Any]:
     expected = {item["controller"] for item in policy["workloads"]}
     rendered = {f"{x.get('kind')}/{x.get('metadata', {}).get('name')}": x for x in documents if x.get("kind") in {"Deployment", "StatefulSet", "DaemonSet"}}
     if expected != set(rendered):
         raise RegenerationError(f"the public workload map differs from the rendered chart: missing={sorted(expected-set(rendered))}, extra={sorted(set(rendered)-expected)}")
+    system_images = policy.get("systemImages", {})
     workloads = {}
     for mapping in sorted(policy["workloads"], key=lambda item: item["name"]):
         document = selected_controller(documents, mapping["controller"])
@@ -206,6 +232,12 @@ def application_allowlist(policy: dict[str, Any], documents: list[dict[str, Any]
         init_containers, containers = [], []
         for field, target in (("initContainers", init_containers), ("containers", containers)):
             for container in pod.get(field, []):
+                if is_injected_container(container, system_images):
+                    # c8s injects and then drops this container before workload
+                    # matching runs (WorkloadContainers). It is already
+                    # admitted through the system-floor entry, so it must not
+                    # also be declared as a main/init container here.
+                    continue
                 target.append(command_record(container, policy["imageConfigs"]))
         if not init_containers and not containers:
             raise RegenerationError(f"{mapping['controller']} has no application container")
