@@ -80,7 +80,7 @@
             "--continue-on-initial-error",
             "--discovery-out=/discovery/discovery.json",
             "--discovery-cds-cert-url=/.well-known/cds-cert.pem",
-            "--discovery-public-tls-mode=webpki",
+            "--discovery-public-tls-mode=acme",
             "--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
             "--reload-watch=/public-tls/tls.crt",
             "--reload-watch=/public-tls/tls.key"
@@ -96,6 +96,19 @@
             "/tls/cert.pem"
           ],
           "args": []
+        },
+        {
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:73235c2cb307647e35e3b0b6747e246b0272116865696870e7222b7ce11e431e",
+          "command": [
+            "/c8s"
+          ],
+          "args": [
+            "acme",
+            "--domains=staging.api.confidential.ai",
+            "--challenge-port=8402",
+            "--http-port=8080",
+            "--cert-dir=/etc/c8s-acme-tls"
+          ]
         }
       ],
       "containers": [
@@ -122,8 +135,8 @@
             "--platform=tdx",
             "--generation=",
             "--attestation-api-url=http://$(HOST_IP):8400",
-            "--front-door-mode=webpki",
-            "--serving-cert-file=/public-tls/tls.crt",
+            "--front-door-mode=acme",
+            "--serving-cert-file=/etc/c8s-acme-tls/cert.pem",
             "--mesh-identity-cert-file=/tls/cert.pem",
             "--mesh-identity-key-file=/tls/key.pem",
             "--mesh-identity-ca-file=/tls/ca.pem",
