@@ -55,6 +55,25 @@ class C8sPolicyRejection(VerificationError):
     """The receipt was not admitted by one candidate allowlist."""
 
 
+def _error_detail(response: http.client.HTTPResponse) -> str:
+    """Read the gateway error body's "detail" string, when it carries one.
+
+    The gateway answers every 5xx with a short detail that names the failing
+    step. The detail is printable ASCII and carries no evidence bytes, so it
+    is safe to repeat in a verdict line. A body that is absent, too large, or
+    not the expected shape yields an empty string.
+    """
+    try:
+        body = response.read(8192)
+        document = json.loads(body.decode("utf-8", "replace"))
+        detail = document["error"]["detail"]
+    except Exception:  # noqa: BLE001 - a failed read must never mask the status
+        return ""
+    if not isinstance(detail, str) or not detail:
+        return ""
+    return ": " + detail[:300]
+
+
 def read_bytes(path: Path, label: str, maximum_bytes: int | None = None) -> bytes:
     if not path.is_file() or path.is_symlink():
         raise VerificationError(f"the {label} must be a regular file")
@@ -723,7 +742,13 @@ def fetch_response(args: argparse.Namespace) -> tuple[dict[str, Any], str, str, 
         response = connection.getresponse()
         peer = connection.sock.getpeercert(binary_form=True) if connection.sock else None
         if response.status != 200:
-            raise VerificationError(f"the public endpoint returned HTTP {response.status}")
+            # The gateway names the step that failed in the error body's
+            # "detail" field. Repeat it here, so one verifier run says where
+            # the producer stopped without any access to the cluster.
+            raise VerificationError(
+                f"the public endpoint returned HTTP {response.status}"
+                + _error_detail(response)
+            )
         length = response.getheader("Content-Length")
         if length is not None and int(length) > args.maximum_response_bytes:
             raise VerificationError("the public response exceeds the size limit")

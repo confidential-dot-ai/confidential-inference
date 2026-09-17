@@ -41,6 +41,11 @@ attestationReceipts:
   # This URL must be the c8s tls-lb front door. The gateway reads only c8s
   # discovery and allowlist evidence from it.
   evidenceBaseUrl: https://api.example.invalid
+  # c8s serves GET /operator-keys on CDS, not on the public front door. Leave
+  # this empty to read the operator key set from evidenceBaseUrl, which is the
+  # behaviour every environment had before this value existed. Set it to the
+  # CDS base URL to read the key set from CDS itself.
+  operatorKeySetBaseUrl: ""
   # Permit only the public c8s front-door addresses that evidenceBaseUrl can
   # use. Keep this empty until an environment supplies its reviewed CIDRs.
   evidenceEgressCidrs: []
