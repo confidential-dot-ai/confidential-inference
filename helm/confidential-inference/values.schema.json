@@ -53,6 +53,7 @@
       "properties": {
         "enabled": {"type": "boolean"},
         "legacyC8s615": {"type": "boolean"},
+        "useNodeAttestationApi": {"type": "boolean"},
         "evidenceBaseUrl": {"type": "string", "pattern": "^https://[^/?#]+(?::[0-9]{1,5})?$"},
         "operatorKeySetBaseUrl": {"type": "string", "pattern": "^$|^https://[^/?#]+(?::[0-9]{1,5})?$"},
         "evidenceEgressCidrs": {

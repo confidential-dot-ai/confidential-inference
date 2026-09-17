@@ -41,7 +41,7 @@ app.kubernetes.io/component: {{ .component }}
     - --nvidia-gpu-evidence
     {{- end }}
     - --expected-workload={{ .workload }}
-    {{- if .root.Values.attestationReceipts.legacyC8s615 }}
+    {{- if or .root.Values.attestationReceipts.legacyC8s615 .root.Values.attestationReceipts.useNodeAttestationApi }}
     - --attestation-api-url=http://$(HOST_IP):{{ .root.Values.attestationReceipts.attestationApiPort }}
     {{- else }}
     - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
@@ -50,13 +50,14 @@ app.kubernetes.io/component: {{ .component }}
     - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
     - --mesh-identity-key-file=/etc/c8s/certs/tls.key
     - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-  {{- if .root.Values.attestationReceipts.legacyC8s615 }}
+  {{- if or .root.Values.attestationReceipts.legacyC8s615 .root.Values.attestationReceipts.useNodeAttestationApi }}
   env:
     - name: HOST_IP
       valueFrom:
         fieldRef:
           fieldPath: status.hostIP
-  {{- else }}
+  {{- end }}
+  {{- if not .root.Values.attestationReceipts.legacyC8s615 }}
   volumeMounts:
     - name: c8s-workload-claims
       mountPath: /run/c8s/workload-claims
