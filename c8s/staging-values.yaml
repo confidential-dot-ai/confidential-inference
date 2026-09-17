@@ -66,13 +66,13 @@ attestationReceipts:
   # digest and the live mesh CA, then tagged and signed.
   releaseBundleSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   policyMode: operator
-  # TODO(release-flow): the operator key for /v0/staging does not exist yet
-  # (staging has no operator key today; the old cluster ran policyMode
-  # static). The release flow generates the key pair, publishes it to
-  # Infisical, and fills these two fingerprints before the first
-  # allowlist-upload.
-  expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  # The operator public key for /v0/staging (Infisical; phase A stored the
+  # key pair). expectedOperatorKeySetSha256 is
+  # sha256("c8s-operator-key-set-v1\0" + the 32 raw bytes of
+  # expectedOperatorPublicKeySha256), the same single-key-set formula
+  # conf-inference-prod uses.
+  expectedOperatorPublicKeySha256: sha256:58b38923c5309156759dbb2c3333dd77831d19ffae256b2ce69094e014d4bc15
+  expectedOperatorKeySetSha256: sha256:e2c90bb06aaa32260ac84921d4837e49ab72576032209bc19c057a8e069c9588
   targets:
     - {target: gateway, workload: gateway, identity: gateway, url: http://127.0.0.1:8800}
     - {target: sglang-router, workload: sglang-router, identity: sglang-router, url: http://sglang-router:8801}
