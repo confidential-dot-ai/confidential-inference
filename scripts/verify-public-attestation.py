@@ -649,7 +649,15 @@ def fetch_response(args: argparse.Namespace) -> tuple[dict[str, Any], str, str, 
     return value, sha256(spki), sha256(leaf_der), leaf_der
 
 
-def verify_c8s_version(executable: str, commit: str, timeout: int) -> str:
+def verify_c8s_version(executable: str, commit: str, timeout: int, tag: str | None = None) -> str:
+    """Fail closed unless the binary's own `--version` text names this source lock entry.
+
+    Cobra's version text carries whatever `git describe` produced at build
+    time. Off an exact tag, `git describe` prints only the tag string, with
+    no commit hash — so a tagged release build is checked against the
+    entry's `tag` (when the lock names one); every other build is still
+    checked against the entry's commit hash, exactly as before.
+    """
     try:
         result = subprocess.run(
             [executable, "--version"], capture_output=True, text=True, timeout=timeout
@@ -663,6 +671,8 @@ def verify_c8s_version(executable: str, commit: str, timeout: int) -> str:
         or f"g{short_commit}" in version
         or re.search(rf"(?<![0-9a-f]){short_commit}(?![0-9a-f])", version) is not None
     )
+    if not version_matches and isinstance(tag, str) and tag:
+        version_matches = re.search(rf"(?<![\w.-]){re.escape(tag)}(?![\w.-])", version) is not None
     if result.returncode != 0 or not version_matches:
         raise VerificationError("the c8s verifier does not match the source lock")
     return version.splitlines()[0]
@@ -1170,7 +1180,11 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         mesh_ca_digest = release["c8s"]["meshCa"]["certificateSha256"]
         if mesh_ca_digest not in {mesh_ca_der_digest, mesh_ca_file_digest}:
             raise VerificationError("the held mesh CA differs from the release")
-    version = verify_c8s_version(args.c8s, source_lock_entry["commit"], args.verifier_timeout_seconds)
+    entry_tag = source_lock_entry.get("tag")
+    version = verify_c8s_version(
+        args.c8s, source_lock_entry["commit"], args.verifier_timeout_seconds,
+        tag=entry_tag if isinstance(entry_tag, str) else None,
+    )
     canonical_from_c8s = canonicalize_allowlist(
         args.c8s, args.allowlist, args.verifier_timeout_seconds, "canonical allowlist"
     )

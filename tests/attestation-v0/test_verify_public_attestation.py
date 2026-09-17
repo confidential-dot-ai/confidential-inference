@@ -989,6 +989,52 @@ print(json.dumps(result))
         with self.assertRaisesRegex(VerificationError, "different c8s source commit"):
             select_source_lock_entry(source_lock, "c" * 40)
 
+    def test_c8s_version_accepts_the_entry_tag_with_no_commit_hash(self):
+        # At an exact git tag, `git describe` prints only the tag string,
+        # so a tagged release build's `--version` output carries no commit
+        # hash at all. The entry's `tag` field must still be accepted.
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            verify_c8s_version = runpy.run_path(str(SCRIPT))["verify_c8s_version"]
+        finally:
+            sys.path.pop(0)
+        self.fake_c8s.write_text("#!/bin/sh\necho 'c8s version v0.20.4'\n")
+        self.fake_c8s.chmod(0o755)
+        version = verify_c8s_version(str(self.fake_c8s), "a" * 40, 5, tag="v0.20.4")
+        self.assertEqual(version, "c8s version v0.20.4")
+
+    def test_c8s_version_still_accepts_the_commit_hash_with_a_tag_pinned(self):
+        # Existing off-tag builds (no exact-tag `git describe` match) must
+        # keep working exactly as before, even when the entry also has a
+        # `tag` field.
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            verify_c8s_version = runpy.run_path(str(SCRIPT))["verify_c8s_version"]
+        finally:
+            sys.path.pop(0)
+        commit = "466ce79e77c2fb6c014620b770066f275e889df6"
+        self.fake_c8s.write_text(f"#!/bin/sh\necho 'c8s version v0.20.3-g{commit[:7]}'\n")
+        self.fake_c8s.chmod(0o755)
+        version = verify_c8s_version(str(self.fake_c8s), commit, 5, tag="v0.20.4")
+        self.assertEqual(version, f"c8s version v0.20.3-g{commit[:7]}")
+
+    def test_c8s_version_rejects_a_version_matching_neither_commit_nor_tag(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+            verify_c8s_version = module["verify_c8s_version"]
+            VerificationError = module["VerificationError"]
+        finally:
+            sys.path.pop(0)
+        self.fake_c8s.write_text("#!/bin/sh\necho 'c8s version v0.9.9'\n")
+        self.fake_c8s.chmod(0o755)
+        with self.assertRaisesRegex(VerificationError, "does not match the source lock"):
+            verify_c8s_version(str(self.fake_c8s), "a" * 40, 5, tag="v0.20.4")
+        # An entry with no tag field at all must still require the commit
+        # hash exactly as before.
+        with self.assertRaisesRegex(VerificationError, "does not match the source lock"):
+            verify_c8s_version(str(self.fake_c8s), "a" * 40, 5, tag=None)
+
     def test_untrusted_public_tls_fails_closed(self):
         wrong_ca = self.directory / "wrong-ca.pem"
         _, ca, _, _ = make_ca_and_leaf("wrong")
