@@ -274,6 +274,19 @@
         "/usr/local/bin/confidential-gateway"
       ]
     },
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:5b255f500d1f1a13fea2125945f4b4a234d55a0f497ca9cf6a784bc9ccaca9b0": {
+      "build": {
+        "commit": "f7893916c9ef4150486e6a333330416dba54fb3d",
+        "context": ".",
+        "dockerfile": "images/gateway/Dockerfile",
+        "platform": "linux/amd64",
+        "repository": "https://github.com/confidential-dot-ai/confidential-inference"
+      },
+      "cmd": [],
+      "entrypoint": [
+        "/usr/local/bin/confidential-gateway"
+      ]
+    },
     "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:f1513aa6be4cf944fea6cb040e5a725e307cdcd1662d83ee454ec1c4e92a9da0": {
       "build": {
         "commit": "db0b6ee2178f53bc7352770c8d05cc5eb3e31964",
