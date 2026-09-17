@@ -135,6 +135,9 @@ pub trait AttestationProvider: Send + Sync + 'static {
 pub enum AttestationError {
     Unavailable,
     Invalid,
+    /// The c8s node speaks a different attestation protocol than this build.
+    /// The string names the cause and comes from the c8s error body.
+    ProtocolMismatch(String),
 }
 
 pub struct UnavailableAttestation;
@@ -708,6 +711,17 @@ async fn attestation_response(
             release_failed_nonce(&state, &nonce);
             client_error(StatusCode::SERVICE_UNAVAILABLE, "attestation_unavailable")
         }
+        // A protocol mismatch is version skew between this gateway and c8s.
+        // It is not failed attestation, and it gets its own code and a detail
+        // string so the cause is visible in the response itself.
+        Err(AttestationError::ProtocolMismatch(detail)) => {
+            release_failed_nonce(&state, &nonce);
+            detailed_client_error(
+                StatusCode::BAD_GATEWAY,
+                "attestation_protocol_mismatch",
+                &detail,
+            )
+        }
     }
 }
 
@@ -761,6 +775,18 @@ fn client_error(status: StatusCode, code: &'static str) -> Response<Body> {
     (
         status,
         Json(json!({"error":{"code":code,"message":status.canonical_reason().unwrap_or("Request failed.")}})),
+    )
+        .into_response()
+}
+
+fn detailed_client_error(status: StatusCode, code: &'static str, detail: &str) -> Response<Body> {
+    (
+        status,
+        Json(json!({"error":{
+            "code": code,
+            "message": status.canonical_reason().unwrap_or("Request failed."),
+            "detail": detail,
+        }})),
     )
         .into_response()
 }
