@@ -22,7 +22,7 @@ scheduling:
   inferenceNodeName: inference-node-1
 
 images:
-  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:a28ca55ec4ffc5a14f52499f6f831dac66a41f4fa58e0b0e0ccef9cfaef4ea06
+  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:5aba24f623cbbde47c91ff8d436f946e4b502ecbf05b91a2d191e068e14c9c21
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895
   sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895
