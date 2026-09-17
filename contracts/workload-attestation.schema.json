@@ -103,7 +103,8 @@
           }
         },
         "meshCaSha256": {"$ref": "#/$defs/sha256Digest"},
-        "attestationProtocol": {"enum": ["c8s/attest-pq/v1", "c8s/attest-pq/v1+xwing"]}
+        "attestationProtocol": {"enum": ["c8s/attest-pq/v1", "c8s/attest-pq/v1+xwing"]},
+        "attestationProtocolC8sCommit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"}
       },
       "oneOf": [
         {"required": ["policyTrust"]},
