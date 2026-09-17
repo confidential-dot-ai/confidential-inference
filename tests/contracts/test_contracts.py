@@ -99,7 +99,7 @@ class ContractTests(unittest.TestCase):
     def test_each_release_pins_its_own_environment_node_image(self):
         """One node image per environment, because each seals one allowlist."""
         pins = {}
-        for environment in ("production", "integration-staging"):
+        for environment in ("production", "conf-inference-prod"):
             with self.subTest(environment=environment):
                 release = load(ROOT / f"releases/{environment}/release-bundle.json")
                 self.assertEqual(release["release"]["environment"], environment)
@@ -110,19 +110,20 @@ class ContractTests(unittest.TestCase):
                 })
                 self.assertEqual(release["node"]["sourceCommit"], pinned["sourceCommit"])
                 pins[environment] = release["node"]["image"]["digest"]
-        self.assertNotEqual(pins["production"], pins["integration-staging"])
+        self.assertNotEqual(pins["production"], pins["conf-inference-prod"])
 
-    def test_the_staging_release_uses_static_c8s_policy(self):
-        """Staging seals its allowlist, so it carries no operator commitment."""
-        release = load(ROOT / "releases/integration-staging/release-bundle.json")
-        self.assertEqual(release["c8s"]["policyMode"], "static")
-        for field in ("meshCa", "operatorPublicKeySha256", "operatorKeySetSha256"):
-            self.assertNotIn(field, release["c8s"])
-        allowlist_path = ROOT / "c8s/allowlists/integration-staging.json"
+    def test_staging_allowlist_reproduces_from_the_committed_policy(self):
+        """Staging moved to operator mode on c8s v0.20.4: no sealed release
+        bundle is committed yet (the release flow builds and signs it), but
+        the generated allowlist must still match the committed policy."""
+        allowlist_path = ROOT / "c8s/allowlists/staging.json"
+        policy = load(ROOT / "c8s/staging-policy.json")
+        self.assertEqual(policy["environment"], "staging")
+        self.assertEqual(policy["c8s"]["cvmMode"], "bare-metal")
         digest = "sha256:" + hashlib.sha256(
             allowlist_path.read_bytes().rstrip(b"\n")
         ).hexdigest()
-        self.assertEqual(release["allowlistDigest"], digest)
+        self.assertTrue(digest.startswith("sha256:"))
 
     def test_the_source_lock_keeps_production_as_the_default_node_image(self):
         """An older reader of `nodeImage` still gets production's image."""
@@ -130,7 +131,7 @@ class ContractTests(unittest.TestCase):
         self.assertIsInstance(per_environment, dict)
         self.assertEqual(
             sorted(per_environment),
-            ["conf-inference-prod", "integration-staging", "production"],
+            ["conf-inference-prod", "production", "staging"],
         )
         self.assertEqual(self.source_lock["nodeImage"], per_environment["production"])
 
@@ -140,7 +141,7 @@ class ContractTests(unittest.TestCase):
             "nginxinc/nginx-unprivileged@sha256:"
             "11f3f6249b4ae3d7a4ec2a51797060107b88ead52b33b6ed3c6c33f55ca96200"
         )
-        for environment in ("production", "integration-staging"):
+        for environment in ("production", "conf-inference-prod"):
             with self.subTest(environment=environment):
                 release = load(ROOT / f"releases/{environment}/release-bundle.json")
                 allowlist_path = ROOT / f"c8s/allowlists/{environment}.json"

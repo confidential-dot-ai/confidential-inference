@@ -543,7 +543,7 @@ mod tests {
     #[test]
     fn custom_environment_and_receipt_target_contract_pass() {
         let mut value = args();
-        value.environment = "integration-staging".to_owned();
+        value.environment = "staging".to_owned();
         value.model = "staging-simulator".to_owned();
         value.c8s_receipt_targets = "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802".to_owned();
         assert!(validate_args(&value).is_ok());
@@ -552,7 +552,7 @@ mod tests {
     #[test]
     fn configured_environment_accepts_its_explicit_model() {
         let mut value = args();
-        value.environment = "integration-staging".to_owned();
+        value.environment = "staging".to_owned();
         value.c8s_receipt_targets = "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802".to_owned();
         assert!(validate_args(&value).is_ok());
     }

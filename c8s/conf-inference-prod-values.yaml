@@ -7,7 +7,7 @@
 # Parity: the internal environments/values-conf-inference-prod.yaml is the
 # file the deployment reads. Workload-affecting fields (images, argv, cw
 # identities, receipt targets) must stay equal between the two, the same
-# convention as integration-staging.
+# convention as staging.
 environment: conf-inference-prod
 
 imagePullSecret:

@@ -72,7 +72,7 @@ GATEWAY_RELEASE_ID=local-dev \
 GATEWAY_RELEASE_BUNDLE_SHA256=sha256:1111111111111111111111111111111111111111111111111111111111111111 \
 GATEWAY_EXPECTED_OPERATOR_PUBLIC_KEY_SHA256=sha256:2222222222222222222222222222222222222222222222222222222222222222 \
 GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256=sha256:3333333333333333333333333333333333333333333333333333333333333333 \
-DEPLOYMENT_ENVIRONMENT=integration-staging \
+DEPLOYMENT_ENVIRONMENT=staging \
 GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE=/tmp/admin-client.crt \
 ./target/debug/confidential-gateway
 ```
@@ -159,13 +159,16 @@ Actions OIDC issuer, workflow identity, tag, repository claims, transparency
 proof, or any attestation value differs. It prints `"verified":true` only
 after all checks pass.
 
-The example above verifies production. Each environment seals its own
-allowlist into its own measured node image, so each environment has its own
-node manifest. Pass
-`--node-manifest images/control-plane-node/manifest-integration-staging.json`
-and `--environment integration-staging` to verify integration-staging.
-`images/sglang/source.lock` pins one node image per environment under
-`nodeImages`, and the verifier selects the entry the release names.
+The example above verifies production, which seals its allowlist into its
+own measured node image. Not every environment seals an allowlist:
+`conf-inference-prod` and `staging` (since its c8s v0.20.4 move) run
+`policyMode: operator` on a stock, pull-mode node image instead, and upload
+the allowlist to CDS after `c8s install`. Pass
+`--node-manifest images/control-plane-node/manifest-conf-inference-prod.json`
+and `--environment conf-inference-prod` to verify that environment; a
+`manifest-staging.json` lands with the release that boots the new staging
+cluster. `images/sglang/source.lock` pins one node image per environment
+under `nodeImages`, and the verifier selects the entry the release names.
 
 `--operator-public-key` is required in both c8s policy modes, not only
 operator mode. The verifier passes it to c8s as `--operator-pkey` on every

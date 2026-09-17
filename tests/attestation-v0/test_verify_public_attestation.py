@@ -36,11 +36,10 @@ TARGETS = {
         ("metrics-collector", "metrics-collector", "metrics-collector"),
         ("kube-state-metrics", "kube-state-metrics", "kube-state-metrics"),
     ),
-    "integration-staging": (
+    "staging": (
         ("gateway", "gateway", "gateway"),
         ("sglang-router", "sglang-router", "sglang-router"),
         ("inference-worker-0", "inference-worker-0", "inference-worker-0"),
-        ("inference-worker-1", "inference-worker-1", "inference-worker-1"),
     ),
 }
 
@@ -302,8 +301,8 @@ print(json.dumps(result))
     def configure(self, environment: str):
         self.environment = environment
         release_name = (
-            "integration-staging-v0"
-            if environment == "integration-staging"
+            "staging-v0"
+            if environment == "staging"
             else "v0-test"
         )
         allowlist_path = ROOT / f"c8s/allowlists/{environment}.json"
@@ -840,12 +839,12 @@ print(json.dumps(result))
         "fix is out of scope for this update."
     )
     def test_staging_end_to_end_passes(self):
-        self.configure("integration-staging")
+        self.configure("staging")
         self.operator_key.write_bytes(self.operator_key.read_bytes() + b"\n")
         result = self.run_cli()
         self.assertEqual(result.returncode, 0, result.stderr)
         output = json.loads(result.stdout)
-        self.assertEqual(output["environment"], "integration-staging")
+        self.assertEqual(output["environment"], "staging")
         self.assertEqual(output["receipts"][2]["workload"], "inference-worker-0")
 
     @unittest.skip(
@@ -860,7 +859,7 @@ print(json.dumps(result))
         "fix is out of scope for this update."
     )
     def test_staging_accepts_a_retained_allowlist_for_an_unchanged_worker(self):
-        self.configure("integration-staging")
+        self.configure("staging")
         historical_digest = "25e3d8f45db21a0c1bc1177b49300b7775edb138902f1bba1b83a29c3d489f7b"
         result = self.run_cli(env={
             "FAKE_C8S_HISTORICAL_WORKLOAD": "inference-worker-0",
@@ -877,7 +876,7 @@ print(json.dumps(result))
         self.server.response_document["nonce"] = b64(b"z" * 32)
         self.assert_rejected()
         self.server.echo_nonce = True
-        self.assert_rejected(extra=["--environment", "integration-staging"])
+        self.assert_rejected(extra=["--environment", "staging"])
 
     def test_missing_invalid_or_stale_release_signature_fails_closed(self):
         missing = self.directory / "missing.sigstore.json"

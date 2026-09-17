@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PREPARE = ROOT / "scripts/prepare-signed-release.py"
 VERIFY = ROOT / "scripts/verify-release-bundle-signature.py"
 PRODUCTION = ROOT / "releases/production/release-bundle.json"
-INTEGRATION_STAGING = ROOT / "releases/integration-staging/release-bundle.json"
+CONF_INFERENCE_PROD = ROOT / "releases/conf-inference-prod/release-bundle.json"
 POLICY = ROOT / "releases/trust/release-signing-policy.json"
 TRUSTED_ROOT = ROOT / "releases/trust/sigstore-public-good-trusted-root.json"
 WORKFLOW = ROOT / ".github/workflows/release-bundle.yml"
@@ -60,7 +60,7 @@ class ReleaseSignatureTests(unittest.TestCase):
         validate_release_schema = runpy.run_path(str(RELEASE_SIGNATURE))[
             "validate_release_schema"
         ]
-        for source in (PRODUCTION, INTEGRATION_STAGING):
+        for source in (PRODUCTION, CONF_INFERENCE_PROD):
             with self.subTest(source=source):
                 release = json.loads(source.read_text())
                 if source.resolve() in pre_history:
@@ -99,13 +99,13 @@ class ReleaseSignatureTests(unittest.TestCase):
                     )
 
     def test_prepare_rejects_a_tag_for_the_other_environment(self) -> None:
-        release = json.loads(INTEGRATION_STAGING.read_text())
+        release = json.loads(CONF_INFERENCE_PROD.read_text())
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "release-bundle.json"
             result = subprocess.run(
                 [
                     "python3", str(PREPARE),
-                    "--source", str(INTEGRATION_STAGING),
+                    "--source", str(CONF_INFERENCE_PROD),
                     "--output", str(output),
                     "--tag", "v0.13.0",
                 ],
@@ -138,7 +138,7 @@ class ReleaseSignatureTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
     def test_shared_policy_rejects_a_tag_environment_mismatch(self) -> None:
-        release = json.loads(INTEGRATION_STAGING.read_text())
+        release = json.loads(CONF_INFERENCE_PROD.read_text())
         release["release"]["environment"] = "production"
         validate_policy = runpy.run_path(str(RELEASE_SIGNATURE))["validate_policy"]
         with self.assertRaisesRegex(ValueError, "environment does not match"):
@@ -221,12 +221,15 @@ class ReleaseSignatureTests(unittest.TestCase):
         workflow = WORKFLOW.read_text()
         self.assertIn("id-token: write", workflow)
         self.assertIn("signed-release-production", workflow)
-        self.assertIn("signed-release-integration-staging", workflow)
+        self.assertIn("signed-release-conf-inference-prod", workflow)
+        self.assertIn("signed-release-staging", workflow)
         self.assertNotIn("environment: signed-release\n", workflow)
         self.assertIn("group: signed-release-${{ github.ref_name }}", workflow)
         self.assertIn("cosign-release: v3.1.2", workflow)
-        self.assertIn('"integration-staging-v[0-9]*"', workflow)
-        self.assertIn("releases/integration-staging/release-bundle.json", workflow)
+        self.assertIn('"conf-inference-prod-v[0-9]*"', workflow)
+        self.assertIn('"staging-v[0-9]*"', workflow)
+        self.assertIn("releases/conf-inference-prod/release-bundle.json", workflow)
+        self.assertIn("releases/staging/release-bundle.json", workflow)
         self.assertIn("cosign sign-blob --yes", workflow)
         self.assertIn("--bundle dist/release-bundle.sigstore.json", workflow)
         self.assertIn("--tag-commit-output dist/release-tag-commit.txt", workflow)

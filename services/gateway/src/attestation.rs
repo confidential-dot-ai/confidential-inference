@@ -1013,7 +1013,7 @@ mod tests {
 
     #[test]
     fn keeps_the_exact_c8s_allowlist_byte_order() {
-        let source = include_bytes!("../../../c8s/allowlists/integration-staging.json");
+        let source = include_bytes!("../../../c8s/allowlists/staging.json");
         let Ok(value) = serde_json::from_slice::<Value>(source) else {
             panic!("the public allowlist test fixture must contain JSON");
         };
@@ -1129,7 +1129,7 @@ mod tests {
 
     #[test]
     fn rejects_whitespace_outside_the_canonical_document() {
-        let source = include_bytes!("../../../c8s/allowlists/integration-staging.json");
+        let source = include_bytes!("../../../c8s/allowlists/staging.json");
         let Ok(value) = serde_json::from_slice::<Value>(source) else {
             panic!("the public allowlist test fixture must contain JSON");
         };

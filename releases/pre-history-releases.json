@@ -5,10 +5,6 @@
       "reason": "Built from a source history that predates this repository's 2026-09-17 recreation, so its recorded source commit is not reachable here."
     },
     {
-      "path": "releases/integration-staging/release-bundle.json",
-      "reason": "Built from a source history that predates this repository's 2026-09-17 recreation, so its recorded source commit is not reachable here."
-    },
-    {
       "path": "releases/conf-inference-prod/release-bundle.json",
       "reason": "Built from a source history that predates this repository's 2026-09-17 recreation, so its recorded source commit is not reachable here."
     }

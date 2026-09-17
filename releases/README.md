@@ -14,7 +14,7 @@ exact bytes of the first file.
 The checked-in bundles are unsigned development artifacts. Do not call them
 signed until the tag workflow
 publishes a matching real Sigstore bundle. The same protected workflow can
-sign one production bundle or one integration-staging bundle. It does not
+sign one production bundle or one staging bundle. It does not
 deploy either environment.
 
 ## Create a signed release
@@ -22,12 +22,12 @@ deploy either environment.
 1. Build the selected environment release bundle with strict inputs.
 2. Set `release.name` to the intended protected tag:
    - Production: `v0.13.0`.
-   - Integration staging: `integration-staging-v1`.
+   - Staging: `staging-v1`.
 3. Commit the bundle and all public release inputs to `main`.
 4. Make sure that the recorded source commit is an ancestor of the tag.
 5. Create and push the exact release tag.
 6. Approve the protected GitHub Environment job for the selected environment:
-   `signed-release-production` or `signed-release-integration-staging`.
+   `signed-release-production` or `signed-release-staging`.
 
 `.github/workflows/release-bundle.yml` then performs these actions:
 
@@ -49,15 +49,15 @@ Release. It cannot request an OIDC token.
 
 The workflow refuses to replace assets in an existing GitHub Release. Protect
 release tags against deletion and replacement. Require different reviewers for
-the `signed-release-production` and `signed-release-integration-staging`
+the `signed-release-production` and `signed-release-staging`
 environments when the environments have different trust levels.
 
 The workflow selects the bundle from the tag. A tag that starts with `v` and a
 digit signs only `releases/production/release-bundle.json`. A tag that starts
-with `integration-staging-v` and a digit signs only
-`releases/integration-staging/release-bundle.json`. The preparation program
-checks this tag-to-environment binding again. A staging tag cannot sign the
-production bundle, and a production tag cannot sign the staging bundle.
+with `staging-v` and a digit signs only `releases/staging/release-bundle.json`.
+The preparation program checks this tag-to-environment binding again. A
+staging tag cannot sign the production bundle, and a production tag cannot
+sign the staging bundle.
 
 ## Verify a release without network access
 
@@ -92,7 +92,7 @@ checks that separate fact.
 
 GitHub tag protection and environment approval are part of the release
 authority. The repository cannot enforce those account settings. Configure
-separate protected environments for production and integration staging.
+separate protected environments for production and staging.
 The verifier also trusts the local Cosign executable. It checks its version and
 source commit, but the user must install it from a trusted source.
 

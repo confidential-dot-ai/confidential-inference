@@ -11,7 +11,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/regenerate-c8s-allowlist.py"
 POLICY_PATH = ROOT / "c8s/production-policy.json"
-STAGING_POLICY_PATH = ROOT / "c8s/integration-staging-policy.json"
+STAGING_POLICY_PATH = ROOT / "c8s/staging-policy.json"
 
 
 class RegenerateAllowlistTests(unittest.TestCase):
@@ -31,17 +31,17 @@ class RegenerateAllowlistTests(unittest.TestCase):
         error = self.module["RegenerationError"]
         with self.assertRaisesRegex(error, "--output"):
             self.module["validate_binding"](
-                self.policy, ROOT / "c8s/allowlists/integration-staging.json"
+                self.policy, ROOT / "c8s/allowlists/staging.json"
             )
 
     def test_staging_policy_is_repository_local(self) -> None:
         self.assertEqual(
-            self.staging_policy["output"], "c8s/allowlists/integration-staging.json"
+            self.staging_policy["output"], "c8s/allowlists/staging.json"
         )
         self.assertEqual(
-            self.staging_policy["chart"]["values"], "c8s/integration-staging-values.yaml"
+            self.staging_policy["chart"]["values"], "c8s/staging-values.yaml"
         )
-        self.assertEqual(self.staging_policy["environment"], "integration-staging")
+        self.assertEqual(self.staging_policy["environment"], "staging")
 
     def test_staging_binding_rejects_production_output(self) -> None:
         error = self.module["RegenerationError"]
@@ -59,7 +59,7 @@ class RegenerateAllowlistTests(unittest.TestCase):
         for path in (POLICY_PATH, STAGING_POLICY_PATH):
             with self.subTest(path=path):
                 loaded = self.module["load_policy"](path)
-                self.assertIn(loaded["environment"], ("production", "integration-staging"))
+                self.assertIn(loaded["environment"], ("production", "staging"))
 
     def test_parse_args_leaves_output_unset_by_default(self) -> None:
         argv = sys.argv
@@ -84,7 +84,7 @@ class RegenerateAllowlistTests(unittest.TestCase):
             with self.assertRaises(self.module["RegenerationError"]):
                 self.module["generate"](STAGING_POLICY_PATH, None, Path("/tmp/pinned-c8s"))
         self.assertEqual(
-            seen["output"], (ROOT / "c8s/allowlists/integration-staging.json").resolve()
+            seen["output"], (ROOT / "c8s/allowlists/staging.json").resolve()
         )
 
     def test_application_policy_has_no_identity_and_keeps_exact_peer_names(self) -> None:

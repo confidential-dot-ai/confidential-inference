@@ -29,7 +29,7 @@ def digest(value: bytes) -> str:
 class StagingControlAllowlistTests(unittest.TestCase):
     def setUp(self) -> None:
         self.allowlist = json.loads(
-            (ROOT / "c8s/allowlists/integration-staging.json").read_text(encoding="utf-8")
+            (ROOT / "c8s/allowlists/staging.json").read_text(encoding="utf-8")
         )
         self.release = {
             "workloads": [
@@ -51,17 +51,20 @@ class StagingControlAllowlistTests(unittest.TestCase):
 
     def test_policy_pins_only_the_named_exact_launch(self) -> None:
         self.assertTrue(self.matches(self.allowlist))
-        release = json.loads(
-            (ROOT / "releases/integration-staging/release-bundle.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        # Staging moved to c8s v0.20.4 and operator mode: there is no signed
+        # releases/staging/release-bundle.json committed yet (the release
+        # flow builds and signs one), so this test checks the generated
+        # allowlist directly instead of cross-checking it against a release
+        # bundle's allowlistDigest, the way the old sealed-allowlist staging
+        # cluster did.
         allowlist_bytes = (
-            ROOT / "c8s/allowlists/integration-staging.json"
+            ROOT / "c8s/allowlists/staging.json"
         ).read_bytes()
         self.assertTrue(allowlist_bytes.endswith(b"\n"))
-        self.assertEqual(release["allowlistDigest"], digest(allowlist_bytes[:-1]))
-        self.assertNotIn(IMAGE_DIGEST, self.allowlist["digests"])
+        # The c8s v0.20.4 main-line allowlist shape carries no top-level
+        # "digests" convenience map (only "schema" and "workloads"), unlike
+        # the older sealed-image format the previous staging cluster used.
+        self.assertNotIn("digests", self.allowlist)
         policy = self.allowlist["workloads"][POLICY_NAME]
         self.assertNotIn("identity", policy)
         self.assertEqual(policy["label"], IMAGE)
