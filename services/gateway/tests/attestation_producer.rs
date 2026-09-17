@@ -1168,16 +1168,17 @@ async fn the_error_detail_never_carries_the_nonce_or_evidence_bytes() {
 }
 
 #[tokio::test]
-async fn the_operator_key_set_base_url_can_name_a_different_host() {
-    // c8s serves GET /operator-keys on CDS, not on the public front door. The
-    // producer must read the key set from the URL this value names, so an
-    // environment can point it at CDS without moving the evidence base URL.
+async fn a_separate_operator_key_set_url_needs_the_mesh_ca_bundle() {
+    // c8s serves GET /operator-keys on CDS over RA-TLS, and the CDS leaf
+    // carries no subject alternative name. The producer therefore reads it
+    // with a client that trusts the mesh CA and nothing else. Without that
+    // bundle on disk the producer must refuse to start, never fall back to
+    // the platform roots.
     let sidecar = fake_sidecar(FakeMode::Valid).await;
-    let keys = fake_sidecar(FakeMode::MismatchedOperatorKeys).await;
-    let mut config_provider = C8sAttestationProvider::from_config(C8sAttestationConfig {
+    let result = C8sAttestationProvider::from_config(C8sAttestationConfig {
         targets: &targets(&sidecar.url, &["gateway"]),
         evidence_base_url: &sidecar.url,
-        operator_key_set_base_url: &keys.url,
+        operator_key_set_base_url: "https://c8s-cds.c8s-system.svc:8443",
         release_id: "test-release",
         release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
         expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
@@ -1186,20 +1187,29 @@ async fn the_operator_key_set_base_url_can_name_a_different_host() {
         expected_static_allowlist_sha256: "",
         timeout: Duration::from_secs(2),
         maximum_receipt_bytes: 1_048_576,
-    })
-    .unwrap_or_else(|error| panic!("provider: {error}"));
-    let result = config_provider.response(&[26_u8; 32]).await;
+    });
     sidecar.task.abort();
-    keys.task.abort();
 
-    // The second host serves a key set that does not match the pin, so the
-    // producer must fail on that host's answer, not on the first host's.
-    let Err(error) = result else {
-        panic!("the mismatched key set must fail closed");
+    // This test host carries no /etc/c8s/certs/ca.crt, so the build must fail
+    // closed and say why.
+    let Err(message) = result else {
+        panic!("a CDS operator key set URL without a mesh CA must fail closed");
     };
-    assert!(
-        format!("{error:?}").contains("operator key set"),
-        "error: {error:?}"
+    assert!(message.contains("mesh CA bundle"), "message: {message}");
+}
+
+#[tokio::test]
+async fn an_empty_operator_key_set_url_keeps_the_evidence_base_url() {
+    // The value defaults to empty, so an environment that does not set it
+    // behaves exactly as it did before the value existed.
+    let sidecar = fake_sidecar(FakeMode::Valid).await;
+    let provider = provider(&sidecar.url);
+    let response = provider.response(&[27_u8; 32]).await;
+    sidecar.task.abort();
+
+    let response = response.unwrap_or_else(|error| panic!("response: {error:?}"));
+    assert_eq!(
+        response["c8s"]["operatorTrust"]["activeKeySetStatus"],
+        "requires-attested-cds-read"
     );
-    let _ = &mut config_provider;
 }
