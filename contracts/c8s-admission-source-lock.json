@@ -92,6 +92,7 @@
   "commits": [
     {
       "commit": "466ce79e77c2fb6c014620b770066f275e889df6",
+      "tag": "v0.20.4",
       "nodeImage": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:efdd1643057f7b9333267ee042d93281c8956275219cd6f6464040d1f3861518",
       "c8sOperatorImage": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:73235c2cb307647e35e3b0b6747e246b0272116865696870e7222b7ce11e431e",
       "requiredVerifierFlags": [
@@ -163,6 +164,7 @@
     },
     {
       "commit": "2ef376a875010ac98542ab5f2f770aeb95b0082f",
+      "tag": "v0.15.5",
       "nodeImage": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:77c30f0ed4cc9c0009de9c7be223e129fa8e10980b6ca5d2d17fe0d0743cd1a8",
       "c8sOperatorImage": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:a191a0d3a45ba5979456d3b008cd38b55940aca5c8ceff6ae40e4d307d80f120",
       "requiredVerifierFlags": [
