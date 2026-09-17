@@ -191,7 +191,11 @@ class SGLangImageRecipeTests(unittest.TestCase):
             "--service-discovery-namespace=confidential-inference-staging",
             router_staging_argv,
         )
-        # Every other argument matches production's role exactly.
+        # Every other argument matches production's role, except the bind
+        # host: staging's c8s v0.20.4 move drops the workload-proxy sidecar
+        # (branch-only c8s code absent from the main-line image staging now
+        # runs), so its router binds --host=0.0.0.0 directly instead of the
+        # proxied --host=127.0.0.1 production still uses.
         production_argv = LOCK["roles"]["sglang-router"]["argv"]
         differences = {
             argument
@@ -201,6 +205,8 @@ class SGLangImageRecipeTests(unittest.TestCase):
             {
                 "--service-discovery-namespace=confidential-inference",
                 "--service-discovery-namespace=confidential-inference-staging",
+                "--host=127.0.0.1",
+                "--host=0.0.0.0",
             },
             differences,
         )
