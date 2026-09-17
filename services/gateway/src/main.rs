@@ -15,7 +15,10 @@ use confidential_gateway::{
     GatewayConfig, TracingAuditSink,
     admin_auth::{AdminRequestVerifier, require_signed_admin_request},
     api_keys::{GatewayState, admin_router},
-    attestation::{C8sAttestationConfig, C8sAttestationProvider},
+    attestation::{
+        C8S_ATTESTATION_PROTOCOL, C8S_ATTESTATION_PROTOCOL_COMMIT, C8sAttestationConfig,
+        C8sAttestationProvider,
+    },
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
     router,
@@ -63,6 +66,17 @@ struct Args {
     expected_operator_key_set_sha256: String,
     #[arg(long, env = "GATEWAY_C8S_POLICY_MODE", default_value = "operator")]
     c8s_policy_mode: String,
+    // The gateway and c8s run in lockstep on one attestation protocol. c8s
+    // serves the same receipt `version` string in both protocols, so the
+    // gateway cannot detect the protocol from a receipt and must not probe.
+    // This flag exists to make the pin explicit in the deployment, not to
+    // select a second protocol: only the pinned value is accepted.
+    #[arg(
+        long,
+        env = "GATEWAY_C8S_ATTESTATION_PROTOCOL",
+        default_value = "v1-xwing"
+    )]
+    c8s_attestation_protocol: String,
     #[arg(
         long,
         env = "GATEWAY_EXPECTED_STATIC_ALLOWLIST_SHA256",
@@ -194,8 +208,13 @@ async fn main() -> Result<()> {
                 4_096,
                 Duration::from_secs(args.state_startup_timeout_seconds),
             )?;
-            GatewayState::open_persistent(&args.state_database, pepper, &args.environment, &args.state_disk_serial)
-                .map_err(anyhow::Error::from)
+            GatewayState::open_persistent(
+                &args.state_database,
+                pepper,
+                &args.environment,
+                &args.state_disk_serial,
+            )
+            .map_err(anyhow::Error::from)
         })();
         match state_result {
             Ok(state) => state,
@@ -359,6 +378,9 @@ fn protection_config(args: &Args) -> ProtectionConfig {
     }
 }
 
+/// The only value `GATEWAY_C8S_ATTESTATION_PROTOCOL` accepts.
+const PINNED_C8S_ATTESTATION_PROTOCOL: &str = "v1-xwing";
+
 fn validate_args(args: &Args) -> Result<()> {
     if args.environment.is_empty()
         || args.environment.len() > 63
@@ -420,6 +442,11 @@ fn validate_args(args: &Args) -> Result<()> {
     }
     if args.model.is_empty() || args.model.len() > 256 {
         bail!("GATEWAY_MODEL must identify one configured model");
+    }
+    if args.c8s_attestation_protocol != PINNED_C8S_ATTESTATION_PROTOCOL {
+        bail!(
+            "GATEWAY_C8S_ATTESTATION_PROTOCOL must be {PINNED_C8S_ATTESTATION_PROTOCOL}: this build speaks {C8S_ATTESTATION_PROTOCOL} and runs in lockstep with c8s {C8S_ATTESTATION_PROTOCOL_COMMIT}"
+        );
     }
     C8sAttestationProvider::from_config(C8sAttestationConfig {
         targets: &args.c8s_receipt_targets,
@@ -483,6 +510,7 @@ mod tests {
             expected_operator_public_key_sha256: format!("sha256:{}", "2".repeat(64)),
             expected_operator_key_set_sha256: format!("sha256:{}", "3".repeat(64)),
             c8s_policy_mode: "operator".to_owned(),
+            c8s_attestation_protocol: PINNED_C8S_ATTESTATION_PROTOCOL.to_owned(),
             expected_static_allowlist_sha256: String::new(),
             attestation_timeout_seconds: 30,
             attestation_maximum_evidence_bytes: 1_048_576,
@@ -565,6 +593,16 @@ mod tests {
         value.allow_direct_inference_url = true;
         assert!(validate_args(&value).is_ok());
         value.inference_url = "sglang-router:30000".to_owned();
+        assert!(validate_args(&value).is_err());
+    }
+
+    #[test]
+    fn only_the_pinned_c8s_attestation_protocol_is_accepted() {
+        let mut value = args();
+        assert!(validate_args(&value).is_ok());
+        value.c8s_attestation_protocol = "v1-session-pubkey".to_owned();
+        assert!(validate_args(&value).is_err());
+        value.c8s_attestation_protocol = String::new();
         assert!(validate_args(&value).is_err());
     }
 
