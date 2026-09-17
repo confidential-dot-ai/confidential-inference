@@ -24,6 +24,7 @@ hmac = "0.12.1"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["server-auto", "tokio"] }
 ipnet = "2.11.0"
+ml-kem = "0.3.2"
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "stream", "rustls"] }
 ring = "0.17.14"
 rusqlite = { version = "0.38.0", features = ["bundled"] }

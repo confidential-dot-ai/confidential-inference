@@ -8,8 +8,9 @@ use axum::{
     Json, Router,
     body::{Body, to_bytes},
     extract::{Query, State},
-    http::{Request, StatusCode},
-    routing::get,
+    http::{Request, StatusCode, header},
+    response::{IntoResponse as _, Response},
+    routing::{get, post},
 };
 use base64::Engine as _;
 use confidential_gateway::{
@@ -24,10 +25,20 @@ use tokio::{net::TcpListener, task::JoinHandle};
 use tower::ServiceExt as _;
 
 const TEST_OPERATOR_KEY: &str = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEnJMsKPXWyf5ZDLsU9OV/wKCWhvRJ\nHk/K2mRdVZoDNgtuvdFkNh9CDp2ekMIfY3wnJvQ7CbQkD+I/3XYobrFIWQ==\n-----END PUBLIC KEY-----\n";
+/// A second, valid operator key. Its key set digest differs from the pinned
+/// one, so a CDS that serves it must fail closed.
+const OTHER_OPERATOR_KEY: &str = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAWsKDZtld071+6SZjbN+SlfXanJd\nYE9q1iiW2e/0wTDAbqui7IsViuNbtrPFqMEk9k5eyR806HZCyd0iC6M+9w==\n-----END PUBLIC KEY-----\n";
 const TEST_OPERATOR_KEY_SHA256: &str =
     "sha256:45363125cde63f66880a4ba62fb4e0b48ae2f21bf1658df1fe1d6f14ec9ebfb7";
 const TEST_OPERATOR_KEY_SET_SHA256: &str =
     "sha256:8e4a722def684a9495d9d024e84fdccbbae9cb7ad9f585e863f7e5df575d2355";
+
+/// Byte length of one X-Wing encapsulation key: ML-KEM-768 plus X25519.
+const XWING_ENCAPSULATION_KEY_BYTES: usize = 1_216;
+/// Byte length of one X-Wing ciphertext.
+const XWING_CIPHERTEXT_BYTES: usize = 1_120;
+/// Byte length of one c8s session identifier.
+const C8S_SESSION_ID_BYTES: usize = 16;
 
 #[derive(Clone, Copy)]
 enum FakeMode {
@@ -39,6 +50,8 @@ enum FakeMode {
     MissingOperatorKeys,
     MalformedOperatorKeys,
     MismatchedOperatorKeys,
+    WrongXwingEcho,
+    LegacyProtocol,
     Cds,
     TeeWebPki,
     TeeWebPkiWrongFrontDoor,
@@ -49,9 +62,15 @@ enum FakeMode {
 struct FakeState {
     mode: FakeMode,
     nonces: Arc<Mutex<Vec<String>>>,
+    /// Every X-Wing encapsulation key this fake c8s received.
+    encapsulation_keys: Arc<Mutex<Vec<String>>>,
     /// Serve the c8s main-line (#551) allowlist shape, which carries no
     /// top-level "digests" map.
     main_line_allowlist: bool,
+}
+
+fn encode(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
 async fn ready(State(state): State<FakeState>) -> StatusCode {
@@ -62,94 +81,157 @@ async fn ready(State(state): State<FakeState>) -> StatusCode {
     }
 }
 
-async fn receipt(
-    State(state): State<FakeState>,
-    Query(query): Query<HashMap<String, String>>,
-) -> (StatusCode, Json<Value>) {
-    if matches!(state.mode, FakeMode::FailedReceipt) {
-        return (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({"error":"attestation_unavailable"})),
-        );
-    }
-    let requested = query.get("nonce").cloned().unwrap_or_default();
-    state
-        .nonces
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(requested.clone());
-    let returned = if matches!(state.mode, FakeMode::WrongNonce) {
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([9_u8; 32])
+/// The c8s `attest-pq` receipt at the pinned commit (c8s 466ce79).
+///
+/// The captured shape carries `xwing_ek`, `xwing_ct` and `session_id`, and
+/// carries no `session_pubkey`, no `gpu_attested`, no `nvidia_gpu`, and no
+/// operator key set.
+/// The long evidence and certificate values are truncated here; only the
+/// structure matters to these tests.
+fn receipt_body(state: &FakeState, nonce: &str, encapsulation_key: &str) -> Value {
+    let returned_nonce = if matches!(state.mode, FakeMode::WrongNonce) {
+        encode(&[9_u8; 32])
     } else {
-        requested
+        nonce.to_owned()
     };
     let chain = if matches!(state.mode, FakeMode::MissingChain) {
         "-----BEGIN CERTIFICATE-----\nAQ==\n-----END CERTIFICATE-----\n"
     } else {
         "-----BEGIN CERTIFICATE-----\nAQ==\n-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----\nAg==\n-----END CERTIFICATE-----\n"
     };
-    let mut body = json!({
-        "version":"c8s/attest-pq/v1",
-        "platform":"tdx",
-        "generation":"",
-        "nonce":returned,
-        "evidence":{"quote":"standard-c8s-evidence"},
-        "operator_keys_pem":TEST_OPERATOR_KEY,
-        "operator_keys_sha256":TEST_OPERATOR_KEY_SET_SHA256.strip_prefix("sha256:").unwrap_or_default(),
-        "cds_cert_pem":chain,
-        "session_pubkey":{
-            "x25519":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([1_u8;32]),
-            "mlkem768":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(vec![2_u8;1184])
-        },
-        "identity_proof":{
-            "algorithm":"ecdsa-sha384",
-            "leaf_sha256":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([3_u8;32]),
-            "mesh_ca_sha256":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([4_u8;32]),
-            "signature":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([5_u8;64])
+    let echoed = if matches!(state.mode, FakeMode::WrongXwingEcho) {
+        encode(&vec![7_u8; XWING_ENCAPSULATION_KEY_BYTES])
+    } else {
+        encapsulation_key.to_owned()
+    };
+    json!({
+        "version": "c8s/attest-pq/v1",
+        "platform": "tdx",
+        "generation": "",
+        "nonce": returned_nonce,
+        "evidence": {"cc_eventlog": "raw-c8s-event-log", "quote": "standard-c8s-evidence"},
+        "cds_cert_pem": chain,
+        "front_door_mode": "webpki",
+        "xwing_ek": echoed,
+        "xwing_ct": encode(&vec![6_u8; XWING_CIPHERTEXT_BYTES]),
+        "session_id": encode(&[5_u8; C8S_SESSION_ID_BYTES]),
+        "identity_proof": {
+            "algorithm": "ecdsa-sha384",
+            "leaf_sha256": encode(&[3_u8; 32]),
+            "mesh_ca_sha256": encode(&[4_u8; 32]),
+            "signature": encode(&[5_u8; 64])
         }
-    });
-    if matches!(state.mode, FakeMode::MissingOperatorKeys | FakeMode::Static) {
-        body.as_object_mut()
-            .unwrap_or_else(|| unreachable!())
-            .remove("operator_keys_pem");
-        body.as_object_mut()
-            .unwrap_or_else(|| unreachable!())
-            .remove("operator_keys_sha256");
-    } else if matches!(state.mode, FakeMode::MalformedOperatorKeys) {
-        body["operator_keys_pem"] = json!("not-a-public-key");
-    } else if matches!(state.mode, FakeMode::MismatchedOperatorKeys)
-        && state
-            .nonces
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
-            > 1
-    {
-        body["operator_keys_sha256"] = json!("0".repeat(64));
-    }
-    (StatusCode::OK, Json(body))
+    })
 }
 
+/// The pinned c8s protocol: `attest-pq` is client-first and takes a POST body.
+async fn receipt(State(state): State<FakeState>, body: Option<Json<Value>>) -> Response {
+    if matches!(state.mode, FakeMode::FailedReceipt) {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error":"attestation_unavailable"})),
+        )
+            .into_response();
+    }
+    if matches!(state.mode, FakeMode::LegacyProtocol) {
+        // c8s 079aeb48 registers attest-pq as GET only, so the POST this
+        // gateway sends is rejected before any evidence is produced.
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            Json(json!({
+                "error": "method_not_allowed",
+                "message": "attest-pq requires GET with a nonce query parameter"
+            })),
+        )
+            .into_response();
+    }
+    let Some(Json(body)) = body else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "invalid_request",
+                "message": "attest-pq is client-first: POST a JSON body with nonce and xwing_ek"
+            })),
+        )
+            .into_response();
+    };
+    let requested = body
+        .get("nonce")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let encapsulation_key = body
+        .get("xwing_ek")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    state
+        .nonces
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(requested.clone());
+    state
+        .encapsulation_keys
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(encapsulation_key.clone());
+    (
+        StatusCode::OK,
+        Json(receipt_body(&state, &requested, &encapsulation_key)),
+    )
+        .into_response()
+}
+
+/// `attest-lb` did not change: it stays a GET with a nonce query parameter,
+/// and it carries `serving_leaf_sha256` instead of the X-Wing material.
 async fn front_door_receipt(
     State(state): State<FakeState>,
     Query(query): Query<HashMap<String, String>>,
 ) -> (StatusCode, Json<Value>) {
-    let mode = state.mode;
-    let (status, Json(mut body)) = receipt(State(state), Query(query)).await;
-    if !status.is_success() {
-        return (status, Json(body));
-    }
-    if matches!(mode, FakeMode::TeeWebPkiWrongFrontDoor) {
-        return (status, Json(body));
+    let requested = query.get("nonce").cloned().unwrap_or_default();
+    let mut body = receipt_body(
+        &state,
+        &requested,
+        &encode(&[1_u8; XWING_ENCAPSULATION_KEY_BYTES]),
+    );
+    if matches!(state.mode, FakeMode::TeeWebPkiWrongFrontDoor) {
+        return (StatusCode::OK, Json(body));
     }
     let object = body.as_object_mut().unwrap_or_else(|| unreachable!());
     object.insert("version".to_owned(), json!("c8s/attest-lb/v1"));
-    object.remove("session_pubkey");
-    object.insert(
-        "serving_leaf_sha256".to_owned(),
-        json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([8_u8; 32])),
-    );
-    (status, Json(body))
+    object.remove("xwing_ek");
+    object.remove("xwing_ct");
+    object.remove("session_id");
+    object.insert("serving_leaf_sha256".to_owned(), json!(encode(&[8_u8; 32])));
+    (StatusCode::OK, Json(body))
+}
+
+/// CDS serves the operator key set as raw PEM on `/operator-keys`. c8s binds it
+/// to no hardware evidence, so an attested read is the strongest claim.
+async fn operator_keys(State(state): State<FakeState>) -> Response {
+    match state.mode {
+        FakeMode::MissingOperatorKeys => {
+            (StatusCode::NOT_FOUND, "no operator keys").into_response()
+        }
+        FakeMode::MalformedOperatorKeys => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/x-pem-file")],
+            "not-a-public-key",
+        )
+            .into_response(),
+        FakeMode::MismatchedOperatorKeys => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/x-pem-file")],
+            OTHER_OPERATOR_KEY,
+        )
+            .into_response(),
+        _ => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/x-pem-file")],
+            TEST_OPERATOR_KEY,
+        )
+            .into_response(),
+    }
 }
 
 async fn discovery(State(state): State<FakeState>) -> Json<Value> {
@@ -225,34 +307,46 @@ async fn allowlist(State(state): State<FakeState>) -> Json<Value> {
     }
 }
 
-async fn fake_sidecar(mode: FakeMode) -> (String, Arc<Mutex<Vec<String>>>, JoinHandle<()>) {
+struct FakeSidecar {
+    url: String,
+    nonces: Arc<Mutex<Vec<String>>>,
+    encapsulation_keys: Arc<Mutex<Vec<String>>>,
+    task: JoinHandle<()>,
+}
+
+async fn fake_sidecar(mode: FakeMode) -> FakeSidecar {
     fake_sidecar_serving(mode, false).await
 }
 
-async fn fake_sidecar_serving(
-    mode: FakeMode,
-    main_line_allowlist: bool,
-) -> (String, Arc<Mutex<Vec<String>>>, JoinHandle<()>) {
+async fn fake_sidecar_serving(mode: FakeMode, main_line_allowlist: bool) -> FakeSidecar {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .unwrap_or_else(|_| unreachable!());
     let address = listener.local_addr().unwrap_or_else(|_| unreachable!());
     let nonces = Arc::new(Mutex::new(Vec::new()));
+    let encapsulation_keys = Arc::new(Mutex::new(Vec::new()));
     let app = Router::new()
         .route("/readyz", get(ready))
-        .route("/.well-known/c8s/attest-pq", get(receipt))
+        .route("/.well-known/c8s/attest-pq", post(receipt))
         .route("/.well-known/c8s/attest-lb", get(front_door_receipt))
         .route("/v1/discovery", get(discovery))
         .route("/allowlist", get(allowlist))
+        .route("/operator-keys", get(operator_keys))
         .with_state(FakeState {
             mode,
             nonces: nonces.clone(),
+            encapsulation_keys: encapsulation_keys.clone(),
             main_line_allowlist,
         });
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    (format!("http://{address}"), nonces, task)
+    FakeSidecar {
+        url: format!("http://{address}"),
+        nonces,
+        encapsulation_keys,
+        task,
+    }
 }
 
 fn targets(base_url: &str, workloads: &[&str]) -> String {
@@ -410,11 +504,11 @@ async fn request(app: Router, nonce: &[u8; 32]) -> (StatusCode, Value) {
 
 #[tokio::test]
 async fn one_nonce_collects_each_production_workload_receipt_once() {
-    let (url, observed, task) = fake_sidecar(FakeMode::Valid).await;
+    let sidecar = fake_sidecar(FakeMode::Valid).await;
     let nonce = [6_u8; 32];
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce);
-    let (status, response) = request(gateway(provider(&url)), &nonce).await;
-    task.abort();
+    let (status, response) = request(gateway(provider(&sidecar.url)), &nonce).await;
+    sidecar.task.abort();
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(response["schemaVersion"], 2);
@@ -423,12 +517,23 @@ async fn one_nonce_collects_each_production_workload_receipt_once() {
     assert!(response.get("releaseBundleDigest").is_none());
     assert_eq!(response["release"]["id"], "test-release");
     assert_eq!(response["c8s"]["discovery"]["version"], "v1");
+    assert!(response["c8s"]["policyTrust"].is_null());
     assert_eq!(
-        response["c8s"]["policyTrust"]["status"],
-        "evidence-present-and-release-matched"
+        response["c8s"]["operatorTrust"]["activeKeySetStatus"],
+        "requires-attested-cds-read"
     );
+    assert_eq!(
+        response["c8s"]["operatorTrust"]["activeKeySetSha256"],
+        TEST_OPERATOR_KEY_SET_SHA256
+    );
+    assert_eq!(
+        response["c8s"]["attestationProtocol"],
+        "c8s/attest-pq/v1+xwing"
+    );
+    assert_eq!(response["c8s"]["attestationProtocolC8sCommit"], "466ce79");
     assert_eq!(response["tls"]["binding"]["status"], "not-proven");
-    assert_eq!(response["gpuEvidence"]["status"], "raw-receipt-evidence");
+    assert_eq!(response["gpuEvidence"]["status"], "not-exposed-by-c8s");
+    assert_eq!(response["gpuEvidence"]["evidence"], json!([]));
     assert_eq!(response["receipts"].as_array().map_or(0, Vec::len), 6);
     let receipt_items = response["receipts"]
         .as_array()
@@ -467,11 +572,15 @@ async fn one_nonce_collects_each_production_workload_receipt_once() {
         items.iter().all(|item| {
             item["receipt"]["version"] == "c8s/attest-pq/v1"
                 && item["receipt"]["nonce"] == encoded
+                && item["receipt"]["session_pubkey"].is_null()
+                && item["receipt"]["xwing_ct"].is_string()
+                && item["receipt"]["session_id"].is_string()
                 && item["admittedLaunch"]["containers"][0]["argv"][0] == "/bin/test"
         })
     }));
     assert_eq!(
-        *observed
+        *sidecar
+            .nonces
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
         vec![encoded; 6]
@@ -480,12 +589,12 @@ async fn one_nonce_collects_each_production_workload_receipt_once() {
 
 #[tokio::test]
 async fn tee_webpki_discovery_mode_is_accepted() {
-    let (url, _, task) = fake_sidecar(FakeMode::TeeWebPki).await;
-    let response = provider(&url)
+    let sidecar = fake_sidecar(FakeMode::TeeWebPki).await;
+    let response = provider(&sidecar.url)
         .response(&[13_u8; 32])
         .await
         .unwrap_or_default();
-    task.abort();
+    sidecar.task.abort();
     assert_eq!(
         response["c8s"]["discovery"]["public_tls"]["mode"],
         "tee-webpki"
@@ -506,13 +615,13 @@ async fn tee_webpki_discovery_mode_is_accepted() {
 
 #[tokio::test]
 async fn static_policy_accepts_no_operator_key_and_pins_the_allowlist() {
-    let (url, _, task) = fake_sidecar(FakeMode::Static).await;
+    let sidecar = fake_sidecar(FakeMode::Static).await;
     let digest = test_allowlist_digest();
-    let response = static_provider(&url, &digest)
+    let response = static_provider(&sidecar.url, &digest)
         .response(&[18_u8; 32])
         .await
         .unwrap_or_default();
-    task.abort();
+    sidecar.task.abort();
 
     assert_eq!(response["c8s"]["policyTrust"]["mode"], "static");
     assert_eq!(
@@ -532,20 +641,20 @@ async fn static_policy_accepts_no_operator_key_and_pins_the_allowlist() {
 
 #[tokio::test]
 async fn static_policy_rejects_a_different_allowlist_digest() {
-    let (url, _, task) = fake_sidecar(FakeMode::Static).await;
-    let result = static_provider(&url, &format!("sha256:{}", "0".repeat(64)))
+    let sidecar = fake_sidecar(FakeMode::Static).await;
+    let result = static_provider(&sidecar.url, &format!("sha256:{}", "0".repeat(64)))
         .response(&[19_u8; 32])
         .await;
-    task.abort();
+    sidecar.task.abort();
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn main_line_allowlist_shape_is_accepted() {
-    let (url, _, task) = fake_sidecar_serving(FakeMode::Valid, true).await;
+    let sidecar = fake_sidecar_serving(FakeMode::Valid, true).await;
     let nonce = [21_u8; 32];
-    let (status, response) = request(gateway(provider(&url)), &nonce).await;
-    task.abort();
+    let (status, response) = request(gateway(provider(&sidecar.url)), &nonce).await;
+    sidecar.task.abort();
 
     assert_eq!(status, StatusCode::OK);
     let document = &response["c8s"]["activeAllowlist"]["document"];
@@ -563,8 +672,8 @@ async fn main_line_allowlist_shape_is_accepted() {
     // Every receipt still resolves its admitted launch policy from the
     // per-workload entries.
     assert_eq!(
-        response["c8s"]["policyTrust"]["status"],
-        "evidence-present-and-release-matched"
+        response["c8s"]["operatorTrust"]["activeKeySetStatus"],
+        "requires-attested-cds-read"
     );
     assert!(response["receipts"].as_array().is_some_and(|items| {
         !items.is_empty()
@@ -576,13 +685,13 @@ async fn main_line_allowlist_shape_is_accepted() {
 
 #[tokio::test]
 async fn static_policy_pins_the_main_line_allowlist() {
-    let (url, _, task) = fake_sidecar_serving(FakeMode::Static, true).await;
+    let sidecar = fake_sidecar_serving(FakeMode::Static, true).await;
     let digest = main_line_allowlist_digest();
-    let response = static_provider(&url, &digest)
+    let response = static_provider(&sidecar.url, &digest)
         .response(&[22_u8; 32])
         .await
         .unwrap_or_default();
-    task.abort();
+    sidecar.task.abort();
 
     assert_eq!(response["c8s"]["policyTrust"]["mode"], "static");
     assert_eq!(
@@ -596,22 +705,22 @@ async fn static_policy_rejects_the_branch_digest_against_a_main_line_allowlist()
     // Adding the branch's empty top-level "digests" map changes the canonical
     // bytes, so an expectation pinned to the branch shape fails closed
     // against a main-line CDS.
-    let (url, _, task) = fake_sidecar_serving(FakeMode::Static, true).await;
-    let result = static_provider(&url, &test_allowlist_digest())
+    let sidecar = fake_sidecar_serving(FakeMode::Static, true).await;
+    let result = static_provider(&sidecar.url, &test_allowlist_digest())
         .response(&[23_u8; 32])
         .await;
-    task.abort();
+    sidecar.task.abort();
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn cds_discovery_mode_requires_a_separate_front_door_receipt() {
-    let (url, _, task) = fake_sidecar(FakeMode::Cds).await;
-    let response = provider(&url)
+    let sidecar = fake_sidecar(FakeMode::Cds).await;
+    let response = provider(&sidecar.url)
         .response(&[14_u8; 32])
         .await
         .unwrap_or_default();
-    task.abort();
+    sidecar.task.abort();
     assert_eq!(response["c8s"]["discovery"]["public_tls"]["mode"], "cds");
     assert_eq!(response["frontDoor"]["source"], "c8s-tls-lb");
     assert_eq!(
@@ -622,10 +731,10 @@ async fn cds_discovery_mode_requires_a_separate_front_door_receipt() {
 
 #[tokio::test]
 async fn tee_webpki_front_door_failure_does_not_use_gateway_receipt() {
-    let (url, _, task) = fake_sidecar(FakeMode::TeeWebPki).await;
-    let provider = provider(&url);
+    let sidecar = fake_sidecar(FakeMode::TeeWebPki).await;
+    let provider = provider(&sidecar.url);
     let response = provider.response(&[13_u8; 32]).await.unwrap_or_default();
-    task.abort();
+    sidecar.task.abort();
     assert_eq!(
         response["frontDoor"]["receipt"]["version"],
         "c8s/attest-lb/v1"
@@ -638,9 +747,9 @@ async fn tee_webpki_front_door_failure_does_not_use_gateway_receipt() {
 
 #[tokio::test]
 async fn tee_webpki_rejects_a_gateway_pq_receipt_at_the_front_door() {
-    let (url, _, task) = fake_sidecar(FakeMode::TeeWebPkiWrongFrontDoor).await;
-    let (status, _) = request(gateway(provider(&url)), &[15_u8; 32]).await;
-    task.abort();
+    let sidecar = fake_sidecar(FakeMode::TeeWebPkiWrongFrontDoor).await;
+    let (status, _) = request(gateway(provider(&sidecar.url)), &[15_u8; 32]).await;
+    sidecar.task.abort();
     assert!(matches!(
         status,
         StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE
@@ -649,11 +758,11 @@ async fn tee_webpki_rejects_a_gateway_pq_receipt_at_the_front_door() {
 
 #[tokio::test]
 async fn staging_collects_the_exact_extra_worker_receipt_set() {
-    let (url, observed, task) = fake_sidecar(FakeMode::Valid).await;
+    let sidecar = fake_sidecar(FakeMode::Valid).await;
     let nonce = [10_u8; 32];
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce);
-    let (status, response) = request(gateway(staging_provider(&url)), &nonce).await;
-    task.abort();
+    let (status, response) = request(gateway(staging_provider(&sidecar.url)), &nonce).await;
+    sidecar.task.abort();
 
     assert_eq!(status, StatusCode::OK);
     let receipt_items = response["receipts"]
@@ -681,7 +790,8 @@ async fn staging_collects_the_exact_extra_worker_receipt_set() {
         ["extra-worker", "extra-worker", "gateway", "sglang-router"]
     );
     assert_eq!(
-        *observed
+        *sidecar
+            .nonces
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
         vec![encoded; 4]
@@ -692,11 +802,11 @@ async fn staging_collects_the_exact_extra_worker_receipt_set() {
 
 #[tokio::test]
 async fn configured_identity_cannot_replace_the_allowlist_identity() {
-    let (url, _, task) = fake_sidecar(FakeMode::Valid).await;
-    let targets = format!("gateway|gateway|attacker={url}");
+    let sidecar = fake_sidecar(FakeMode::Valid).await;
+    let targets = format!("gateway|gateway|attacker={}", sidecar.url);
     let provider = C8sAttestationProvider::from_config(C8sAttestationConfig {
         targets: &targets,
-        evidence_base_url: &url,
+        evidence_base_url: &sidecar.url,
         release_id: "test-release",
         release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
         expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
@@ -708,7 +818,7 @@ async fn configured_identity_cannot_replace_the_allowlist_identity() {
     })
     .unwrap_or_else(|error| panic!("provider: {error}"));
     let response = provider.response(&[17_u8; 32]).await;
-    task.abort();
+    sidecar.task.abort();
     assert!(response.is_err());
 }
 
@@ -720,9 +830,9 @@ async fn any_failed_or_invalid_receipt_fails_closed() {
         FakeMode::WrongNonce,
         FakeMode::MissingChain,
     ] {
-        let (url, _, task) = fake_sidecar(mode).await;
-        let (status, _) = request(gateway(provider(&url)), &[7_u8; 32]).await;
-        task.abort();
+        let sidecar = fake_sidecar(mode).await;
+        let (status, _) = request(gateway(provider(&sidecar.url)), &[7_u8; 32]).await;
+        sidecar.task.abort();
         assert!(matches!(
             status,
             StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE
@@ -736,9 +846,9 @@ async fn operator_policy_is_required_and_fails_closed() {
         FakeMode::MissingOperatorKeys,
         FakeMode::MalformedOperatorKeys,
     ] {
-        let (url, _, task) = fake_sidecar(mode).await;
-        let (status, _) = request(gateway(provider(&url)), &[11_u8; 32]).await;
-        task.abort();
+        let sidecar = fake_sidecar(mode).await;
+        let (status, _) = request(gateway(provider(&sidecar.url)), &[11_u8; 32]).await;
+        sidecar.task.abort();
         assert!(matches!(
             status,
             StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE
@@ -747,10 +857,10 @@ async fn operator_policy_is_required_and_fails_closed() {
 }
 
 #[tokio::test]
-async fn operator_policy_must_match_on_every_receipt() {
-    let (url, _, task) = fake_sidecar(FakeMode::MismatchedOperatorKeys).await;
-    let (status, _) = request(gateway(provider(&url)), &[14_u8; 32]).await;
-    task.abort();
+async fn a_different_cds_operator_key_set_fails_closed() {
+    let sidecar = fake_sidecar(FakeMode::MismatchedOperatorKeys).await;
+    let (status, _) = request(gateway(provider(&sidecar.url)), &[14_u8; 32]).await;
+    sidecar.task.abort();
     assert!(matches!(
         status,
         StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE
@@ -758,10 +868,125 @@ async fn operator_policy_must_match_on_every_receipt() {
 }
 
 #[tokio::test]
+async fn the_post_body_carries_the_nonce_and_one_fresh_encapsulation_key() {
+    let sidecar = fake_sidecar(FakeMode::Valid).await;
+    let nonce = [24_u8; 32];
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce);
+    let (status, response) = request(gateway(provider(&sidecar.url)), &nonce).await;
+    let keys = sidecar
+        .encapsulation_keys
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    sidecar.task.abort();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(keys.len(), 6);
+    for key in &keys {
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(key)
+            .unwrap_or_default();
+        assert_eq!(decoded.len(), XWING_ENCAPSULATION_KEY_BYTES);
+    }
+    // Each request generates its own ephemeral key.
+    let mut unique = keys.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), keys.len());
+    // The receipt echoes the exact key the gateway sent.
+    let receipts = response["receipts"]
+        .as_array()
+        .unwrap_or_else(|| unreachable!());
+    assert!(
+        receipts
+            .iter()
+            .all(|item| keys.iter().any(|key| item["receipt"]["xwing_ek"] == *key))
+    );
+    assert_eq!(
+        *sidecar
+            .nonces
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        vec![encoded; 6]
+    );
+}
+
+#[tokio::test]
+async fn a_different_echoed_encapsulation_key_fails_closed() {
+    let sidecar = fake_sidecar(FakeMode::WrongXwingEcho).await;
+    let (status, body) = request(gateway(provider(&sidecar.url)), &[25_u8; 32]).await;
+    sidecar.task.abort();
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(body["error"]["code"], "attestation_invalid");
+}
+
+#[tokio::test]
+async fn an_old_protocol_node_reports_a_protocol_mismatch() {
+    let sidecar = fake_sidecar(FakeMode::LegacyProtocol).await;
+    let (status, body) = request(gateway(provider(&sidecar.url)), &[26_u8; 32]).await;
+    sidecar.task.abort();
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(body["error"]["code"], "attestation_protocol_mismatch");
+    let detail = body["error"]["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("405"), "detail: {detail}");
+    assert!(detail.contains("method_not_allowed"), "detail: {detail}");
+    assert!(
+        detail.contains("attest-pq requires GET"),
+        "detail: {detail}"
+    );
+    assert!(
+        detail.contains("c8s/attest-pq/v1+xwing"),
+        "detail: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn the_operator_key_set_digest_comes_from_an_attested_cds_read() {
+    let sidecar = fake_sidecar(FakeMode::Valid).await;
+    let response = provider(&sidecar.url)
+        .response(&[27_u8; 32])
+        .await
+        .unwrap_or_default();
+    sidecar.task.abort();
+
+    let trust = &response["c8s"]["operatorTrust"];
+    assert_eq!(trust["expectedKeySetSha256"], TEST_OPERATOR_KEY_SET_SHA256);
+    assert_eq!(trust["activeKeySetSha256"], TEST_OPERATOR_KEY_SET_SHA256);
+    assert_eq!(
+        trust["activeKeySetC8sSha256"],
+        TEST_OPERATOR_KEY_SET_SHA256
+            .strip_prefix("sha256:")
+            .unwrap_or_default()
+    );
+    assert_eq!(trust["activeKeySetPem"], TEST_OPERATOR_KEY);
+    assert_eq!(trust["activeKeySetStatus"], "requires-attested-cds-read");
+    // The weaker claim must never be reported as a hardware-bound match.
+    assert_ne!(
+        trust["activeKeySetStatus"],
+        "evidence-present-and-release-matched"
+    );
+}
+
+#[tokio::test]
+async fn the_folded_allowlist_needs_no_digests_key() {
+    let sidecar = fake_sidecar_serving(FakeMode::Valid, true).await;
+    let response = provider(&sidecar.url)
+        .response(&[28_u8; 32])
+        .await
+        .unwrap_or_default();
+    sidecar.task.abort();
+
+    let allowlist = &response["c8s"]["activeAllowlist"];
+    assert!(allowlist["document"].get("digests").is_none());
+    assert_eq!(allowlist["document"]["schema"], "c8s.allowlist/v1");
+    assert_eq!(allowlist["sha256"], main_line_allowlist_digest());
+}
+
+#[tokio::test]
 async fn operator_policy_digest_mismatch_fails_closed() {
-    let (url, _, task) = fake_sidecar(FakeMode::Valid).await;
+    let sidecar = fake_sidecar(FakeMode::Valid).await;
     let targets = targets(
-        &url,
+        &sidecar.url,
         &[
             "gateway",
             "sglang-router",
@@ -773,7 +998,7 @@ async fn operator_policy_digest_mismatch_fails_closed() {
     );
     let provider = C8sAttestationProvider::from_config(C8sAttestationConfig {
         targets: &targets,
-        evidence_base_url: &url,
+        evidence_base_url: &sidecar.url,
         release_id: "test-release",
         release_bundle_sha256: &format!("sha256:{}", "2".repeat(64)),
         expected_operator_public_key_sha256: TEST_OPERATOR_KEY_SHA256,
@@ -785,16 +1010,16 @@ async fn operator_policy_digest_mismatch_fails_closed() {
     })
     .unwrap_or_else(|error| panic!("provider: {error}"));
     assert!(provider.response(&[12_u8; 32]).await.is_err());
-    task.abort();
+    sidecar.task.abort();
 }
 
 #[tokio::test]
 async fn each_request_uses_its_client_nonce() {
-    let (url, _, task) = fake_sidecar(FakeMode::Valid).await;
-    let provider = provider(&url);
+    let sidecar = fake_sidecar(FakeMode::Valid).await;
+    let provider = provider(&sidecar.url);
     let first = provider.response(&[1_u8; 32]).await.unwrap_or_default();
     let second = provider.response(&[2_u8; 32]).await.unwrap_or_default();
-    task.abort();
+    sidecar.task.abort();
     assert_ne!(first["nonce"], second["nonce"]);
     assert_ne!(
         first["receipts"][0]["receipt"]["nonce"],
@@ -830,9 +1055,9 @@ fn target_configuration_rejects_malformed_or_unsafe_entries() {
 
 #[tokio::test]
 async fn response_does_not_claim_workload_liveness() {
-    let (url, _, task) = fake_sidecar(FakeMode::Valid).await;
-    let (_, response) = request(gateway(provider(&url)), &[8_u8; 32]).await;
-    task.abort();
+    let sidecar = fake_sidecar(FakeMode::Valid).await;
+    let (_, response) = request(gateway(provider(&sidecar.url)), &[8_u8; 32]).await;
+    sidecar.task.abort();
     let text = serde_json::to_string(&response)
         .unwrap_or_default()
         .to_lowercase();

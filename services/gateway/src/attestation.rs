@@ -7,6 +7,7 @@ use std::{
 
 use base64::Engine as _;
 use futures_util::StreamExt as _;
+use ml_kem::{FromSeed as _, kem::KeyExport as _};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use url::Url;
@@ -20,10 +21,79 @@ use crate::{AttestationError, AttestationProvider};
 const MAX_METADATA_BYTES: usize = 1_048_576;
 const OPERATOR_KEY_SET_DOMAIN: &[u8] = b"c8s-operator-key-set-v1\0";
 const MAX_OPERATOR_KEY_SET_BYTES: usize = 256 * 1_024;
+const MAX_PROTOCOL_ERROR_BYTES: usize = 8 * 1_024;
+const MAX_PROTOCOL_DETAIL_CHARACTERS: usize = 200;
+
+/// The one c8s attestation protocol this gateway speaks.
+///
+/// c8s kept the receipt `version` string identical across the two protocols,
+/// so a receipt cannot tell the gateway which protocol the node serves. The
+/// gateway must know the protocol before it sends the request. This build is
+/// therefore in lockstep with one pinned c8s commit. A node that serves the
+/// other protocol answers with a 4xx, and the gateway reports
+/// `attestation_protocol_mismatch`.
+pub const C8S_ATTESTATION_PROTOCOL: &str = "c8s/attest-pq/v1+xwing";
+
+/// The pinned c8s commit that serves `C8S_ATTESTATION_PROTOCOL`.
+pub const C8S_ATTESTATION_PROTOCOL_COMMIT: &str = "466ce79";
+
+/// Byte length of one ML-KEM-768 encapsulation key.
+const MLKEM768_ENCAPSULATION_KEY_BYTES: usize = 1_184;
+/// Byte length of one X25519 public key.
+const X25519_PUBLIC_KEY_BYTES: usize = 32;
+/// Byte length of one X-Wing encapsulation key.
+const XWING_ENCAPSULATION_KEY_BYTES: usize =
+    MLKEM768_ENCAPSULATION_KEY_BYTES + X25519_PUBLIC_KEY_BYTES;
+/// Byte length of one X-Wing ciphertext.
+const XWING_CIPHERTEXT_BYTES: usize = 1_120;
+/// Byte length of one c8s session identifier.
+const C8S_SESSION_ID_BYTES: usize = 16;
+
+/// One ephemeral X-Wing encapsulation key.
+///
+/// X-Wing is the hybrid of ML-KEM-768 and X25519. The encapsulation key is the
+/// ML-KEM-768 encapsulation key followed by the X25519 public key. The gateway
+/// generates one key for each attestation request and never decapsulates, so it
+/// drops both secret keys as soon as the public bytes exist. The key exists
+/// only to bind the receipt to this exact request.
+struct XWingEncapsulationKey {
+    encoded: String,
+}
+
+impl XWingEncapsulationKey {
+    /// Generate one ephemeral X-Wing encapsulation key.
+    fn generate() -> Result<Self, AttestationError> {
+        let mut seed = ml_kem::Seed::default();
+        getrandom::fill(&mut seed[..]).map_err(|_| AttestationError::Unavailable)?;
+        let (_decapsulation_key, encapsulation_key) = ml_kem::MlKem768::from_seed(&seed);
+        let mlkem_bytes = encapsulation_key.to_bytes();
+
+        let rng = ring::rand::SystemRandom::new();
+        let x25519_secret =
+            ring::agreement::EphemeralPrivateKey::generate(&ring::agreement::X25519, &rng)
+                .map_err(|_| AttestationError::Unavailable)?;
+        let x25519_public = x25519_secret
+            .compute_public_key()
+            .map_err(|_| AttestationError::Unavailable)?;
+
+        let mut material = Vec::with_capacity(XWING_ENCAPSULATION_KEY_BYTES);
+        material.extend_from_slice(mlkem_bytes.as_slice());
+        material.extend_from_slice(x25519_public.as_ref());
+        if material.len() != XWING_ENCAPSULATION_KEY_BYTES {
+            return Err(AttestationError::Unavailable);
+        }
+        Ok(Self {
+            encoded: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&material),
+        })
+    }
+
+    fn as_str(&self) -> &str {
+        &self.encoded
+    }
+}
 
 #[derive(Clone, Debug)]
 struct OperatorKeySet {
-    raw_pem: String,
     canonical_pem: String,
     digest: String,
     c8s_digest: String,
@@ -43,7 +113,6 @@ struct ReceiptTarget {
 struct CollectedEvidence {
     receipts: Vec<Value>,
     mesh_ca_sha256: String,
-    operator_keys: Option<OperatorKeySet>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -191,23 +260,54 @@ impl C8sAttestationProvider {
         }
         read_bounded(ready, 4_096).await?;
 
-        let mut receipt_url = target
+        let receipt_url = target
             .base_url
             .join(".well-known/c8s/attest-pq")
             .map_err(|_| AttestationError::Invalid)?;
-        receipt_url.query_pairs_mut().append_pair("nonce", nonce);
+        // The c8s attest-pq endpoint is client-first at the pinned commit: the
+        // gateway POSTs the nonce and one ephemeral X-Wing encapsulation key,
+        // and c8s echoes that key in the receipt it signs.
+        let encapsulation_key = XWingEncapsulationKey::generate()?;
         let response = self
             .http
-            .get(receipt_url)
+            .post(receipt_url)
+            .json(&json!({"nonce": nonce, "xwing_ek": encapsulation_key.as_str()}))
+            .send()
+            .await
+            .map_err(|_| AttestationError::Unavailable)?;
+        let response = require_protocol_success(response).await?;
+        let body = read_bounded(response, self.maximum_receipt_bytes).await?;
+        let receipt: Value =
+            serde_json::from_slice(&body).map_err(|_| AttestationError::Invalid)?;
+        validate_standard_receipt(
+            &receipt,
+            nonce,
+            "c8s/attest-pq/v1",
+            Some(encapsulation_key.as_str()),
+        )?;
+        Ok(receipt)
+    }
+
+    /// Read the c8s operator key set from CDS over the attested channel.
+    ///
+    /// c8s binds this key set to no hardware evidence at the pinned commit. The
+    /// receipt no longer carries it either. An attested read of `/operator-keys`
+    /// is therefore the strongest available claim, and the response labels it
+    /// as such.
+    async fn fetch_operator_key_set(&self) -> Result<OperatorKeySet, AttestationError> {
+        let url = self
+            .evidence_base_url
+            .join("operator-keys")
+            .map_err(|_| AttestationError::Invalid)?;
+        let response = self
+            .http
+            .get(url)
             .send()
             .await
             .map_err(|_| AttestationError::Unavailable)?;
         require_success(&response)?;
-        let body = read_bounded(response, self.maximum_receipt_bytes).await?;
-        let receipt: Value =
-            serde_json::from_slice(&body).map_err(|_| AttestationError::Invalid)?;
-        validate_standard_receipt(&receipt, nonce, "c8s/attest-pq/v1")?;
-        Ok(receipt)
+        let body = read_bounded(response, MAX_OPERATOR_KEY_SET_BYTES).await?;
+        canonical_operator_key_set(&body)
     }
 
     async fn fetch_front_door_receipt(&self, nonce: &str) -> Result<Value, AttestationError> {
@@ -226,7 +326,7 @@ impl C8sAttestationProvider {
         let body = read_bounded(response, self.maximum_receipt_bytes).await?;
         let receipt: Value =
             serde_json::from_slice(&body).map_err(|_| AttestationError::Invalid)?;
-        validate_standard_receipt(&receipt, nonce, "c8s/attest-lb/v1")?;
+        validate_standard_receipt(&receipt, nonce, "c8s/attest-lb/v1", None)?;
         Ok(receipt)
     }
 
@@ -258,21 +358,12 @@ impl C8sAttestationProvider {
     ) -> Result<CollectedEvidence, AttestationError> {
         let mut receipts = Vec::with_capacity(self.targets.len());
         let mut mesh_ca_sha256 = None;
-        let mut operator_keys: Option<OperatorKeySet> = None;
         for target in &self.targets {
             let identity = policy_identity(allowlist, &target.workload)?;
             if identity != target.identity {
                 return Err(AttestationError::Invalid);
             }
             let receipt = self.fetch_receipt(target, nonce).await?;
-            if self.policy_mode == PolicyMode::Operator {
-                let receipt_operator_keys = receipt_operator_key_set(&receipt)?;
-                if let Some(expected) = &operator_keys {
-                    require_matching_operator_keys(expected, &receipt_operator_keys)?;
-                } else {
-                    operator_keys = Some(receipt_operator_keys);
-                }
-            }
             let receipt_mesh_ca = receipt_mesh_ca_sha256(&receipt)?;
             require_matching_mesh_ca(mesh_ca_sha256.as_deref(), &receipt_mesh_ca)?;
             mesh_ca_sha256.get_or_insert(receipt_mesh_ca);
@@ -287,7 +378,6 @@ impl C8sAttestationProvider {
         Ok(CollectedEvidence {
             receipts,
             mesh_ca_sha256: mesh_ca_sha256.ok_or(AttestationError::Invalid)?,
-            operator_keys,
         })
     }
 
@@ -301,16 +391,6 @@ impl C8sAttestationProvider {
             return Ok(None);
         }
         let receipt = self.fetch_front_door_receipt(nonce).await?;
-        if self.policy_mode == PolicyMode::Operator {
-            let receipt_operator_keys = receipt_operator_key_set(&receipt)?;
-            require_matching_operator_keys(
-                evidence
-                    .operator_keys
-                    .as_ref()
-                    .ok_or(AttestationError::Invalid)?,
-                &receipt_operator_keys,
-            )?;
-        }
         let receipt_mesh_ca = receipt_mesh_ca_sha256(&receipt)?;
         require_matching_mesh_ca(Some(&evidence.mesh_ca_sha256), &receipt_mesh_ca)?;
         Ok(Some(json!({"source": "c8s-tls-lb", "receipt": receipt})))
@@ -344,46 +424,58 @@ impl AttestationProvider for C8sAttestationProvider {
         let front_door = self
             .collect_front_door_evidence(&nonce, tls_mode, &evidence)
             .await?;
-        if self.policy_mode == PolicyMode::Operator {
-            let operator_keys = evidence
-                .operator_keys
-                .as_ref()
-                .ok_or(AttestationError::Invalid)?;
-            if operator_keys.digest != self.expected_operator_key_set_sha256
-                || !operator_keys
-                    .fingerprints
-                    .iter()
-                    .any(|fingerprint| fingerprint == &self.expected_operator_public_key_sha256)
-            {
-                return Err(AttestationError::Invalid);
-            }
-        }
 
-        let policy_trust = match self.policy_mode {
+        // c8s removed the operator key set from the receipt at the pinned
+        // commit, so the gateway reads it from CDS over the attested channel.
+        // That read proves CDS holds the key set now. It does not prove the
+        // node launched with it, and the status says so.
+        let mut trust = match self.policy_mode {
             PolicyMode::Static => json!({
-                "mode": "static",
-                "expectedAllowlistSha256": self.expected_static_allowlist_sha256,
-                "activeAllowlistSha256": active_allowlist_sha256,
-                "status": "evidence-present-requires-independent-verification",
-                "reason": "verify the sealed allowlist extension and embedded TEE evidence in the returned mesh CA chain",
+                "policyTrust": {
+                    "mode": "static",
+                    "expectedAllowlistSha256": self.expected_static_allowlist_sha256,
+                    "activeAllowlistSha256": active_allowlist_sha256,
+                    "status": "evidence-present-requires-independent-verification",
+                    "reason": "verify the sealed allowlist extension and embedded TEE evidence in the returned mesh CA chain",
+                }
             }),
             PolicyMode::Operator => {
-                let operator_keys = evidence
-                    .operator_keys
-                    .as_ref()
-                    .ok_or(AttestationError::Invalid)?;
+                let operator_keys = self.fetch_operator_key_set().await?;
+                if operator_keys.digest != self.expected_operator_key_set_sha256
+                    || !operator_keys
+                        .fingerprints
+                        .iter()
+                        .any(|fingerprint| fingerprint == &self.expected_operator_public_key_sha256)
+                {
+                    return Err(AttestationError::Invalid);
+                }
                 json!({
-                    "mode": "operator",
-                    "expectedPublicKeySpkiSha256": self.expected_operator_public_key_sha256,
-                    "expectedKeySetSha256": self.expected_operator_key_set_sha256,
-                    "activeKeySetSha256": operator_keys.digest,
-                    "activeKeySetPem": operator_keys.canonical_pem,
-                    "activeKeySetC8sSha256": operator_keys.c8s_digest,
-                    "status": "evidence-present-and-release-matched",
-                    "reason": "the active operator key set was copied from every nonce-bound c8s receipt and matched the release commitment",
+                    "operatorTrust": {
+                        "expectedPublicKeySpkiSha256": self.expected_operator_public_key_sha256,
+                        "expectedKeySetSha256": self.expected_operator_key_set_sha256,
+                        "activeKeySetStatus": "requires-attested-cds-read",
+                        "activeKeySetSha256": operator_keys.digest,
+                        "activeKeySetPem": operator_keys.canonical_pem,
+                        "activeKeySetC8sSha256": operator_keys.c8s_digest,
+                        "reason": "c8s serves this key set on /operator-keys and binds it to no hardware evidence; verify it by reading /operator-keys yourself over the attested CDS channel and comparing this digest",
+                    }
                 })
             }
         };
+
+        let mut c8s = json!({
+            "discovery": discovery,
+            "activeAllowlist": {
+                "sha256": active_allowlist_sha256,
+                "document": allowlist,
+            },
+            "attestationProtocol": C8S_ATTESTATION_PROTOCOL,
+            "attestationProtocolC8sCommit": C8S_ATTESTATION_PROTOCOL_COMMIT,
+            "meshCaSha256": evidence.mesh_ca_sha256,
+        });
+        if let (Some(target), Some(source)) = (c8s.as_object_mut(), trust.as_object_mut()) {
+            target.append(source);
+        }
 
         Ok(json!({
             "schemaVersion": 2,
@@ -395,31 +487,12 @@ impl AttestationProvider for C8sAttestationProvider {
                 "bundleSha256": self.release_bundle_sha256,
                 "source": "operator-selected-public-release",
             },
-            "c8s": {
-                "discovery": discovery,
-                "activeAllowlist": {
-                    "sha256": active_allowlist_sha256,
-                    "document": allowlist,
-                },
-                "policyTrust": policy_trust,
-                "meshCaSha256": evidence.mesh_ca_sha256,
-            },
+            "c8s": c8s,
             "tls": {"mode": tls_mode, "binding": tls_binding(tls_mode)},
             "frontDoor": front_door,
             "gpuEvidence": gpu_evidence(&evidence.receipts),
             "receipts": evidence.receipts,
         }))
-    }
-}
-
-fn require_matching_operator_keys(
-    expected: &OperatorKeySet,
-    actual: &OperatorKeySet,
-) -> Result<(), AttestationError> {
-    if expected.raw_pem == actual.raw_pem && expected.digest == actual.digest {
-        Ok(())
-    } else {
-        Err(AttestationError::Invalid)
     }
 }
 
@@ -470,6 +543,17 @@ fn gpu_evidence(receipts: &[Value]) -> Value {
             })
         })
         .collect::<Vec<_>>();
+    if evidence.is_empty() {
+        // c8s deleted gpu_attested and nvidia_gpu from the receipt at the
+        // pinned commit. A CPU-only node set and a GPU node set both return no
+        // GPU field, so the gateway must not claim GPU evidence it does not
+        // hold.
+        return json!({
+            "status": "not-exposed-by-c8s",
+            "evidence": [],
+            "reason": "the pinned c8s protocol serves no gpu_attested or nvidia_gpu field, so this response carries no GPU evidence; a GPU claim needs the c8s attestation API",
+        });
+    }
     json!({
         "status": "raw-receipt-evidence",
         "evidence": evidence,
@@ -485,6 +569,64 @@ fn require_success(response: &reqwest::Response) -> Result<(), AttestationError>
     } else {
         Err(AttestationError::Invalid)
     }
+}
+
+/// Separate a protocol mismatch from invalid evidence.
+///
+/// c8s answers a request in the other protocol with a 4xx and a JSON error
+/// body. That is a version skew between this gateway and the node, not a
+/// failed attestation. The gateway reports it as its own error code and copies
+/// the c8s message, so an operator can name the cause without reading logs.
+async fn require_protocol_success(
+    response: reqwest::Response,
+) -> Result<reqwest::Response, AttestationError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    if status.is_server_error() {
+        return Err(AttestationError::Unavailable);
+    }
+    let body = read_bounded(response, MAX_PROTOCOL_ERROR_BYTES)
+        .await
+        .unwrap_or_default();
+    Err(AttestationError::ProtocolMismatch(protocol_detail(
+        status.as_u16(),
+        &body,
+    )))
+}
+
+/// Build one safe, short description of a c8s protocol error.
+fn protocol_detail(status: u16, body: &[u8]) -> String {
+    let document = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    let code = document
+        .get("error")
+        .and_then(Value::as_str)
+        .or_else(|| document.get("code").and_then(Value::as_str))
+        .unwrap_or("unknown");
+    let message = document
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("the c8s node returned no message");
+    let detail = format!(
+        "c8s .well-known/c8s/attest-pq answered {status} {code}: {message}; this gateway speaks {C8S_ATTESTATION_PROTOCOL} (c8s {C8S_ATTESTATION_PROTOCOL_COMMIT})"
+    );
+    sanitize_detail(&detail)
+}
+
+/// Keep printable ASCII only, and bound the length.
+fn sanitize_detail(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_graphic() || character == ' ' {
+                character
+            } else {
+                ' '
+            }
+        })
+        .take(MAX_PROTOCOL_DETAIL_CHARACTERS)
+        .collect()
 }
 
 fn parse_targets(targets: &str) -> Result<Vec<ReceiptTarget>, String> {
@@ -645,7 +787,6 @@ fn canonical_operator_key_set(bytes: &[u8]) -> Result<OperatorKeySet, Attestatio
     let digest_bytes = commitment.finalize();
     let digest_hex = hex::encode(digest_bytes);
     Ok(OperatorKeySet {
-        raw_pem: String::from_utf8(bytes.to_vec()).map_err(|_| AttestationError::Invalid)?,
         canonical_pem,
         digest: format!("sha256:{digest_hex}"),
         c8s_digest: digest_hex,
@@ -654,30 +795,6 @@ fn canonical_operator_key_set(bytes: &[u8]) -> Result<OperatorKeySet, Attestatio
             .map(|fingerprint| format!("sha256:{}", hex::encode(fingerprint)))
             .collect(),
     })
-}
-
-fn receipt_operator_key_set(receipt: &Value) -> Result<OperatorKeySet, AttestationError> {
-    let pem = receipt
-        .get("operator_keys_pem")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty() && value.len() <= MAX_OPERATOR_KEY_SET_BYTES)
-        .ok_or(AttestationError::Invalid)?;
-    let c8s_digest = receipt
-        .get("operator_keys_sha256")
-        .and_then(Value::as_str)
-        .filter(|value| {
-            value.len() == 64
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        })
-        .ok_or(AttestationError::Invalid)?;
-    let mut policy = canonical_operator_key_set(pem.as_bytes())?;
-    if policy.c8s_digest != c8s_digest {
-        return Err(AttestationError::Invalid);
-    }
-    pem.clone_into(&mut policy.raw_pem);
-    Ok(policy)
 }
 
 fn pem_public_key(der: &[u8]) -> String {
@@ -936,6 +1053,7 @@ fn validate_standard_receipt(
     receipt: &Value,
     nonce: &str,
     expected_version: &str,
+    expected_xwing_ek: Option<&str>,
 ) -> Result<(), AttestationError> {
     let object = receipt.as_object().ok_or(AttestationError::Invalid)?;
     if object.get("version").and_then(Value::as_str) != Some(expected_version)
@@ -959,12 +1077,23 @@ fn validate_standard_receipt(
     }
 
     if expected_version == "c8s/attest-pq/v1" {
-        let session = object
-            .get("session_pubkey")
-            .and_then(Value::as_object)
+        // The pinned c8s protocol carries the X-Wing material and no
+        // session_pubkey. The receipt must echo the exact encapsulation key
+        // this gateway sent, which binds the receipt to this request.
+        let expected_xwing_ek = expected_xwing_ek.ok_or(AttestationError::Invalid)?;
+        let echoed = object
+            .get("xwing_ek")
+            .and_then(Value::as_str)
             .ok_or(AttestationError::Invalid)?;
-        decode_exact(session.get("x25519"), 32)?;
-        decode_exact(session.get("mlkem768"), 1_184)?;
+        if echoed != expected_xwing_ek {
+            return Err(AttestationError::Invalid);
+        }
+        decode_exact(object.get("xwing_ek"), XWING_ENCAPSULATION_KEY_BYTES)?;
+        decode_exact(object.get("xwing_ct"), XWING_CIPHERTEXT_BYTES)?;
+        decode_exact(object.get("session_id"), C8S_SESSION_ID_BYTES)?;
+        if object.contains_key("session_pubkey") {
+            return Err(AttestationError::Invalid);
+        }
     } else if expected_version == "c8s/attest-lb/v1" {
         decode_exact(object.get("serving_leaf_sha256"), 32)?;
     }
