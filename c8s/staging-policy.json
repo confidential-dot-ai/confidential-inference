@@ -1,31 +1,31 @@
 {
   "schema": "confidential.ai/c8s-production-policy/v1",
-  "environment": "integration-staging",
-  "output": "c8s/allowlists/integration-staging.json",
+  "environment": "staging",
+  "output": "c8s/allowlists/staging.json",
   "chart": {
     "path": "helm/confidential-inference",
     "release": "confidential-inference",
     "namespace": "confidential-inference-staging",
-    "values": "c8s/integration-staging-values.yaml",
+    "values": "c8s/staging-values.yaml",
     "kubeVersion": "1.32.0"
   },
   "c8s": {
     "repository": "https://github.com/confidential-dot-ai/c8s",
-    "sourceCommit": "079aeb48c4d523aa7500b4bd78f0283b2d12e317",
-    "imageTag": "079aeb4",
-    "cvmMode": "node",
+    "sourceCommit": "01dd665d412f16665f97eb0cf5e59a47b8a281d9",
+    "imageTag": "v0.21.2",
+    "cvmMode": "bare-metal",
     "hardwarePlatform": "tdx",
     "distro": "rke2",
     "volumes": true,
     "attest": true
   },
   "systemImages": {
-    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723",
-    "ghcr.io/confidential-dot-ai/cds@sha256:a2aada807121dd7f34ec86e1ae64e86104177b4da89eddb2839174c03aed7404": "ghcr.io/confidential-dot-ai/cds@sha256:a2aada807121dd7f34ec86e1ae64e86104177b4da89eddb2839174c03aed7404",
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:d192e812c4e9d5c5502ef1cdb568c5474273ff592706e050d453daaab3c87197": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:d192e812c4e9d5c5502ef1cdb568c5474273ff592706e050d453daaab3c87197",
+    "ghcr.io/confidential-dot-ai/cds@sha256:6891ca35559119988db866b9337c15dce62c398580a25ad5ef4e63b976b1e2eb": "ghcr.io/confidential-dot-ai/cds@sha256:6891ca35559119988db866b9337c15dce62c398580a25ad5ef4e63b976b1e2eb",
     "nginxinc/nginx-unprivileged@sha256:11f3f6249b4ae3d7a4ec2a51797060107b88ead52b33b6ed3c6c33f55ca96200": "nginxinc/nginx-unprivileged@sha256:11f3f6249b4ae3d7a4ec2a51797060107b88ead52b33b6ed3c6c33f55ca96200",
-    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:7700f5490bfde2342b1368af5b28e816fdd2a3b723648360149b5d86e456054e": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:7700f5490bfde2342b1368af5b28e816fdd2a3b723648360149b5d86e456054e",
-    "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:88c5fb9a1b274c25c29480cfec4272e8babd083fb4af69392a34de6745f05760": "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:88c5fb9a1b274c25c29480cfec4272e8babd083fb4af69392a34de6745f05760",
-    "ghcr.io/confidential-dot-ai/volumed@sha256:47cac3bed60e2a142e4aa126c399eb18c339b32e557cce5f23bd41438e9df85f": "ghcr.io/confidential-dot-ai/volumed@sha256:47cac3bed60e2a142e4aa126c399eb18c339b32e557cce5f23bd41438e9df85f"
+    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:306539513a6a872f5f9b5d01344c49812d799c85638de806bcf9659103df0cf8": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:306539513a6a872f5f9b5d01344c49812d799c85638de806bcf9659103df0cf8",
+    "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:ded1201e1b5db0e5828d703e3027d3a4ffab1af12f68cf92d0a86cf00b5bd351": "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:ded1201e1b5db0e5828d703e3027d3a4ffab1af12f68cf92d0a86cf00b5bd351",
+    "ghcr.io/confidential-dot-ai/volumed@sha256:5dc47ca5a9de8ff8d9a27cf67def3351befb150e46ce47b2f1954ee43b77f4be": "ghcr.io/confidential-dot-ai/volumed@sha256:5dc47ca5a9de8ff8d9a27cf67def3351befb150e46ce47b2f1954ee43b77f4be"
   },
   "workloads": [
     {
@@ -44,10 +44,6 @@
       "controller": "StatefulSet/inference-worker-0"
     },
     {
-      "name": "inference-worker-1",
-      "controller": "StatefulSet/inference-worker-1"
-    },
-    {
       "name": "kube-state-metrics",
       "controller": "Deployment/kube-state-metrics"
     },
@@ -61,11 +57,11 @@
     }
   ],
   "systemWorkloads": {
-    "c8s-tls-lb": {
-      "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723",
+    "c8s-router": {
+      "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:d192e812c4e9d5c5502ef1cdb568c5474273ff592706e050d453daaab3c87197",
       "initContainers": [
         {
-          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723",
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:d192e812c4e9d5c5502ef1cdb568c5474273ff592706e050d453daaab3c87197",
           "command": [
             "/c8s"
           ],
@@ -91,7 +87,7 @@
           ]
         },
         {
-          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723",
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:d192e812c4e9d5c5502ef1cdb568c5474273ff592706e050d453daaab3c87197",
           "command": [
             "/c8s",
             "probe-file",
@@ -115,7 +111,7 @@
           ]
         },
         {
-          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723",
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:d192e812c4e9d5c5502ef1cdb568c5474273ff592706e050d453daaab3c87197",
           "command": [
             "/c8s"
           ],
@@ -135,7 +131,7 @@
           ]
         },
         {
-          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723",
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:d192e812c4e9d5c5502ef1cdb568c5474273ff592706e050d453daaab3c87197",
           "command": [
             "/c8s"
           ],
@@ -304,7 +300,7 @@
         ]
       }
     ],
-    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:5e1a8e3a90e29ba4240a4ac37e92062af17d19f0ec62167ceb04f08180687723": [
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:d192e812c4e9d5c5502ef1cdb568c5474273ff592706e050d453daaab3c87197": [
       {
         "command": [
           "/c8s"
@@ -352,24 +348,6 @@
           "--platform=tdx",
           "--front-door-mode=webpki",
           "--expected-workload=inference-worker-0",
-          "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
-          "--serving-cert-file=/etc/c8s/certs/tls.crt",
-          "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
-          "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
-          "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
-        ]
-      },
-      {
-        "command": [
-          "/c8s"
-        ],
-        "args": [
-          "cds-attest",
-          "--host=0.0.0.0",
-          "--port=8802",
-          "--platform=tdx",
-          "--front-door-mode=webpki",
-          "--expected-workload=inference-worker-1",
           "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
           "--serving-cert-file=/etc/c8s/certs/tls.crt",
           "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",

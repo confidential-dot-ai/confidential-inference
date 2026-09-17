@@ -18,7 +18,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = ROOT / "c8s/production-policy.json"
-STAGING_POLICY = ROOT / "c8s/integration-staging-policy.json"
+STAGING_POLICY = ROOT / "c8s/staging-policy.json"
 CONF_INFERENCE_PROD_POLICY = ROOT / "c8s/conf-inference-prod-policy.json"
 ALLOWED_POLICIES = (POLICY, STAGING_POLICY, CONF_INFERENCE_PROD_POLICY)
 SCHEMA = ROOT / "c8s/production-policy.schema.json"
