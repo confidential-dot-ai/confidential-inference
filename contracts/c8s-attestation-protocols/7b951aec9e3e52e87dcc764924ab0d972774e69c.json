@@ -1,0 +1,99 @@
+{
+  "schema": "confidential-inference.c8s-attestation-protocol-manifest/v1",
+  "commit": "7b951aec9e3e52e87dcc764924ab0d972774e69c",
+  "attestationProtocol": "c8s/attest-pq/v1+xwing",
+  "capturedFrom": {
+    "cdsattestRoutes": "internal/cmds/cdsattest/server.go",
+    "bundleTypes": "pkg/types/verify.go",
+    "cdsAllowlistRoutes": "internal/cmds/cds/routes.go"
+  },
+  "capturedFromNote": "pkg/types is byte-identical to v0.20.4 (both trees resolve to 391cfbf24bd411e2917b3735ed1bb33ca7fc1334), so the receipt field set is unchanged. internal/cmds/cds/routes.go is byte-identical too. Only the cds-attest route table moved: c8s PR #637 (commit 77857d3d) deleted the two retired 400-stub handlers, so those paths now answer 404. Read-only diff confirmed at capture time.",
+  "cdsattestRoutes": [
+    {
+      "method": "POST",
+      "path": "/.well-known/c8s/attest-pq"
+    },
+    {
+      "method": "GET",
+      "path": "/.well-known/c8s/attest-pq",
+      "note": "always 400 invalid_request (client-first POST only)"
+    },
+    {
+      "method": "GET",
+      "path": "/.well-known/c8s/attest-lb"
+    },
+    {
+      "method": "POST",
+      "path": "/.well-known/c8s/tunnel"
+    }
+  ],
+  "retiredRoutes": [
+    {
+      "method": "GET",
+      "path": "/.well-known/c8s/attestation",
+      "note": "handler removed by c8s PR #637; answers 404, not the 400 v0.20.4 served"
+    },
+    {
+      "method": "POST",
+      "path": "/.well-known/c8s/handshake",
+      "note": "handler removed by c8s PR #637; answers 404, not the 400 v0.20.4 served"
+    }
+  ],
+  "attestPqRequest": {
+    "method": "POST",
+    "bodyFields": [
+      "nonce",
+      "xwing_ek"
+    ]
+  },
+  "attestationBundleFields": [
+    "version",
+    "platform",
+    "generation",
+    "nonce",
+    "evidence",
+    "cds_cert_pem",
+    "front_door_mode",
+    "xwing_ek",
+    "xwing_ct",
+    "session_id",
+    "identity_proof",
+    "serving_leaf_sha256"
+  ],
+  "identityProofFields": [
+    "algorithm",
+    "leaf_sha256",
+    "mesh_ca_sha256",
+    "signature"
+  ],
+  "cdsRoutes": [
+    {
+      "method": "GET",
+      "path": "/allowlist"
+    },
+    {
+      "method": "PUT",
+      "path": "/allowlist"
+    },
+    {
+      "method": "PUT",
+      "path": "/allowlist/workloads/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/allowlist/workloads/{name}"
+    },
+    {
+      "method": "GET",
+      "path": "/ca"
+    },
+    {
+      "method": "GET",
+      "path": "/operator-keys"
+    }
+  ],
+  "allowlistDocumentTopLevelFields": [
+    "schema",
+    "workloads"
+  ]
+}
