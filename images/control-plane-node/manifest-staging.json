@@ -1,45 +1,47 @@
 {
   "version": 3,
   "build": {
-    "timestamp": "2026-09-15T17:19:01Z",
+    "timestamp": "2026-09-18T16:10:26Z",
     "memory": "16G",
     "format": "raw",
     "platform": "tdx"
   },
   "inputs": {
     "kernel": {
-      "linux_version": "6.16.12",
-      "vmlinuz_sha256": "69626d425ccf4ba46eacadaa5b52dcb886e8dcf87df99876cb9a7331a1f96352",
+      "linux_version": "6.18.49",
+      "vmlinuz_sha256": "a150ce74893d6ed6bc242e6ea22fad290034095c16dab73c9717e22c91156fab",
       "required_config_sha256": "ea97d2774893e2d33674db7bab601a2e029402ee3058b1f414fe14ace19618f2",
-      "hardening_config_sha256": "6d11310996c8d7805ca9ed95d790e86e9ec0932ec8a555107434373de34bc66b",
+      "hardening_config_sha256": "0114a50e7b2695170be396b3820f2dbce940f84e7421414985197de17e4746ee",
       "kernel_extra_config_sha256": "451ff6778589a8e05e2678438aa6299a6274a98ca42217671a8693781a0d7aee",
-      "snapshot_config_sha256": "480f1f0d0a150e71732a4b05ecdb42bb7d39f2d59efd13df1382b50f972f467a",
+      "snapshot_config_sha256": "a4c06aaee4b43c2e7df0e8f84fd233b801ce101e38e261f75872b9cfc85d264b",
       "module_signing_cert_sha256": "7c9f63b0206dc794e5be126b86ce50c68cd33d1c22ecd5979984614c476a986e",
-      "randstruct_seed_sha256": "7d6b81e63586f80ea22920623630caee43ec2eeab3113be606ab75da779ce317"
+      "randstruct_seed_sha256": "7d6b81e63586f80ea22920623630caee43ec2eeab3113be606ab75da779ce317",
+      "trusted_dsdt_sha256": "6c5ed8e54d9178d1fe2040f6ea97899422353d441ab5ba469641afd342016d0f",
+      "trusted_aml_patch_sha256": "9b26d516d5860cba4aea34248177b4caedf7f0528a7920c697b13723efcc2d77"
     },
     "initrd": {
-      "path": "combined-initrd.img",
-      "sha256": "5971470afce1b00d2452edc76144922396636043982009e02aa6610b7f4f2891"
+      "path": "initrd.img",
+      "sha256": "a6d303be15f2d95a85d15a64de7d106da2d05704b40015bad8ccd0801a767a10"
     },
     "base_image": {
       "path": "image.raw",
-      "sha256": "b38658bc5d730ba8d26c848c3ef594797417bd6b3a8ce62dc97b46981423af92"
+      "sha256": "788edfe0ff4b6b5567efa9d6a894bbd4c493c76b524db77b21f78c5eb3b3a261"
     }
   },
   "outputs": {
     "disk_image": {
       "path": "disk.raw",
-      "sha256": "b38658bc5d730ba8d26c848c3ef594797417bd6b3a8ce62dc97b46981423af92"
+      "sha256": "788edfe0ff4b6b5567efa9d6a894bbd4c493c76b524db77b21f78c5eb3b3a261"
     },
     "uki": {
       "path": "uki.efi",
-      "sha256": "8ace6dee207e6aca417860b08a0e38950ccff22f2b3615cc004c41cf444e677f"
+      "sha256": "d8a3b149f2a305775cc99df29ae81e6a9ece3bb50c089f3c5b10446b176758f5"
     }
   },
   "tdx": {
     "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
-    "rtmr1": "36533e26f764256f2683865906bc3c6de4db51f260fe7edbc392773650e52c27a756dc27dc84a062ac2a34b5033101ba",
-    "rtmr2": "9297e4b1c462fa3421f7d228969957ca92484e5313d4d09f5e07437b13ab876f053dea38a246c443fe82769c2b1c4036",
+    "rtmr1": "2bcba26812949df337ade76bf29afa19c4aeebf5ed9bceb692cd4e6cb347d2a24556584bcfeb4a0ba8e723f16204fd95",
+    "rtmr2": "90a9be91ac7e5721e261f35e1a9b9a35bf5c23277bde768b718ce31144ebb0205cd44092f710288079af40658d692277",
     "firmware": {
       "path": "OVMF.tdx.fd",
       "sha256": "a7edaeff6fc4bef8924461cb0fb68a194c3595d08ccad2720cca926dea12f7cf"
