@@ -1,17 +1,17 @@
 {
   "environment": "staging",
-  "buildHost": "https://github.com/confidential-dot-ai/c8s/tree/v0.20.4",
+  "buildHost": "https://github.com/confidential-dot-ai/c8s/releases/tag/v0.26.1",
   "publication": {
-    "ociManifestDigest": "sha256:efdd1643057f7b9333267ee042d93281c8956275219cd6f6464040d1f3861518",
+    "ociManifestDigest": "sha256:84fadd3dbc1c6bd94320ac22a9bdeb9483420b4deb8c9acf72325843ea175a57",
     "configDigest": "sha256:dc570f145a7f2862c9ef3c30b8d6ae2feaceb0d364e4b2e08e67ae18815427d9",
-    "cdiLayerDigest": "sha256:c35ab119c67c574ae78c8dae5d1295bfe016fa1e36d67b386d0a355b3fb9b777",
-    "cdiLayerSize": 1925716631
+    "cdiLayerDigest": "sha256:8a9ce3f0be6fde0d7c150f1a132038a1f9959fed828028b4229233c33a8f0314",
+    "cdiLayerSize": 1927166401
   },
-  "sealedAllowlistSha256": "sha256:ac84f651e2170fcbe7b0dc535339133e0b1301c11b45055b96ba91d1ecbc8cc5",
-  "manifestSha256": "sha256:6a861df96889a2094fb9aee4fe705a5640c4535e83ab1663fef0dc683106a5d7",
+  "sealedAllowlistSha256": "sha256:48ca3220171cf5ea922fa0cd8aa9662e584f851af3c51c6b68053478ce842967",
+  "manifestSha256": "sha256:648b8e4d9dada2ee237334bff5f0d40cd0f3902a8357501cfeaa21b8a09c2195",
   "measurements": {
     "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
-    "rtmr1": "36533e26f764256f2683865906bc3c6de4db51f260fe7edbc392773650e52c27a756dc27dc84a062ac2a34b5033101ba",
-    "rtmr2": "9297e4b1c462fa3421f7d228969957ca92484e5313d4d09f5e07437b13ab876f053dea38a246c443fe82769c2b1c4036"
+    "rtmr1": "2bcba26812949df337ade76bf29afa19c4aeebf5ed9bceb692cd4e6cb347d2a24556584bcfeb4a0ba8e723f16204fd95",
+    "rtmr2": "90a9be91ac7e5721e261f35e1a9b9a35bf5c23277bde768b718ce31144ebb0205cd44092f710288079af40658d692277"
   }
 }
