@@ -15,7 +15,7 @@ use axum::{
     extract::{Path as AxumPath, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
@@ -28,7 +28,11 @@ use uuid::Uuid;
 
 use crate::{
     ApiKeyVerifier, GatewayAvailability,
-    key_registry::{KeyRegistryMode, RegistrySnapshotKey},
+    key_registry::{
+        KeyRegistryMode, RegistrySnapshotKey, RevisionDecision, SnapshotPush, SnapshotPushResult,
+        revision_decision, validate_push,
+    },
+    metrics::GatewayMetrics,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -74,6 +78,10 @@ pub enum StateError {
     PepperMismatch,
     #[error("the import conflicts with an existing record")]
     ImportConflict,
+    #[error("the gateway mints no key in registry mode")]
+    LocalMintDisabled,
+    #[error("the pushed snapshot revision is lower than the cached revision")]
+    StaleRevision,
 }
 
 #[derive(Clone)]
@@ -83,6 +91,8 @@ pub struct GatewayState {
     availability: GatewayAvailability,
     database_path: Option<Arc<PathBuf>>,
     mode: KeyRegistryMode,
+    environment: Arc<String>,
+    metrics: Option<Arc<GatewayMetrics>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -363,6 +373,10 @@ pub struct RegistrySourceStatus {
     pub(crate) stale_seconds: Option<i64>,
     row_count: i64,
     pepper_mismatch_count: i64,
+    /// The fingerprint of the pepper this gateway holds. The admin VM
+    /// compares it against the snapshot it would push, so a pepper change
+    /// shows up as drift.
+    pepper_fingerprint: String,
 }
 
 fn scan_api_keys(database: &Connection, verifier: &[u8], revoked: bool) -> Option<String> {
@@ -567,6 +581,8 @@ impl GatewayState {
             availability: GatewayAvailability::new(available),
             database_path,
             mode: KeyRegistryMode::Local,
+            environment: Arc::new(String::new()),
+            metrics: None,
         };
         Ok(state)
     }
@@ -586,6 +602,105 @@ impl GatewayState {
     #[must_use]
     pub fn mode(&self) -> KeyRegistryMode {
         self.mode
+    }
+
+    /// Name the environment this gateway serves.
+    ///
+    /// The snapshot push route refuses a body that names another
+    /// environment. An empty name (the default in a unit test) accepts any
+    /// name. `main.rs` always sets it.
+    #[must_use]
+    pub fn with_environment(mut self, environment: &str) -> Self {
+        self.environment = Arc::new(environment.to_owned());
+        self
+    }
+
+    /// Give the state the metric registry, so the snapshot push route can
+    /// record what it applied and what it refused.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<GatewayMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    fn record_push_rejection(&self, reason: &'static str) {
+        if let Some(metrics) = &self.metrics {
+            metrics.record_key_registry_push_rejection(reason);
+        }
+    }
+
+    fn record_push_applied(&self, revision: i64, skipped_pepper_mismatch: i64) {
+        if let Some(metrics) = &self.metrics {
+            metrics.set_key_registry_revision(revision);
+            metrics.set_key_registry_pepper_mismatch_rows(
+                u64::try_from(skipped_pepper_mismatch).unwrap_or(0),
+            );
+            metrics.set_key_registry_stale_seconds(0.0);
+        }
+    }
+
+    /// Apply one pushed snapshot, after the revision rule and the contract
+    /// check.
+    ///
+    /// The admin channel has already verified the ECDSA P-256 signature
+    /// over this body, so this function trusts the bytes and checks only
+    /// the contract and the revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError::Invalid` for a wrong schema or environment,
+    /// `StateError::StaleRevision` for a revision below the cached one, and
+    /// a database error when the transaction fails. On any error the cache
+    /// is left exactly as it was.
+    pub fn push_registry_snapshot(
+        &self,
+        push: &SnapshotPush,
+    ) -> Result<SnapshotPushResult, StateError> {
+        self.require_available()?;
+        if let Err(rejection) = validate_push(push, &self.environment) {
+            let _ = rejection;
+            self.record_push_rejection("invalid_request");
+            return Err(StateError::Invalid);
+        }
+        let cached_revision = self.registry_cached_revision()?;
+        match revision_decision(cached_revision, push.revision) {
+            RevisionDecision::Refuse => {
+                self.record_push_rejection("stale_revision");
+                Err(StateError::StaleRevision)
+            }
+            RevisionDecision::AlreadyHeld => {
+                // The admin VM re-sent the revision this gateway already
+                // holds. Nothing is written, and the push counts as an
+                // acknowledgement.
+                self.record_push_applied(push.revision, 0);
+                Ok(SnapshotPushResult {
+                    revision: push.revision,
+                    cached_revision: push.revision,
+                    accepted: 0,
+                    skipped_pepper_mismatch: 0,
+                    applied: false,
+                })
+            }
+            RevisionDecision::Apply => {
+                let outcome = self
+                    .apply_registry_snapshot(&push.environment, push.revision, &push.keys)
+                    .inspect_err(|_| self.record_push_rejection("apply_failed"))?;
+                self.record_push_applied(push.revision, outcome.skipped_pepper_mismatch);
+                tracing::info!(
+                    revision = push.revision,
+                    accepted = outcome.accepted,
+                    skipped_pepper_mismatch = outcome.skipped_pepper_mismatch,
+                    "applied a pushed key registry snapshot"
+                );
+                Ok(SnapshotPushResult {
+                    revision: push.revision,
+                    cached_revision: push.revision,
+                    accepted: outcome.accepted,
+                    skipped_pepper_mismatch: outcome.skipped_pepper_mismatch,
+                    applied: true,
+                })
+            }
+        }
     }
 
     #[must_use]
@@ -792,6 +907,7 @@ impl GatewayState {
             stale_seconds,
             row_count,
             pepper_mismatch_count,
+            pepper_fingerprint: pepper_fingerprint(&self.pepper),
         })
     }
 
@@ -801,6 +917,13 @@ impl GatewayState {
         idempotency_key: &str,
     ) -> Result<(bool, String, ApiKeyMetadata, String), StateError> {
         self.require_available()?;
+        // In `registry` mode the admin VM mints every key with the pepper
+        // it reads from Infisical. A local mint would create a row the
+        // registry does not know, and the next pushed snapshot would erase
+        // it. Refuse the mint instead of losing it.
+        if self.mode == KeyRegistryMode::Registry {
+            return Err(StateError::LocalMintDisabled);
+        }
         validate_create(request)?;
         validate_idempotency(idempotency_key)?;
         let request_hash = json_hash(request)?;
@@ -1205,7 +1328,24 @@ pub fn admin_router(state: GatewayState) -> Router {
         .route("/admin/v1/api-keys/freeze", post(freeze_keys))
         .route("/admin/v1/api-keys/unfreeze", post(unfreeze_keys))
         .route("/admin/v1/api-keys/source", get(key_source))
+        .route("/admin/v1/api-keys/snapshot", put(push_snapshot))
         .with_state(state)
+}
+
+/// Apply one snapshot the admin VM pushed.
+///
+/// The admin VM owns the key record. It pushes the complete snapshot on
+/// every change, and again when a drift probe shows this gateway holds an
+/// older revision. The gateway stores the rows and answers every request
+/// from its own table, so the request path never calls the admin VM.
+async fn push_snapshot(
+    State(state): State<GatewayState>,
+    Json(push): Json<SnapshotPush>,
+) -> Response {
+    match state.push_registry_snapshot(&push) {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => error_response(error),
+    }
 }
 
 async fn key_source(State(state): State<GatewayState>) -> Response {
@@ -1425,6 +1565,16 @@ fn error_response(error: StateError) -> Response {
             StatusCode::CONFLICT,
             "import_conflict",
             "The import conflicts with an existing record.",
+        ),
+        StateError::LocalMintDisabled => (
+            StatusCode::CONFLICT,
+            "local_mint_disabled",
+            "The gateway runs in registry mode. The admin VM mints every key.",
+        ),
+        StateError::StaleRevision => (
+            StatusCode::CONFLICT,
+            "stale_revision",
+            "The pushed snapshot revision is lower than the cached revision.",
         ),
         StateError::Database(_)
         | StateError::Lock

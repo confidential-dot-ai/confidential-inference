@@ -177,14 +177,6 @@ spec:
               value: {{ join "," .Values.metricsCollector.approvedApiKeyLabels | quote }}
             - name: GATEWAY_KEY_REGISTRY_MODE
               value: {{ .Values.gateway.keyRegistry.mode | quote }}
-            {{- if ne .Values.gateway.keyRegistry.mode "local" }}
-            - name: GATEWAY_KEY_REGISTRY_URL
-              value: {{ .Values.gateway.keyRegistry.url | quote }}
-            - name: GATEWAY_KEY_REGISTRY_POLL_SECONDS
-              value: {{ printf "%.0f" (float64 .Values.gateway.keyRegistry.pollSeconds) | quote }}
-            - name: GATEWAY_KEY_REGISTRY_TOKEN_FILE
-              value: /run/confidential-inference/key-registry/token
-            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.gateway.containerPorts.public }}
@@ -213,12 +205,6 @@ spec:
               mountPath: /run/confidential-inference/admin-auth/client.crt
               subPath: client.crt
               readOnly: true
-            {{- if ne .Values.gateway.keyRegistry.mode "local" }}
-            - name: key-registry-token
-              mountPath: /run/confidential-inference/key-registry/token
-              subPath: {{ .Values.gateway.keyRegistry.tokenSecret.tokenKey }}
-              readOnly: true
-            {{- end }}
             - name: run
               mountPath: /run/confidential-gateway
             - name: tmp
@@ -266,14 +252,6 @@ spec:
             items:
               - key: {{ .Values.gateway.secrets.adminSigner.certificateKey }}
                 path: client.crt
-        {{- if ne .Values.gateway.keyRegistry.mode "local" }}
-        - name: key-registry-token
-          secret:
-            secretName: {{ .Values.gateway.keyRegistry.tokenSecret.secretName }}
-            items:
-              - key: {{ .Values.gateway.keyRegistry.tokenSecret.tokenKey }}
-                path: {{ .Values.gateway.keyRegistry.tokenSecret.tokenKey }}
-        {{- end }}
         - name: run
           emptyDir: {}
         - name: tmp

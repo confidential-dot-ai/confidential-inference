@@ -58,7 +58,7 @@ struct MetricsState {
     cache_read_tokens: BTreeMap<ModelKeyLabels, u64>,
     finish_reasons: BTreeMap<ModelReasonLabels, u64>,
     key_registry_stale_seconds: f64,
-    key_registry_pull_failures: BTreeMap<&'static str, u64>,
+    key_registry_push_rejections: BTreeMap<&'static str, u64>,
     key_registry_revision: i64,
     key_registry_pepper_mismatch_rows: u64,
     api_key_accepted: BTreeMap<&'static str, u64>,
@@ -355,15 +355,19 @@ impl GatewayMetrics {
     }
 
     /// Record how many seconds have passed since the last successful key
-    /// registry snapshot fetch. The poller calls this on every poll tick.
+    /// applied key registry snapshot push. The push route sets it.
     pub fn set_key_registry_stale_seconds(&self, seconds: f64) {
         recover_lock(&self.state).key_registry_stale_seconds = seconds;
     }
 
-    /// Count one failed key registry poll under a fixed reason code.
-    pub fn record_key_registry_pull_failure(&self, reason: &'static str) {
+    /// Count one refused key registry snapshot push under a fixed reason
+    /// code. The admin VM reads the same reason from the response body.
+    pub fn record_key_registry_push_rejection(&self, reason: &'static str) {
         let mut state = recover_lock(&self.state);
-        *state.key_registry_pull_failures.entry(reason).or_default() += 1;
+        *state
+            .key_registry_push_rejections
+            .entry(reason)
+            .or_default() += 1;
     }
 
     /// Record the cached key registry snapshot revision.
@@ -687,7 +691,7 @@ impl MetricsSource for GatewayMetrics {
         render_header(
             &mut output,
             "gateway_key_registry_stale_seconds",
-            "Seconds since the last successful key registry snapshot fetch",
+            "Seconds since the last applied key registry snapshot push",
             "gauge",
         );
         render_sample_float(
@@ -699,14 +703,14 @@ impl MetricsSource for GatewayMetrics {
         );
         render_header(
             &mut output,
-            "gateway_key_registry_pull_failures_total",
-            "Count of failed key registry snapshot polls by reason",
+            "gateway_key_registry_push_rejected_total",
+            "Count of refused key registry snapshot pushes by reason",
             "counter",
         );
-        for (reason, value) in &state.key_registry_pull_failures {
+        for (reason, value) in &state.key_registry_push_rejections {
             render_sample(
                 &mut output,
-                "gateway_key_registry_pull_failures_total",
+                "gateway_key_registry_push_rejected_total",
                 &[("reason", reason)],
                 &self.environment,
                 *value,
@@ -715,7 +719,7 @@ impl MetricsSource for GatewayMetrics {
         render_header(
             &mut output,
             "gateway_key_registry_revision",
-            "The cached key registry snapshot revision",
+            "The key registry snapshot revision this gateway holds",
             "gauge",
         );
         render_sample(
@@ -973,7 +977,7 @@ mod tests {
     fn renders_key_registry_and_source_metrics() {
         let metrics = GatewayMetrics::new("staging");
         metrics.set_key_registry_stale_seconds(12.5);
-        metrics.record_key_registry_pull_failure("bad_signature");
+        metrics.record_key_registry_push_rejection("stale_revision");
         metrics.set_key_registry_revision(42);
         metrics.set_key_registry_pepper_mismatch_rows(2);
         metrics.record_api_key_accepted("local");
@@ -983,7 +987,7 @@ mod tests {
 
         for name in [
             "gateway_key_registry_stale_seconds",
-            "gateway_key_registry_pull_failures_total",
+            "gateway_key_registry_push_rejected_total",
             "gateway_key_registry_revision",
             "gateway_key_registry_pepper_mismatch_rows",
             "gateway_api_key_accepted_total",
@@ -992,7 +996,7 @@ mod tests {
         }
         assert!(rendered.contains("gateway_key_registry_stale_seconds{env=\"staging\"} 12.5"));
         assert!(rendered.contains(
-            "gateway_key_registry_pull_failures_total{env=\"staging\",reason=\"bad_signature\"} 1"
+            "gateway_key_registry_push_rejected_total{env=\"staging\",reason=\"stale_revision\"} 1"
         ));
         assert!(rendered.contains("gateway_key_registry_revision{env=\"staging\"} 42"));
         assert!(rendered.contains("gateway_key_registry_pepper_mismatch_rows{env=\"staging\"} 2"));
