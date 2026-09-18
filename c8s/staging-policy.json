@@ -329,7 +329,7 @@
         ]
       }
     ],
-    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:7ca9107446bc702c93d2e2136eb91cf837701619c665cad2bcca7e470bb245e4": [
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:6d49346d06c3494a30524fbf457c66f512106f435792017237a387eb6b25a6b5": [
       {
         "command": [
           "/usr/local/bin/confidential-gateway"
