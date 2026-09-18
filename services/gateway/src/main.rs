@@ -16,6 +16,7 @@ use confidential_gateway::{
     admin_auth::{AdminRequestVerifier, require_signed_admin_request},
     api_keys::{GatewayState, admin_router},
     attestation::{C8sAttestationConfig, C8sAttestationProvider},
+    key_registry::{KeyRegistryConfig, KeyRegistryMode, KeyRegistryPoller},
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
     router,
@@ -174,6 +175,14 @@ struct Args {
     endpoint_drain_seconds: u64,
     #[arg(long, env = "GATEWAY_TRUSTED_PROXY_CIDRS", value_delimiter = ',')]
     trusted_proxy_cidrs: Vec<ipnet::IpNet>,
+    #[arg(long, env = "GATEWAY_KEY_REGISTRY_MODE", default_value = "local")]
+    key_registry_mode: KeyRegistryMode,
+    #[arg(long, env = "GATEWAY_KEY_REGISTRY_URL", default_value = "")]
+    key_registry_url: String,
+    #[arg(long, env = "GATEWAY_KEY_REGISTRY_TOKEN_FILE", default_value = "")]
+    key_registry_token_file: PathBuf,
+    #[arg(long, env = "GATEWAY_KEY_REGISTRY_POLL_SECONDS", default_value_t = 10)]
+    key_registry_poll_seconds: u64,
 }
 
 #[tokio::main]
@@ -208,6 +217,7 @@ async fn main() -> Result<()> {
         tracing::warn!("the gateway state feature is disabled; the gateway uses outage-only mode");
         GatewayState::outage_only().context("create the outage-only gateway state")?
     };
+    let gateway_state = gateway_state.with_mode(args.key_registry_mode);
     let availability = gateway_state.availability_handle();
     let metrics = Arc::new(GatewayMetrics::new(args.environment.clone()));
     let timeout = Duration::from_secs(args.upstream_timeout_seconds);
@@ -257,6 +267,25 @@ async fn main() -> Result<()> {
         AdminRequestVerifier::from_certificate_file(&args.admin_signer_certificate_file)
             .map_err(anyhow::Error::msg)
             .context("load the admin request signer certificate")?;
+    if args.key_registry_mode != KeyRegistryMode::Local {
+        let token = String::from_utf8(read_bounded(&args.key_registry_token_file, 4_096)?)
+            .context("read the key registry token as UTF-8")?
+            .trim()
+            .to_owned();
+        let poller = KeyRegistryPoller::new(
+            KeyRegistryConfig {
+                mode: args.key_registry_mode,
+                url: args.key_registry_url.clone(),
+                poll_seconds: args.key_registry_poll_seconds,
+                environment: args.environment.clone(),
+            },
+            token,
+            admin_verifier.public_key_bytes(),
+            gateway_state.clone(),
+            metrics.clone(),
+        );
+        let _ = poller.spawn();
+    }
     let admin = admin_router(gateway_state).layer(middleware::from_fn_with_state(
         admin_verifier,
         require_signed_admin_request,
@@ -409,6 +438,17 @@ fn validate_args(args: &Args) -> Result<()> {
     if args.state_absence_policy != "fail-closed" {
         bail!("GATEWAY_STATE_ABSENCE_POLICY must be fail-closed");
     }
+    if args.key_registry_mode != KeyRegistryMode::Local {
+        if !args.key_registry_url.starts_with("https://") {
+            bail!("GATEWAY_KEY_REGISTRY_URL must be an https URL for dual or registry mode");
+        }
+        if args.key_registry_token_file.as_os_str().is_empty() {
+            bail!("GATEWAY_KEY_REGISTRY_TOKEN_FILE is required for dual or registry mode");
+        }
+    }
+    if !(1..=3_600).contains(&args.key_registry_poll_seconds) {
+        bail!("GATEWAY_KEY_REGISTRY_POLL_SECONDS is outside the safe range");
+    }
     if !(1..=300).contains(&args.state_startup_timeout_seconds) {
         bail!("GATEWAY_STATE_STARTUP_TIMEOUT_SECONDS is outside the safe range");
     }
@@ -515,6 +555,10 @@ mod tests {
             shutdown_grace_seconds: 900,
             endpoint_drain_seconds: 35,
             trusted_proxy_cidrs: Vec::new(),
+            key_registry_mode: KeyRegistryMode::Local,
+            key_registry_url: String::new(),
+            key_registry_token_file: PathBuf::new(),
+            key_registry_poll_seconds: 10,
         }
     }
 
@@ -584,6 +628,31 @@ mod tests {
         value.c8s_receipt_targets =
             "gateway|gateway|gateway=https://attestation.example:8800".to_owned();
         assert!(validate_args(&value).is_err());
+    }
+
+    #[test]
+    fn dual_and_registry_key_registry_modes_require_an_https_url_and_a_token_file() {
+        let mut value = args();
+        value.key_registry_mode = KeyRegistryMode::Dual;
+        assert!(validate_args(&value).is_err());
+        value.key_registry_url = "http://admin.example.invalid".to_owned();
+        value.key_registry_token_file = PathBuf::from("/run/confidential-gateway/registry-token");
+        assert!(validate_args(&value).is_err());
+        value.key_registry_url = "https://admin.example.invalid".to_owned();
+        assert!(validate_args(&value).is_ok());
+        value.key_registry_mode = KeyRegistryMode::Registry;
+        assert!(validate_args(&value).is_ok());
+    }
+
+    #[test]
+    fn key_registry_poll_seconds_stays_in_the_safe_range() {
+        let mut value = args();
+        value.key_registry_poll_seconds = 0;
+        assert!(validate_args(&value).is_err());
+        value.key_registry_poll_seconds = 3_601;
+        assert!(validate_args(&value).is_err());
+        value.key_registry_poll_seconds = 10;
+        assert!(validate_args(&value).is_ok());
     }
 
     #[test]
