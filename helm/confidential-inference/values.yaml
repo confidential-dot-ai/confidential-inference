@@ -172,17 +172,20 @@ gateway:
     diskSerial: confai-gateway-state
     allowFormat: true
   keyRegistry:
-    # "local" keeps today's behaviour: the gateway never polls, and answers
-    # every API key check from its own database alone. "dual" checks the
-    # local database first, then the registry cache. "registry" answers
-    # from the registry cache alone. The empty url keeps the chart's default
-    # behaviour unchanged: no value here changes today's deployment.
+    # How the gateway answers an API key check.
+    #
+    # "local" keeps today's behaviour: the gateway answers from its own
+    # `api_keys` table alone, and the gateway mints every key.
+    # "dual" checks the `api_keys` table first, then the snapshot the
+    # admin VM pushed. Use it for the production migration.
+    # "registry" answers from the pushed snapshot alone and disables the
+    # local mint. A gateway in this mode that holds no snapshot yet
+    # answers 503 `key_registry_not_ready`.
+    #
+    # The admin VM pushes every snapshot over the existing signed admin
+    # channel, so no mode needs a URL, a token or a poll interval. The
+    # default keeps today's deployment unchanged.
     mode: local
-    url: ""
-    pollSeconds: 10
-    tokenSecret:
-      secretName: gateway-key-registry-token
-      tokenKey: token
 
 inference:
   enabled: true
