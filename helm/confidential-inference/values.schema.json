@@ -188,7 +188,7 @@
     },
     "gateway": {
       "type": "object",
-      "required": ["attestedWorkload", "shutdownGraceSeconds", "endpointDrainSeconds", "terminationGracePeriodSeconds", "service", "containerPorts", "protection", "c8sSecrets", "secrets", "state"],
+      "required": ["attestedWorkload", "shutdownGraceSeconds", "endpointDrainSeconds", "terminationGracePeriodSeconds", "service", "containerPorts", "protection", "c8sSecrets", "secrets", "state", "keyRegistry"],
       "properties": {
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
         "shutdownGraceSeconds": {"type": "integer", "minimum": 1},
@@ -294,6 +294,25 @@
             "devicePath": {"enum": ["/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_confai-gateway-state", "/dev/disk/by-id/virtio-c8s-vol-gw-state"]},
             "diskSerial": {"enum": ["confai-gateway-state", "c8s-vol-gw-state"]},
             "allowFormat": {"const": true}
+          }
+        },
+        "keyRegistry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "url", "pollSeconds", "tokenSecret"],
+          "properties": {
+            "mode": {"enum": ["local", "dual", "registry"]},
+            "url": {"type": "string"},
+            "pollSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+            "tokenSecret": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["secretName", "tokenKey"],
+              "properties": {
+                "secretName": {"$ref": "#/definitions/kubernetesName"},
+                "tokenKey": {"type": "string", "minLength": 1}
+              }
+            }
           }
         }
       }

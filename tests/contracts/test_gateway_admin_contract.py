@@ -95,6 +95,9 @@ def validate_mtls_security(document):
             raise AssertionError(f"{method} {path} omits an authentication error response")
 
 
+CREATE_RESPONSE = ("/admin/v1/api-keys", "post", "201")
+
+
 def validate_response_secret_boundaries(document):
     forbidden = {"plaintext", "secret", "verifier", "keyhash", "hash", "salt"}
     for path, method, operation in operations(document):
@@ -106,13 +109,16 @@ def validate_response_secret_boundaries(document):
             names = property_names(document, content["schema"])
             normalized = {"".join(character.lower() for character in name if character.isalnum()) for name in names}
             leaked = normalized & forbidden
+            # The one-time create response gains `keyHash`, the same
+            # HMAC-SHA256(pepper, plaintext) digest the export route already
+            # calls `verifierHash`. The admin key registry stores only this
+            # hash: it never receives the plaintext. Every other response
+            # keeps the full boundary.
+            if (path, method, status) == CREATE_RESPONSE:
+                leaked = leaked - {"keyhash"}
             if leaked:
                 raise AssertionError(f"{method} {path} {status} exposes {sorted(leaked)}")
-            if "apiKey" in names and (path, method, status) != (
-                "/admin/v1/api-keys",
-                "post",
-                "201",
-            ):
+            if "apiKey" in names and (path, method, status) != CREATE_RESPONSE:
                 raise AssertionError(f"{method} {path} {status} exposes the API key")
 
 
@@ -154,6 +160,7 @@ class GatewayAdminContractTests(unittest.TestCase):
             ("/admin/v1/api-keys/import", "post"),
             ("/admin/v1/api-keys/freeze", "post"),
             ("/admin/v1/api-keys/unfreeze", "post"),
+            ("/admin/v1/api-keys/source", "get"),
         }
         actual = {(path, method) for path, method, _ in operations(self.contract)}
         self.assertEqual(actual, expected)
@@ -161,7 +168,10 @@ class GatewayAdminContractTests(unittest.TestCase):
     def test_create_returns_plaintext_once(self):
         create = self.contract["paths"]["/admin/v1/api-keys"]["post"]
         schema = response_schema(self.contract, create, "201")
-        self.assertEqual(set(schema["properties"]), {"apiKey", "metadata"})
+        self.assertEqual(
+            set(schema["properties"]),
+            {"apiKey", "metadata", "keyHash", "pepperFingerprint"},
+        )
         self.assertTrue(schema["properties"]["apiKey"]["x-sensitive"])
         self.assertTrue(schema["properties"]["apiKey"]["x-one-time-response"])
         self.assertIn("apiKey", schema["required"])

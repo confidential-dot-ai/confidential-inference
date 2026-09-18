@@ -500,6 +500,34 @@
           }
         }
       }
+    },
+    "/admin/v1/api-keys/source": {
+      "get": {
+        "operationId": "getApiKeySource",
+        "summary": "Read the key registry read mode and cache status",
+        "description": "Reports which key source the gateway reads from, and the health of the key registry cache when the mode uses one.",
+        "responses": {
+          "200": {
+            "description": "The key source status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrySourceStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -639,7 +667,9 @@
         "additionalProperties": false,
         "required": [
           "apiKey",
-          "metadata"
+          "metadata",
+          "keyHash",
+          "pepperFingerprint"
         ],
         "properties": {
           "apiKey": {
@@ -653,6 +683,15 @@
           },
           "metadata": {
             "$ref": "#/components/schemas/ApiKeyMetadata"
+          },
+          "keyHash": {
+            "type": "string",
+            "description": "Base64url, no padding, of HMAC-SHA256(pepper, plaintext). The admin key registry stores this hash; it never receives the plaintext."
+          },
+          "pepperFingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Hex SHA-256 fingerprint of the gateway pepper that produced keyHash."
           }
         }
       },
@@ -962,6 +1001,54 @@
           "until": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "RegistrySourceStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode",
+          "cachedRevision",
+          "lastSuccessUnix",
+          "staleSeconds",
+          "rowCount",
+          "pepperMismatchCount"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "local",
+              "dual",
+              "registry"
+            ]
+          },
+          "cachedRevision": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lastSuccessUnix": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "staleSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rowCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pepperMismatchCount": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       }
