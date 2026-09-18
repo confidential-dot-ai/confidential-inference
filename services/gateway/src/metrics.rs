@@ -61,6 +61,7 @@ struct MetricsState {
     key_registry_push_rejections: BTreeMap<&'static str, u64>,
     key_registry_revision: i64,
     key_registry_pepper_mismatch_rows: u64,
+    key_registry_pepper_mismatch: u64,
     api_key_accepted: BTreeMap<&'static str, u64>,
 }
 
@@ -379,6 +380,17 @@ impl GatewayMetrics {
     /// fingerprint mismatch.
     pub fn set_key_registry_pepper_mismatch_rows(&self, rows: u64) {
         recover_lock(&self.state).key_registry_pepper_mismatch_rows = rows;
+    }
+
+    /// Record whether the last pushed snapshot named a different pepper
+    /// than this gateway holds.
+    ///
+    /// The gauge reads 1 while the two peppers differ and 0 once a
+    /// matching snapshot arrives. An alert on this gauge tells an operator
+    /// that the admin backend and the gateway hold different peppers, so
+    /// no new key can work until one side is corrected.
+    pub fn set_key_registry_pepper_mismatch(&self, mismatch: bool) {
+        recover_lock(&self.state).key_registry_pepper_mismatch = u64::from(mismatch);
     }
 
     /// Count one authenticated request by which key source matched it.
@@ -744,6 +756,19 @@ impl MetricsSource for GatewayMetrics {
         );
         render_header(
             &mut output,
+            "gateway_key_registry_pepper_mismatch",
+            "One while the last pushed key registry snapshot named a different pepper than the gateway holds",
+            "gauge",
+        );
+        render_sample(
+            &mut output,
+            "gateway_key_registry_pepper_mismatch",
+            &[],
+            &self.environment,
+            state.key_registry_pepper_mismatch,
+        );
+        render_header(
+            &mut output,
             "gateway_api_key_accepted_total",
             "Count of accepted API key authentications by source",
             "counter",
@@ -980,6 +1005,7 @@ mod tests {
         metrics.record_key_registry_push_rejection("stale_revision");
         metrics.set_key_registry_revision(42);
         metrics.set_key_registry_pepper_mismatch_rows(2);
+        metrics.set_key_registry_pepper_mismatch(true);
         metrics.record_api_key_accepted("local");
         metrics.record_api_key_accepted("registry");
         metrics.record_api_key_accepted("registry");
@@ -990,6 +1016,7 @@ mod tests {
             "gateway_key_registry_push_rejected_total",
             "gateway_key_registry_revision",
             "gateway_key_registry_pepper_mismatch_rows",
+            "gateway_key_registry_pepper_mismatch",
             "gateway_api_key_accepted_total",
         ] {
             assert!(rendered.contains(name), "missing {name}");
@@ -1000,6 +1027,13 @@ mod tests {
         ));
         assert!(rendered.contains("gateway_key_registry_revision{env=\"staging\"} 42"));
         assert!(rendered.contains("gateway_key_registry_pepper_mismatch_rows{env=\"staging\"} 2"));
+        assert!(rendered.contains("gateway_key_registry_pepper_mismatch{env=\"staging\"} 1"));
+        metrics.set_key_registry_pepper_mismatch(false);
+        assert!(
+            metrics
+                .render_prometheus()
+                .contains("gateway_key_registry_pepper_mismatch{env=\"staging\"} 0")
+        );
         assert!(
             rendered.contains("gateway_api_key_accepted_total{env=\"staging\",source=\"local\"} 1")
         );
