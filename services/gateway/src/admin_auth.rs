@@ -56,6 +56,16 @@ impl AdminRequestVerifier {
         })
     }
 
+    /// Return the P-256 public key bytes from the admin signer certificate.
+    ///
+    /// The key registry poller uses this key to verify a registry snapshot
+    /// signature. The gateway gains no new trust root: it is the exact key
+    /// this struct already uses to verify signed admin requests.
+    #[must_use]
+    pub fn public_key_bytes(&self) -> Arc<Vec<u8>> {
+        Arc::clone(&self.public_key)
+    }
+
     fn verify(
         &self,
         method: &str,
