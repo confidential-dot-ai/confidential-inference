@@ -1,5 +1,5 @@
 {
-  "allowlistDigest": "sha256:55e855891bcf26827962e494e07c0ad259a684938e12a90f250b4730d72575ba",
+  "allowlistDigest": "sha256:76db273779c4e50f8fc3af5d235366b04cd9f2debb6bbef932d39a9c423cb344",
   "c8s": {
     "attestationTargets": [
       {
@@ -30,7 +30,7 @@
     ],
     "frontDoorWorkload": "c8s-router",
     "imageTag": "7b951ae",
-    "installInputDigest": "sha256:7a094dab83f5009953c58bcde9f8a3210f727f072c33940c2719fcd84dd81487",
+    "installInputDigest": "sha256:2c37f926abf200d15461c3c86abfd06c693a7e50deff8d25d9b3f16d3b3172e9",
     "measurements": {
       "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
       "rtmr1": "2bcba26812949df337ade76bf29afa19c4aeebf5ed9bceb692cd4e6cb347d2a24556584bcfeb4a0ba8e723f16204fd95",
@@ -38,7 +38,7 @@
     },
     "meshCa": {
       "certificateSecretName": "C8S_MESH_CA_CERT_PEM",
-      "certificateSha256": "sha256:73d6e00079db1cee25415b26b4fc64e4444c930dec37ba4c9f4749d27d05c298",
+      "certificateSha256": "sha256:ff920588cb5589fcbe9f59f64efe5510d9044a48e655cb3560205e83f112b4a6",
       "fingerprintSecretName": "C8S_MESH_CA_CERT_SHA256"
     },
     "operatorKeySetSha256": "sha256:1899ce71bec3104e8ada101f22f2f6f27154691bbbed572b94d974e264174111",
@@ -99,7 +99,7 @@
   },
   "release": {
     "environment": "staging",
-    "name": "staging-v8"
+    "name": "staging-v9"
   },
   "releaseTrust": {
     "policyPath": "releases/trust/release-signing-policy.json",
@@ -108,7 +108,7 @@
   },
   "schemaVersion": 2,
   "source": {
-    "commit": "1a419ff07cc3899f598a86f67e61afd01d2c9147",
+    "commit": "7339592d918c2ee0cd11deac41490fc6a376f4c5",
     "repository": "https://github.com/confidential-dot-ai/confidential-inference"
   },
   "workloads": [
@@ -117,14 +117,14 @@
         "/usr/local/bin/confidential-gateway"
       ],
       "build": {
-        "commit": "6acf6c41c8db5379d818051a842c762d2f1d8b27",
+        "commit": "7339592d918c2ee0cd11deac41490fc6a376f4c5",
         "context": ".",
         "dockerfile": "images/gateway/Dockerfile",
         "platform": "linux/amd64",
         "repository": "https://github.com/confidential-dot-ai/confidential-inference"
       },
       "image": {
-        "digest": "sha256:7ca9107446bc702c93d2e2136eb91cf837701619c665cad2bcca7e470bb245e4",
+        "digest": "sha256:6d49346d06c3494a30524fbf457c66f512106f435792017237a387eb6b25a6b5",
         "reference": "ghcr.io/confidential-dot-ai/confidential-inference/gateway"
       },
       "name": "gateway"
