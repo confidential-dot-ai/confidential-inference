@@ -394,6 +394,19 @@
         "--port=8080",
         "--telemetry-port=8081"
       ]
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:7ca9107446bc702c93d2e2136eb91cf837701619c665cad2bcca7e470bb245e4": {
+      "build": {
+        "commit": "6acf6c41c8db5379d818051a842c762d2f1d8b27",
+        "context": ".",
+        "dockerfile": "images/gateway/Dockerfile",
+        "platform": "linux/amd64",
+        "repository": "https://github.com/confidential-dot-ai/confidential-inference"
+      },
+      "cmd": [],
+      "entrypoint": [
+        "/usr/local/bin/confidential-gateway"
+      ]
     }
   }
 }
