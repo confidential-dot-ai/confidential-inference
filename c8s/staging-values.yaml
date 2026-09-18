@@ -118,23 +118,18 @@ gateway:
     perAddressConcurrency: 256
     requestsPerAddressPerSecond: 256
     perKeyConcurrency: 128
-  # API key registry (public repo PR #25, internal PR #87). "dual" checks the
-  # gateway's own table first, then the registry snapshot cache, so the
-  # gateway keeps working unchanged while the registry is absent or
-  # unreachable. The gateway appends /registry/v1/staging/keys to this url.
+  # API key registry. "dual" checks the gateway's own table first, then the
+  # snapshot the admin VM pushed, so the gateway keeps working unchanged
+  # while no snapshot has arrived.
   #
-  # The registry route is not served yet. Until it is, the poller fails every
-  # cycle, leaves its cache unchanged, and the gateway's own table answers
-  # every key check. That is the designed fallback, not a defect. The
-  # deployment detail lives in the confidential-inference-internal
-  # repository, not here.
+  # The admin VM pushes each snapshot over the existing signed admin
+  # channel, so this needs no url, no token and no poll interval. The
+  # gateway never calls the admin VM. Until the admin VM pushes its first
+  # snapshot, the gateway's own table answers every key check. That is the
+  # designed fallback, not a defect. The deployment detail lives in the
+  # confidential-inference-internal repository, not here.
   keyRegistry:
     mode: dual
-    url: https://admin.api.confidential.ai
-    pollSeconds: 10
-    tokenSecret:
-      secretName: gateway-key-registry-token
-      tokenKey: token
 
   state:
     enabled: true

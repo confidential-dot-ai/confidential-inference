@@ -161,9 +161,39 @@ class GatewayAdminContractTests(unittest.TestCase):
             ("/admin/v1/api-keys/freeze", "post"),
             ("/admin/v1/api-keys/unfreeze", "post"),
             ("/admin/v1/api-keys/source", "get"),
+            ("/admin/v1/api-keys/snapshot", "put"),
         }
         actual = {(path, method) for path, method, _ in operations(self.contract)}
         self.assertEqual(actual, expected)
+
+    def test_the_snapshot_push_carries_no_second_signature(self):
+        """The admin request signature already binds the pushed body. A
+        second signature field would add a trust root the gateway does not
+        need."""
+        snapshot = self.contract["components"]["schemas"]["KeyRegistrySnapshot"]
+        self.assertNotIn("signature", snapshot["properties"])
+        self.assertFalse(snapshot["additionalProperties"])
+        self.assertEqual(
+            snapshot["properties"]["schemaVersion"]["const"],
+            "confidential.ai/key-registry-snapshot/v1",
+        )
+
+    def test_the_snapshot_never_carries_a_plaintext_key(self):
+        """The admin VM stores only the peppered hash. No snapshot field
+        may hold a plaintext key."""
+        key = self.contract["components"]["schemas"]["KeyRegistrySnapshotKey"]
+        self.assertFalse(key["additionalProperties"])
+        self.assertNotIn("apiKey", key["properties"])
+        self.assertNotIn("plaintextKey", key["properties"])
+        self.assertIn("keyHash", key["required"])
+
+    def test_the_source_route_reports_the_drift_probe_fields(self):
+        """The admin VM reads this route once a minute. It pushes only on
+        drift, so the route must report the revision and the pepper
+        fingerprint."""
+        status = self.contract["components"]["schemas"]["RegistrySourceStatus"]
+        for field in ("mode", "cachedRevision", "pepperFingerprint"):
+            self.assertIn(field, status["required"])
 
     def test_create_returns_plaintext_once(self):
         create = self.contract["paths"]["/admin/v1/api-keys"]["post"]

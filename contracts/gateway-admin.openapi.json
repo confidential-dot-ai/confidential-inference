@@ -505,7 +505,7 @@
       "get": {
         "operationId": "getApiKeySource",
         "summary": "Read the key registry read mode and cache status",
-        "description": "Reports which key source the gateway reads from, and the health of the key registry cache when the mode uses one.",
+        "description": "Reports which key source the gateway reads from, the revision of the snapshot the admin VM last pushed, and the pepper fingerprint. The admin VM reads it once a minute as a drift probe.",
         "responses": {
           "200": {
             "description": "The key source status.",
@@ -522,6 +522,50 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/admin/v1/api-keys/snapshot": {
+      "put": {
+        "operationId": "putApiKeySnapshot",
+        "summary": "Apply the key registry snapshot the admin VM pushed",
+        "description": "The admin VM owns the API key record. It pushes the complete snapshot on every change, and again when a drift probe shows this gateway holds an older revision. The gateway checks the revision, applies the whole snapshot in one transaction, and then answers every request from its own table. The gateway never calls the admin VM. The existing admin request signature already binds this body, so the snapshot carries no second signature.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyRegistrySnapshot"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The gateway applied the snapshot, or it already held that revision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotPushResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -1013,7 +1057,8 @@
           "lastSuccessUnix",
           "staleSeconds",
           "rowCount",
-          "pepperMismatchCount"
+          "pepperMismatchCount",
+          "pepperFingerprint"
         ],
         "properties": {
           "mode": {
@@ -1049,6 +1094,177 @@
           "pepperMismatchCount": {
             "type": "integer",
             "minimum": 0
+          },
+          "pepperFingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "The fingerprint of the pepper this gateway holds. The admin VM's drift probe compares it against the snapshot it would push."
+          }
+        },
+        "description": "The admin VM reads this route once a minute per gateway as a drift probe. It pushes the full snapshot only when cachedRevision is null or lower than the registry revision, or when pepperFingerprint differs."
+      },
+      "KeyRegistrySnapshotKey": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "owner",
+          "prefix",
+          "keyHash",
+          "pepperFingerprint",
+          "tags",
+          "createdAt",
+          "createdBy",
+          "version"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "The customer or team that holds the key."
+          },
+          "prefix": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16
+          },
+          "keyHash": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Base64url, no padding, of HMAC-SHA256(pepper, plaintext). It never discloses the plaintext key or the pepper."
+          },
+          "pepperFingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Binds this hash to one pepper. The gateway skips and counts a row whose fingerprint differs from its own."
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 16,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "rateLimit": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Reserved. Always null in this release. The gateway accepts and ignores it."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "revokedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "revokedBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "version": {
+            "$ref": "#/components/schemas/Version"
+          }
+        }
+      },
+      "KeyRegistrySnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "environment",
+          "revision",
+          "keys"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "const": "confidential.ai/key-registry-snapshot/v1"
+          },
+          "environment": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "description": "The gateway refuses a snapshot that names another environment."
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The registry revision. The gateway applies a strictly higher revision, acknowledges an equal one, and refuses a lower one."
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "pepperFingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "keys": {
+            "type": "array",
+            "maxItems": 10000,
+            "items": {
+              "$ref": "#/components/schemas/KeyRegistrySnapshotKey"
+            }
+          }
+        }
+      },
+      "SnapshotPushResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revision",
+          "cachedRevision",
+          "accepted",
+          "skippedPepperMismatch",
+          "applied"
+        ],
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "cachedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The revision the gateway holds after this push."
+          },
+          "accepted": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "skippedPepperMismatch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "applied": {
+            "type": "boolean",
+            "description": "False when the push repeated the cached revision. The gateway wrote nothing, and the admin VM may treat this as an acknowledgement."
           }
         }
       }
@@ -1125,7 +1341,7 @@
         }
       },
       "Conflict": {
-        "description": "The idempotency key conflicts, the import pepper fingerprint does not match, or an imported record conflicts with an existing record.",
+        "description": "The idempotency key conflicts, the import pepper fingerprint does not match, an imported record conflicts with an existing record, the pushed snapshot revision is lower than the cached revision, or the gateway runs in registry mode and mints no key of its own.",
         "content": {
           "application/json": {
             "schema": {

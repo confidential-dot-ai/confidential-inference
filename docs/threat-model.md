@@ -80,6 +80,15 @@ runs now (`README.md`, "What attestation proves").
   The pepper lives in CDS memory and reaches the gateway as a released secret
   (`services/gateway/src/main.rs`, `GATEWAY_API_KEY_PEPPER_FILE`;
   `c8s` `docs/secrets.md`, at commit `079aeb48`, describes this release path).
+- **The key registry snapshot.** The admin virtual machine holds the key
+  record and pushes the complete snapshot to each gateway through the
+  signed admin channel (`PUT /admin/v1/api-keys/snapshot`). The snapshot
+  carries one peppered hash per key. It carries no plaintext key and no
+  pepper. The gateway refuses a revision lower than the one it holds, so
+  the control plane cannot roll the key set back. The control plane can
+  still remove a key. That is a denial of service, not a loss of
+  confidentiality, and the threat model already treats the host as
+  untrusted.
 - **Model weights.** DeepSeek-V4-Flash-0731 is a public model. It is served
   from a dm-verity-verified, dm-crypt-encrypted volume
   (`releases/production/release-bundle.json`, `model.dmVerityRoot` and

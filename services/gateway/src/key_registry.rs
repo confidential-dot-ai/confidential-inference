@@ -1,53 +1,55 @@
-//! The gateway's key registry snapshot poller.
+//! The gateway's key registry snapshot contract.
 //!
-//! A key registry is an admin-owned service that stores API key hashes. This
-//! module polls its snapshot route, checks its signature, and applies an
-//! accepted snapshot to the gateway's own cache. See
-//! `docs/plans/api-keys-source-of-truth-admin.md` for the full design and
-//! the frozen snapshot contract it implements.
+//! A key registry is an admin-owned store that holds API key hashes. The
+//! admin VM owns every write to it. The admin VM pushes the complete
+//! snapshot to this gateway through the signed admin channel. See
+//! `docs/plans/api-keys-source-of-truth-admin.md` for the design.
 //!
-//! The poller never fails open. A fetch error, a bad signature, a bad
-//! revision, or an unreachable registry leaves the cache unchanged: the
-//! gateway keeps answering from the last accepted snapshot.
+//! The gateway never calls the admin VM. The network permits no such call:
+//! the admin VM reaches each gateway, and no gateway reaches the admin VM.
+//! This module therefore holds no HTTP client and no poller. It holds the
+//! snapshot wire types, the read mode, and the revision rule.
+//!
+//! The push route is `PUT /admin/v1/api-keys/snapshot`. It lives on the
+//! admin router, so the existing ECDSA P-256 admin request signature
+//! already binds the method, the path, the body hash, a timestamp and a
+//! one-time nonce (`crate::admin_auth`). The snapshot carries no second
+//! signature, and the gateway gains no new trust root.
+//!
+//! The gateway never fails open. A rejected push leaves the cache
+//! unchanged: the gateway keeps answering from the last accepted snapshot.
 
-use std::{sync::Arc, time::Duration};
-
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use clap::ValueEnum;
-use ring::signature::{ECDSA_P256_SHA256_ASN1, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-use crate::{api_keys::GatewayState, metrics::GatewayMetrics};
-
-/// The schema this gateway build understands. A registry that serves a
-/// different schema is treated as a fetch error: the cache is unchanged.
+/// The schema this gateway build understands. A push that names a
+/// different schema is rejected and the cache is unchanged.
 pub const SNAPSHOT_SCHEMA: &str = "confidential.ai/key-registry-snapshot/v1";
+
+/// The largest number of keys one pushed snapshot may carry.
+///
+/// The admin channel already caps a request body at one mebibyte
+/// (`crate::admin_auth::MAX_ADMIN_BODY_BYTES`). This second limit states
+/// the row count plainly, so an oversized push fails with a clear code
+/// instead of a body-size rejection.
+pub const MAX_SNAPSHOT_KEYS: usize = 10_000;
 
 /// How the gateway answers an API key verification.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[value(rename_all = "lowercase")]
 pub enum KeyRegistryMode {
-    /// Answer from the `api_keys` table alone. The poller never runs.
+    /// Answer from the `api_keys` table alone. A pushed snapshot is still
+    /// stored, but it never answers a request.
     #[default]
     Local,
-    /// Check `api_keys` first, then the registry cache.
+    /// Check `api_keys` first, then the pushed snapshot.
     Dual,
-    /// Answer from the registry cache alone.
+    /// Answer from the pushed snapshot alone. A local mint is disabled.
     Registry,
 }
 
-/// Static configuration for one poller.
-#[derive(Clone, Debug)]
-pub struct KeyRegistryConfig {
-    pub mode: KeyRegistryMode,
-    pub url: String,
-    pub poll_seconds: u64,
-    pub environment: String,
-}
-
-/// One key row inside a snapshot body, as CONTRACT.md section 2 defines it.
+/// One key row inside a snapshot body.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegistrySnapshotKey {
@@ -72,370 +74,116 @@ pub struct RegistrySnapshotKey {
     pub version: i64,
 }
 
-#[derive(Debug, Deserialize)]
+/// The body of `PUT /admin/v1/api-keys/snapshot`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SnapshotBody {
-    schema_version: String,
-    environment: String,
-    revision: i64,
-    keys: Vec<RegistrySnapshotKey>,
+pub struct SnapshotPush {
+    pub schema_version: String,
+    pub environment: String,
+    pub revision: i64,
+    #[serde(default)]
+    pub generated_at: String,
+    #[serde(default)]
+    pub pepper_fingerprint: String,
+    pub keys: Vec<RegistrySnapshotKey>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum PollOutcome {
-    Applied {
-        revision: i64,
-        accepted: i64,
-        skipped_pepper_mismatch: i64,
-    },
-    NotModified,
+/// The body of a successful `PUT /admin/v1/api-keys/snapshot`.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotPushResult {
+    /// The revision the push carried.
+    pub revision: i64,
+    /// The revision the gateway holds after the push.
+    pub cached_revision: i64,
+    /// The rows the gateway stored.
+    pub accepted: i64,
+    /// The rows the gateway skipped for a pepper fingerprint mismatch.
+    pub skipped_pepper_mismatch: i64,
+    /// `false` when the push repeated the cached revision. The gateway
+    /// wrote nothing, and the admin VM may treat this as an
+    /// acknowledgement.
+    pub applied: bool,
 }
 
-/// The canonical string the admin backend signs for one snapshot, per
-/// CONTRACT.md section 3.
+/// Why the gateway refused one pushed snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotRejection {
+    /// The push repeats a revision the gateway already passed. The admin
+    /// VM must not retry it; the next drift probe resolves the difference.
+    StaleRevision,
+    /// The schema, the environment, or a field value is wrong.
+    Invalid,
+}
+
+/// Decide what the gateway does with one pushed revision.
+///
+/// A strictly higher revision is applied. An equal revision is an
+/// acknowledgement and writes nothing. A lower revision is refused, which
+/// blocks a rollback of the key set.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RevisionDecision {
+    Apply,
+    AlreadyHeld,
+    Refuse,
+}
+
+/// Compare a pushed revision against the cached revision.
 #[must_use]
-pub fn canonical_snapshot_string(
-    environment: &str,
-    revision: i64,
-    body_sha256_hex: &str,
-) -> String {
-    format!("v1\n{environment}\n{revision}\n{body_sha256_hex}\n")
+pub fn revision_decision(cached_revision: Option<i64>, pushed_revision: i64) -> RevisionDecision {
+    let cached = cached_revision.unwrap_or(0);
+    if pushed_revision > cached {
+        RevisionDecision::Apply
+    } else if pushed_revision == cached && cached_revision.is_some() {
+        RevisionDecision::AlreadyHeld
+    } else {
+        RevisionDecision::Refuse
+    }
 }
 
-/// Verify a snapshot signature against the admin signer public key.
-///
-/// # Errors
-///
-/// Returns `"invalid_signature"` when the signature does not verify or
-/// cannot be decoded.
-pub fn verify_snapshot_signature(
-    public_key: &[u8],
-    environment: &str,
-    revision: i64,
-    body: &[u8],
-    signature_base64url: &str,
-) -> Result<(), &'static str> {
-    let body_hash = hex::encode(Sha256::digest(body));
-    let canonical = canonical_snapshot_string(environment, revision, &body_hash);
-    let signature = URL_SAFE_NO_PAD
-        .decode(signature_base64url)
-        .map_err(|_| "invalid_signature")?;
-    UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, public_key)
-        .verify(canonical.as_bytes(), &signature)
-        .map_err(|_| "invalid_signature")
-}
-
-/// A snapshot is accepted only when its revision is strictly higher than the
-/// cached revision. A 304 is the normal no-change path and never reaches
-/// this function.
+/// A snapshot is applied only when its revision is strictly higher than
+/// the cached revision.
 #[must_use]
 pub fn accepts_revision(cached_revision: Option<i64>, snapshot_revision: i64) -> bool {
     snapshot_revision > cached_revision.unwrap_or(0)
 }
 
-/// Polls one environment's key registry snapshot route on an interval.
-pub struct KeyRegistryPoller {
-    client: reqwest::Client,
-    config: KeyRegistryConfig,
-    token: String,
-    admin_public_key: Arc<Vec<u8>>,
-    state: GatewayState,
-    metrics: Arc<GatewayMetrics>,
-}
-
-impl KeyRegistryPoller {
-    #[must_use]
-    pub fn new(
-        config: KeyRegistryConfig,
-        token: String,
-        admin_public_key: Arc<Vec<u8>>,
-        state: GatewayState,
-        metrics: Arc<GatewayMetrics>,
-    ) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            config,
-            token,
-            admin_public_key,
-            state,
-            metrics,
-        }
+/// Check one pushed snapshot against the frozen contract, before any
+/// write.
+///
+/// # Errors
+///
+/// Returns `SnapshotRejection::Invalid` when the schema version, the
+/// environment name, the revision or the row count is wrong.
+pub fn validate_push(
+    push: &SnapshotPush,
+    gateway_environment: &str,
+) -> Result<(), SnapshotRejection> {
+    if push.schema_version != SNAPSHOT_SCHEMA {
+        return Err(SnapshotRejection::Invalid);
     }
-
-    /// Start the poll loop. Returns `None` for `local` mode, which never
-    /// polls.
-    #[must_use]
-    pub fn spawn(self) -> Option<tokio::task::JoinHandle<()>> {
-        if self.config.mode == KeyRegistryMode::Local {
-            return None;
-        }
-        Some(tokio::spawn(async move { self.run().await }))
+    if !gateway_environment.is_empty() && push.environment != gateway_environment {
+        return Err(SnapshotRejection::Invalid);
     }
-
-    async fn run(self) {
-        let mut interval =
-            tokio::time::interval(Duration::from_secs(self.config.poll_seconds.max(1)));
-        loop {
-            interval.tick().await;
-            match self.poll_once().await {
-                Ok(PollOutcome::Applied {
-                    revision,
-                    accepted,
-                    skipped_pepper_mismatch,
-                }) => {
-                    self.metrics.set_key_registry_revision(revision);
-                    self.metrics.set_key_registry_pepper_mismatch_rows(
-                        u64::try_from(skipped_pepper_mismatch).unwrap_or(0),
-                    );
-                    self.metrics.set_key_registry_stale_seconds(0.0);
-                    tracing::info!(
-                        revision,
-                        accepted,
-                        skipped_pepper_mismatch,
-                        "applied a key registry snapshot"
-                    );
-                }
-                Ok(PollOutcome::NotModified) => {
-                    self.refresh_stale_metric();
-                }
-                Err(reason) => {
-                    self.metrics.record_key_registry_pull_failure(reason);
-                    self.refresh_stale_metric();
-                    tracing::warn!(
-                        reason,
-                        "the key registry poll failed; the cache is unchanged"
-                    );
-                }
-            }
-        }
+    if push.revision < 1 || push.keys.len() > MAX_SNAPSHOT_KEYS {
+        return Err(SnapshotRejection::Invalid);
     }
-
-    fn refresh_stale_metric(&self) {
-        let Ok(status) = self.state.registry_source_status() else {
-            return;
-        };
-        let Some(stale_seconds) = status.stale_seconds else {
-            return;
-        };
-        self.metrics
-            .set_key_registry_stale_seconds(f64_from_i64(stale_seconds));
-        if stale_seconds > 300 {
-            tracing::warn!(
-                stale_seconds,
-                "no successful key registry fetch in over five minutes"
-            );
-        }
-    }
-
-    async fn poll_once(&self) -> Result<PollOutcome, &'static str> {
-        let cached_revision = self
-            .state
-            .registry_cached_revision()
-            .map_err(|_| "database_unavailable")?;
-        let url = format!(
-            "{}/registry/v1/{}/keys",
-            self.config.url.trim_end_matches('/'),
-            self.config.environment
-        );
-        let mut request = self.client.get(url).bearer_auth(&self.token);
-        if let Some(revision) = cached_revision {
-            request = request.header(reqwest::header::IF_NONE_MATCH, format!("\"{revision}\""));
-        }
-        let response = request.send().await.map_err(|_| "fetch_error")?;
-        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
-            return Ok(PollOutcome::NotModified);
-        }
-        if !response.status().is_success() {
-            return Err("http_error");
-        }
-        let signature_version =
-            header_text(&response, "x-registry-signature-version").ok_or("missing_signature")?;
-        if signature_version != "v1" {
-            return Err("unsupported_signature_version");
-        }
-        let signature = header_text(&response, "x-registry-signature")
-            .ok_or("missing_signature")?
-            .to_owned();
-        let body = response.bytes().await.map_err(|_| "fetch_error")?;
-        let snapshot: SnapshotBody = serde_json::from_slice(&body).map_err(|_| "invalid_body")?;
-        if snapshot.schema_version != SNAPSHOT_SCHEMA
-            || snapshot.environment != self.config.environment
-        {
-            return Err("invalid_body");
-        }
-        verify_snapshot_signature(
-            &self.admin_public_key,
-            &self.config.environment,
-            snapshot.revision,
-            &body,
-            &signature,
-        )
-        .map_err(|_| "bad_signature")?;
-        if !accepts_revision(cached_revision, snapshot.revision) {
-            return Err("stale_revision");
-        }
-        let outcome = self
-            .state
-            .apply_registry_snapshot(&self.config.environment, snapshot.revision, &snapshot.keys)
-            .map_err(|_| "apply_failed")?;
-        Ok(PollOutcome::Applied {
-            revision: snapshot.revision,
-            accepted: outcome.accepted,
-            skipped_pepper_mismatch: outcome.skipped_pepper_mismatch,
-        })
-    }
-}
-
-fn header_text<'a>(response: &'a reqwest::Response, name: &str) -> Option<&'a str> {
-    response.headers().get(name)?.to_str().ok()
-}
-
-fn f64_from_i64(value: i64) -> f64 {
-    #[allow(clippy::cast_precision_loss)]
-    let converted = value as f64;
-    converted
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        error::Error,
-        io::{Read, Write},
-        net::TcpListener,
-        process::Command,
-    };
+    use std::error::Error;
 
     use axum::body::Body;
-    use http::Request;
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use http::{Request, StatusCode};
+    use sha2::{Digest, Sha256};
     use tower::ServiceExt;
 
-    use crate::admin_auth::AdminRequestVerifier;
+    use crate::api_keys::{GatewayState, admin_router};
 
     use super::*;
-
-    fn run(command: &mut Command) -> Result<(), Box<dyn Error>> {
-        let output = command.output()?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
-        }
-        Ok(())
-    }
-
-    struct SigningKey {
-        certificate: std::path::PathBuf,
-        key: std::path::PathBuf,
-        _directory: tempfile::TempDir,
-    }
-
-    fn generate_signing_key() -> Result<SigningKey, Box<dyn Error>> {
-        let directory = tempfile::tempdir()?;
-        let key = directory.path().join("registry-signer.key");
-        let certificate = directory.path().join("registry-signer.crt");
-        run(Command::new("openssl")
-            .args([
-                "ecparam",
-                "-name",
-                "prime256v1",
-                "-genkey",
-                "-noout",
-                "-out",
-            ])
-            .arg(&key))?;
-        run(Command::new("openssl")
-            .args(["req", "-x509", "-new", "-key"])
-            .arg(&key)
-            .args([
-                "-sha256",
-                "-days",
-                "1",
-                "-subj",
-                "/CN=registry-signer",
-                "-out",
-            ])
-            .arg(&certificate))?;
-        Ok(SigningKey {
-            certificate,
-            key,
-            _directory: directory,
-        })
-    }
-
-    fn sign(key: &SigningKey, message: &[u8]) -> Result<String, Box<dyn Error>> {
-        let directory = tempfile::tempdir()?;
-        let message_path = directory.path().join("message");
-        let signature_path = directory.path().join("signature");
-        std::fs::write(&message_path, message)?;
-        run(Command::new("openssl")
-            .args(["dgst", "-sha256", "-sign"])
-            .arg(&key.key)
-            .arg("-out")
-            .arg(&signature_path)
-            .arg(&message_path))?;
-        Ok(URL_SAFE_NO_PAD.encode(std::fs::read(signature_path)?))
-    }
-
-    fn snapshot_body(
-        environment: &str,
-        revision: i64,
-        key_hash: &str,
-        pepper_fingerprint: &str,
-    ) -> Vec<u8> {
-        let value = serde_json::json!({
-            "schemaVersion": SNAPSHOT_SCHEMA,
-            "environment": environment,
-            "revision": revision,
-            "generatedAt": "2026-09-18T10:00:00Z",
-            "pepperFingerprint": pepper_fingerprint,
-            "keys": [{
-                "id": "key_0123456789abcdef0123456789abcdef",
-                "name": "example",
-                "owner": "unknown",
-                "prefix": "ci_abcdefgh",
-                "keyHash": key_hash,
-                "pepperFingerprint": pepper_fingerprint,
-                "tags": ["example"],
-                "rateLimit": null,
-                "createdAt": "2026-09-18T09:00:00Z",
-                "createdBy": "operator@confidential.ai",
-                "revokedAt": null,
-                "revokedBy": null,
-                "version": 1,
-            }],
-        });
-        serde_json::to_vec(&value).unwrap_or_else(|_| unreachable!())
-    }
-
-    /// A one-shot fake HTTP/1.1 server: it accepts one connection, ignores
-    /// the request, and writes back the exact response bytes given.
-    fn one_shot_server(response: Vec<u8>) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|_| unreachable!());
-        let addr = listener.local_addr().unwrap_or_else(|_| unreachable!());
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buffer = [0_u8; 8_192];
-                let _ = stream.read(&mut buffer);
-                let _ = stream.write_all(&response);
-                let _ = stream.flush();
-            }
-        });
-        format!("http://{addr}")
-    }
-
-    fn ok_response(body: &[u8], revision: i64, signature: &str) -> Vec<u8> {
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nEtag: \"{revision}\"\r\nX-Registry-Signature-Version: v1\r\nX-Registry-Signature: {signature}\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        )
-        .into_bytes()
-        .into_iter()
-        .chain(body.iter().copied())
-        .collect()
-    }
-
-    fn not_modified_response(revision: i64) -> Vec<u8> {
-        format!("HTTP/1.1 304 Not Modified\r\nEtag: \"{revision}\"\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-            .into_bytes()
-    }
 
     fn gateway_pepper() -> Vec<u8> {
         vec![7_u8; 32]
@@ -455,49 +203,184 @@ mod tests {
         URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
     }
 
-    fn poller(url: String, public_key: Arc<Vec<u8>>, state: GatewayState) -> KeyRegistryPoller {
-        KeyRegistryPoller::new(
-            KeyRegistryConfig {
-                mode: KeyRegistryMode::Registry,
-                url,
-                poll_seconds: 10,
-                environment: "integration-staging".to_owned(),
-            },
-            "registry-token".to_owned(),
-            public_key,
-            state,
-            Arc::new(GatewayMetrics::new("integration-staging")),
+    fn state_with_mode(mode: KeyRegistryMode) -> Result<GatewayState, Box<dyn Error>> {
+        Ok(
+            GatewayState::open(tempfile::NamedTempFile::new()?.path(), gateway_pepper())
+                .map_err(|error| -> Box<dyn Error> { format!("{error:?}").into() })?
+                .with_mode(mode)
+                .with_environment("integration-staging"),
         )
     }
 
+    fn snapshot_json(revision: i64, key_hash: &str, fingerprint: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schemaVersion": SNAPSHOT_SCHEMA,
+            "environment": "integration-staging",
+            "revision": revision,
+            "generatedAt": "2026-09-18T10:00:00Z",
+            "pepperFingerprint": fingerprint,
+            "keys": [{
+                "id": "key_0123456789abcdef0123456789abcdef",
+                "name": "example",
+                "owner": "unknown",
+                "prefix": "ci_abcdefgh",
+                "keyHash": key_hash,
+                "pepperFingerprint": fingerprint,
+                "tags": ["example"],
+                "rateLimit": null,
+                "createdAt": "2026-09-18T09:00:00Z",
+                "createdBy": "operator@confidential.ai",
+                "revokedAt": null,
+                "revokedBy": null,
+                "version": 1,
+            }],
+        })
+    }
+
+    async fn push(
+        state: &GatewayState,
+        body: &serde_json::Value,
+    ) -> Result<(StatusCode, serde_json::Value), Box<dyn Error>> {
+        let response = admin_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/admin/v1/api-keys/snapshot")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(body)?))?,
+            )
+            .await?;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1_048_576).await?;
+        Ok((status, serde_json::from_slice(&bytes)?))
+    }
+
     #[tokio::test]
-    async fn a_valid_signature_updates_the_cache() -> Result<(), Box<dyn Error>> {
-        let signing_key = generate_signing_key()?;
-        let verifier = AdminRequestVerifier::from_certificate_file(&signing_key.certificate)
-            .map_err(|error| -> Box<dyn Error> { error.into() })?;
-        let public_key = verifier.public_key_bytes();
+    async fn a_pushed_snapshot_updates_the_cache() -> Result<(), Box<dyn Error>> {
         let pepper = gateway_pepper();
         let fingerprint = pepper_fingerprint_hex(&pepper);
         let key_hash = plaintext_key_hash(&pepper, "ci_example");
-        let body = snapshot_body("integration-staging", 1, &key_hash, &fingerprint);
-        let body_hash = hex::encode(Sha256::digest(&body));
-        let canonical = canonical_snapshot_string("integration-staging", 1, &body_hash);
-        let signature = sign(&signing_key, canonical.as_bytes())?;
-        let url = one_shot_server(ok_response(&body, 1, &signature));
+        let state = state_with_mode(KeyRegistryMode::Registry)?;
+        assert!(!state.registry_ready());
 
-        let state = GatewayState::open(tempfile::NamedTempFile::new()?.path(), pepper.clone())
-            .map_err(|error| -> Box<dyn Error> { format!("{error:?}").into() })?
-            .with_mode(KeyRegistryMode::Registry);
-        let poller = poller(url, public_key, state.clone());
-        let outcome = poller.poll_once().await;
-        assert!(matches!(
-            outcome,
-            Ok(PollOutcome::Applied {
-                revision: 1,
-                accepted: 1,
-                skipped_pepper_mismatch: 0
-            })
-        ));
+        let (status, body) = push(&state, &snapshot_json(1, &key_hash, &fingerprint)).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["applied"], serde_json::json!(true));
+        assert_eq!(body["accepted"], serde_json::json!(1));
+        assert_eq!(body["cachedRevision"], serde_json::json!(1));
+        assert!(state.registry_ready());
+        assert_eq!(
+            state.verify("ci_example"),
+            Some("key_0123456789abcdef0123456789abcdef".to_owned())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_repeated_revision_is_acknowledged_and_writes_nothing() -> Result<(), Box<dyn Error>>
+    {
+        let pepper = gateway_pepper();
+        let fingerprint = pepper_fingerprint_hex(&pepper);
+        let key_hash = plaintext_key_hash(&pepper, "ci_example");
+        let state = state_with_mode(KeyRegistryMode::Registry)?;
+        push(&state, &snapshot_json(2, &key_hash, &fingerprint)).await?;
+
+        // The same revision arrives again, with no rows. The gateway must
+        // not empty its cache: it recognises the revision it already holds.
+        let mut repeat = snapshot_json(2, &key_hash, &fingerprint);
+        repeat["keys"] = serde_json::json!([]);
+        let (status, body) = push(&state, &repeat).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["applied"], serde_json::json!(false));
+        assert_eq!(body["cachedRevision"], serde_json::json!(2));
+        assert_eq!(
+            state.verify("ci_example"),
+            Some("key_0123456789abcdef0123456789abcdef".to_owned())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_lower_revision_is_refused_and_leaves_the_cache_unchanged()
+    -> Result<(), Box<dyn Error>> {
+        let pepper = gateway_pepper();
+        let fingerprint = pepper_fingerprint_hex(&pepper);
+        let key_hash = plaintext_key_hash(&pepper, "ci_example");
+        let state = state_with_mode(KeyRegistryMode::Registry)?;
+        push(&state, &snapshot_json(5, &key_hash, &fingerprint)).await?;
+
+        let mut older = snapshot_json(4, &key_hash, &fingerprint);
+        older["keys"] = serde_json::json!([]);
+        let (status, body) = push(&state, &older).await?;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], serde_json::json!("stale_revision"));
+        assert_eq!(state.registry_cached_revision()?, Some(5));
+        assert_eq!(
+            state.verify("ci_example"),
+            Some("key_0123456789abcdef0123456789abcdef".to_owned())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_wrong_schema_or_environment_is_refused() -> Result<(), Box<dyn Error>> {
+        let pepper = gateway_pepper();
+        let fingerprint = pepper_fingerprint_hex(&pepper);
+        let key_hash = plaintext_key_hash(&pepper, "ci_example");
+        let state = state_with_mode(KeyRegistryMode::Registry)?;
+
+        let mut wrong_schema = snapshot_json(1, &key_hash, &fingerprint);
+        wrong_schema["schemaVersion"] = serde_json::json!("confidential.ai/other/v9");
+        let (status, _) = push(&state, &wrong_schema).await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let mut wrong_environment = snapshot_json(1, &key_hash, &fingerprint);
+        wrong_environment["environment"] = serde_json::json!("production");
+        let (status, _) = push(&state, &wrong_environment).await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        assert_eq!(state.registry_cached_revision()?, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_wrong_pepper_fingerprint_row_is_skipped_and_counted() -> Result<(), Box<dyn Error>> {
+        let state = state_with_mode(KeyRegistryMode::Registry)?;
+        let other_fingerprint = pepper_fingerprint_hex(&[9_u8; 32]);
+        let (status, body) = push(
+            &state,
+            &snapshot_json(
+                1,
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                &other_fingerprint,
+            ),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["accepted"], serde_json::json!(0));
+        assert_eq!(body["skippedPepperMismatch"], serde_json::json!(1));
+        // The revision still advances, so the next push is not refused.
+        assert_eq!(state.registry_cached_revision()?, Some(1));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_whole_snapshot_applies_in_one_transaction() -> Result<(), Box<dyn Error>> {
+        let pepper = gateway_pepper();
+        let fingerprint = pepper_fingerprint_hex(&pepper);
+        let key_hash = plaintext_key_hash(&pepper, "ci_example");
+        let state = state_with_mode(KeyRegistryMode::Registry)?;
+        push(&state, &snapshot_json(1, &key_hash, &fingerprint)).await?;
+
+        // The second row carries an unparsable timestamp. The transaction
+        // must roll back, so the first snapshot still answers.
+        let mut broken = snapshot_json(2, &key_hash, &fingerprint);
+        let mut second = broken["keys"][0].clone();
+        second["id"] = serde_json::json!("key_ffffffffffffffffffffffffffffffff");
+        second["createdAt"] = serde_json::json!("not-a-timestamp");
+        broken["keys"] = serde_json::json!([broken["keys"][0].clone(), second]);
+        let (status, _) = push(&state, &broken).await?;
+        assert_ne!(status, StatusCode::OK);
         assert_eq!(state.registry_cached_revision()?, Some(1));
         assert_eq!(
             state.verify("ci_example"),
@@ -507,200 +390,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_bad_signature_leaves_the_cache_unchanged() -> Result<(), Box<dyn Error>> {
-        let signing_key = generate_signing_key()?;
-        let other_key = generate_signing_key()?;
-        let verifier = AdminRequestVerifier::from_certificate_file(&signing_key.certificate)
-            .map_err(|error| -> Box<dyn Error> { error.into() })?;
-        let public_key = verifier.public_key_bytes();
+    async fn a_restart_keeps_the_pushed_snapshot() -> Result<(), Box<dyn Error>> {
         let pepper = gateway_pepper();
         let fingerprint = pepper_fingerprint_hex(&pepper);
         let key_hash = plaintext_key_hash(&pepper, "ci_example");
-        let body = snapshot_body("integration-staging", 1, &key_hash, &fingerprint);
-        let body_hash = hex::encode(Sha256::digest(&body));
-        let canonical = canonical_snapshot_string("integration-staging", 1, &body_hash);
-        // Signed with a different key than the one the gateway trusts.
-        let signature = sign(&other_key, canonical.as_bytes())?;
-        let url = one_shot_server(ok_response(&body, 1, &signature));
-
-        let state = GatewayState::open(tempfile::NamedTempFile::new()?.path(), pepper)
-            .map_err(|error| -> Box<dyn Error> { format!("{error:?}").into() })?
-            .with_mode(KeyRegistryMode::Registry);
-        let poller = poller(url, public_key, state.clone());
-        assert_eq!(poller.poll_once().await, Err("bad_signature"));
-        assert_eq!(state.registry_cached_revision()?, None);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_lower_or_equal_revision_leaves_the_cache_unchanged() -> Result<(), Box<dyn Error>> {
-        let signing_key = generate_signing_key()?;
-        let verifier = AdminRequestVerifier::from_certificate_file(&signing_key.certificate)
-            .map_err(|error| -> Box<dyn Error> { error.into() })?;
-        let public_key = verifier.public_key_bytes();
-        let pepper = gateway_pepper();
-        let fingerprint = pepper_fingerprint_hex(&pepper);
-        let key_hash = plaintext_key_hash(&pepper, "ci_example");
-
-        let state = GatewayState::open(tempfile::NamedTempFile::new()?.path(), pepper)
-            .map_err(|error| -> Box<dyn Error> { format!("{error:?}").into() })?
-            .with_mode(KeyRegistryMode::Registry);
-        state.apply_registry_snapshot(
-            "integration-staging",
-            5,
-            &[RegistrySnapshotKey {
-                id: "key_0123456789abcdef0123456789abcdef".to_owned(),
-                name: "example".to_owned(),
-                owner: "unknown".to_owned(),
-                prefix: "ci_abcdefgh".to_owned(),
-                key_hash: key_hash.clone(),
-                pepper_fingerprint: fingerprint.clone(),
-                tags: vec![],
-                rate_limit: None,
-                created_at: "2026-09-18T09:00:00Z".to_owned(),
-                created_by: "operator@confidential.ai".to_owned(),
-                revoked_at: None,
-                revoked_by: None,
-                version: 1,
-            }],
-        )?;
-
-        let body = snapshot_body("integration-staging", 5, &key_hash, &fingerprint);
-        let body_hash = hex::encode(Sha256::digest(&body));
-        let canonical = canonical_snapshot_string("integration-staging", 5, &body_hash);
-        let signature = sign(&signing_key, canonical.as_bytes())?;
-        let url = one_shot_server(ok_response(&body, 5, &signature));
-        let poller = poller(url, public_key, state.clone());
-        assert_eq!(poller.poll_once().await, Err("stale_revision"));
-        assert_eq!(state.registry_cached_revision()?, Some(5));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_304_leaves_the_cache_unchanged_and_costs_no_write() -> Result<(), Box<dyn Error>> {
-        let signing_key = generate_signing_key()?;
-        let verifier = AdminRequestVerifier::from_certificate_file(&signing_key.certificate)
-            .map_err(|error| -> Box<dyn Error> { error.into() })?;
-        let public_key = verifier.public_key_bytes();
-        let pepper = gateway_pepper();
-        let fingerprint = pepper_fingerprint_hex(&pepper);
-        let key_hash = plaintext_key_hash(&pepper, "ci_example");
-
-        let state = GatewayState::open(tempfile::NamedTempFile::new()?.path(), pepper)
-            .map_err(|error| -> Box<dyn Error> { format!("{error:?}").into() })?
-            .with_mode(KeyRegistryMode::Registry);
-        state.apply_registry_snapshot(
-            "integration-staging",
-            3,
-            &[RegistrySnapshotKey {
-                id: "key_0123456789abcdef0123456789abcdef".to_owned(),
-                name: "example".to_owned(),
-                owner: "unknown".to_owned(),
-                prefix: "ci_abcdefgh".to_owned(),
-                key_hash,
-                pepper_fingerprint: fingerprint,
-                tags: vec![],
-                rate_limit: None,
-                created_at: "2026-09-18T09:00:00Z".to_owned(),
-                created_by: "operator@confidential.ai".to_owned(),
-                revoked_at: None,
-                revoked_by: None,
-                version: 1,
-            }],
-        )?;
-        let url = one_shot_server(not_modified_response(3));
-        let poller = poller(url, public_key, state.clone());
-        assert!(matches!(
-            poller.poll_once().await,
-            Ok(PollOutcome::NotModified)
-        ));
-        assert_eq!(state.registry_cached_revision()?, Some(3));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_wrong_pepper_fingerprint_row_is_skipped_and_counted() -> Result<(), Box<dyn Error>> {
-        let pepper = gateway_pepper();
-        let state = GatewayState::open(tempfile::NamedTempFile::new()?.path(), pepper)
-            .map_err(|error| -> Box<dyn Error> { format!("{error:?}").into() })?
-            .with_mode(KeyRegistryMode::Registry);
-        let outcome = state.apply_registry_snapshot(
-            "integration-staging",
-            1,
-            &[RegistrySnapshotKey {
-                id: "key_0123456789abcdef0123456789abcdef".to_owned(),
-                name: "example".to_owned(),
-                owner: "unknown".to_owned(),
-                prefix: "ci_abcdefgh".to_owned(),
-                key_hash: URL_SAFE_NO_PAD.encode([0_u8; 32]),
-                pepper_fingerprint: "0".repeat(64),
-                tags: vec![],
-                rate_limit: None,
-                created_at: "2026-09-18T09:00:00Z".to_owned(),
-                created_by: "operator@confidential.ai".to_owned(),
-                revoked_at: None,
-                revoked_by: None,
-                version: 1,
-            }],
-        )?;
-        assert_eq!(outcome.accepted, 0);
-        assert_eq!(outcome.skipped_pepper_mismatch, 1);
-        assert_eq!(state.registry_cached_revision()?, Some(1));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn an_unreachable_registry_leaves_the_cache_unchanged() -> Result<(), Box<dyn Error>> {
-        let signing_key = generate_signing_key()?;
-        let verifier = AdminRequestVerifier::from_certificate_file(&signing_key.certificate)
-            .map_err(|error| -> Box<dyn Error> { error.into() })?;
-        let public_key = verifier.public_key_bytes();
-        let pepper = gateway_pepper();
-        let state = GatewayState::open(tempfile::NamedTempFile::new()?.path(), pepper)
-            .map_err(|error| -> Box<dyn Error> { format!("{error:?}").into() })?
-            .with_mode(KeyRegistryMode::Registry);
-        // Nothing listens on this port.
-        let poller = poller("http://127.0.0.1:1".to_owned(), public_key, state.clone());
-        assert_eq!(poller.poll_once().await, Err("fetch_error"));
-        assert_eq!(state.registry_cached_revision()?, None);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_restart_with_a_cached_snapshot_still_accepts_a_cached_key_when_unreachable()
-    -> Result<(), Box<dyn Error>> {
-        let pepper = gateway_pepper();
-        let fingerprint = pepper_fingerprint_hex(&pepper);
-        let key_hash = plaintext_key_hash(&pepper, "ci_example");
-        let database_path = tempfile::NamedTempFile::new()?.path().to_path_buf();
+        let file = tempfile::NamedTempFile::new()?;
+        let database_path = file.path().to_path_buf();
         {
             let state = GatewayState::open(&database_path, pepper.clone())
                 .map_err(|error| -> Box<dyn Error> { format!("{error:?}").into() })?
-                .with_mode(KeyRegistryMode::Registry);
-            state.apply_registry_snapshot(
-                "integration-staging",
-                1,
-                &[RegistrySnapshotKey {
-                    id: "key_0123456789abcdef0123456789abcdef".to_owned(),
-                    name: "example".to_owned(),
-                    owner: "unknown".to_owned(),
-                    prefix: "ci_abcdefgh".to_owned(),
-                    key_hash,
-                    pepper_fingerprint: fingerprint,
-                    tags: vec![],
-                    rate_limit: None,
-                    created_at: "2026-09-18T09:00:00Z".to_owned(),
-                    created_by: "operator@confidential.ai".to_owned(),
-                    revoked_at: None,
-                    revoked_by: None,
-                    version: 1,
-                }],
-            )?;
+                .with_mode(KeyRegistryMode::Registry)
+                .with_environment("integration-staging");
+            push(&state, &snapshot_json(1, &key_hash, &fingerprint)).await?;
         }
-        // Simulate a restart: reopen the same database file.
+        // Simulate a restart: reopen the same database file. The admin VM
+        // is unreachable from here, and the cache must still answer.
         let restarted = GatewayState::open(&database_path, pepper)
             .map_err(|error| -> Box<dyn Error> { format!("{error:?}").into() })?
             .with_mode(KeyRegistryMode::Registry);
+        assert!(restarted.registry_ready());
         assert_eq!(
             restarted.verify("ci_example"),
             Some("key_0123456789abcdef0123456789abcdef".to_owned())
@@ -709,115 +417,125 @@ mod tests {
     }
 
     #[test]
-    fn a_cold_start_with_no_cache_reports_not_ready() -> Result<(), Box<dyn Error>> {
-        let state = GatewayState::open(tempfile::NamedTempFile::new()?.path(), gateway_pepper())
-            .map_err(|error| -> Box<dyn Error> { format!("{error:?}").into() })?
-            .with_mode(KeyRegistryMode::Registry);
+    fn a_cold_start_with_no_snapshot_reports_not_ready() -> Result<(), Box<dyn Error>> {
+        let state = state_with_mode(KeyRegistryMode::Registry)?;
         assert!(!state.registry_ready());
         assert_eq!(state.verify("anything"), None);
         Ok(())
     }
 
     #[tokio::test]
-    async fn dual_mode_accepts_a_local_key_and_a_registry_key() -> Result<(), Box<dyn Error>> {
-        let pepper = gateway_pepper();
-        let fingerprint = pepper_fingerprint_hex(&pepper);
-        let registry_key_hash = plaintext_key_hash(&pepper, "ci_registry_key");
-        let state = GatewayState::open(tempfile::NamedTempFile::new()?.path(), pepper)
-            .map_err(|error| -> Box<dyn Error> { format!("{error:?}").into() })?
-            .with_mode(KeyRegistryMode::Dual);
-        state.apply_registry_snapshot(
-            "integration-staging",
-            1,
-            &[RegistrySnapshotKey {
-                id: "key_registry".to_owned(),
-                name: "registry key".to_owned(),
-                owner: "unknown".to_owned(),
-                prefix: "ci_regist".to_owned(),
-                key_hash: registry_key_hash,
-                pepper_fingerprint: fingerprint,
-                tags: vec![],
-                rate_limit: None,
-                created_at: "2026-09-18T09:00:00Z".to_owned(),
-                created_by: "operator@confidential.ai".to_owned(),
-                revoked_at: None,
-                revoked_by: None,
-                version: 1,
-            }],
-        )?;
-        assert_eq!(
-            state.verify_with_source("ci_registry_key"),
-            Some(("key_registry".to_owned(), "registry"))
-        );
-
-        // A key minted through the admin API is a `local` row and must still
-        // verify in dual mode.
-        let admin = crate::api_keys::admin_router(state.clone());
-        let body = serde_json::json!({
-            "name": "local key",
-            "tags": [],
-            "audit": {"actor": "operator", "reason": "dual-mode test"},
-        });
-        let response = admin
+    async fn registry_mode_refuses_a_local_mint() -> Result<(), Box<dyn Error>> {
+        let state = state_with_mode(KeyRegistryMode::Registry)?;
+        let response = admin_router(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/admin/v1/api-keys")
                     .header("content-type", "application/json")
-                    .header("idempotency-key", "dual-mode-create-0001")
-                    .body(Body::from(serde_json::to_vec(&body)?))?,
+                    .header("idempotency-key", "0123456789abcdef0123")
+                    .body(Body::from(serde_json::to_vec(&serde_json::json!({
+                        "name": "refused",
+                        "tags": [],
+                        "audit": {"actor": "operator", "reason": "registry mode test"},
+                    }))?))?,
             )
             .await?;
-        assert_eq!(response.status(), http::StatusCode::CREATED);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dual_mode_accepts_a_local_key_and_a_pushed_key() -> Result<(), Box<dyn Error>> {
+        let pepper = gateway_pepper();
+        let fingerprint = pepper_fingerprint_hex(&pepper);
+        let registry_key_hash = plaintext_key_hash(&pepper, "ci_registry_key");
+        let state = state_with_mode(KeyRegistryMode::Dual)?;
+        let mut body = snapshot_json(1, &registry_key_hash, &fingerprint);
+        body["keys"][0]["id"] = serde_json::json!("key_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        body["keys"][0]["prefix"] = serde_json::json!("ci_regist");
+        push(&state, &body).await?;
+        assert_eq!(
+            state.verify_with_source("ci_registry_key"),
+            Some((
+                "key_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+                "registry"
+            ))
+        );
+
+        // A key minted through the admin API is a `local` row and must
+        // still verify in dual mode.
+        let response = admin_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/v1/api-keys")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", "0123456789abcdef0123")
+                    .body(Body::from(serde_json::to_vec(&serde_json::json!({
+                        "name": "local key",
+                        "tags": [],
+                        "audit": {"actor": "operator", "reason": "dual-mode test"},
+                    }))?))?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::CREATED);
         let bytes = axum::body::to_bytes(response.into_body(), 1_048_576).await?;
-        let created: serde_json::Value = serde_json::from_slice(&bytes)?;
-        let plaintext = created["apiKey"]
-            .as_str()
-            .ok_or("missing apiKey in response")?;
+        let minted: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let plaintext = minted["apiKey"].as_str().unwrap_or_default().to_owned();
         assert_eq!(
             state
-                .verify_with_source(plaintext)
+                .verify_with_source(&plaintext)
                 .map(|(_, source)| source),
             Some("local")
         );
         Ok(())
     }
 
-    #[test]
-    fn a_registry_revoke_rejects_the_key_on_the_next_poll() -> Result<(), Box<dyn Error>> {
+    #[tokio::test]
+    async fn a_pushed_revoke_rejects_the_key() -> Result<(), Box<dyn Error>> {
         let pepper = gateway_pepper();
         let fingerprint = pepper_fingerprint_hex(&pepper);
         let key_hash = plaintext_key_hash(&pepper, "ci_example");
-        let state = GatewayState::open(tempfile::NamedTempFile::new()?.path(), pepper)
-            .map_err(|error| -> Box<dyn Error> { format!("{error:?}").into() })?
-            .with_mode(KeyRegistryMode::Registry);
-        let row = RegistrySnapshotKey {
-            id: "key_0123456789abcdef0123456789abcdef".to_owned(),
-            name: "example".to_owned(),
-            owner: "unknown".to_owned(),
-            prefix: "ci_abcdefgh".to_owned(),
-            key_hash,
-            pepper_fingerprint: fingerprint,
-            tags: vec![],
-            rate_limit: None,
-            created_at: "2026-09-18T09:00:00Z".to_owned(),
-            created_by: "operator@confidential.ai".to_owned(),
-            revoked_at: None,
-            revoked_by: None,
-            version: 1,
-        };
-        state.apply_registry_snapshot("integration-staging", 1, std::slice::from_ref(&row))?;
+        let state = state_with_mode(KeyRegistryMode::Registry)?;
+        push(&state, &snapshot_json(1, &key_hash, &fingerprint)).await?;
         assert_eq!(
             state.verify("ci_example"),
             Some("key_0123456789abcdef0123456789abcdef".to_owned())
         );
 
-        let mut revoked = row;
-        revoked.revoked_at = Some("2026-09-18T10:00:00Z".to_owned());
-        revoked.revoked_by = Some("operator@confidential.ai".to_owned());
-        revoked.version = 2;
-        state.apply_registry_snapshot("integration-staging", 2, &[revoked])?;
+        let mut revoked = snapshot_json(2, &key_hash, &fingerprint);
+        revoked["keys"][0]["revokedAt"] = serde_json::json!("2026-09-18T10:00:00Z");
+        revoked["keys"][0]["revokedBy"] = serde_json::json!("operator@confidential.ai");
+        revoked["keys"][0]["version"] = serde_json::json!(2);
+        let (status, _) = push(&state, &revoked).await?;
+        assert_eq!(status, StatusCode::OK);
         assert_eq!(state.verify("ci_example"), None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_source_route_reports_the_drift_probe_fields() -> Result<(), Box<dyn Error>> {
+        let pepper = gateway_pepper();
+        let fingerprint = pepper_fingerprint_hex(&pepper);
+        let key_hash = plaintext_key_hash(&pepper, "ci_example");
+        let state = state_with_mode(KeyRegistryMode::Dual)?;
+        push(&state, &snapshot_json(3, &key_hash, &fingerprint)).await?;
+
+        let response = admin_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/v1/api-keys/source")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1_048_576).await?;
+        let body: serde_json::Value = serde_json::from_slice(&bytes)?;
+        assert_eq!(body["mode"], serde_json::json!("dual"));
+        assert_eq!(body["cachedRevision"], serde_json::json!(3));
+        assert_eq!(body["rowCount"], serde_json::json!(1));
+        assert_eq!(body["pepperFingerprint"], serde_json::json!(fingerprint));
         Ok(())
     }
 
@@ -827,5 +545,42 @@ mod tests {
         assert!(accepts_revision(Some(1), 2));
         assert!(!accepts_revision(Some(2), 2));
         assert!(!accepts_revision(Some(3), 2));
+    }
+
+    #[test]
+    fn the_revision_decision_separates_apply_hold_and_refuse() {
+        assert_eq!(revision_decision(None, 1), RevisionDecision::Apply);
+        assert_eq!(revision_decision(None, 0), RevisionDecision::Refuse);
+        assert_eq!(revision_decision(Some(4), 5), RevisionDecision::Apply);
+        assert_eq!(revision_decision(Some(4), 4), RevisionDecision::AlreadyHeld);
+        assert_eq!(revision_decision(Some(4), 3), RevisionDecision::Refuse);
+    }
+
+    #[test]
+    fn validate_push_checks_the_schema_the_environment_and_the_size() {
+        let mut push = SnapshotPush {
+            schema_version: SNAPSHOT_SCHEMA.to_owned(),
+            environment: "integration-staging".to_owned(),
+            revision: 1,
+            generated_at: "2026-09-18T10:00:00Z".to_owned(),
+            pepper_fingerprint: String::new(),
+            keys: Vec::new(),
+        };
+        assert!(validate_push(&push, "integration-staging").is_ok());
+        assert_eq!(
+            validate_push(&push, "production"),
+            Err(SnapshotRejection::Invalid)
+        );
+        push.revision = 0;
+        assert_eq!(
+            validate_push(&push, "integration-staging"),
+            Err(SnapshotRejection::Invalid)
+        );
+        push.revision = 1;
+        push.schema_version = "confidential.ai/other/v9".to_owned();
+        assert_eq!(
+            validate_push(&push, "integration-staging"),
+            Err(SnapshotRejection::Invalid)
+        );
     }
 }

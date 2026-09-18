@@ -299,20 +299,9 @@
         "keyRegistry": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["mode", "url", "pollSeconds", "tokenSecret"],
+          "required": ["mode"],
           "properties": {
-            "mode": {"enum": ["local", "dual", "registry"]},
-            "url": {"type": "string"},
-            "pollSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
-            "tokenSecret": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["secretName", "tokenKey"],
-              "properties": {
-                "secretName": {"$ref": "#/definitions/kubernetesName"},
-                "tokenKey": {"type": "string", "minLength": 1}
-              }
-            }
+            "mode": {"enum": ["local", "dual", "registry"]}
           }
         }
       }
