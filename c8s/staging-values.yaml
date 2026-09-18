@@ -22,7 +22,7 @@ scheduling:
   inferenceNodeName: inference-node-1
 
 images:
-  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:fc7955f4004c4e01922e1db0a085ac8f9168086f7e92ea083763e7480e6913f0
+  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:7ca9107446bc702c93d2e2136eb91cf837701619c665cad2bcca7e470bb245e4
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895
   sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895
@@ -118,6 +118,24 @@ gateway:
     perAddressConcurrency: 256
     requestsPerAddressPerSecond: 256
     perKeyConcurrency: 128
+  # API key registry (public repo PR #25, internal PR #87). "dual" checks the
+  # gateway's own table first, then the registry snapshot cache, so the
+  # gateway keeps working unchanged while the registry is absent or
+  # unreachable. The gateway appends /registry/v1/staging/keys to this url.
+  #
+  # The registry route is not served yet. Until it is, the poller fails every
+  # cycle, leaves its cache unchanged, and the gateway's own table answers
+  # every key check. That is the designed fallback, not a defect. The
+  # deployment detail lives in the confidential-inference-internal
+  # repository, not here.
+  keyRegistry:
+    mode: dual
+    url: https://admin.api.confidential.ai
+    pollSeconds: 10
+    tokenSecret:
+      secretName: gateway-key-registry-token
+      tokenKey: token
+
   state:
     enabled: true
     storageResources: {create: true}
