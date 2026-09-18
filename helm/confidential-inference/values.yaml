@@ -147,6 +147,18 @@ gateway:
     devicePath: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_confai-gateway-state
     diskSerial: confai-gateway-state
     allowFormat: true
+  keyRegistry:
+    # "local" keeps today's behaviour: the gateway never polls, and answers
+    # every API key check from its own database alone. "dual" checks the
+    # local database first, then the registry cache. "registry" answers
+    # from the registry cache alone. The empty url keeps the chart's default
+    # behaviour unchanged: no value here changes today's deployment.
+    mode: local
+    url: ""
+    pollSeconds: 10
+    tokenSecret:
+      secretName: gateway-key-registry-token
+      tokenKey: token
 
 inference:
   enabled: true
