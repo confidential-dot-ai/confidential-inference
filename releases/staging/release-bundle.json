@@ -1,5 +1,5 @@
 {
-  "allowlistDigest": "sha256:b6aff53354faa51debfc6db4f8931a3e7ee3e89009df6bfe3cebf3f28e16ae0e",
+  "allowlistDigest": "sha256:55e855891bcf26827962e494e07c0ad259a684938e12a90f250b4730d72575ba",
   "c8s": {
     "attestationTargets": [
       {
@@ -29,45 +29,45 @@
       }
     ],
     "frontDoorWorkload": "c8s-router",
-    "imageTag": "466ce79",
-    "installInputDigest": "sha256:27fb631a5ca8b04c20799a93e8068fa846d6dd476578bf9011c0b3f60f954461",
+    "imageTag": "7b951ae",
+    "installInputDigest": "sha256:7a094dab83f5009953c58bcde9f8a3210f727f072c33940c2719fcd84dd81487",
     "measurements": {
       "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
-      "rtmr1": "36533e26f764256f2683865906bc3c6de4db51f260fe7edbc392773650e52c27a756dc27dc84a062ac2a34b5033101ba",
-      "rtmr2": "9297e4b1c462fa3421f7d228969957ca92484e5313d4d09f5e07437b13ab876f053dea38a246c443fe82769c2b1c4036"
+      "rtmr1": "2bcba26812949df337ade76bf29afa19c4aeebf5ed9bceb692cd4e6cb347d2a24556584bcfeb4a0ba8e723f16204fd95",
+      "rtmr2": "90a9be91ac7e5721e261f35e1a9b9a35bf5c23277bde768b718ce31144ebb0205cd44092f710288079af40658d692277"
     },
     "meshCa": {
       "certificateSecretName": "C8S_MESH_CA_CERT_PEM",
-      "certificateSha256": "sha256:d65f71e68aa9cb98a3f7b5cc37ef63c9d251ba873ce527be9ff847560269b630",
+      "certificateSha256": "sha256:73d6e00079db1cee25415b26b4fc64e4444c930dec37ba4c9f4749d27d05c298",
       "fingerprintSecretName": "C8S_MESH_CA_CERT_SHA256"
     },
     "operatorKeySetSha256": "sha256:1899ce71bec3104e8ada101f22f2f6f27154691bbbed572b94d974e264174111",
     "operatorPublicKeySha256": "sha256:aa03435a600e84035333fcc2dbb7dcc0c694b6a16674d28aa297c9ad5bcf1431",
     "policyMode": "operator",
-    "sourceCommit": "466ce79e77c2fb6c014620b770066f275e889df6",
+    "sourceCommit": "7b951aec9e3e52e87dcc764924ab0d972774e69c",
     "systemFloor": [
       {
-        "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:73235c2cb307647e35e3b0b6747e246b0272116865696870e7222b7ce11e431e",
+        "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:20c1b7c2f9288d9ef5fd26025957667824081fe978eaf48bc641992872eea7c9",
         "name": "c8s-operator"
       },
       {
-        "image": "ghcr.io/confidential-dot-ai/cds@sha256:5c0fbd8c3602100e86dcc07697445f46e8f862e87851783167ce175eb25d877e",
+        "image": "ghcr.io/confidential-dot-ai/cds@sha256:53d3db7c1d2ffc6641e73030762d0642939e647813f0a7fa327f9164a16f7a0a",
         "name": "cds"
       },
       {
-        "image": "nginxinc/nginx-unprivileged@sha256:11f3f6249b4ae3d7a4ec2a51797060107b88ead52b33b6ed3c6c33f55ca96200",
+        "image": "nginxinc/nginx-unprivileged@sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348",
         "name": "nginx"
       },
       {
-        "image": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:da36fe04e5b44cc3ad46257e834cab7d3bb70269f81102030faaa62960276287",
+        "image": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:b29bee57151bdbe6b18f8fb337977bb94528547347e5adbf30e2e38cff870c80",
         "name": "nri-image-policy"
       },
       {
-        "image": "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:6913771a5a8ae237a271a9739efc987f29f0c5cf17dde4717d866c7b2db58e4c",
+        "image": "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:e003a65bdda732fd90bcde9261aa7971f1baf240a72e364aac47ca58cca164ad",
         "name": "ratls-mesh"
       },
       {
-        "image": "ghcr.io/confidential-dot-ai/volumed@sha256:60737d114767f43340bb957c37e01fcbf42b3ca1ce58118a20b6486dfa69a410",
+        "image": "ghcr.io/confidential-dot-ai/volumed@sha256:70ebbcde09140937c3a63cc7d9ed5af6f9826a54db8dd9a018d95f9fe6b15160",
         "name": "volumed"
       }
     ]
@@ -99,7 +99,7 @@
   },
   "release": {
     "environment": "staging",
-    "name": "staging-v7"
+    "name": "staging-v8"
   },
   "releaseTrust": {
     "policyPath": "releases/trust/release-signing-policy.json",
@@ -108,7 +108,7 @@
   },
   "schemaVersion": 2,
   "source": {
-    "commit": "4b928ea6bebc2b75ec9b686db18e58f356f7b76c",
+    "commit": "1a419ff07cc3899f598a86f67e61afd01d2c9147",
     "repository": "https://github.com/confidential-dot-ai/confidential-inference"
   },
   "workloads": [
@@ -117,14 +117,14 @@
         "/usr/local/bin/confidential-gateway"
       ],
       "build": {
-        "commit": "929d1dbaabb52ea5c09a1561bb6f0566b32ea4dc",
+        "commit": "6acf6c41c8db5379d818051a842c762d2f1d8b27",
         "context": ".",
         "dockerfile": "images/gateway/Dockerfile",
         "platform": "linux/amd64",
         "repository": "https://github.com/confidential-dot-ai/confidential-inference"
       },
       "image": {
-        "digest": "sha256:fc7955f4004c4e01922e1db0a085ac8f9168086f7e92ea083763e7480e6913f0",
+        "digest": "sha256:7ca9107446bc702c93d2e2136eb91cf837701619c665cad2bcca7e470bb245e4",
         "reference": "ghcr.io/confidential-dot-ai/confidential-inference/gateway"
       },
       "name": "gateway"
@@ -145,7 +145,7 @@
         "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
       ],
       "image": {
-        "digest": "sha256:73235c2cb307647e35e3b0b6747e246b0272116865696870e7222b7ce11e431e",
+        "digest": "sha256:20c1b7c2f9288d9ef5fd26025957667824081fe978eaf48bc641992872eea7c9",
         "reference": "ghcr.io/confidential-dot-ai/c8s-operator"
       },
       "name": "gateway-cds-attest"
@@ -210,7 +210,7 @@
         "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
       ],
       "image": {
-        "digest": "sha256:73235c2cb307647e35e3b0b6747e246b0272116865696870e7222b7ce11e431e",
+        "digest": "sha256:20c1b7c2f9288d9ef5fd26025957667824081fe978eaf48bc641992872eea7c9",
         "reference": "ghcr.io/confidential-dot-ai/c8s-operator"
       },
       "modelDmVerityRoot": "67b15f1b3b472a4a0668e9b1bf309ea30994f765860ec986cc30024b0a81a1bb",
@@ -248,7 +248,7 @@
         "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
       ],
       "image": {
-        "digest": "sha256:73235c2cb307647e35e3b0b6747e246b0272116865696870e7222b7ce11e431e",
+        "digest": "sha256:20c1b7c2f9288d9ef5fd26025957667824081fe978eaf48bc641992872eea7c9",
         "reference": "ghcr.io/confidential-dot-ai/c8s-operator"
       },
       "name": "kube-state-metrics-cds-attest"
@@ -281,7 +281,7 @@
         "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
       ],
       "image": {
-        "digest": "sha256:73235c2cb307647e35e3b0b6747e246b0272116865696870e7222b7ce11e431e",
+        "digest": "sha256:20c1b7c2f9288d9ef5fd26025957667824081fe978eaf48bc641992872eea7c9",
         "reference": "ghcr.io/confidential-dot-ai/c8s-operator"
       },
       "name": "metrics-collector-cds-attest"
@@ -337,7 +337,7 @@
         "--mesh-identity-ca-file=/etc/c8s/certs/tls.crt"
       ],
       "image": {
-        "digest": "sha256:73235c2cb307647e35e3b0b6747e246b0272116865696870e7222b7ce11e431e",
+        "digest": "sha256:20c1b7c2f9288d9ef5fd26025957667824081fe978eaf48bc641992872eea7c9",
         "reference": "ghcr.io/confidential-dot-ai/c8s-operator"
       },
       "name": "sglang-router-cds-attest"
