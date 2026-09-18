@@ -18,6 +18,6 @@
   "platform": "tdx",
   "profile": "images/control-plane-node/profile/control-plane-state",
   "stagingSignedStage": {
-    "digest": "sha256:efdd1643057f7b9333267ee042d93281c8956275219cd6f6464040d1f3861518"
+    "digest": "sha256:84fadd3dbc1c6bd94320ac22a9bdeb9483420b4deb8c9acf72325843ea175a57"
   }
 }

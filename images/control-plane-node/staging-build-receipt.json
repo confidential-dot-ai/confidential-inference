@@ -1,14 +1,14 @@
 {
   "environment": "staging",
-  "buildHost": "https://github.com/confidential-dot-ai/c8s/tree/v0.26.1",
+  "buildHost": "https://github.com/confidential-dot-ai/c8s/releases/tag/v0.26.1",
   "publication": {
     "ociManifestDigest": "sha256:84fadd3dbc1c6bd94320ac22a9bdeb9483420b4deb8c9acf72325843ea175a57",
     "configDigest": "sha256:dc570f145a7f2862c9ef3c30b8d6ae2feaceb0d364e4b2e08e67ae18815427d9",
     "cdiLayerDigest": "sha256:8a9ce3f0be6fde0d7c150f1a132038a1f9959fed828028b4229233c33a8f0314",
     "cdiLayerSize": 1927166401
   },
-  "sealedAllowlistSha256": "sha256:ac84f651e2170fcbe7b0dc535339133e0b1301c11b45055b96ba91d1ecbc8cc5",
-  "manifestSha256": "sha256:df9f08757bc92824822702d4555d2c687ec5561fa030f5d7412f338fc7d7a121",
+  "sealedAllowlistSha256": "sha256:48ca3220171cf5ea922fa0cd8aa9662e584f851af3c51c6b68053478ce842967",
+  "manifestSha256": "sha256:648b8e4d9dada2ee237334bff5f0d40cd0f3902a8357501cfeaa21b8a09c2195",
   "measurements": {
     "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
     "rtmr1": "2bcba26812949df337ade76bf29afa19c4aeebf5ed9bceb692cd4e6cb347d2a24556584bcfeb4a0ba8e723f16204fd95",
