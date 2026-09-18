@@ -47,6 +47,8 @@ const EXPORT_SCHEMA: &str = "confidential.ai/gateway-api-key-export/v1";
 const PEPPER_FINGERPRINT_CONTEXT: &[u8] = b"confidential.ai/gateway-pepper-fingerprint/v1";
 const FREEZE_SECONDS: i64 = 600;
 const MAX_IMPORT_KEYS: usize = 10_000;
+/// How many characters of a pepper fingerprint an error detail prints.
+const FINGERPRINT_PREFIX_CHARACTERS: usize = 12;
 
 #[derive(Debug, Error)]
 pub enum StateError {
@@ -82,6 +84,13 @@ pub enum StateError {
     LocalMintDisabled,
     #[error("the pushed snapshot revision is lower than the cached revision")]
     StaleRevision,
+    #[error("the pushed snapshot names a different pepper than the gateway holds")]
+    SnapshotPepperMismatch {
+        /// The fingerprint of the pepper this gateway holds.
+        expected: String,
+        /// The fingerprint the pushed snapshot named.
+        received: String,
+    },
 }
 
 #[derive(Clone)]
@@ -353,6 +362,31 @@ struct FreezeStatus {
 struct ErrorBody {
     code: &'static str,
     message: &'static str,
+}
+
+/// An error body that carries one extra line of operator detail.
+///
+/// The snapshot push refusal uses it. The detail names the two pepper
+/// fingerprint prefixes, so an operator sees which side is stale without
+/// a second request. A fingerprint reveals no pepper: it is a one-way
+/// digest over a domain separation string and the pepper.
+#[derive(Serialize)]
+struct DetailedErrorBody {
+    code: &'static str,
+    message: &'static str,
+    detail: String,
+}
+
+/// The first 12 characters of a pepper fingerprint.
+///
+/// A prefix is enough to tell two peppers apart in a log line, and it is
+/// the same length the operator tools print.
+fn fingerprint_prefix(fingerprint: &str) -> &str {
+    let end = fingerprint
+        .char_indices()
+        .nth(FINGERPRINT_PREFIX_CHARACTERS)
+        .map_or(fingerprint.len(), |(index, _)| index);
+    &fingerprint[..end]
 }
 
 /// The outcome of applying one accepted key registry snapshot.
@@ -639,6 +673,50 @@ impl GatewayState {
         }
     }
 
+    /// Refuse a snapshot whose pepper is not the pepper this gateway holds.
+    ///
+    /// Every row of such a snapshot carries a hash this gateway can never
+    /// match, so applying it would replace a working cache with rows that
+    /// authenticate nothing. The gateway refuses the whole body instead
+    /// and keeps the cache it already serves.
+    ///
+    /// An empty `pepperFingerprint` states nothing. An older admin backend
+    /// sends one, so the gateway keeps its per-row rule for that case.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError::SnapshotPepperMismatch` when the two
+    /// fingerprints differ.
+    fn check_snapshot_pepper(&self, push: &SnapshotPush) -> Result<(), StateError> {
+        if push.pepper_fingerprint.is_empty() {
+            return Ok(());
+        }
+        let expected = pepper_fingerprint(&self.pepper);
+        if bool::from(
+            expected
+                .as_bytes()
+                .ct_eq(push.pepper_fingerprint.as_bytes()),
+        ) {
+            if let Some(metrics) = &self.metrics {
+                metrics.set_key_registry_pepper_mismatch(false);
+            }
+            return Ok(());
+        }
+        self.record_push_rejection("pepper_mismatch");
+        if let Some(metrics) = &self.metrics {
+            metrics.set_key_registry_pepper_mismatch(true);
+        }
+        tracing::error!(
+            expected = fingerprint_prefix(&expected),
+            received = fingerprint_prefix(&push.pepper_fingerprint),
+            "refused a pushed key registry snapshot: the pepper does not match"
+        );
+        Err(StateError::SnapshotPepperMismatch {
+            expected,
+            received: push.pepper_fingerprint.clone(),
+        })
+    }
+
     /// Apply one pushed snapshot, after the revision rule and the contract
     /// check.
     ///
@@ -662,6 +740,7 @@ impl GatewayState {
             self.record_push_rejection("invalid_request");
             return Err(StateError::Invalid);
         }
+        self.check_snapshot_pepper(push)?;
         let cached_revision = self.registry_cached_revision()?;
         match revision_decision(cached_revision, push.revision) {
             RevisionDecision::Refuse => {
@@ -1534,6 +1613,21 @@ fn json_response<T: Serialize>(
 
 #[allow(clippy::needless_pass_by_value)]
 fn error_response(error: StateError) -> Response {
+    if let StateError::SnapshotPepperMismatch { expected, received } = &error {
+        return (
+            StatusCode::CONFLICT,
+            Json(DetailedErrorBody {
+                code: "pepper_mismatch",
+                message: "The pushed snapshot names a different pepper than the gateway holds.",
+                detail: format!(
+                    "the gateway holds pepper {}, the snapshot names pepper {}",
+                    fingerprint_prefix(expected),
+                    fingerprint_prefix(received),
+                ),
+            }),
+        )
+            .into_response();
+    }
     let (status, code, message) = match error {
         StateError::Invalid | StateError::Random => (
             StatusCode::BAD_REQUEST,
@@ -1575,6 +1669,13 @@ fn error_response(error: StateError) -> Response {
             StatusCode::CONFLICT,
             "stale_revision",
             "The pushed snapshot revision is lower than the cached revision.",
+        ),
+        // The detailed branch above answers this variant. This arm keeps
+        // the match exhaustive.
+        StateError::SnapshotPepperMismatch { .. } => (
+            StatusCode::CONFLICT,
+            "pepper_mismatch",
+            "The pushed snapshot names a different pepper than the gateway holds.",
         ),
         StateError::Database(_)
         | StateError::Lock

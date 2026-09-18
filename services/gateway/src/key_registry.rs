@@ -18,6 +18,33 @@
 //!
 //! The gateway never fails open. A rejected push leaves the cache
 //! unchanged: the gateway keeps answering from the last accepted snapshot.
+//!
+//! ## The pepper rule of the contract
+//!
+//! Every snapshot states one `pepperFingerprint` in its envelope. That
+//! field names the pepper the admin backend minted every row with.
+//!
+//! The gateway compares the envelope fingerprint with its own pepper
+//! fingerprint before it writes anything.
+//!
+//! - The two agree: the gateway applies the snapshot. A single row that
+//!   names another pepper is still skipped and counted, because a
+//!   rotation can leave one old row behind.
+//! - The two differ: the gateway answers `409` with the code
+//!   `pepper_mismatch` and writes nothing. Every row of such a snapshot
+//!   carries a hash the gateway can never match, so applying it would
+//!   replace a working cache with rows that authenticate nothing. The
+//!   `detail` field names the first 12 characters of each fingerprint, so
+//!   an operator sees which side is stale. The gauge
+//!   `gateway_key_registry_pepper_mismatch` reads 1 until a matching
+//!   snapshot arrives.
+//! - The envelope states an empty fingerprint: the gateway applies the
+//!   snapshot and judges each row on its own. An older admin backend
+//!   sends an empty field, so this case stays compatible.
+//!
+//! `GET /admin/v1/api-keys/source` is unchanged. It still reports this
+//! gateway's own `pepperFingerprint`, which is how the admin backend and
+//! the deploy tooling read the gateway's side of the comparison.
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -83,6 +110,10 @@ pub struct SnapshotPush {
     pub revision: i64,
     #[serde(default)]
     pub generated_at: String,
+    /// The fingerprint of the pepper the admin backend minted every row
+    /// with. The gateway refuses the whole snapshot with `409
+    /// pepper_mismatch` when this names a pepper it does not hold. An
+    /// empty value states nothing and keeps the per-row rule.
     #[serde(default)]
     pub pepper_fingerprint: String,
     pub keys: Vec<RegistrySnapshotKey>,
@@ -114,6 +145,9 @@ pub enum SnapshotRejection {
     StaleRevision,
     /// The schema, the environment, or a field value is wrong.
     Invalid,
+    /// The snapshot names a pepper this gateway does not hold. The admin
+    /// VM must not retry it: no row of that snapshot can ever match.
+    PepperMismatch,
 }
 
 /// Decide what the gateway does with one pushed revision.
@@ -213,12 +247,24 @@ mod tests {
     }
 
     fn snapshot_json(revision: i64, key_hash: &str, fingerprint: &str) -> serde_json::Value {
+        snapshot_json_with(revision, key_hash, fingerprint, fingerprint)
+    }
+
+    /// Build a snapshot whose envelope fingerprint and row fingerprint may
+    /// differ. The two differ only in a test: the admin backend stamps the
+    /// envelope with the pepper it minted every row with.
+    fn snapshot_json_with(
+        revision: i64,
+        key_hash: &str,
+        envelope_fingerprint: &str,
+        fingerprint: &str,
+    ) -> serde_json::Value {
         serde_json::json!({
             "schemaVersion": SNAPSHOT_SCHEMA,
             "environment": "integration-staging",
             "revision": revision,
             "generatedAt": "2026-09-18T10:00:00Z",
-            "pepperFingerprint": fingerprint,
+            "pepperFingerprint": envelope_fingerprint,
             "keys": [{
                 "id": "key_0123456789abcdef0123456789abcdef",
                 "name": "example",
@@ -346,12 +392,16 @@ mod tests {
     #[tokio::test]
     async fn a_wrong_pepper_fingerprint_row_is_skipped_and_counted() -> Result<(), Box<dyn Error>> {
         let state = state_with_mode(KeyRegistryMode::Registry)?;
+        let fingerprint = pepper_fingerprint_hex(&gateway_pepper());
         let other_fingerprint = pepper_fingerprint_hex(&[9_u8; 32]);
+        // The envelope names the gateway's own pepper, so the snapshot is
+        // accepted. One row names another pepper, so that row is skipped.
         let (status, body) = push(
             &state,
-            &snapshot_json(
+            &snapshot_json_with(
                 1,
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                &fingerprint,
                 &other_fingerprint,
             ),
         )
@@ -361,6 +411,62 @@ mod tests {
         assert_eq!(body["skippedPepperMismatch"], serde_json::json!(1));
         // The revision still advances, so the next push is not refused.
         assert_eq!(state.registry_cached_revision()?, Some(1));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_naming_another_pepper_is_refused_with_409() -> Result<(), Box<dyn Error>> {
+        let pepper = gateway_pepper();
+        let fingerprint = pepper_fingerprint_hex(&pepper);
+        let key_hash = plaintext_key_hash(&pepper, "ci_example");
+        let state = state_with_mode(KeyRegistryMode::Registry)?;
+        push(&state, &snapshot_json(1, &key_hash, &fingerprint)).await?;
+
+        let other_pepper = [9_u8; 32];
+        let other_fingerprint = pepper_fingerprint_hex(&other_pepper);
+        let mismatched = snapshot_json_with(
+            2,
+            &plaintext_key_hash(&other_pepper, "ci_other"),
+            &other_fingerprint,
+            &other_fingerprint,
+        );
+        let (status, body) = push(&state, &mismatched).await?;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], serde_json::json!("pepper_mismatch"));
+
+        // The detail names both fingerprint prefixes, so an operator sees
+        // which side is stale without a second request.
+        let detail = body["detail"].as_str().unwrap_or_default().to_owned();
+        assert!(detail.contains(&fingerprint[..12]), "{detail}");
+        assert!(detail.contains(&other_fingerprint[..12]), "{detail}");
+        // The detail never carries a whole fingerprint of either pepper.
+        assert!(!detail.contains(fingerprint.as_str()), "{detail}");
+        assert!(!detail.contains(other_fingerprint.as_str()), "{detail}");
+
+        // The cache is exactly as it was. The refused snapshot applied no
+        // row, so the working key still answers.
+        assert_eq!(state.registry_cached_revision()?, Some(1));
+        assert_eq!(
+            state.verify("ci_example"),
+            Some("key_0123456789abcdef0123456789abcdef".to_owned())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_empty_envelope_fingerprint_keeps_the_per_row_rule() -> Result<(), Box<dyn Error>> {
+        let pepper = gateway_pepper();
+        let fingerprint = pepper_fingerprint_hex(&pepper);
+        let key_hash = plaintext_key_hash(&pepper, "ci_example");
+        let state = state_with_mode(KeyRegistryMode::Registry)?;
+
+        // An older admin backend states no envelope fingerprint. The
+        // gateway must still accept the snapshot and judge each row.
+        let mut older_sender = snapshot_json(1, &key_hash, &fingerprint);
+        older_sender["pepperFingerprint"] = serde_json::json!("");
+        let (status, body) = push(&state, &older_sender).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["accepted"], serde_json::json!(1));
         Ok(())
     }
 
