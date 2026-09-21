@@ -68,7 +68,7 @@ class SGLangImageRecipeTests(unittest.TestCase):
             "patch_flashinfer_cuda_ipc.py",
             "wait_for_model.py",
             "gpu_metrics.py",
-            "patches/sglang-simulator-tool-calls.patch",
+            "patches/sglang-simulator-parser-flags-noop.patch",
         ):
             self.assertIn(f"source={source}", DOCKERFILE)
         self.assertIn("install -D -m 0555 /run-src/wait-for-model", DOCKERFILE)
@@ -106,28 +106,20 @@ class SGLangImageRecipeTests(unittest.TestCase):
             simulator["patch"]["sha256"],
             hashlib.sha256(simulator_patch.read_bytes()).hexdigest(),
         )
-        tool_calls_patch = ROOT / simulator["toolCallsPatch"]["path"]
+        parser_flags_noop_patch = ROOT / simulator["parserFlagsNoopPatch"]["path"]
         self.assertEqual(
-            simulator["toolCallsPatch"]["sha256"],
-            hashlib.sha256(tool_calls_patch.read_bytes()).hexdigest(),
+            simulator["parserFlagsNoopPatch"]["sha256"],
+            hashlib.sha256(parser_flags_noop_patch.read_bytes()).hexdigest(),
         )
         self.assertIn(
-            f'LABEL ai.confidential.sglang.simulator.tool-calls-patch.sha256='
-            f'"{simulator["toolCallsPatch"]["sha256"]}"',
+            f'LABEL ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256='
+            f'"{simulator["parserFlagsNoopPatch"]["sha256"]}"',
             instructions(),
         )
-        simulator_reasoning_patch = ROOT / simulator["reasoningPatch"]["path"]
-        self.assertEqual(
-            simulator["reasoningPatch"]["sha256"],
-            hashlib.sha256(simulator_reasoning_patch.read_bytes()).hexdigest(),
-        )
 
-    def test_worker_and_simulator_argv_enable_the_reasoning_parser(self) -> None:
-        # The staging simulator turns the reasoning parser on now. The
-        # production model role turns it on only when a production release
-        # sets helm/confidential-inference/values.yaml's
-        # inference.reasoningParser, so source.lock keeps the flag off the
-        # real-model roles until that release.
+    def test_simulator_accepts_parser_flags_as_noops(self) -> None:
+        # Production keeps its normal parser flags. The simulator accepts the
+        # same flags, but its launcher removes them before SGLang parses them.
         for role_name in ("inference-worker-0", "inference-worker-1"):
             self.assertNotIn("--reasoning-parser=deepseek-v4", LOCK["roles"][role_name]["argv"])
             self.assertIn(
@@ -135,8 +127,8 @@ class SGLangImageRecipeTests(unittest.TestCase):
                 LOCK["simulatorRoles"][role_name]["argv"],
             )
         self.assertIn(
-            'LABEL ai.confidential.sglang.simulator.reasoning-patch.sha256='
-            f'"{LOCK["optimizations"]["sglang"]["simulator"]["reasoningPatch"]["sha256"]}"',
+            'LABEL ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256='
+            f'"{LOCK["optimizations"]["sglang"]["simulator"]["parserFlagsNoopPatch"]["sha256"]}"',
             DOCKERFILE,
         )
 
@@ -227,8 +219,7 @@ class SGLangImageRecipeTests(unittest.TestCase):
             {
                 "cc-optimizations-v0518.patch",
                 "sglang-simulator-replay-only.patch",
-                "sglang-simulator-tool-calls.patch",
-                "sglang-simulator-reasoning.patch",
+                "sglang-simulator-parser-flags-noop.patch",
             },
             {path.name for path in (RECIPE / "patches").iterdir() if path.is_file()},
         )
