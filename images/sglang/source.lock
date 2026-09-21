@@ -243,6 +243,11 @@
       "digest": "sha256:77c30f0ed4cc9c0009de9c7be223e129fa8e10980b6ca5d2d17fe0d0743cd1a8",
       "sourceCommit": "2ef376a875010ac98542ab5f2f770aeb95b0082f"
     },
+    "candidate": {
+      "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
+      "digest": "sha256:95fc18f3317b9a9d55684835f44e268feb4798b7b5f4b9f718eccb6cf68fbfba",
+      "sourceCommit": "e630fd13b5fca9d66c9549faa54427dd027806a4"
+    },
     "production": {
       "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
       "digest": "sha256:cdc98a230169ff62599084f8f791c022e983c803c0d950c6f43e38d2009dfe3d",

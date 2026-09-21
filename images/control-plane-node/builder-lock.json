@@ -19,5 +19,10 @@
   "profile": "images/control-plane-node/profile/control-plane-state",
   "stagingSignedStage": {
     "digest": "sha256:84fadd3dbc1c6bd94320ac22a9bdeb9483420b4deb8c9acf72325843ea175a57"
+  },
+  "candidateSignedStage": {
+    "source": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:4dbc0f6912013c2b570e87484e6ca7db09a7c29eefe20821d2c0c3c969d24e63",
+    "digest": "sha256:4dbc0f6912013c2b570e87484e6ca7db09a7c29eefe20821d2c0c3c969d24e63",
+    "confosSourceCommit": "e630fd13b5fca9d66c9549faa54427dd027806a4"
   }
 }
