@@ -649,6 +649,9 @@ def c8s_release_input(
         "systemFloor": sorted(floor, key=lambda item: item["name"]),
         "attestationTargets": attestation_targets,
     }
+    for field in ("release", "confosSourceCommit", "components"):
+        if field in value["c8s"]:
+            result[field] = value["c8s"][field]
     if mode == "operator":
         result["operatorPublicKeySha256"] = value["operatorPublicKey"]["fingerprint"]
         result["operatorKeySetSha256"] = operator_key_set_sha256

@@ -15,6 +15,7 @@ DOCKERFILE = (RECIPE / "Dockerfile").read_text(encoding="utf-8")
 LOCK = json.loads((RECIPE / "source.lock").read_text(encoding="utf-8"))
 DOCKERIGNORE = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
 WORKFLOW = (ROOT / ".github" / "workflows" / "v0-images.yml").read_text(encoding="utf-8")
+PUBLISH_MATRIX = (ROOT / "scripts" / "select-publish-image-matrix.py").read_text(encoding="utf-8")
 BUILD_SCRIPT = (RECIPE / "build.sh").read_text(encoding="utf-8")
 
 BUILD_IMAGE = "docker.io/library/rust"
@@ -150,8 +151,9 @@ class GatewayImageRecipeTests(unittest.TestCase):
         self.assertIn("no-cache: true", reproducibility)
         self.assertIn("verify-reproducible-oci.py", reproducibility)
         publish_job = WORKFLOW.split("\n  publish-images:", 1)[1]
-        self.assertRegex(publish_job, re.compile(r"^\s*- image: gateway\s*$", re.MULTILINE))
-        self.assertIn("dockerfile: images/gateway/Dockerfile", publish_job)
+        self.assertIn("fromJSON(needs.select-publish-images.outputs.matrix)", publish_job)
+        self.assertIn('"image": "gateway"', PUBLISH_MATRIX)
+        self.assertIn('"dockerfile": "images/gateway/Dockerfile"', PUBLISH_MATRIX)
         self.assertIn(
             "github.event_name == 'workflow_dispatch' &&",
             WORKFLOW,

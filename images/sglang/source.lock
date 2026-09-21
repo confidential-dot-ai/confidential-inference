@@ -27,13 +27,9 @@
           "path": "images/sglang/patches/sglang-simulator-replay-only.patch",
           "sha256": "7b9116115b440bcfd6b06ff00e410bc779cabe2e2a86ee75d3d8851a4dbe302e"
         },
-        "toolCallsPatch": {
-          "path": "images/sglang/patches/sglang-simulator-tool-calls.patch",
-          "sha256": "3348e274f0a22bf4b86531ec44e66faf3ee2f6aa9e46d18c1681232652274c25"
-        },
-        "reasoningPatch": {
-          "path": "images/sglang/patches/sglang-simulator-reasoning.patch",
-          "sha256": "ea8ca140615a74476e99fab6f8b26c822897531b7fe6ca0adebb46b66c4ed8c5"
+        "parserFlagsNoopPatch": {
+          "path": "images/sglang/patches/sglang-simulator-parser-flags-noop.patch",
+          "sha256": "9c654801f916b9d57eb3981dacdde5a3624d5b29e4d352c20822a64ae51f9306"
         }
       }
     },

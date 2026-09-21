@@ -47,10 +47,8 @@ class ImageWorkflowTests(unittest.TestCase):
 
     def test_publication_does_not_depend_on_reproducibility(self) -> None:
         invalid = self.valid.replace(
-            "needs: validate\n    runs-on: ubuntu-24.04\n    timeout-minutes: 120\n"
-            "    environment: ghcr-production",
-            "needs: [validate, reproducibility]\n    runs-on: ubuntu-24.04\n"
-            "    timeout-minutes: 120\n    environment: ghcr-production",
+            "needs: [validate, select-publish-images]",
+            "needs: [validate, select-publish-images, reproducibility]",
             1,
         )
         self.assertIn(
