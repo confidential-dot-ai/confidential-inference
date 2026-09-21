@@ -95,7 +95,7 @@
     "revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
   },
   "node": {
-    "evidenceArtifactDigest": "sha256:026e62bf69fe05eecfc8809c6be0539d098f3d42be8a6c8f196200d018b50a7c",
+    "evidenceArtifactDigest": "sha256:6ef7b6571de8790476701119f921638ae3dd0b03c2d8d28737e9d22d5fb06727",
     "image": {
       "digest": "sha256:3c57e9a637372faceae676f992f6a4967c0da41e3f9b5ad64d5dc7ff51f71a2e",
       "reference": "ghcr.io/confidential-dot-ai/node-guest-base"
@@ -104,7 +104,7 @@
   },
   "release": {
     "environment": "candidate",
-    "name": "candidate-v1"
+    "name": "candidate-v2"
   },
   "releaseTrust": {
     "policyPath": "releases/trust/release-signing-policy.json",
@@ -113,7 +113,7 @@
   },
   "schemaVersion": 2,
   "source": {
-    "commit": "3ed20a4a782b6eb21cad65a0cfcba10c59ffb8fb",
+    "commit": "a59cda0396efca1ada272c631186f5f276d350db",
     "repository": "https://github.com/confidential-dot-ai/confidential-inference"
   },
   "workloads": [
@@ -230,7 +230,6 @@
         "--port=8802",
         "--platform=tdx",
         "--front-door-mode=webpki",
-        "--nvidia-gpu-evidence",
         "--expected-workload=inference-worker-0",
         "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
         "--serving-cert-file=/etc/c8s/certs/tls.crt",
@@ -309,7 +308,6 @@
         "--port=8802",
         "--platform=tdx",
         "--front-door-mode=webpki",
-        "--nvidia-gpu-evidence",
         "--expected-workload=inference-worker-1",
         "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
         "--serving-cert-file=/etc/c8s/certs/tls.crt",
