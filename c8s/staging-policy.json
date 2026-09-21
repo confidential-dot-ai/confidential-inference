@@ -337,7 +337,7 @@
         "args": []
       }
     ],
-    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895": [
+    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:d4de960159c7c4f9b64fd57351c80629fcbdbf4ea7e464469fcb0748ebe64786": [
       {
         "command": [
           "python3"
