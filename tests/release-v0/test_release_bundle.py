@@ -260,6 +260,30 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertNotIn("operatorKeySetSha256", result)
         self.assertNotIn("meshCa", result)
 
+    def test_c8s_dependency_closure_is_carried_into_the_bundle(self) -> None:
+        module = runpy.run_path(str(SCRIPT))
+        install = json.loads(INSTALL.read_text())
+        install["c8s"]["release"] = "v0.26.5"
+        install["c8s"]["confosSourceCommit"] = "b" * 40
+        install["c8s"]["components"] = {
+            "c8s-operator": f"ghcr.io/confidential-dot-ai/c8s-operator@sha256:{'c' * 64}",
+        }
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        install_path = Path(temporary.name) / "install.json"
+        install_path.write_text(json.dumps(install))
+        result = module["c8s_release_input"](
+            install_path,
+            ROOT / "tests/release-v0/allowlist.fixture.json",
+            install["allowlist"]["digest"],
+            "sha256:" + "6" * 64,
+            False,
+            "production",
+        )
+        self.assertEqual(result["release"], "v0.26.5")
+        self.assertEqual(result["confosSourceCommit"], "b" * 40)
+        self.assertEqual(result["components"], install["c8s"]["components"])
+
     def test_front_door_workload_follows_the_c8s_chart_mapping(self) -> None:
         # c8s PR #606 renamed the front-door component from tls-lb to
         # router; an install input whose externalWorkloadMappings names the
