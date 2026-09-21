@@ -1,5 +1,5 @@
 {
-  "allowlistDigest": "sha256:ba1233607d3d99e6b0fe14d94ee814d09efc9429a7fa9a039407f9e1f0406069",
+  "allowlistDigest": "sha256:c9e63f3f87cf29a64a791b54bd95b18d5c4d8542a5ce69a4a110b03fe2ca84ff",
   "c8s": {
     "attestationTargets": [
       {
@@ -30,7 +30,7 @@
     ],
     "frontDoorWorkload": "c8s-router",
     "imageTag": "7b951ae",
-    "installInputDigest": "sha256:3dfdd9121d709bf27a12624016c660405005911d06c9fcef3d210834848cee6e",
+    "installInputDigest": "sha256:db11737759be30f7e25d4d2afa19b0a8693cc8fd08307f8aed9af430637b7277",
     "measurements": {
       "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
       "rtmr1": "2bcba26812949df337ade76bf29afa19c4aeebf5ed9bceb692cd4e6cb347d2a24556584bcfeb4a0ba8e723f16204fd95",
@@ -38,7 +38,7 @@
     },
     "meshCa": {
       "certificateSecretName": "C8S_MESH_CA_CERT_PEM",
-      "certificateSha256": "sha256:ff920588cb5589fcbe9f59f64efe5510d9044a48e655cb3560205e83f112b4a6",
+      "certificateSha256": "sha256:4711c1a2e55db00cbac06b32ac2e089158a1b43d787c171865cb2c0f3b315569",
       "fingerprintSecretName": "C8S_MESH_CA_CERT_SHA256"
     },
     "operatorKeySetSha256": "sha256:1899ce71bec3104e8ada101f22f2f6f27154691bbbed572b94d974e264174111",
@@ -90,16 +90,16 @@
     "revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
   },
   "node": {
-    "evidenceArtifactDigest": "sha256:026e62bf69fe05eecfc8809c6be0539d098f3d42be8a6c8f196200d018b50a7c",
+    "evidenceArtifactDigest": "sha256:97c41cb38bab6a7c6858ef0ecc50bd076f70d262f150b2fa8759311ec55be582",
     "image": {
-      "digest": "sha256:efdd1643057f7b9333267ee042d93281c8956275219cd6f6464040d1f3861518",
+      "digest": "sha256:84fadd3dbc1c6bd94320ac22a9bdeb9483420b4deb8c9acf72325843ea175a57",
       "reference": "ghcr.io/confidential-dot-ai/node-guest-base"
     },
-    "sourceCommit": "466ce79e77c2fb6c014620b770066f275e889df6"
+    "sourceCommit": "7b951aec9e3e52e87dcc764924ab0d972774e69c"
   },
   "release": {
     "environment": "staging",
-    "name": "staging-v10"
+    "name": "staging-v11"
   },
   "releaseTrust": {
     "policyPath": "releases/trust/release-signing-policy.json",
@@ -108,7 +108,7 @@
   },
   "schemaVersion": 2,
   "source": {
-    "commit": "4006e6b37ea5ed10499d02146d5e9e2d304aad05",
+    "commit": "9742098304a4d0de4c3a322c974e6986841611dc",
     "repository": "https://github.com/confidential-dot-ai/confidential-inference"
   },
   "workloads": [
@@ -181,14 +181,14 @@
         "--port=30000"
       ],
       "build": {
-        "commit": "1c74424ec2802f402ea9dd502a50835359dd3e6e",
+        "commit": "56d28bd1014e5a22451440a27d1325d3b353b4ec",
         "context": "images/sglang",
         "dockerfile": "images/sglang/Dockerfile",
         "platform": "linux/amd64",
         "repository": "https://github.com/confidential-dot-ai/confidential-inference"
       },
       "image": {
-        "digest": "sha256:d4de960159c7c4f9b64fd57351c80629fcbdbf4ea7e464469fcb0748ebe64786",
+        "digest": "sha256:4530aa10c1694d8bf492b17d181c4a043f7e05430b011c8fad0b0e8d083f5709",
         "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang"
       },
       "modelDmVerityRoot": "67b15f1b3b472a4a0668e9b1bf309ea30994f765860ec986cc30024b0a81a1bb",
@@ -309,14 +309,14 @@
         "--prometheus-port=29000"
       ],
       "build": {
-        "commit": "1c74424ec2802f402ea9dd502a50835359dd3e6e",
+        "commit": "56d28bd1014e5a22451440a27d1325d3b353b4ec",
         "context": "images/sglang",
         "dockerfile": "images/sglang/Dockerfile",
         "platform": "linux/amd64",
         "repository": "https://github.com/confidential-dot-ai/confidential-inference"
       },
       "image": {
-        "digest": "sha256:d4de960159c7c4f9b64fd57351c80629fcbdbf4ea7e464469fcb0748ebe64786",
+        "digest": "sha256:4530aa10c1694d8bf492b17d181c4a043f7e05430b011c8fad0b0e8d083f5709",
         "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang"
       },
       "name": "sglang-router"
