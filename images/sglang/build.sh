@@ -23,10 +23,9 @@ expected_revision = f'LABEL ai.confidential.upstream.revision="{lock["source"]["
 expected_patch = f'LABEL ai.confidential.sglang.patch.sha256="{lock["optimizations"]["patch"]["sha256"]}"'
 expected_simulator = f'LABEL ai.confidential.sglang.simulator.revision="{lock["optimizations"]["sglang"]["simulator"]["commit"]}"'
 expected_simulator_patch = f'LABEL ai.confidential.sglang.simulator.patch.sha256="{lock["optimizations"]["sglang"]["simulator"]["patch"]["sha256"]}"'
-expected_simulator_tool_calls_patch = f'LABEL ai.confidential.sglang.simulator.tool-calls-patch.sha256="{lock["optimizations"]["sglang"]["simulator"]["toolCallsPatch"]["sha256"]}"'
-expected_simulator_reasoning_patch = f'LABEL ai.confidential.sglang.simulator.reasoning-patch.sha256="{lock["optimizations"]["sglang"]["simulator"]["reasoningPatch"]["sha256"]}"'
+expected_simulator_parser_flags_noop_patch = f'LABEL ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256="{lock["optimizations"]["sglang"]["simulator"]["parserFlagsNoopPatch"]["sha256"]}"'
 expected_flashinfer = f'LABEL ai.confidential.flashinfer.version="{lock["optimizations"]["flashInfer"]["version"]}"'
-for expected in (expected_from, expected_source, expected_revision, expected_patch, expected_simulator, expected_simulator_patch, expected_simulator_tool_calls_patch, expected_simulator_reasoning_patch, expected_flashinfer):
+for expected in (expected_from, expected_source, expected_revision, expected_patch, expected_simulator, expected_simulator_patch, expected_simulator_parser_flags_noop_patch, expected_flashinfer):
     if expected not in dockerfile.splitlines():
         raise SystemExit(f"the Dockerfile does not match source.lock: {expected}")
 
@@ -63,19 +62,12 @@ actual_simulator_patch_digest = hashlib.sha256(simulator_patch_path.read_bytes()
 if actual_simulator_patch_digest != simulator["patch"]["sha256"]:
     raise SystemExit("the simulator patch digest does not match source.lock")
 
-simulator_tool_calls_patch_path = lock_path.parents[2] / simulator["toolCallsPatch"]["path"]
-if not simulator_tool_calls_patch_path.is_file():
-    raise SystemExit(f"the locked simulator tool-calls patch does not exist: {simulator_tool_calls_patch_path}")
-actual_simulator_tool_calls_patch_digest = hashlib.sha256(simulator_tool_calls_patch_path.read_bytes()).hexdigest()
-if actual_simulator_tool_calls_patch_digest != simulator["toolCallsPatch"]["sha256"]:
-    raise SystemExit("the simulator tool-calls patch digest does not match source.lock")
-
-simulator_reasoning_patch_path = lock_path.parents[2] / simulator["reasoningPatch"]["path"]
-if not simulator_reasoning_patch_path.is_file():
-    raise SystemExit(f"the locked simulator reasoning patch does not exist: {simulator_reasoning_patch_path}")
-actual_simulator_reasoning_patch_digest = hashlib.sha256(simulator_reasoning_patch_path.read_bytes()).hexdigest()
-if actual_simulator_reasoning_patch_digest != simulator["reasoningPatch"]["sha256"]:
-    raise SystemExit("the simulator reasoning patch digest does not match source.lock")
+simulator_parser_flags_noop_patch_path = lock_path.parents[2] / simulator["parserFlagsNoopPatch"]["path"]
+if not simulator_parser_flags_noop_patch_path.is_file():
+    raise SystemExit(f"the locked simulator parser-flags no-op patch does not exist: {simulator_parser_flags_noop_patch_path}")
+actual_simulator_parser_flags_noop_patch_digest = hashlib.sha256(simulator_parser_flags_noop_patch_path.read_bytes()).hexdigest()
+if actual_simulator_parser_flags_noop_patch_digest != simulator["parserFlagsNoopPatch"]["sha256"]:
+    raise SystemExit("the simulator parser-flags no-op patch digest does not match source.lock")
 PY
 
 docker build \

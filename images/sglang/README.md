@@ -39,29 +39,14 @@ This starts the SGLang HTTP server, scheduler, cache, streaming path, and metric
 Only the GPU model execution is simulated.
 The server returns deterministic `prefix` text and does not load model weights.
 
-One exception: when a chat completion request carries `tools` and the prompt
-asks for one of them, or `tool_choice` names one, the simulator answers with
-a fixed, OpenAI-shaped `tool_calls` entry instead of prefix text. The function
-name comes from the first tool. The arguments echo that tool's first required
-parameter with a fixed value. `finish_reason` is `tool_calls`, in both
-streaming and non-streaming responses. Every other request keeps the existing
-prefix-text path unchanged. The `sglang-simulator-tool-calls.patch` adds this
-path; it does not touch SGLang's production module.
+The simulator accepts `--reasoning-parser` and `--tool-call-parser` for command
+compatibility. It removes both options before SGLang parses the arguments.
+They do not change simulator output. Production still passes these options to
+the normal SGLang server and keeps the normal parser behavior.
 
 The small `sglang-simulator-replay-only.patch` delays imports for optional simulator
 predictors. Replay mode does not need those packages. The patch does not change SGLang's
 production module or Python environment.
-
-One exception: when a chat completion request sets `chat_template_kwargs.thinking: true`
-and the worker was launched with `--reasoning-parser=deepseek-v4`, the simulator answers
-with `<think>{reasoning text}</think>{answer text}` instead of the usual fixed text. SGLang's
-real, unmodified DeepSeekV4Detector reasoning parser then splits that text into
-`reasoning_content` and `content` exactly as it would for a real model's output, in both
-streaming and non-streaming responses. Every other request keeps the existing text path
-unchanged. The `sglang-simulator-reasoning.patch` adds this path; it does not touch
-SGLang's production module and composes with `sglang-simulator-tool-calls.patch` (PR #56)
-once that lands, since the two patches touch different layers -- token generation here,
-`OpenAIServingChat.handle_request` there.
 
 ## Build and smoke test
 
