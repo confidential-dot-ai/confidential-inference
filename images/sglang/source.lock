@@ -260,6 +260,20 @@
   "nodeEvidenceArtifact": {
     "digest": "sha256:026e62bf69fe05eecfc8809c6be0539d098f3d42be8a6c8f196200d018b50a7c"
   },
+  "nodeEvidenceArtifacts": {
+    "conf-inference-prod": {
+      "digest": "sha256:026e62bf69fe05eecfc8809c6be0539d098f3d42be8a6c8f196200d018b50a7c"
+    },
+    "candidate": {
+      "digest": "sha256:6ef7b6571de8790476701119f921638ae3dd0b03c2d8d28737e9d22d5fb06727"
+    },
+    "production": {
+      "digest": "sha256:026e62bf69fe05eecfc8809c6be0539d098f3d42be8a6c8f196200d018b50a7c"
+    },
+    "staging": {
+      "digest": "sha256:97c41cb38bab6a7c6858ef0ecc50bd076f70d262f150b2fa8759311ec55be582"
+    }
+  },
   "nodeImages": {
     "conf-inference-prod": {
       "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
@@ -278,8 +292,8 @@
     },
     "staging": {
       "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
-      "digest": "sha256:efdd1643057f7b9333267ee042d93281c8956275219cd6f6464040d1f3861518",
-      "sourceCommit": "466ce79e77c2fb6c014620b770066f275e889df6"
+      "digest": "sha256:84fadd3dbc1c6bd94320ac22a9bdeb9483420b4deb8c9acf72325843ea175a57",
+      "sourceCommit": "7b951aec9e3e52e87dcc764924ab0d972774e69c"
     }
   },
   "alternateArgvRoles": {

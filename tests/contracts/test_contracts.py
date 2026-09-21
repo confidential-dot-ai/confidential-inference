@@ -41,6 +41,19 @@ def source_lock_node_image(source_lock: dict, environment: str) -> dict:
     return source_lock["nodeImage"]
 
 
+def source_lock_node_evidence_artifact(source_lock: dict, environment: str) -> dict:
+    """Return the evidence artifact the source lock pins for one environment."""
+    per_environment = source_lock.get("nodeEvidenceArtifacts")
+    if isinstance(per_environment, dict) and per_environment:
+        selected = per_environment.get(environment)
+        if not isinstance(selected, dict):
+            raise ValueError(
+                f"the source lock pins no node evidence artifact for {environment}"
+            )
+        return selected
+    return source_lock["nodeEvidenceArtifact"]
+
+
 def verify_release_against_source_lock(release: dict, source_lock: dict) -> None:
     node = release["node"]
     pinned = source_lock_node_image(source_lock, release["release"]["environment"])
@@ -51,7 +64,10 @@ def verify_release_against_source_lock(release: dict, source_lock: dict) -> None
         raise ValueError("the node image pin does not match the source lock")
     if node["sourceCommit"] != pinned["sourceCommit"]:
         raise ValueError("the node source commit does not match the source lock")
-    if node["evidenceArtifactDigest"] != source_lock["nodeEvidenceArtifact"]["digest"]:
+    evidence = source_lock_node_evidence_artifact(
+        source_lock, release["release"]["environment"]
+    )
+    if node["evidenceArtifactDigest"] != evidence["digest"]:
         raise ValueError("the node evidence pin does not match the source lock")
     if release["model"]["repository"] != source_lock["model"]["repository"]:
         raise ValueError("the model repository does not match the source lock")
@@ -246,6 +262,12 @@ class ContractTests(unittest.TestCase):
         self.assertRegex(
             lock["nodeEvidenceArtifact"]["digest"], r"^sha256:[0-9a-f]{64}$"
         )
+        self.assertEqual(
+            set(lock["nodeEvidenceArtifacts"]),
+            {"candidate", "conf-inference-prod", "production", "staging"},
+        )
+        for artifact in lock["nodeEvidenceArtifacts"].values():
+            self.assertRegex(artifact["digest"], r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(
             set(lock["roles"]),
             {"sglang-router", "inference-worker-0", "inference-worker-1"},

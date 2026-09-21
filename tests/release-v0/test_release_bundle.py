@@ -799,3 +799,43 @@ class SourceLockNodeImageTests(unittest.TestCase):
         staging = self.select(lock, "staging")
         self.assertNotEqual(production["digest"], staging["digest"])
         self.assertEqual(production, lock["nodeImage"])
+
+
+class SourceLockNodeEvidenceArtifactTests(unittest.TestCase):
+    """The source lock pins one node evidence artifact per environment."""
+
+    @staticmethod
+    def select(lock: dict, environment: str):
+        module = runpy.run_path(str(SCRIPT))
+        return module["source_lock_node_evidence_artifact"](lock, environment)
+
+    @staticmethod
+    def entry(digest_character: str) -> dict:
+        return {"digest": "sha256:" + digest_character * 64}
+
+    def test_a_per_environment_entry_wins(self):
+        lock = {
+            "nodeEvidenceArtifact": self.entry("1"),
+            "nodeEvidenceArtifacts": {
+                "production": self.entry("1"),
+                "staging": self.entry("2"),
+            },
+        }
+        self.assertEqual(self.select(lock, "production"), self.entry("1"))
+        self.assertEqual(self.select(lock, "staging"), self.entry("2"))
+
+    def test_an_old_lock_without_per_environment_entries_still_reads(self):
+        lock = {"nodeEvidenceArtifact": self.entry("3")}
+        self.assertEqual(self.select(lock, "staging"), self.entry("3"))
+
+    def test_an_unpinned_environment_fails_closed(self):
+        lock = {
+            "nodeEvidenceArtifact": self.entry("1"),
+            "nodeEvidenceArtifacts": {"production": self.entry("1")},
+        }
+        with self.assertRaises(Exception):
+            self.select(lock, "staging")
+
+    def test_a_lock_with_no_node_evidence_artifact_fails_closed(self):
+        with self.assertRaises(Exception):
+            self.select({}, "production")
