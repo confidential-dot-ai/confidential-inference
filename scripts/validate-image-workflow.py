@@ -38,7 +38,6 @@ def validate(text: str) -> list[str]:
         "push: false",
         "push=true",
         "image: gateway",
-        "image: sglang",
         "image: maintenance-gateway",
         "image: metrics-collector",
         "image: kube-state-metrics",
@@ -66,6 +65,9 @@ def validate(text: str) -> list[str]:
         "version: ${{ env.BUILDX_VERSION }}",
         "driver-opts: image=${{ env.BUILDKIT_IMAGE }}",
         "inputs.publish_target == 'all' || inputs.publish_target == matrix.image",
+        "select-publish-images:",
+        "scripts/select-publish-image-matrix.py",
+        "matrix: ${{ fromJSON(needs.select-publish-images.outputs.matrix) }}",
         "verify-reproducible-oci.py",
         "inputs.rebuild_audit",
         "needs: validate",
@@ -97,10 +99,10 @@ def validate(text: str) -> list[str]:
     )
     if reproducibility.count(selection_condition) < 9:
         errors.append("manual reproducibility must run only for the selected image")
-    if "- image: gateway" not in publish:
-        errors.append("the image publication matrix must include the gateway")
-    if "needs: validate" not in publish:
-        errors.append("image publication must require validation")
+    if "needs: [validate, select-publish-images]" not in publish:
+        errors.append("image publication must require validation and matrix selection")
+    if "inputs.publish_target == matrix.image" in publish:
+        errors.append("image publication must filter the matrix before jobs are created")
     if "reproducibility" in re.search(r"^\s+needs:\s*(.+)$", publish, re.MULTILINE).group(1):
         errors.append("image publication must not depend on the rebuild audit")
     if "inputs.rebuild_audit" not in reproducibility:
@@ -144,9 +146,8 @@ def validate(text: str) -> list[str]:
         "(github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')"
     )
     for name, block in (("image", publish),):
-        condition = re.search(r"^\s+if:\s*>-\s*\n((?:\s{6}.*\n?)+)", block)
-        normalized = " ".join(condition.group(1).split()) if condition else ""
-        if normalized != expected_condition:
+        normalized = " ".join(block.split())
+        if expected_condition not in normalized:
             errors.append(f"the {name} publication condition is not exact")
         if "environment: ghcr-production" not in block or "packages: write" not in block:
             errors.append(f"the {name} publication lacks its protected write policy")

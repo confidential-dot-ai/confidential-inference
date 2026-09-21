@@ -400,12 +400,33 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  publish-images:
+  select-publish-images:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.publish &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
     needs: validate
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Select only the requested images
+        id: select
+        env:
+          PUBLISH_TARGET: ${{ inputs.publish_target }}
+        run: |
+          matrix=$(python3 scripts/select-publish-image-matrix.py "$PUBLISH_TARGET")
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+
+  publish-images:
+    needs: [validate, select-publish-images]
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: ghcr-production
@@ -414,40 +435,17 @@ jobs:
       packages: write
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - image: sglang
-            context: images/sglang
-            dockerfile: images/sglang/Dockerfile
-            title: Confidential Inference stock SGLang
-          - image: gateway
-            context: .
-            dockerfile: images/gateway/Dockerfile
-            title: Confidential Inference gateway
-          - image: maintenance-gateway
-            context: .
-            dockerfile: images/maintenance-gateway/Dockerfile
-            title: Confidential Inference maintenance gateway
-          - image: metrics-collector
-            context: images/metrics-collector
-            dockerfile: images/metrics-collector/Dockerfile
-            title: Confidential Inference metrics collector
-          - image: kube-state-metrics
-            context: images/kube-state-metrics
-            dockerfile: images/kube-state-metrics/Dockerfile
-            title: Confidential Inference kube-state metrics
+      matrix: ${{ fromJSON(needs.select-publish-images.outputs.matrix) }}
     steps:
       - name: Check out the repository
-        if: inputs.publish_target == 'all' || inputs.publish_target == matrix.image
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Get the stable source epoch
-        if: inputs.publish_target == 'all' || inputs.publish_target == matrix.image
         id: source
         run: printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
       - name: Free runner storage for SGLang
-        if: matrix.image == 'sglang' && (inputs.publish_target == 'all' || inputs.publish_target == matrix.image)
+        if: matrix.image == 'sglang'
         run: |
           echo "--- disk before cleanup ---"
           df -h / /mnt || true
@@ -467,14 +465,12 @@ jobs:
           df -h / /mnt
 
       - name: Set up Docker Buildx
-        if: inputs.publish_target == 'all' || inputs.publish_target == matrix.image
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
         with:
           version: ${{ env.BUILDX_VERSION }}
           driver-opts: image=${{ env.BUILDKIT_IMAGE }}
 
       - name: Log in to GHCR
-        if: inputs.publish_target == 'all' || inputs.publish_target == matrix.image
         uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -482,7 +478,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and publish the image
-        if: inputs.publish_target == 'all' || inputs.publish_target == matrix.image
         id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
@@ -507,7 +502,6 @@ jobs:
           sbom: ${{ matrix.image != 'sglang' }}
 
       - name: Record the immutable image digest
-        if: inputs.publish_target == 'all' || inputs.publish_target == matrix.image
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}
