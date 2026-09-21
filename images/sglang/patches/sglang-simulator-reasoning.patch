@@ -1,3 +1,76 @@
+diff --git a/src/sglang_simulator/hook/class_hook_entry.py b/src/sglang_simulator/hook/class_hook_entry.py
+--- a/src/sglang_simulator/hook/class_hook_entry.py
++++ b/src/sglang_simulator/hook/class_hook_entry.py
+@@ -14,35 +14,40 @@ _builtins_build_class_ = builtins.__build_class__
+ _builtins_build_class_ = builtins.__build_class__
+-
++
+-
++
+ def _custom_build_class_(func, name: str, *bases, **kwargs):
++    matching_hooks = []
+     for hook in CLASS_HOOKS:
+-        if (
++        class_matches = (
+             hook.REGEX
+             and hook.HOOK_CLASS_NAME
+             and re.search(hook.HOOK_CLASS_NAME, name)
+-        ) or name == hook.HOOK_CLASS_NAME:
+-            module_name = None
+-            if isinstance(func, FunctionType):
+-                module_name = getattr(func, "__globals__", {}).get("__name__", "")
+-            if (
+-                hook.REGEX and re.search(hook.HOOK_MODULE_NAME, module_name)
+-            ) or module_name == hook.HOOK_MODULE_NAME:
+-                logger.debug(
+-                    f"Hooking Class: {hook.__name__} into {module_name}|{name}"
+-                    + (
+-                        "(Regex is enabled, which might cause unexpected behavior.)"
+-                        if hook.REGEX
+-                        else ""
+-                    )
+-                )
+-                target_class = _builtins_build_class_(func, name, *bases, **kwargs)
+-                try:
+-                    hook.hook(target_class)
+-                except Exception as e:
+-                    logger.warning(f"Failed to hook class [{name}]. Error: {e}")
+-                return target_class
++        ) or name == hook.HOOK_CLASS_NAME
++        if not class_matches:
++            continue
++        module_name = None
++        if isinstance(func, FunctionType):
++            module_name = getattr(func, "__globals__", {}).get("__name__", "")
++        module_matches = (
++            hook.REGEX and re.search(hook.HOOK_MODULE_NAME, module_name)
++        ) or module_name == hook.HOOK_MODULE_NAME
++        if module_matches:
++            matching_hooks.append(hook)
+-
++
+-    return _builtins_build_class_(func, name, *bases, **kwargs)
++    target_class = _builtins_build_class_(func, name, *bases, **kwargs)
++    for hook in matching_hooks:
++        logger.debug(
++            f"Hooking Class: {hook.__name__} into {module_name}|{name}"
++            + (
++                "(Regex is enabled, which might cause unexpected behavior.)"
++                if hook.REGEX
++                else ""
++            )
++        )
++        try:
++            hook.hook(target_class)
++        except Exception as e:
++            logger.warning(f"Failed to hook class [{name}]. Error: {e}")
++    return target_class
+-
++
+-
++
+ def install_class_hooks(hooks: Union[List[BaseHook], BaseHook]):
+
 diff --git a/src/sglang_simulator/simulation/sglang/hook_bootstrap.py b/src/sglang_simulator/simulation/sglang/hook_bootstrap.py
 index 622d0d0..4dd62bc 100644
 --- a/src/sglang_simulator/simulation/sglang/hook_bootstrap.py

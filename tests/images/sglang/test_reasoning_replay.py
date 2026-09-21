@@ -100,6 +100,62 @@ class ReasoningReplayPatchTests(unittest.TestCase):
             scheduler = (sglang_dir / "scheduler.py").read_text(encoding="utf-8")
             self.assertIn("apply_reasoning_replay", scheduler)
 
+    def test_dispatcher_applies_all_matching_class_hooks_in_order(self) -> None:
+        with self._tmp_dir() as tmp_path:
+            patched = _apply_patched_simulator(tmp_path)
+            hook_dir = patched / "src" / "sglang_simulator" / "hook"
+
+            fake_base_hook = types.ModuleType("sglang_simulator.hook.base_hook")
+
+            class BaseHook:
+                REGEX = False
+                HOOK_CLASS_NAME = None
+                HOOK_MODULE_NAME = None
+
+            def register_hooks(target, hooks):
+                target.extend(hooks if isinstance(hooks, list) else [hooks])
+
+            fake_base_hook.BaseHook = BaseHook
+            fake_base_hook._register_hooks = register_hooks
+            previous = sys.modules.get("sglang_simulator.hook.base_hook")
+            sys.modules["sglang_simulator.hook.base_hook"] = fake_base_hook
+            dispatcher = None
+            try:
+                dispatcher = _load_module(
+                    "simulator_class_hook_entry_under_test",
+                    hook_dir / "class_hook_entry.py",
+                )
+
+                class FirstHook(BaseHook):
+                    HOOK_CLASS_NAME = "ComposedTarget"
+                    HOOK_MODULE_NAME = __name__
+
+                    @classmethod
+                    def hook(cls, target):
+                        target.applied_hooks.append("first")
+
+                class SecondHook(BaseHook):
+                    HOOK_CLASS_NAME = "ComposedTarget"
+                    HOOK_MODULE_NAME = __name__
+
+                    @classmethod
+                    def hook(cls, target):
+                        target.applied_hooks.append("second")
+
+                dispatcher.install_class_hooks([FirstHook, SecondHook])
+
+                class ComposedTarget:
+                    applied_hooks = []
+
+                self.assertEqual(ComposedTarget.applied_hooks, ["first", "second"])
+            finally:
+                if dispatcher is not None:
+                    dispatcher.remove_class_hooks()
+                if previous is None:
+                    sys.modules.pop("sglang_simulator.hook.base_hook", None)
+                else:
+                    sys.modules["sglang_simulator.hook.base_hook"] = previous
+
     def test_source_lock_pins_the_reasoning_patch(self) -> None:
         import hashlib
 

@@ -33,7 +33,7 @@
         },
         "reasoningPatch": {
           "path": "images/sglang/patches/sglang-simulator-reasoning.patch",
-          "sha256": "ea8ca140615a74476e99fab6f8b26c822897531b7fe6ca0adebb46b66c4ed8c5"
+          "sha256": "ec07039ebd759a6be3395e0b3875e18b631e62909301a67313ca663946133709"
         }
       }
     },
