@@ -915,7 +915,7 @@ mod tests {
     ) -> Router {
         router(
             GatewayConfig {
-                catalog_model_ids: vec!["deepseek".to_owned(), "minimax-m3".to_owned()],
+                catalog_model_ids: vec!["deepseek".to_owned()],
                 inference_model_ids: vec!["deepseek".to_owned()],
                 upstream_base_url: "http://127.0.0.1:1".to_owned(),
                 maximum_body_bytes: 1_024,
@@ -957,8 +957,7 @@ mod tests {
             assert_eq!(
                 serde_json::from_slice::<Value>(&body).unwrap_or_default()["data"],
                 json!([
-                    {"id":"deepseek","object":"model","owned_by":"confidential.ai"},
-                    {"id":"minimax-m3","object":"model","owned_by":"confidential.ai"}
+                    {"id":"deepseek","object":"model","owned_by":"confidential.ai"}
                 ])
             );
         }

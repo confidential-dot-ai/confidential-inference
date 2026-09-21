@@ -26,7 +26,6 @@ use confidential_gateway::{
 };
 use hyper_util::rt::TokioTimer;
 
-const MINIMAX_M3_MODEL_ID: &str = "MiniMaxAI/MiniMax-M3-MXFP8";
 // The gateway must never dial the router Service directly. The c8s
 // workload-proxy client owns this loopback port and provides the authenticated
 // hop to the named router workload.
@@ -265,10 +264,7 @@ async fn main() -> Result<()> {
     .context("load the fail-closed attestation producer")?;
     let protection = protection_config(&args);
     let inference_model_id = args.model;
-    let mut catalog_model_ids = vec![inference_model_id.clone()];
-    if inference_model_id != MINIMAX_M3_MODEL_ID {
-        catalog_model_ids.push(MINIMAX_M3_MODEL_ID.to_owned());
-    }
+    let catalog_model_ids = vec![inference_model_id.clone()];
     let public = router(
         GatewayConfig {
             catalog_model_ids,
