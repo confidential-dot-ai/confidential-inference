@@ -131,7 +131,7 @@ class ContractTests(unittest.TestCase):
         self.assertIsInstance(per_environment, dict)
         self.assertEqual(
             sorted(per_environment),
-            ["conf-inference-prod", "production", "staging"],
+            ["candidate", "conf-inference-prod", "production", "staging"],
         )
         self.assertEqual(self.source_lock["nodeImage"], per_environment["production"])
 

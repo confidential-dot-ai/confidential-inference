@@ -198,6 +198,24 @@
       "path": "c8s/staging-values.yaml",
       "line_sha256": "e5fc5a64200b776275f0ebd5f27f50441e71efb16a72997d6320e322f751288b",
       "reason": "The chart's generic pod and service network defaults, 10.52.0.0/16 and 10.53.0.0/16. Every Kubernetes cluster uses a private range here. These two values name no real host and identify no deployment."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "c8s/candidate-policy.json",
+      "line_sha256": "d77dcd2912e4a82b7cd2a4447b7f83e76cab8ac26a0f51fed621c1273ffbde2b",
+      "reason": "This line names the candidate control-plane access workload. It does not send inference traffic through a Tailnet."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "c8s/candidate-policy.json",
+      "line_sha256": "aadb6f4a665e4c372971f13aac942fcab3d3e9d18ae2e2c40dc35d40e3d82d70",
+      "reason": "This line pins the Tailscale container image used for candidate control-plane access. It does not route inference traffic."
+    },
+    {
+      "rule": "tailnet-service-traffic",
+      "path": "c8s/candidate-policy.json",
+      "line_sha256": "6d8f1bc5a57a3a247021810d9b87b043b71f2ef00790dad92d2424d059df5779",
+      "reason": "This line pins the Tailscale container image used for candidate control-plane access. It does not route inference traffic."
     }
   ]
 }

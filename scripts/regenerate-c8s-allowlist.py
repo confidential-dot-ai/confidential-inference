@@ -25,8 +25,9 @@ import c8s_allowlist_canonical
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = ROOT / "c8s/production-policy.json"
 STAGING_POLICY = ROOT / "c8s/staging-policy.json"
+CANDIDATE_POLICY = ROOT / "c8s/candidate-policy.json"
 CONF_INFERENCE_PROD_POLICY = ROOT / "c8s/conf-inference-prod-policy.json"
-ALLOWED_POLICIES = (POLICY, STAGING_POLICY, CONF_INFERENCE_PROD_POLICY)
+ALLOWED_POLICIES = (POLICY, STAGING_POLICY, CANDIDATE_POLICY, CONF_INFERENCE_PROD_POLICY)
 SCHEMA = ROOT / "c8s/production-policy.schema.json"
 OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")

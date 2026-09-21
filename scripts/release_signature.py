@@ -25,6 +25,7 @@ RELEASE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
 TAG_ENVIRONMENTS = (
     (re.compile(r"v[0-9][a-z0-9._-]{0,126}"), "production"),
     (re.compile(r"staging-v[0-9][a-z0-9._-]{0,118}"), "staging"),
+    (re.compile(r"candidate-v[0-9][a-z0-9._-]{0,116}"), "candidate"),
     (re.compile(r"conf-inference-prod-v[0-9][a-z0-9._-]{0,107}"), "conf-inference-prod"),
 )
 

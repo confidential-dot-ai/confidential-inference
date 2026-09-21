@@ -875,7 +875,7 @@ def collect_external_workloads(
 
 
 def validate_source_lock(
-    workloads: list[dict[str, Any]], source_lock: dict[str, Any]
+    workloads: list[dict[str, Any]], source_lock: dict[str, Any], environment: str
 ) -> None:
     by_name = {workload["name"]: workload for workload in workloads}
     expected_image = source_lock.get("deploymentImage")
@@ -885,6 +885,7 @@ def validate_source_lock(
     # runs while its pinned c8s image lacks /workload-proxy). Each entry names one
     # additional allowed argv for that role; it never replaces the primary pin.
     alternate_roles = source_lock.get("alternateArgvRoles", {})
+    environment_roles = source_lock.get("environmentRoles", {})
     if (
         not isinstance(expected_image, dict)
         or not isinstance(expected_image.get("reference"), str)
@@ -892,6 +893,7 @@ def validate_source_lock(
         or not isinstance(roles, dict)
         or not isinstance(simulator_roles, dict)
         or not isinstance(alternate_roles, dict)
+        or not isinstance(environment_roles, dict)
     ):
         raise BundleError("the SGLang source lock is incomplete")
     for name, role in roles.items():
@@ -925,6 +927,13 @@ def validate_source_lock(
                     f"the {name} alternate source-lock role has unexpected fields"
                 )
             valid_argv.append(alternate_role.get("argv"))
+        environment_role = environment_roles.get(environment, {}).get(name)
+        if environment_role is not None:
+            if set(environment_role) != {"argv"}:
+                raise BundleError(
+                    f"the {name} {environment} source-lock role has unexpected fields"
+                )
+            valid_argv.append(environment_role.get("argv"))
         if workload["argv"] not in valid_argv:
             raise BundleError(f"the {name} argv does not match the SGLang source lock")
 
@@ -1082,7 +1091,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     names = [item["name"] for item in workloads]
     if len(names) != len(set(names)):
         raise BundleError("the release contains duplicate workload names")
-    validate_source_lock(workloads, source_lock)
+    validate_source_lock(workloads, source_lock, args.environment)
     active_allowlist = read_json(allowlist_path)
     if not isinstance(active_allowlist.get("workloads"), dict):
         raise BundleError("the active public allowlist has no workloads object")

@@ -1,0 +1,121 @@
+environment: candidate
+
+imagePullSecret:
+  name: candidate-ghcr-pull
+
+# The node names below are placeholders. The real node names are
+# infrastructure values. They live in the confidential-inference-internal
+# repository, in its environments files, and the deployment reads them from
+# there. The chart renders them into a pod nodeSelector only, so they are
+# not an input to the c8s allowlist.
+scheduling:
+  gatewayNodeName: gateway-node-1
+  inferenceNodeName: inference-node-1
+
+images:
+  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:075386639f458aa29f0e53171ceded3a963198b7bf53576b32acba53d72337a3
+  sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895
+  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895
+  metricsCollector: docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24
+  dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
+  nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
+  kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:f6176b59be5efb653a92715c95c87ed1186e5cf9f58d4bc02003440cb628795a
+  stateMounter: docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
+
+namedWorkloadProxy:
+  enabled: false
+
+attestationReceipts:
+  enabled: true
+  legacyC8s615: false
+  evidenceBaseUrl: https://candidate.api.confidential.ai
+  releaseId: candidate-v1
+  releaseBundleSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  policyMode: operator
+  expectedOperatorPublicKeySha256: sha256:e8d707fbd22925d58b494fed1b732b3003498d5f430b197277611b33c70d5e61
+  expectedOperatorKeySetSha256: sha256:18185552cdbfe68f331773f83064b649e3ba8185c4143ceb47a4d5632e5fe6ad
+  targets:
+    - {target: gateway, workload: gateway, identity: gateway, url: http://127.0.0.1:8800}
+    - {target: sglang-router, workload: sglang-router, identity: sglang-router, url: http://sglang-router:8801}
+    - {target: inference-worker-0, workload: inference-worker-0, identity: inference-worker-0, url: http://inference-worker-0-0.inference-workers:8802}
+    - {target: inference-worker-1, workload: inference-worker-1, identity: inference-worker-1, url: http://inference-worker-1-0.inference-workers:8802}
+    - {target: metrics-collector, workload: metrics-collector, identity: metrics-collector, url: http://metrics-collector:8803}
+    - {target: kube-state-metrics, workload: kube-state-metrics, identity: kube-state-metrics, url: http://kube-state-metrics:8804}
+  certificateRenewInterval: 30s
+  gatewayPort: 8800
+  routerPort: 8801
+  firstWorkerPort: 8802
+  metricsCollectorPort: 8803
+  kubeStateMetricsPort: 8804
+  platform: tdx
+  attestationApiPort: 8400
+  resources:
+    requests: {cpu: 25m, memory: 32Mi}
+    limits: {cpu: 250m, memory: 128Mi}
+
+gateway:
+  attestedWorkload: gateway
+  secrets:
+    adminSigner:
+      secretName: candidate-gateway-admin-mtls
+  service:
+    type: ClusterIP
+  keyRegistry:
+    mode: dual
+  shutdownGraceSeconds: 900
+  endpointDrainSeconds: 35
+  terminationGracePeriodSeconds: 960
+  c8sSecrets:
+    apiKeyPepper: {name: GATEWAY_API_KEY_PEPPER, sourcePath: /confidential-inference/gateway/api-key-pepper}
+  state:
+    enabled: true
+    storageResources: {create: true}
+    absencePolicy: fail-closed
+    startupTimeoutSeconds: 60
+    databasePath: /var/lib/confidential-gateway/gateway.sqlite3
+    mountPath: /var/lib/confidential-gateway
+    claimName: gateway-state
+    persistentVolumeName: gateway-state
+    storageClassName: confidential-inference-gateway-state
+    storageNamespace: kube-system
+    size: 16Gi
+    nodeName: gateway-node-1
+    hostStateRootPath: /var/lib/confidential-inference/gateway-state-root
+    hostMountPath: /var/lib/confidential-inference/gateway-state-root/data
+    devicePath: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_confai-gateway-state
+    diskSerial: confai-gateway-state
+    allowFormat: true
+
+inference:
+  enabled: true
+  mode: model
+  replicas: 2
+  gpusPerReplica: 4
+  gpuArchitectures: [BLACKWELL]
+  # Both workers share one 8-GPU node: each pod is allocated 4 devices, but
+  # CVM driver-level evidence attests all 8 visible devices.
+  attestedGpuCount: 8
+  attestedWorkloads: [inference-worker-0, inference-worker-1]
+  model:
+    name: deepseek-ai/DeepSeek-V4-Flash-0731
+    revision: 9e165c30e2704aec5d9d593cce3eebd58bbef1cb
+    c8sVolumeSource: /confidential-inference/volumes/dsv4
+    volumeNames: [dsv4, dsv4-1]
+    mountVerification:
+      expectedFiles:
+        .model-lock-local-manifest.json: cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c
+        config.json: 6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023
+        model.safetensors.index.json: 98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b
+        tokenizer_config.json: 6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
+
+router:
+  attestedWorkload: sglang-router
+  enabled: true
+
+metricsCollector:
+  enabled: true
+  attestedWorkload: metrics-collector
+
+kubeStateMetrics:
+  attestedWorkload: kube-state-metrics

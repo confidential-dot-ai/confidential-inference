@@ -5,6 +5,7 @@ on:
     tags:
       - "v[0-9]*"
       - "staging-v[0-9]*"
+      - "candidate-v[0-9]*"
       - "conf-inference-prod-v[0-9]*"
 
 permissions: {}
@@ -18,7 +19,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
-      name: ${{ startsWith(github.ref_name, 'staging-v') && 'signed-release-staging' || startsWith(github.ref_name, 'conf-inference-prod-v') && 'signed-release-conf-inference-prod' || 'signed-release-production' }}
+      name: ${{ startsWith(github.ref_name, 'staging-v') && 'signed-release-staging' || startsWith(github.ref_name, 'candidate-v') && 'signed-release-candidate' || startsWith(github.ref_name, 'conf-inference-prod-v') && 'signed-release-conf-inference-prod' || 'signed-release-production' }}
     permissions:
       contents: read
       id-token: write
@@ -48,6 +49,7 @@ jobs:
           case "$RELEASE_TAG" in
             v[0-9]*) source=releases/production/release-bundle.json ;;
             staging-v[0-9]*) source=releases/staging/release-bundle.json ;;
+            candidate-v[0-9]*) source=releases/candidate/release-bundle.json ;;
             conf-inference-prod-v[0-9]*) source=releases/conf-inference-prod/release-bundle.json ;;
             *) echo "The release tag is not allowed." >&2; exit 1 ;;
           esac

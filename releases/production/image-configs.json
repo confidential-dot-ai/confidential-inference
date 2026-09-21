@@ -92,6 +92,25 @@
         "/c8s"
       ]
     },
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f6176b59be5efb653a92715c95c87ed1186e5cf9f58d4bc02003440cb628795a": {
+      "cmd": [],
+      "entrypoint": [
+        "/c8s"
+      ]
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:075386639f458aa29f0e53171ceded3a963198b7bf53576b32acba53d72337a3": {
+      "build": {
+        "commit": "ad8c6b416349d183fe4cb9fcb145a8cc97b6cc78",
+        "context": ".",
+        "dockerfile": "images/gateway/Dockerfile",
+        "platform": "linux/amd64",
+        "repository": "https://github.com/confidential-dot-ai/confidential-inference"
+      },
+      "cmd": [],
+      "entrypoint": [
+        "/usr/local/bin/confidential-gateway"
+      ]
+    },
     "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:13af0676c75a0c1277491b0a125baa7c076b42a275bcf3f3f25de403c09c65bb": {
       "build": {
         "commit": "5a9297fbccae7eec5bf62ac0330da0d23db88adc",
