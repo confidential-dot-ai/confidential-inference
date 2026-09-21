@@ -22,7 +22,7 @@
   },
   "candidateSignedStage": {
     "source": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:6ef7b6571de8790476701119f921638ae3dd0b03c2d8d28737e9d22d5fb06727",
-    "digest": "sha256:6ef7b6571de8790476701119f921638ae3dd0b03c2d8d28737e9d22d5fb06727",
+    "digest": "sha256:3c57e9a637372faceae676f992f6a4967c0da41e3f9b5ad64d5dc7ff51f71a2e",
     "c8sRelease": "v0.26.5",
     "c8sSourceCommit": "152d58336dfb8ed1aabe515927da1569c8970ca1",
     "confosSourceCommit": "e630fd13b5fca9d66c9549faa54427dd027806a4"

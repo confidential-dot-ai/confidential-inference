@@ -1,0 +1,17 @@
+{
+  "environment": "candidate",
+  "buildHost": "https://github.com/confidential-dot-ai/c8s/releases/tag/v0.26.5",
+  "publication": {
+    "ociManifestDigest": "sha256:3c57e9a637372faceae676f992f6a4967c0da41e3f9b5ad64d5dc7ff51f71a2e",
+    "configDigest": "sha256:dc570f145a7f2862c9ef3c30b8d6ae2feaceb0d364e4b2e08e67ae18815427d9",
+    "cdiLayerDigest": "sha256:4904b7b53d2497d8194d22317fe643d2b87e29b88d0748052abd0a01d5dc2e92",
+    "cdiLayerSize": 1927168001
+  },
+  "sealedAllowlistSha256": "sha256:34cc52fc4166ae97ff28a2c2f62e9a2dbbaa4b3c65def397cc63ee69493fad59",
+  "manifestSha256": "sha256:e2287223cd334fbea57edb3ebe20cbed97a813b62e657eb911a9807453dddae6",
+  "measurements": {
+    "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
+    "rtmr1": "70f5d4740bab2ead4193c069a156052128854f87835b7828e78b821c31af2e4145fe11ce903686c0650bfb4efb2ade6c",
+    "rtmr2": "f57af25bd9d14e1b761ddde6b5e8124f8eaad2d6d5ec875d6eaa369e30e23186fead763b6d04844d7f31aa50e3eb5b59"
+  }
+}
