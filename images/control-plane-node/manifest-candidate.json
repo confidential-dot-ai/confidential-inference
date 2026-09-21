@@ -28,5 +28,3 @@
     "firmware": {"path": "OVMF.tdx.fd", "sha256": "a7edaeff6fc4bef8924461cb0fb68a194c3595d08ccad2720cca926dea12f7cf"}
   }
 }
-
-

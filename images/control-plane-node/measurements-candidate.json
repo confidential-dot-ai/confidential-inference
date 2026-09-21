@@ -1,7 +1,17 @@
 {
-  "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
-  "rtmr1": "6aa0e575836064e4894bb778522eb7de278b7d8e5224b6aeb77810aee38499a087c81a1aa50db3b02a6ab83c1492a824",
-  "rtmr2": "2c54b32ad794df54d46c5b0d5ab56e340e6497b2e5d68b320919e5f86f69150b24014ada5015d654ff597cbdc94a76d0"
+  "schema_version": "1",
+  "tee": "tdx",
+  "measurements": [
+    {
+      "name": "control-plane-node",
+      "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
+      "rtmr": [
+        null,
+        "6aa0e575836064e4894bb778522eb7de278b7d8e5224b6aeb77810aee38499a087c81a1aa50db3b02a6ab83c1492a824",
+        "2c54b32ad794df54d46c5b0d5ab56e340e6497b2e5d68b320919e5f86f69150b24014ada5015d654ff597cbdc94a76d0",
+        null
+      ]
+    }
+  ]
 }
-
 

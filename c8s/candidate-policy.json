@@ -108,7 +108,7 @@
           ],
           "args": [
             "acme",
-            "--domains=candidate.api.confidential.ai,api.confidential.ai",
+            "--domains=candidate.api.confidential.ai",
             "--challenge-port=8402",
             "--http-port=8080",
             "--cert-dir=/etc/c8s-acme-tls"
@@ -333,7 +333,7 @@
         ]
       }
     ],
-    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:6d49346d06c3494a30524fbf457c66f512106f435792017237a387eb6b25a6b5": [
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:075386639f458aa29f0e53171ceded3a963198b7bf53576b32acba53d72337a3": [
       {
         "command": [
           "/usr/local/bin/confidential-gateway"
@@ -446,4 +446,3 @@
     ]
   }
 }
-
