@@ -37,7 +37,7 @@ app.kubernetes.io/component: {{ .component }}
     - --port={{ .port }}
     - --platform={{ .root.Values.attestationReceipts.platform }}
     - --front-door-mode=webpki
-    {{- if .gpuEvidence }}
+    {{- if and .gpuEvidence (ne .root.Values.attestationReceipts.gpuEvidenceFlagEnabled false) }}
     - --nvidia-gpu-evidence
     {{- end }}
     - --expected-workload={{ .workload }}

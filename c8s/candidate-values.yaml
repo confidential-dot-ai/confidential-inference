@@ -28,6 +28,7 @@ namedWorkloadProxy:
 
 attestationReceipts:
   enabled: true
+  gpuEvidenceFlagEnabled: false
   legacyC8s615: false
   evidenceBaseUrl: https://candidate.api.confidential.ai
   releaseId: candidate-v1

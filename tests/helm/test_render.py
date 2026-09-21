@@ -233,6 +233,29 @@ def main() -> None:
             == f"inference-worker-{worker_index}"
         )
 
+    no_gpu_flag_documents = [
+        item for item in yaml.safe_load_all(
+            helm(
+                "template", "example", str(CHART), "--namespace", "inference",
+                "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
+                "--set", "attestationReceipts.gpuEvidenceFlagEnabled=false",
+            )
+        ) if item
+    ]
+    no_gpu_flag_workers = [
+        item for item in no_gpu_flag_documents
+        if item["kind"] == "StatefulSet"
+        and item["metadata"]["name"].startswith("inference-worker-")
+    ]
+    assert len(no_gpu_flag_workers) == 2
+    for worker in no_gpu_flag_workers:
+        cds_attest_args = next(
+            container["args"]
+            for container in worker["spec"]["template"]["spec"]["containers"]
+            if container["name"] == "cds-attest"
+        )
+        assert "--nvidia-gpu-evidence" not in cds_attest_args
+
     simulator_documents = [
         item for item in yaml.safe_load_all(
             helm(

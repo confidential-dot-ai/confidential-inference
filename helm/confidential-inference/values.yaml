@@ -35,6 +35,9 @@ c8s:
 
 attestationReceipts:
   enabled: true
+  # Older c8s releases accepted this cds-attest flag. Disable it when the
+  # pinned c8s binary does not list it in `c8s cds-attest --help`.
+  gpuEvidenceFlagEnabled: true
   # Use the node-local attestation API and the two-field gateway target format
   # on the production c8s 615 release.
   legacyC8s615: false
