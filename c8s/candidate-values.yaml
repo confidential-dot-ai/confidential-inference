@@ -20,7 +20,7 @@ images:
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:8dd6e5d5486f30520b9625550a5a95600da95a815499ea6b33eb16a4bd66ad31
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:f6176b59be5efb653a92715c95c87ed1186e5cf9f58d4bc02003440cb628795a
   stateMounter: docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
 
 namedWorkloadProxy:

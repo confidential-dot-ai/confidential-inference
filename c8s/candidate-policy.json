@@ -11,8 +11,8 @@
   },
   "c8s": {
     "repository": "https://github.com/confidential-dot-ai/c8s",
-    "sourceCommit": "3909a56e8400dfca637422caeb7282bbb2415d2c",
-    "imageTag": "3909a56",
+    "sourceCommit": "152d58336dfb8ed1aabe515927da1569c8970ca1",
+    "imageTag": "152d583",
     "cvmMode": "bare-metal",
     "hardwarePlatform": "tdx",
     "distro": "rke2",
@@ -20,12 +20,12 @@
     "attest": true
   },
   "systemImages": {
-    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:8dd6e5d5486f30520b9625550a5a95600da95a815499ea6b33eb16a4bd66ad31": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:8dd6e5d5486f30520b9625550a5a95600da95a815499ea6b33eb16a4bd66ad31",
-    "ghcr.io/confidential-dot-ai/cds@sha256:5011ec19451bfc6aa220b16f74fe1b0066693b13df0d346b5e7ca8299db16280": "ghcr.io/confidential-dot-ai/cds@sha256:5011ec19451bfc6aa220b16f74fe1b0066693b13df0d346b5e7ca8299db16280",
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f6176b59be5efb653a92715c95c87ed1186e5cf9f58d4bc02003440cb628795a": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f6176b59be5efb653a92715c95c87ed1186e5cf9f58d4bc02003440cb628795a",
+    "ghcr.io/confidential-dot-ai/cds@sha256:5bc6fb208526ca605bbfea51aa67599008d549130404465271b035429945bb05": "ghcr.io/confidential-dot-ai/cds@sha256:5bc6fb208526ca605bbfea51aa67599008d549130404465271b035429945bb05",
     "nginxinc/nginx-unprivileged@sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348": "nginxinc/nginx-unprivileged@sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348",
-    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:8ab6bfa1e164c683c8e348d243ffe75942e5afdaf31f533c829592b82a7d61d8": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:8ab6bfa1e164c683c8e348d243ffe75942e5afdaf31f533c829592b82a7d61d8",
-    "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:fdbe4b537d3b87dd63bcd8cf068e711e912a41a557103631b1a7e15a6e949580": "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:fdbe4b537d3b87dd63bcd8cf068e711e912a41a557103631b1a7e15a6e949580",
-    "ghcr.io/confidential-dot-ai/volumed@sha256:f9e0ea17df842a6d1b341b70f10ba508205e6d03cf85dbfce54d8834f2dc838c": "ghcr.io/confidential-dot-ai/volumed@sha256:f9e0ea17df842a6d1b341b70f10ba508205e6d03cf85dbfce54d8834f2dc838c"
+    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:6793768e6b94006d9ef0490a289b425c38b4c5d9bf9d081a4e98c6736a818769": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:6793768e6b94006d9ef0490a289b425c38b4c5d9bf9d081a4e98c6736a818769",
+    "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:fd79577c3efb4134d983e9f691467ab55bb769acd417ef0c7c627651c49d0d18": "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:fd79577c3efb4134d983e9f691467ab55bb769acd417ef0c7c627651c49d0d18",
+    "ghcr.io/confidential-dot-ai/volumed@sha256:c2b437c222c33c8ee223dd7b96dfe7993b90c0b4d8b2ff86aa91428f021b4368": "ghcr.io/confidential-dot-ai/volumed@sha256:c2b437c222c33c8ee223dd7b96dfe7993b90c0b4d8b2ff86aa91428f021b4368"
   },
   "workloads": [
     {
@@ -62,10 +62,10 @@
   ],
   "systemWorkloads": {
     "c8s-router": {
-      "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:8dd6e5d5486f30520b9625550a5a95600da95a815499ea6b33eb16a4bd66ad31",
+      "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f6176b59be5efb653a92715c95c87ed1186e5cf9f58d4bc02003440cb628795a",
       "initContainers": [
         {
-          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:8dd6e5d5486f30520b9625550a5a95600da95a815499ea6b33eb16a4bd66ad31",
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f6176b59be5efb653a92715c95c87ed1186e5cf9f58d4bc02003440cb628795a",
           "command": [
             "/c8s"
           ],
@@ -91,7 +91,7 @@
           ]
         },
         {
-          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:8dd6e5d5486f30520b9625550a5a95600da95a815499ea6b33eb16a4bd66ad31",
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f6176b59be5efb653a92715c95c87ed1186e5cf9f58d4bc02003440cb628795a",
           "command": [
             "/c8s",
             "probe-file",
@@ -102,7 +102,7 @@
           "args": []
         },
         {
-          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:8dd6e5d5486f30520b9625550a5a95600da95a815499ea6b33eb16a4bd66ad31",
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f6176b59be5efb653a92715c95c87ed1186e5cf9f58d4bc02003440cb628795a",
           "command": [
             "/c8s"
           ],
@@ -128,7 +128,7 @@
           ]
         },
         {
-          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:8dd6e5d5486f30520b9625550a5a95600da95a815499ea6b33eb16a4bd66ad31",
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f6176b59be5efb653a92715c95c87ed1186e5cf9f58d4bc02003440cb628795a",
           "command": [
             "/c8s"
           ],
@@ -148,7 +148,7 @@
           ]
         },
         {
-          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:8dd6e5d5486f30520b9625550a5a95600da95a815499ea6b33eb16a4bd66ad31",
+          "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f6176b59be5efb653a92715c95c87ed1186e5cf9f58d4bc02003440cb628795a",
           "command": [
             "/c8s"
           ],
@@ -213,7 +213,7 @@
         ]
       }
     ],
-    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:8dd6e5d5486f30520b9625550a5a95600da95a815499ea6b33eb16a4bd66ad31": [
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f6176b59be5efb653a92715c95c87ed1186e5cf9f58d4bc02003440cb628795a": [
       {
         "command": [
           "/c8s"

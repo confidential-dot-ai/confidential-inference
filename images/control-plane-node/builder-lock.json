@@ -21,8 +21,10 @@
     "digest": "sha256:84fadd3dbc1c6bd94320ac22a9bdeb9483420b4deb8c9acf72325843ea175a57"
   },
   "candidateSignedStage": {
-    "source": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:4dbc0f6912013c2b570e87484e6ca7db09a7c29eefe20821d2c0c3c969d24e63",
-    "digest": "sha256:4dbc0f6912013c2b570e87484e6ca7db09a7c29eefe20821d2c0c3c969d24e63",
+    "source": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:6ef7b6571de8790476701119f921638ae3dd0b03c2d8d28737e9d22d5fb06727",
+    "digest": "sha256:6ef7b6571de8790476701119f921638ae3dd0b03c2d8d28737e9d22d5fb06727",
+    "c8sRelease": "v0.26.5",
+    "c8sSourceCommit": "152d58336dfb8ed1aabe515927da1569c8970ca1",
     "confosSourceCommit": "e630fd13b5fca9d66c9549faa54427dd027806a4"
   }
 }
