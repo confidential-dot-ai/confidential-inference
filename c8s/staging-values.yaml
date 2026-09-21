@@ -23,9 +23,9 @@ scheduling:
 
 images:
   gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:6d49346d06c3494a30524fbf457c66f512106f435792017237a387eb6b25a6b5
-  sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:d4de960159c7c4f9b64fd57351c80629fcbdbf4ea7e464469fcb0748ebe64786
-  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:d4de960159c7c4f9b64fd57351c80629fcbdbf4ea7e464469fcb0748ebe64786
-  sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:d4de960159c7c4f9b64fd57351c80629fcbdbf4ea7e464469fcb0748ebe64786
+  sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:95e04cba43d8f5cd47a6352d57429ef3e94a52b715f244817694f12c7eece1fa
+  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:95e04cba43d8f5cd47a6352d57429ef3e94a52b715f244817694f12c7eece1fa
+  sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:95e04cba43d8f5cd47a6352d57429ef3e94a52b715f244817694f12c7eece1fa
   metricsCollector: docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
