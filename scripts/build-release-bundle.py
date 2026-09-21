@@ -1033,6 +1033,25 @@ def source_lock_node_image(
     return node_image
 
 
+def source_lock_node_evidence_artifact(
+    source_lock: dict[str, Any], environment: str
+) -> dict[str, Any]:
+    """Return the node evidence artifact pinned for one environment."""
+    per_environment = source_lock.get("nodeEvidenceArtifacts")
+    if isinstance(per_environment, dict):
+        selected = per_environment.get(environment)
+        if isinstance(selected, dict):
+            return selected
+        if per_environment:
+            raise BundleError(
+                f"the source lock pins no node evidence artifact for {environment}"
+            )
+    artifact = source_lock.get("nodeEvidenceArtifact")
+    if not isinstance(artifact, dict):
+        raise BundleError("the source lock pins no node evidence artifact")
+    return artifact
+
+
 def build(args: argparse.Namespace) -> dict[str, Any]:
     source_lock = read_json(args.source_lock)
     install_input = read_json(args.c8s_install_input)
@@ -1082,6 +1101,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     if args.strict and source_commit != git_value(["rev-parse", "HEAD"]):
         raise BundleError("the source commit does not match the checked-out commit")
     node_image = source_lock_node_image(source_lock, args.environment)
+    node_evidence_artifact = source_lock_node_evidence_artifact(
+        source_lock, args.environment
+    )
     node_pin = image_pin(
         f"{node_image['reference']}@{node_image['digest']}", args.strict
     )
@@ -1118,7 +1140,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "node": {
             "image": node_pin,
             "sourceCommit": node_image["sourceCommit"],
-            "evidenceArtifactDigest": source_lock["nodeEvidenceArtifact"]["digest"],
+            "evidenceArtifactDigest": node_evidence_artifact["digest"],
         },
         "c8s": c8s_release_input(
             args.c8s_install_input,
