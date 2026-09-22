@@ -41,16 +41,9 @@ attestationReceipts:
   # Use the node-local attestation API and the two-field gateway target format
   # on the production c8s 615 release.
   legacyC8s615: false
-  # Read TEE evidence from the node's attestation API over HTTP, at
-  # http://$(HOST_IP):attestationApiPort, instead of the workload-claims Unix
-  # socket. A c8s install that runs no in-cluster attestation-api Deployment
-  # (c8s `attestationApi.enabled: false`) serves the node HTTP endpoint only:
-  # c8s injects its own get-cert and get-secret sidecars with that same URL,
-  # and the socket path then has no server behind it. The `cds-attest` sidecar
-  # answers `502 attestation_unavailable` in that case, and the gateway maps
-  # that 5xx to `503 attestation_unavailable` on /attestation. This value is
-  # independent of legacyC8s615, which also changes the receipt target format.
-  useNodeAttestationApi: false
+  # cds-attest reads TEE evidence from the measured node service at
+  # http://$(HOST_IP):attestationApiPort. Current c8s node-mode clusters do
+  # not serve a workload-claims Unix socket.
   # This URL must be the c8s tls-lb front door. The gateway reads only c8s
   # discovery and allowlist evidence from it.
   evidenceBaseUrl: https://api.example.invalid

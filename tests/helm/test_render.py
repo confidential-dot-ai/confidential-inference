@@ -43,32 +43,21 @@ def main() -> None:
     names = {item["metadata"]["name"] for item in workloads}
     assert {"gateway", "sglang-router", "inference-worker-0", "inference-worker-1"}.issubset(names)
     assert not any(item["kind"] == "PersistentVolume" for item in documents)
-    expected_claim_mount = {
-        "name": "c8s-workload-claims",
-        "mountPath": "/run/c8s/workload-claims",
-        "readOnly": True,
-    }
     for workload in workloads:
         containers = workload["spec"]["template"]["spec"]["containers"]
         attest = [item for item in containers if item["name"] == "cds-attest"]
         assert len(attest) == 1
         attest = attest[0]
-        assert (
-            "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock"
-            in attest["args"]
+        assert "--attestation-api-url=http://$(HOST_IP):8400" in attest["args"]
+        assert any(item["name"] == "HOST_IP" for item in attest.get("env", []))
+        assert not any(
+            item["name"] == "c8s-workload-claims"
+            for item in attest.get("volumeMounts", [])
         )
-        assert not any(item["name"] == "HOST_IP" for item in attest.get("env", []))
-        assert expected_claim_mount in attest["volumeMounts"]
-        claims_volume = next(
-            item for item in workload["spec"]["template"]["spec"].get("volumes", [])
-            if item["name"] == "c8s-workload-claims"
+        assert not any(
+            item["name"] == "c8s-workload-claims"
+            for item in workload["spec"]["template"]["spec"].get("volumes", [])
         )
-        assert claims_volume["hostPath"] == {
-            "path": "/var/run/nri-image-policy", "type": "Directory"
-        }
-        assert 65532 in workload["spec"]["template"]["spec"]["securityContext"][
-            "supplementalGroups"
-        ]
         for container in containers:
             if container is not attest:
                 assert not any(
@@ -204,7 +193,6 @@ def main() -> None:
     for worker in workers:
         worker_index = worker["metadata"]["name"].removeprefix("inference-worker-")
         worker_pod = worker["spec"]["template"]
-        assert 65532 in worker_pod["spec"]["securityContext"]["supplementalGroups"]
         sglang_args = next(
             container["args"]
             for container in worker_pod["spec"]["containers"]
@@ -223,11 +211,11 @@ def main() -> None:
             for container in worker_pod["spec"]["containers"]
             if container["name"] == "cds-attest"
         )
-        assert expected_claim_mount in cds_attest["volumeMounts"]
-        assert {
-            "name": "c8s-workload-claims",
-            "hostPath": {"path": "/var/run/nri-image-policy", "type": "Directory"},
-        } in worker_pod["spec"]["volumes"]
+        assert "--attestation-api-url=http://$(HOST_IP):8400" in cds_attest["args"]
+        assert not any(
+            item["name"] == "c8s-workload-claims"
+            for item in cds_attest.get("volumeMounts", [])
+        )
         assert (
             worker["spec"]["template"]["metadata"]["annotations"]["confidential.ai/cw"]
             == f"inference-worker-{worker_index}"
@@ -408,15 +396,7 @@ def main() -> None:
     # c8s install with no in-cluster attestation-api Deployment serves the
     # node HTTP endpoint only, and the Unix socket then has no server behind
     # it: the sidecar answers 502 and /attestation answers 503.
-    node_api_documents = [
-        item for item in yaml.safe_load_all(
-            helm(
-                "template", "example", str(CHART), "--namespace", "inference",
-                *NEUTRAL_MODE,
-                "--set", "attestationReceipts.useNodeAttestationApi=true",
-            )
-        ) if item
-    ]
+    node_api_documents = default_documents
     node_api_sidecars = [
         container
         for document in node_api_documents
@@ -430,20 +410,9 @@ def main() -> None:
         assert [
             item for item in container.get("env", []) if item["name"] == "HOST_IP"
         ], "the node attestation API URL needs the HOST_IP field reference"
-    # The default keeps the workload-claims socket, so no environment changes
-    # behaviour without setting the value.
-    default_sidecars = [
-        container
-        for document in default_documents
-        if document["kind"] in {"Deployment", "StatefulSet"}
-        for container in document["spec"]["template"]["spec"]["containers"]
-        if container["name"] == "cds-attest"
-    ]
-    assert default_sidecars
-    for container in default_sidecars:
-        assert (
-            "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock"
-            in container["args"]
+        assert not any(
+            item["name"] == "c8s-workload-claims"
+            for item in container.get("volumeMounts", [])
         )
 
     print("Helm neutral-default and safety tests passed.")

@@ -59,7 +59,6 @@ spec:
       # The router watches Ready worker Pods in this namespace.
       serviceAccountName: sglang-router
       securityContext:
-        {{- include "confidential-inference.workloadClaimsSupplementalGroup" . | nindent 8 }}
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -159,8 +158,4 @@ spec:
         {{- if .Values.attestationReceipts.enabled }}
         {{- include "confidential-inference.cdsAttestSidecar" (dict "root" . "workload" .Values.router.attestedWorkload "host" "0.0.0.0" "port" .Values.attestationReceipts.routerPort) | nindent 8 }}
         {{- end }}
-      {{- if and .Values.attestationReceipts.enabled (not .Values.attestationReceipts.legacyC8s615) }}
-      volumes:
-        {{- include "confidential-inference.workloadClaimsVolume" . | nindent 8 }}
-      {{- end }}
 {{- end }}
