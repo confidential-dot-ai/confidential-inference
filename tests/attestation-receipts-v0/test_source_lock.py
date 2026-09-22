@@ -114,7 +114,10 @@ class SourceLockTests(unittest.TestCase):
     def test_accepts_release_entry_metadata_used_by_the_public_lock(self) -> None:
         value = json.loads(self.lock.read_text(encoding="utf-8"))
         value["tag"] = "v0.26.5"
-        value["capabilities"] = {"allowlistCanonicalize": False}
+        value["capabilities"] = {
+            "allowlistCanonicalize": False,
+            "gpuAttestationMode": "measured-boot-gate",
+        }
         value["attestationProtocol"] = "c8s/attest-pq/v1+xwing"
         self.lock.write_text(json.dumps(value), encoding="utf-8")
         result = self.run_tool()
@@ -127,6 +130,17 @@ class SourceLockTests(unittest.TestCase):
         result = self.run_tool()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("attestation protocol is invalid", result.stderr)
+
+    def test_rejects_unknown_gpu_attestation_mode(self) -> None:
+        value = json.loads(self.lock.read_text(encoding="utf-8"))
+        value["capabilities"] = {
+            "allowlistCanonicalize": False,
+            "gpuAttestationMode": "external-evidence-maybe",
+        }
+        self.lock.write_text(json.dumps(value), encoding="utf-8")
+        result = self.run_tool()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("capabilities are invalid", result.stderr)
 
     def test_wrong_source_digest_fails_closed(self) -> None:
         value = json.loads(self.lock.read_text(encoding="utf-8"))

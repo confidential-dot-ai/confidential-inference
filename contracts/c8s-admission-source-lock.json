@@ -139,6 +139,9 @@
         "internal/secrets/operator.go": "sha256:cee60bb53e1dc47bff1c21d4bd6cf4b8b5a360f459aed6cb734ef8bc6d0ef36f",
         "internal/secrets/policy.go": "sha256:f7b5c91c6e6a99dc43516d68ab828eeada89402b3fcb51e37e2601bc1e672cd5",
         "internal/secrets/store.go": "sha256:5d0027b83c629220386276370f634f44a5f24738daaeb40a68f90ee2e36cfa4b",
+        "node-guest-image/c8s/mkosi.extra/etc/systemd/system/gpu-cc-enforce.service": "sha256:121179dd3a724454d2bea582ea4e3255108e7f870e2190186e3947b25188e2fc",
+        "node-guest-image/c8s/mkosi.extra/usr/lib/systemd/system-preset/50-rke2.preset": "sha256:1baa438b58213d8f9a7b09ca3f484953f04f0e6daa02cef1f34027f490b181c6",
+        "node-guest-image/c8s/mkosi.extra/usr/local/bin/gpu-cc-enforce.sh": "sha256:43f04cd8233b12db19dd73e563971c5cf39178c88b3a5bc99a333ea3b60107a1",
         "pkg/attestclient/client.go": "sha256:59a8b4a3c642d9eedeb76b7b59b695f6a73dae45f68c9b1abb6521b146aa083a",
         "pkg/attestclient/ratls.go": "sha256:551549dd1a2307071ebd29a258eb09e998a367c5217e3cc45f87410bf74626b5",
         "pkg/overenc/identity.go": "sha256:56d037964b2fb3ceaf19ddb70d57532f99a1b96b0aea758dce50471dac1e74a0",
@@ -163,7 +166,8 @@
         "pkg/workloadclaims/workloadclaims.go": "sha256:96af68f563bceff23ccb37ec26ef1e15d2ee11ed6c3f2a473b241c0df2a76b39"
       },
       "capabilities": {
-        "allowlistCanonicalize": false
+        "allowlistCanonicalize": false,
+        "gpuAttestationMode": "measured-boot-gate"
       },
       "attestationProtocol": "c8s/attest-pq/v1+xwing"
     },

@@ -713,6 +713,7 @@ def validate_response_evidence(
     operator_key_set_digest: str | None, mesh_ca_der_digest: str,
     attestation_protocol: str, gpu_required: bool,
     attested_key_set: tuple[str, set[str], str] | None = None,
+    gpu_mode: str = "receipt-evidence",
 ) -> None:
     """Bind the gateway envelope to the held public release inputs."""
     if response["release"] != {
@@ -730,9 +731,13 @@ def validate_response_evidence(
             "the response c8s attestation protocol differs from the pinned source lock entry"
         )
     gpu_status = response["gpuEvidence"]["status"]
-    if gpu_status == "not-exposed-by-c8s" and gpu_required:
+    if gpu_required and gpu_mode == "receipt-evidence" and gpu_status == "not-exposed-by-c8s":
         raise VerificationError(
             "the response claims c8s exposes no GPU evidence, but the release requires it"
+        )
+    if gpu_required and gpu_mode == "measured-boot-gate" and gpu_status != "not-exposed-by-c8s":
+        raise VerificationError(
+            "the response GPU evidence status differs from the measured boot-gate protocol"
         )
     mode = release_policy_mode(release)
     policy = response["c8s"].get("policyTrust")
@@ -1104,6 +1109,26 @@ def required_gpu_policy(release: dict[str, Any], target: str, workload: str) -> 
     return None
 
 
+def gpu_attestation_mode(source_lock_entry: dict[str, Any]) -> str:
+    """Return how the pinned c8s release enforces required GPU policy.
+
+    Older c8s releases copied raw NVIDIA evidence into each workload receipt.
+    Current node images instead verify every passed-through GPU in a measured,
+    fail-closed boot unit that RKE2 requires. That verdict stays inside the
+    node, so an external verifier checks the measured gate and must not demand
+    receipt fields that this protocol does not expose.
+    """
+    capabilities = source_lock_entry.get("capabilities")
+    mode = (
+        capabilities.get("gpuAttestationMode", "receipt-evidence")
+        if isinstance(capabilities, dict)
+        else "receipt-evidence"
+    )
+    if mode not in {"receipt-evidence", "measured-boot-gate"}:
+        raise VerificationError("the source lock names an unknown GPU attestation mode")
+    return mode
+
+
 def verify_gpu_receipt(
     item: dict[str, Any], policy: dict[str, Any], receipt: dict[str, Any],
     report_data_hex: str, args: argparse.Namespace, allowlist_path: Path,
@@ -1229,6 +1254,7 @@ def verify_gpu_receipt(
 def verify_receipt_with_trusted_allowlists(
     item: dict[str, Any], args: argparse.Namespace,
     release: dict[str, Any], allowlists: list[tuple[str, Path, dict[str, Any]]],
+    verify_external_gpu_evidence: bool,
 ) -> dict[str, str]:
     """Verify one receipt against the exact retained policy which admitted it."""
     attempted = False
@@ -1243,7 +1269,7 @@ def verify_receipt_with_trusted_allowlists(
         except C8sPolicyRejection:
             continue
         gpu_policy = required_gpu_policy(release, item["target"], item["workload"])
-        if gpu_policy is not None:
+        if gpu_policy is not None and verify_external_gpu_evidence:
             result["gpu"] = verify_gpu_receipt(
                 item, gpu_policy, item["receipt"],
                 result["reportDataHex"], args, path,
@@ -1430,9 +1456,13 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         required_gpu_policy(release, target, workload) is not None
         for target, workload, _ in targets
     )
+    source_lock_entry = validate_source_policy(release, manifest, source_lock, node_source_lock)
+    selected_gpu_mode = gpu_attestation_mode(source_lock_entry)
+    verify_external_gpu_evidence = gpu_required and selected_gpu_mode == "receipt-evidence"
+    attestation_protocol = expected_attestation_protocol(source_lock_entry)
     args.attestation_cli_sha256 = ""
     args.gpu_verifier_environment = None
-    if gpu_required:
+    if verify_external_gpu_evidence:
         if args.attestation_cli is None:
             raise VerificationError(
                 "GPU evidence requires --attestation-cli built from the pinned attestation-rs source"
@@ -1444,7 +1474,6 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         environment = os.environ.copy()
         environment["PATH"] = str(attestation_cli.parent) + os.pathsep + environment.get("PATH", "")
         args.gpu_verifier_environment = environment
-    source_lock_entry = validate_source_policy(release, manifest, source_lock, node_source_lock)
     if args.operator_public_key is None:
         raise VerificationError(
             "verification requires --operator-public-key: c8s pins RTMR[3] to "
@@ -1498,7 +1527,10 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             "--mode", "attest-lb", "--attestation-nonce", "--observed-serving-cert",
         })
     for item in response.get("receipts", []):
-        if required_gpu_policy(release, item["target"], item["workload"]) is not None:
+        if (
+            verify_external_gpu_evidence
+            and required_gpu_policy(release, item["target"], item["workload"]) is not None
+        ):
             required_c8s_flags.update({
                 "--nvidia-gpu-user-nonce", "--nvidia-gpu-required",
                 "--nvidia-gpu-expected-arch", "--attestation-cli-sha256",
@@ -1522,7 +1554,6 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             raise VerificationError("the release operator key-set commitment differs from the held key")
         if operator_digest not in operator_key_set_members:
             raise VerificationError("the held operator key is not a member of the expected key set")
-    attestation_protocol = expected_attestation_protocol(source_lock_entry)
     # On the new protocol the gateway publishes only its pinned key-set
     # expectation, so the verifier must read the live key set for itself over
     # an attested CDS session. Without --cds-url there is nothing to compare
@@ -1542,7 +1573,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     validate_response_evidence(
         response, release, release_digest, allowlist, canonical_allowlist,
         operator_digest, operator_key_set_digest, mesh_ca_der_digest,
-        attestation_protocol, gpu_required, attested_key_set,
+        attestation_protocol, gpu_required, attested_key_set, selected_gpu_mode,
     )
     for item in response["receipts"]:
         if item["admittedLaunch"] != expected_admitted_launch(allowlist, item["workload"]):
@@ -1564,7 +1595,8 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         try:
             receipts = [
                 verify_receipt_with_trusted_allowlists(
-                    item, args, release, materialized_allowlists
+                    item, args, release, materialized_allowlists,
+                    verify_external_gpu_evidence,
                 ) for item in response["receipts"]
             ]
         finally:
@@ -1621,14 +1653,18 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "publicTlsSpkiSha256": public_spki,
         "publicTlsKeyAttested": public_tls_attested,
         "attestationProtocol": attestation_protocol,
-        # Non-GPU workloads are expected in the receipt set. Check GPU
-        # evidence only for the targets whose trusted release policy requires
-        # it. Each such target must have passed verify_gpu_receipt above.
-        "gpuEvidenceVerified": bool(gpu_targets)
+        "gpuAttestationMode": selected_gpu_mode if gpu_targets else "not-required",
+        # In receipt-evidence mode, each required GPU target passed the raw
+        # NVIDIA evidence verifier above. In measured-boot-gate mode, the
+        # verified node image enforces GPU checks before RKE2 can start.
+        "gpuEvidenceVerified": verify_external_gpu_evidence
+        and bool(gpu_targets)
         and all(
             "gpu" in item for item in receipts
             if item["target"] in gpu_targets
         ),
+        "gpuBootGateEnforcedByMeasuredImage": bool(gpu_targets)
+        and selected_gpu_mode == "measured-boot-gate",
         "modelDmVerityRootPolicy": model_root,
         "c8sVerifierVersion": version,
         "intelCollateralVerifiedBy": "c8s attestation-go",
@@ -1647,7 +1683,11 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
                 if args.policy_mode == "operator"
                 else "The c8s verifier checks the sealed allowlist digest in the attested mesh CA."
             ),
-            "Raw NVIDIA worker evidence is exposed, but cryptographic GPU verification requires the c8s GPU verifier.",
+            (
+                "The measured c8s node image verifies each passed-through GPU before RKE2 starts; raw NVIDIA evidence is not exposed externally."
+                if selected_gpu_mode == "measured-boot-gate"
+                else "Raw NVIDIA worker evidence is exposed, but cryptographic GPU verification requires the c8s GPU verifier."
+            ),
         ],
     }
 
@@ -1686,7 +1726,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--attestation-cli",
         type=Path,
-        help="attestation-cli built from the attestation-rs commit pinned by c8s",
+        help=(
+            "attestation-cli built from the attestation-rs commit pinned by c8s; "
+            "required only for source-lock entries that use receipt-evidence GPU attestation"
+        ),
     )
     result.add_argument(
         "--cds-url",
