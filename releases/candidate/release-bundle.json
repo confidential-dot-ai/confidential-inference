@@ -33,9 +33,18 @@
         "workload": "sglang-router"
       }
     ],
+    "components": {
+      "attestation-api": "ghcr.io/confidential-dot-ai/attestation-api@sha256:fb0d98a3f248f6d0f0a8feb8d497fba58d40d775b2db3e9e33d25d3fb283815f",
+      "c8s-operator": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f6176b59be5efb653a92715c95c87ed1186e5cf9f58d4bc02003440cb628795a",
+      "cds": "ghcr.io/confidential-dot-ai/cds@sha256:5bc6fb208526ca605bbfea51aa67599008d549130404465271b035429945bb05",
+      "nri-image-policy": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:6793768e6b94006d9ef0490a289b425c38b4c5d9bf9d081a4e98c6736a818769",
+      "ratls-mesh": "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:fd79577c3efb4134d983e9f691467ab55bb769acd417ef0c7c627651c49d0d18",
+      "volumed": "ghcr.io/confidential-dot-ai/volumed@sha256:c2b437c222c33c8ee223dd7b96dfe7993b90c0b4d8b2ff86aa91428f021b4368"
+    },
+    "confosSourceCommit": "e630fd13b5fca9d66c9549faa54427dd027806a4",
     "frontDoorWorkload": "c8s-router",
     "imageTag": "152d583",
-    "installInputDigest": "sha256:70aea165a1fd0d8f3bc054918c8e4fd9b1d5d12b50d78fabbca4158756c174e1",
+    "installInputDigest": "sha256:b2f5e7c0b23fdc5e07500fd48b4b0440b96decd8213154bd24c69b83e4918ff1",
     "measurements": {
       "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
       "rtmr1": "70f5d4740bab2ead4193c069a156052128854f87835b7828e78b821c31af2e4145fe11ce903686c0650bfb4efb2ade6c",
@@ -49,6 +58,7 @@
     "operatorKeySetSha256": "sha256:18185552cdbfe68f331773f83064b649e3ba8185c4143ceb47a4d5632e5fe6ad",
     "operatorPublicKeySha256": "sha256:e8d707fbd22925d58b494fed1b732b3003498d5f430b197277611b33c70d5e61",
     "policyMode": "operator",
+    "release": "v0.26.5",
     "sourceCommit": "152d58336dfb8ed1aabe515927da1569c8970ca1",
     "systemFloor": [
       {
@@ -104,7 +114,7 @@
   },
   "release": {
     "environment": "candidate",
-    "name": "candidate-v2"
+    "name": "candidate-v3"
   },
   "releaseTrust": {
     "policyPath": "releases/trust/release-signing-policy.json",
@@ -113,7 +123,7 @@
   },
   "schemaVersion": 2,
   "source": {
-    "commit": "a59cda0396efca1ada272c631186f5f276d350db",
+    "commit": "1a2bd24248adbe62f2e99de107d6d65b31a4d9d4",
     "repository": "https://github.com/confidential-dot-ai/confidential-inference"
   },
   "workloads": [
@@ -143,7 +153,7 @@
         "--platform=tdx",
         "--front-door-mode=webpki",
         "--expected-workload=gateway",
-        "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+        "--attestation-api-url=http://$(HOST_IP):8400",
         "--serving-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
@@ -231,7 +241,7 @@
         "--platform=tdx",
         "--front-door-mode=webpki",
         "--expected-workload=inference-worker-0",
-        "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+        "--attestation-api-url=http://$(HOST_IP):8400",
         "--serving-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
@@ -309,7 +319,7 @@
         "--platform=tdx",
         "--front-door-mode=webpki",
         "--expected-workload=inference-worker-1",
-        "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+        "--attestation-api-url=http://$(HOST_IP):8400",
         "--serving-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
@@ -347,7 +357,7 @@
         "--platform=tdx",
         "--front-door-mode=webpki",
         "--expected-workload=kube-state-metrics",
-        "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+        "--attestation-api-url=http://$(HOST_IP):8400",
         "--serving-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
@@ -380,7 +390,7 @@
         "--platform=tdx",
         "--front-door-mode=webpki",
         "--expected-workload=metrics-collector",
-        "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+        "--attestation-api-url=http://$(HOST_IP):8400",
         "--serving-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
@@ -436,7 +446,7 @@
         "--platform=tdx",
         "--front-door-mode=webpki",
         "--expected-workload=sglang-router",
-        "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+        "--attestation-api-url=http://$(HOST_IP):8400",
         "--serving-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
         "--mesh-identity-key-file=/etc/c8s/certs/tls.key",

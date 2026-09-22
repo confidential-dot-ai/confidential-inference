@@ -1,6 +1,9 @@
 {
   "environment": "candidate",
   "buildHost": "https://github.com/confidential-dot-ai/c8s/releases/tag/v0.26.5",
+  "c8sRelease": "v0.26.5",
+  "c8sSourceCommit": "152d58336dfb8ed1aabe515927da1569c8970ca1",
+  "confosSourceCommit": "e630fd13b5fca9d66c9549faa54427dd027806a4",
   "publication": {
     "ociManifestDigest": "sha256:3c57e9a637372faceae676f992f6a4967c0da41e3f9b5ad64d5dc7ff51f71a2e",
     "configDigest": "sha256:dc570f145a7f2862c9ef3c30b8d6ae2feaceb0d364e4b2e08e67ae18815427d9",
