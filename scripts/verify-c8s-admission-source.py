@@ -22,6 +22,7 @@ class SourceError(ValueError):
 
 
 ENTRY_FIELDS = {"commit", "nodeImage", "c8sOperatorImage", "requiredVerifierFlags", "files"}
+OPTIONAL_ENTRY_FIELDS = {"candidate", "tag", "capabilities", "attestationProtocol"}
 
 
 def read_lock(path: Path) -> dict[str, Any]:
@@ -30,11 +31,10 @@ def read_lock(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SourceError("the source lock is not valid JSON") from error
     required_fields = {"schema"} | ENTRY_FIELDS
-    if not isinstance(value, dict) or set(value) not in (
-        required_fields,
-        required_fields | {"candidate"},
-        required_fields | {"commits"},
-        required_fields | {"candidate", "commits"},
+    if (
+        not isinstance(value, dict)
+        or not required_fields.issubset(value)
+        or set(value) - required_fields - OPTIONAL_ENTRY_FIELDS - {"commits"}
     ):
         raise SourceError("the source lock fields are invalid")
     if value["schema"] != "confidential-inference.c8s-admission-source-lock/v1":
@@ -46,8 +46,10 @@ def read_lock(path: Path) -> dict[str, Any]:
         if not isinstance(commits, list) or not commits:
             raise SourceError("the source lock commits list is invalid")
         for entry in commits:
-            if not isinstance(entry, dict) or set(entry) not in (
-                ENTRY_FIELDS, ENTRY_FIELDS | {"candidate"},
+            if (
+                not isinstance(entry, dict)
+                or not ENTRY_FIELDS.issubset(entry)
+                or set(entry) - ENTRY_FIELDS - OPTIONAL_ENTRY_FIELDS
             ):
                 raise SourceError("the source lock commits list contains invalid fields")
             validate_entry(entry, seen_commits)
@@ -89,6 +91,19 @@ def validate_entry(value: dict[str, Any], seen_commits: set[str]) -> None:
         not isinstance(flag, str) or not flag.startswith("--") for flag in flags
     ) or len(set(flags)) != len(flags):
         raise SourceError("the source lock verifier flags are invalid")
+    if "tag" in value and (not isinstance(value["tag"], str) or not value["tag"]):
+        raise SourceError("the source lock tag is invalid")
+    if "capabilities" in value and (
+        not isinstance(value["capabilities"], dict)
+        or set(value["capabilities"]) != {"allowlistCanonicalize"}
+        or not isinstance(value["capabilities"]["allowlistCanonicalize"], bool)
+    ):
+        raise SourceError("the source lock capabilities are invalid")
+    if "attestationProtocol" in value and value["attestationProtocol"] not in {
+        "c8s/attest-pq/v1",
+        "c8s/attest-pq/v1+xwing",
+    }:
+        raise SourceError("the source lock attestation protocol is invalid")
     if "candidate" in value:
         candidate = value["candidate"]
         if (
