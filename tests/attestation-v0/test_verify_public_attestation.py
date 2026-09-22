@@ -639,6 +639,8 @@ print(json.dumps(result))
             )
         )
         self.assertTrue(output["gpuEvidenceVerified"])
+        self.assertEqual(output["gpuAttestationMode"], "receipt-evidence")
+        self.assertFalse(output["gpuBootGateEnforcedByMeasuredImage"])
         self.assertIn("publicTlsSpkiSha256", output)
         self.assertNotIn(self.nonce, result.stdout)
         self.assertNotIn("running", result.stdout.lower())
@@ -1169,6 +1171,10 @@ print(json.dumps(result))
         )
         for entry in SOURCE_LOCK.get("commits", []):
             self.assertEqual(expected_attestation_protocol(entry), XWING)
+        v0265 = next(
+            entry for entry in SOURCE_LOCK["commits"] if entry.get("tag") == "v0.26.5"
+        )
+        self.assertEqual(module["gpu_attestation_mode"](v0265), "measured-boot-gate")
 
     def _minimal_response_and_release(self, module, protocol, gpu_status="raw-receipt-evidence"):
         """Build the small subset validate_response_evidence actually reads."""
@@ -1421,7 +1427,7 @@ print(json.dumps(result))
                 OLD, False,
             )
 
-    def test_gpu_not_exposed_by_c8s_requires_no_gpu_policy(self):
+    def test_gpu_not_exposed_by_c8s_follows_the_pinned_gpu_mode(self):
         sys.path.insert(0, str(SCRIPT.parent))
         try:
             module = runpy.run_path(str(SCRIPT))
@@ -1434,18 +1440,43 @@ print(json.dumps(result))
         attested = (
             self.operator_key_set_digest, {self.operator_digest}, "a" * 96,
         )
-        # No release workload requires GPU evidence: the honest c8s gap is fine.
+        # A release with no GPU policy accepts the status in either mode.
         module["validate_response_evidence"](
             response, release, release_digest, allowlist, canonical,
             self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
             XWING, False, attested,
         )
-        # A release that requires GPU evidence must not accept the gap.
+        # The older receipt-evidence mode requires external GPU evidence.
         with self.assertRaisesRegex(module["VerificationError"], "GPU evidence"):
             module["validate_response_evidence"](
                 response, release, release_digest, allowlist, canonical,
                 self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
                 XWING, True, attested,
+            )
+        # The current measured image enforces the GPU gate before RKE2 starts.
+        # Its protocol intentionally does not expose raw NVIDIA evidence.
+        module["validate_response_evidence"](
+            response, release, release_digest, allowlist, canonical,
+            self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+            XWING, True, attested, "measured-boot-gate",
+        )
+
+    def test_gpu_attestation_mode_defaults_to_receipt_evidence(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        self.assertEqual(module["gpu_attestation_mode"]({}), "receipt-evidence")
+        self.assertEqual(
+            module["gpu_attestation_mode"](
+                {"capabilities": {"gpuAttestationMode": "measured-boot-gate"}}
+            ),
+            "measured-boot-gate",
+        )
+        with self.assertRaisesRegex(module["VerificationError"], "unknown GPU"):
+            module["gpu_attestation_mode"](
+                {"capabilities": {"gpuAttestationMode": "unverified"}}
             )
 
 

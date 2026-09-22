@@ -93,12 +93,17 @@ def validate_entry(value: dict[str, Any], seen_commits: set[str]) -> None:
         raise SourceError("the source lock verifier flags are invalid")
     if "tag" in value and (not isinstance(value["tag"], str) or not value["tag"]):
         raise SourceError("the source lock tag is invalid")
-    if "capabilities" in value and (
-        not isinstance(value["capabilities"], dict)
-        or set(value["capabilities"]) != {"allowlistCanonicalize"}
-        or not isinstance(value["capabilities"]["allowlistCanonicalize"], bool)
-    ):
-        raise SourceError("the source lock capabilities are invalid")
+    if "capabilities" in value:
+        capabilities = value["capabilities"]
+        if (
+            not isinstance(capabilities, dict)
+            or "allowlistCanonicalize" not in capabilities
+            or set(capabilities) - {"allowlistCanonicalize", "gpuAttestationMode"}
+            or not isinstance(capabilities["allowlistCanonicalize"], bool)
+            or capabilities.get("gpuAttestationMode", "receipt-evidence")
+            not in {"receipt-evidence", "measured-boot-gate"}
+        ):
+            raise SourceError("the source lock capabilities are invalid")
     if "attestationProtocol" in value and value["attestationProtocol"] not in {
         "c8s/attest-pq/v1",
         "c8s/attest-pq/v1+xwing",

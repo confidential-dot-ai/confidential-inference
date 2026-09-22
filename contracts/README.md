@@ -38,17 +38,27 @@ declares it instead, in the optional `c8s.attestationProtocol` field:
 - `c8s/attest-pq/v1` (old, production only, c8s `079aeb48`): the receipt
   carries `session_pubkey`. The gateway must not send this value; its absence
   means the old protocol.
-- `c8s/attest-pq/v1+xwing` (new, c8s `466ce79` and `2ef376a8`): the receipt
+- `c8s/attest-pq/v1+xwing` (new, c8s `466ce79`, `152d583`, and `2ef376a8`): the receipt
   carries `xwing_ek`, `xwing_ct`, and `session_id` instead of
-  `session_pubkey`. c8s also removed `gpu_attested`/`nvidia_gpu` from the
-  receipt, so `gpuEvidence.status` may be `not-exposed-by-c8s`, and it folded
-  `GET /allowlist`, so `c8s.activeAllowlist.document` may omit `digests`.
+  `session_pubkey`. It also folded `GET /allowlist`, so
+  `c8s.activeAllowlist.document` may omit `digests`.
 
 `contracts/c8s-admission-source-lock.json` names the protocol each pinned c8s
 commit speaks in a new `attestationProtocol` field on the top-level entry and
 on each `commits` entry. `scripts/verify-public-attestation.py` reads that
 field, not the response, to pick its branch, and then checks that the
 response's own `c8s.attestationProtocol` agrees.
+
+GPU enforcement is a separate source-lock capability. Older entries use
+`receipt-evidence`. The verifier requires raw NVIDIA evidence from each GPU
+worker and verifies it with the pinned c8s GPU verifier. c8s v0.26.5 uses
+`measured-boot-gate`. Its measured node image checks every passed-through GPU
+before RKE2 starts. The systemd dependency blocks RKE2 on failure and powers
+off the node. This mode does not expose raw NVIDIA evidence to the relying
+party. The verifier therefore checks the measured node image and reports the
+boot-gate mode. It does not require raw NVIDIA receipt fields or the external
+attestation CLI. The source lock pins the boot-gate script, unit, and systemd
+preset so this rule fails closed if their source changes.
 
 c8s never binds the allowlist-write operator key set to hardware evidence at
 either commit (see `docs/ratls.md`), so on the new protocol the gateway can

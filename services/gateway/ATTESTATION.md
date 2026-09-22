@@ -39,7 +39,7 @@ The response also includes:
 - The active policy mode: `operator` or `static`.
 - Operator public-key evidence when operator policy is active.
 - The expected and active allowlist digests when static policy is active.
-- Raw NVIDIA evidence copied from each worker receipt.
+- The GPU evidence status exposed by the selected c8s protocol.
 
 Set `GATEWAY_C8S_POLICY_MODE` to `static` for the sealed production policy.
 Set `GATEWAY_EXPECTED_STATIC_ALLOWLIST_SHA256` to the canonical digest of the
@@ -74,17 +74,21 @@ gateway also checks the same operator key set in every receipt. It calculates
 the key-set digest as `SHA256("c8s-operator-key-set-v1\\0" || sorted unique
 SHA256(SPKI-DER))`.
 
-The c8s branch preserves `gpu_attested` and `nvidia_gpu` in worker receipts.
-The gateway copies this raw evidence. A GPU release target must declare `gpu`
-in its release workload. The offline verifier then calls a c8s verifier with
-the derived NVIDIA user nonce and requires `gpu_verified` and
-`nonce_binding_ok`. TLS-LB-local GPU evidence never proves a worker GPU. The
-verifier passes the exact CPU `report_data` as the GPU user nonce; c8s derives
-the per-device nonce internally.
+A GPU release target must declare `gpu` in its release workload. The source
+lock states how its c8s version enforces that policy.
 
-The offline verifier checks that the supplied c8s binary supports the required
-GPU and TLS-LB flags. It fails closed when the pinned c8s source does not yet
-provide them.
+Older c8s entries use `receipt-evidence`. The gateway copies `gpu_attested`
+and `nvidia_gpu` from each worker receipt. The offline verifier calls the c8s
+GPU verifier with the CPU-report-derived nonce. It requires `gpu_verified` and
+`nonce_binding_ok`.
+
+c8s v0.26.5 uses `measured-boot-gate`. The measured node image checks every
+passed-through GPU before RKE2 starts. The required systemd unit blocks RKE2
+and powers off the node if the check fails. The verdict stays inside the node,
+so the gateway reports `not-exposed-by-c8s`. The offline verifier verifies the
+measured node image and does not require raw NVIDIA evidence or an external
+GPU attestation CLI for this mode. The c8s source lock pins the boot-gate
+script, unit, and preset.
 
 The response proves launch or admission facts. It does not prove current
 liveness, request routing, mounts, environment values, or model use.
