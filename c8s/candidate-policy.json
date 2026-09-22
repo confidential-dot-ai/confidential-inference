@@ -76,7 +76,6 @@
             "--san=candidate.api.confidential.ai",
             "--out=/tls/cert.pem",
             "--key-out=/tls/key.pem",
-            "--key-mode=0640",
             "--ca-out=/tls/ca.pem",
             "--initial-retry-timeout=2m",
             "--renew-interval=1h",
@@ -86,8 +85,7 @@
             "--discovery-cds-cert-url=/.well-known/cds-cert.pem",
             "--discovery-public-tls-mode=acme",
             "--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
-            "--reload-watch=/public-tls/tls.crt",
-            "--reload-watch=/public-tls/tls.key"
+            "--ca-watch-interval=1m"
           ]
         },
         {

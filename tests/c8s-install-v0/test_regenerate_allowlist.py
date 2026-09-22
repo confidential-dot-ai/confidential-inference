@@ -34,6 +34,13 @@ class RegenerateAllowlistTests(unittest.TestCase):
                 self.policy, ROOT / "c8s/allowlists/staging.json"
             )
 
+    def test_candidate_allowlist_matches_reviewed_policy_and_rendered_chart(self) -> None:
+        policy = self.module["load_policy"](ROOT / "c8s/candidate-policy.json")
+        documents = self.module["render_application"](policy)
+        workloads = self.module["application_allowlist"](policy, documents)
+        canonical = self.module["compose_mainline"](policy, workloads)
+        self.assertEqual((ROOT / policy["output"]).read_bytes(), canonical + b"\n")
+
     def test_staging_policy_is_repository_local(self) -> None:
         self.assertEqual(
             self.staging_policy["output"], "c8s/allowlists/staging.json"
