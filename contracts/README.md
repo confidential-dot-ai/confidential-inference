@@ -24,7 +24,7 @@ policy mode. It is the retired path: keep it only until that cluster is
 taken down, and add no new environment to it. Every current and future
 environment belongs in `commits[]`, on the shared `c8s/attest-pq/v1+xwing`
 protocol and the shared `requiredVerifierFlags` list -- staging (`466ce79`)
-and conf-inference-prod (`2ef376a8`) already carry identical
+candidate (`152d583`), and conf-inference-prod (`2ef376a8`) carry compatible
 `requiredVerifierFlags`, and `scripts/verify-public-attestation.py` picks
 its branch from that field, never from a hard-coded environment name, so
 no environment needs its own copy of this entry's shape.
