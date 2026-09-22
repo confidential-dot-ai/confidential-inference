@@ -26,6 +26,11 @@ images:
 namedWorkloadProxy:
   enabled: false
 
+c8s:
+  # c8s v0.26.5 uses `router` for the front-door pod label. The chart's
+  # `tls-lb` default applies only to older c8s releases.
+  frontDoorPodLabelName: router
+
 attestationReceipts:
   enabled: true
   gpuEvidenceFlagEnabled: false
