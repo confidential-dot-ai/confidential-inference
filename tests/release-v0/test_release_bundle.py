@@ -644,7 +644,7 @@ class ReleaseBundleTests(unittest.TestCase):
             validate(policies, targets, rendered)
 
     def test_node_socket_capability_is_required(self) -> None:
-        require = runpy.run_path(str(SCRIPT))["require_node_workload_claims"]
+        require = runpy.run_path(str(SCRIPT))["require_attestation_transport"]
         install = json.loads(INSTALL.read_text())
         install["c8s"]["sourceCommit"] = "d" * 40
         for field, value in (
@@ -661,6 +661,18 @@ class ReleaseBundleTests(unittest.TestCase):
             with self.subTest(field=field):
                 with self.assertRaisesRegex(ValueError, "node-CVM|workload-claims|baked-node-socket"):
                     require(candidate)
+
+    def test_node_http_attestation_has_no_socket_contract(self) -> None:
+        require = runpy.run_path(str(SCRIPT))["require_attestation_transport"]
+        install = json.loads(INSTALL.read_text())
+        install["c8s"]["sourceCommit"] = "d" * 40
+        install["c8s"]["capabilities"] = ["node-attestation-http"]
+        install["c8s"].pop("workloadClaimsHostDir")
+        install["c8s"].pop("workloadClaimsSocket")
+        require(install)
+        install["c8s"]["workloadClaimsSocket"] = "attestation-api.sock"
+        with self.assertRaisesRegex(ValueError, "must not declare"):
+            require(install)
 
     def test_strict_mode_rejects_an_unready_source(self) -> None:
         result, _ = self.run_tool(
