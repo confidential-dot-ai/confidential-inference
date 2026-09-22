@@ -44,7 +44,7 @@
     "confosSourceCommit": "e630fd13b5fca9d66c9549faa54427dd027806a4",
     "frontDoorWorkload": "c8s-router",
     "imageTag": "152d583",
-    "installInputDigest": "sha256:b2f5e7c0b23fdc5e07500fd48b4b0440b96decd8213154bd24c69b83e4918ff1",
+    "installInputDigest": "sha256:20877de0e9769d66b606f8897a6cbdcc39e58dde1beba5ff07a70aca5e17a67a",
     "measurements": {
       "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
       "rtmr1": "70f5d4740bab2ead4193c069a156052128854f87835b7828e78b821c31af2e4145fe11ce903686c0650bfb4efb2ade6c",
@@ -114,7 +114,7 @@
   },
   "release": {
     "environment": "candidate",
-    "name": "candidate-v3"
+    "name": "candidate-v4"
   },
   "releaseTrust": {
     "policyPath": "releases/trust/release-signing-policy.json",
@@ -123,7 +123,7 @@
   },
   "schemaVersion": 2,
   "source": {
-    "commit": "1a2bd24248adbe62f2e99de107d6d65b31a4d9d4",
+    "commit": "7e1ac18b20b20258a4931e390caa16c09ff85679",
     "repository": "https://github.com/confidential-dot-ai/confidential-inference"
   },
   "workloads": [
