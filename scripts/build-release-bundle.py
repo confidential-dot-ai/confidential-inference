@@ -43,14 +43,21 @@ class BundleError(ValueError):
     """A deterministic release input is absent or invalid."""
 
 
-def require_node_workload_claims(value: dict[str, Any]) -> None:
+def require_attestation_transport(value: dict[str, Any]) -> None:
     """Require the node-local socket used by the public CDS sidecar."""
     cluster = value.get("cluster", {})
     c8s = value.get("c8s", {})
     if c8s.get("sourceCommit") in LEGACY_C8S_SOURCE_COMMITS:
         return
     if cluster.get("cvmMode") != "node":
-        raise BundleError("the application socket requires node-CVM mode")
+        raise BundleError("the attestation service requires node-CVM mode")
+    capabilities = c8s.get("capabilities", [])
+    if "node-attestation-http" in capabilities:
+        if "baked-node-socket" in capabilities:
+            raise BundleError("the c8s install selects two attestation transports")
+        if "workloadClaimsHostDir" in c8s or "workloadClaimsSocket" in c8s:
+            raise BundleError("node HTTP attestation must not declare a workload-claims socket")
+        return
     if c8s.get("workloadClaimsHostDir") != "/var/run/nri-image-policy":
         raise BundleError("the c8s install must pin the workload-claims host directory")
     if c8s.get("workloadClaimsSocket") != "attestation-api.sock":
@@ -562,7 +569,7 @@ def c8s_release_input(
     except jsonschema.ValidationError as error:
         location = ".".join(str(item) for item in error.absolute_path) or "input"
         raise BundleError(f"the c8s install input fails at {location}: {error.message}") from error
-    require_node_workload_claims(value)
+    require_attestation_transport(value)
     if value["environment"] != environment:
         raise BundleError("the c8s install input environment differs from the release")
     if value["allowlist"]["digest"] != allowlist_digest:
