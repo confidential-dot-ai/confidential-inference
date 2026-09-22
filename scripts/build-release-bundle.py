@@ -44,7 +44,7 @@ class BundleError(ValueError):
 
 
 def require_attestation_transport(value: dict[str, Any]) -> None:
-    """Require the node-local socket used by the public CDS sidecar."""
+    """Require one attestation transport and reject mixed transport inputs."""
     cluster = value.get("cluster", {})
     c8s = value.get("c8s", {})
     if c8s.get("sourceCommit") in LEGACY_C8S_SOURCE_COMMITS:
