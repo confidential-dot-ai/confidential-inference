@@ -1,9 +1,9 @@
 {
   "schema": "confidential.ai/confos-builder-lock/v1",
   "repository": "https://github.com/confidential-dot-ai/confidential-os-builder.git",
-  "commit": "f5a9c24643450ef6cbb857156e77acf3e76d5cee",
-  "c8sSourceCommit": "fd6355414f79c6b3d3657e1abca04a6edc90550f",
-  "c8sImageTag": "079aeb4",
+  "commit": "e630fd13b5fca9d66c9549faa54427dd027806a4",
+  "c8sSourceCommit": "152d58336dfb8ed1aabe515927da1569c8970ca1",
+  "c8sImageTag": "152d583",
   "mkosi": {
     "repository": "https://github.com/systemd/mkosi.git",
     "commit": "84af20892b61c8e177e391f997ded8b4cb5514f2"
