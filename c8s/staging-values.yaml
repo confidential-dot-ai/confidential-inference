@@ -57,10 +57,7 @@ attestationReceipts:
   evidenceEgressCidrs:
     - 192.0.2.1/32
   legacyC8s615: false
-  # This c8s install runs no in-cluster attestation-api Deployment, so c8s
-  # injects get-cert and get-secret with http://$(HOST_IP):8400 and serves no
-  # workload-claims socket. The cds-attest sidecar must use the same endpoint.
-  useNodeAttestationApi: true
+  # cds-attest uses the measured node service at http://$(HOST_IP):8400.
   evidenceBaseUrl: https://staging.api.confidential.ai
   # c8s serves GET /operator-keys on CDS only. The c8s router serves
   # /allowlist, /v1/discovery, /.well-known/c8s/ and the two .well-known PEM

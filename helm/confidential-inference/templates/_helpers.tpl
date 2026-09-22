@@ -2,18 +2,6 @@
 confidential-inference
 {{- end }}
 
-{{- define "confidential-inference.workloadClaimsVolume" -}}
-- name: c8s-workload-claims
-  hostPath:
-    path: /var/run/nri-image-policy
-    type: Directory
-{{- end }}
-
-{{- define "confidential-inference.workloadClaimsSupplementalGroup" -}}
-{{- if and .Values.attestationReceipts.enabled (not .Values.attestationReceipts.legacyC8s615) }}
-supplementalGroups: [65532]
-{{- end }}
-{{- end }}
 {{- define "confidential-inference.labels" -}}
 app.kubernetes.io/part-of: {{ include "confidential-inference.name" . }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
@@ -41,28 +29,16 @@ app.kubernetes.io/component: {{ .component }}
     - --nvidia-gpu-evidence
     {{- end }}
     - --expected-workload={{ .workload }}
-    {{- if or .root.Values.attestationReceipts.legacyC8s615 .root.Values.attestationReceipts.useNodeAttestationApi }}
     - --attestation-api-url=http://$(HOST_IP):{{ .root.Values.attestationReceipts.attestationApiPort }}
-    {{- else }}
-    - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
-    {{- end }}
     - --serving-cert-file=/etc/c8s/certs/tls.crt
     - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
     - --mesh-identity-key-file=/etc/c8s/certs/tls.key
     - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-  {{- if or .root.Values.attestationReceipts.legacyC8s615 .root.Values.attestationReceipts.useNodeAttestationApi }}
   env:
     - name: HOST_IP
       valueFrom:
         fieldRef:
           fieldPath: status.hostIP
-  {{- end }}
-  {{- if not .root.Values.attestationReceipts.legacyC8s615 }}
-  volumeMounts:
-    - name: c8s-workload-claims
-      mountPath: /run/c8s/workload-claims
-      readOnly: true
-  {{- end }}
   {{- if ne .host "127.0.0.1" }}
   ports:
     - name: cds-attest
