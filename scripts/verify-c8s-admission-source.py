@@ -21,20 +21,53 @@ class SourceError(ValueError):
     """The c8s source does not match the approved source lock."""
 
 
+ENTRY_FIELDS = {"commit", "nodeImage", "c8sOperatorImage", "requiredVerifierFlags", "files"}
+OPTIONAL_ENTRY_FIELDS = {"candidate", "tag", "capabilities", "attestationProtocol"}
+
+
 def read_lock(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SourceError("the source lock is not valid JSON") from error
-    required_fields = {
-        "schema", "commit", "nodeImage", "c8sOperatorImage", "requiredVerifierFlags", "files"
-    }
-    if not isinstance(value, dict) or set(value) not in (required_fields, required_fields | {"candidate"}):
+    required_fields = {"schema"} | ENTRY_FIELDS
+    if (
+        not isinstance(value, dict)
+        or not required_fields.issubset(value)
+        or set(value) - required_fields - OPTIONAL_ENTRY_FIELDS - {"commits"}
+    ):
         raise SourceError("the source lock fields are invalid")
     if value["schema"] != "confidential-inference.c8s-admission-source-lock/v1":
         raise SourceError("the source lock schema is invalid")
+    seen_commits: set[str] = set()
+    validate_entry(value, seen_commits)
+    if "commits" in value:
+        commits = value["commits"]
+        if not isinstance(commits, list) or not commits:
+            raise SourceError("the source lock commits list is invalid")
+        for entry in commits:
+            if (
+                not isinstance(entry, dict)
+                or not ENTRY_FIELDS.issubset(entry)
+                or set(entry) - ENTRY_FIELDS - OPTIONAL_ENTRY_FIELDS
+            ):
+                raise SourceError("the source lock commits list contains invalid fields")
+            validate_entry(entry, seen_commits)
+    return value
+
+
+def validate_entry(value: dict[str, Any], seen_commits: set[str]) -> None:
+    """Validate one pinned-commit entry (the top-level entry, or one item of
+    the `commits` list) and record its commit in `seen_commits`.
+
+    Every signed release must use a c8s commit that is one of these entries;
+    an unlisted commit must never verify.
+    """
     if not isinstance(value["commit"], str) or not COMMIT_RE.fullmatch(value["commit"]):
         raise SourceError("the source lock commit is invalid")
+    if value["commit"] in seen_commits:
+        raise SourceError("the source lock pins the same commit twice")
+    seen_commits.add(value["commit"])
     for field in ("nodeImage", "c8sOperatorImage"):
         image = value[field]
         reference, separator, digest = image.rpartition("@") if isinstance(image, str) else ("", "", "")
@@ -58,6 +91,28 @@ def read_lock(path: Path) -> dict[str, Any]:
         not isinstance(flag, str) or not flag.startswith("--") for flag in flags
     ) or len(set(flags)) != len(flags):
         raise SourceError("the source lock verifier flags are invalid")
+    if "tag" in value and (not isinstance(value["tag"], str) or not value["tag"]):
+        raise SourceError("the source lock tag is invalid")
+    if "capabilities" in value:
+        capabilities = value["capabilities"]
+        if (
+            not isinstance(capabilities, dict)
+            or "allowlistCanonicalize" not in capabilities
+            or set(capabilities) - {
+                "allowlistCanonicalize", "gpuAttestationMode", "frontDoorVerification"
+            }
+            or not isinstance(capabilities["allowlistCanonicalize"], bool)
+            or capabilities.get("gpuAttestationMode", "receipt-evidence")
+            not in {"receipt-evidence", "measured-boot-gate"}
+            or capabilities.get("frontDoorVerification", "c8s-cli")
+            not in {"c8s-cli", "external-teerminator"}
+        ):
+            raise SourceError("the source lock capabilities are invalid")
+    if "attestationProtocol" in value and value["attestationProtocol"] not in {
+        "c8s/attest-pq/v1",
+        "c8s/attest-pq/v1+xwing",
+    }:
+        raise SourceError("the source lock attestation protocol is invalid")
     if "candidate" in value:
         candidate = value["candidate"]
         if (
@@ -93,7 +148,6 @@ def read_lock(path: Path) -> dict[str, Any]:
                 raise SourceError("the release-ready c8s candidate source checks are not verified")
         elif candidate["status"] == "release-ready":
             raise SourceError("the release-ready c8s candidate has no source checks")
-    return value
 
 
 def _safe_relative_path(name: str) -> bool:
@@ -115,10 +169,28 @@ def git(repository: Path, arguments: list[str]) -> bytes:
     return result.stdout
 
 
-def verify(repository: Path, lock_path: Path) -> dict[str, Any]:
+def select_entry(lock: dict[str, Any], commit: str | None) -> dict[str, Any]:
+    """Return the pinned entry to verify against.
+
+    With no `--commit`, the top-level entry is used (unchanged behavior for
+    every existing caller). With `--commit`, the top-level entry or one entry
+    of the `commits` list whose `commit` field matches is used; an unlisted
+    commit fails closed rather than silently falling back.
+    """
+    if commit is None:
+        return lock
+    if lock["commit"] == commit:
+        return lock
+    for entry in lock.get("commits", []):
+        if entry["commit"] == commit:
+            return entry
+    raise SourceError("the requested c8s commit is not pinned in the source lock")
+
+
+def verify(repository: Path, lock_path: Path, commit: str | None = None) -> dict[str, Any]:
     if not repository.is_dir() or repository.is_symlink():
         raise SourceError("the c8s repository is invalid")
-    lock = read_lock(lock_path)
+    lock = select_entry(read_lock(lock_path), commit)
     commit = lock["commit"]
     resolved = git(repository, ["rev-parse", f"{commit}^{{commit}}"])
     if resolved.decode("ascii", "strict").strip() != commit:
@@ -166,9 +238,14 @@ def main() -> int:
         type=Path,
         default=Path("contracts/c8s-admission-source-lock.json"),
     )
+    parser.add_argument(
+        "--commit",
+        default=None,
+        help="the pinned c8s commit to verify; defaults to the lock's top-level commit",
+    )
     try:
         args = parser.parse_args()
-        result = verify(args.repository, args.lock)
+        result = verify(args.repository, args.lock, args.commit)
     except (SourceError, UnicodeError) as error:
         print(f"source verification failed: {error}", file=sys.stderr)
         return 1

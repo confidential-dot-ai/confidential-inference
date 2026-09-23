@@ -1,0 +1,207 @@
+# Application chart values for the staging inner cluster.
+#
+# policyMode is operator (dynamic allowlist): the release bundle commits to
+# the operator key set below, and the allowlist is uploaded to CDS after
+# c8s install instead of being sealed in the node image.
+#
+# Parity: the internal environments/values-staging.yaml is the file the
+# deployment reads. Workload-affecting fields (images, argv, cw identities,
+# receipt targets) must stay equal between the two.
+environment: staging
+
+imagePullSecret:
+  name: staging-ghcr-pull
+
+# The node names below are placeholders. The real node names are
+# infrastructure values. They live in the confidential-inference-internal
+# repository, in its environments files, and the deployment reads them from
+# there. The chart renders them into a pod nodeSelector only, so they are
+# not an input to the c8s allowlist.
+scheduling:
+  gatewayNodeName: gateway-node-1
+  inferenceNodeName: inference-node-1
+
+images:
+  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:6d49346d06c3494a30524fbf457c66f512106f435792017237a387eb6b25a6b5
+  sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:4530aa10c1694d8bf492b17d181c4a043f7e05430b011c8fad0b0e8d083f5709
+  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:4530aa10c1694d8bf492b17d181c4a043f7e05430b011c8fad0b0e8d083f5709
+  sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:4530aa10c1694d8bf492b17d181c4a043f7e05430b011c8fad0b0e8d083f5709
+  metricsCollector: docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24
+  dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
+  nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
+  kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
+  # c8s v0.26.1, main-line ghcr image (rke2-tdx-cdi-v0.26.1 node image
+  # family). c8s PRs #638 and #652 fixed the v0.21.x scratch-enforce.sh
+  # virtio-blk serial path that powered every guest off, so the v0.2x line
+  # is usable again. No branch code baked in, so no /workload-proxy binary
+  # (see namedWorkloadProxy below).
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:20c1b7c2f9288d9ef5fd26025957667824081fe978eaf48bc641992872eea7c9
+  stateMounter: docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
+
+namedWorkloadProxy:
+  # OFF on c8s v0.26.1: workload-proxy is branch-only c8s code, absent from
+  # every main-line c8s-operator image (/c8s has no such subcommand at
+  # v0.26.1 and no /workload-proxy binary ships in the image). The previous
+  # staging cluster ran a branch build (079aeb4) that carried the proxy;
+  # the c8s bump drops it, same as conf-inference-prod. The
+  # gateway<->router hop is direct inside the TEE boundary until the proxy
+  # lands on main and the images pin it.
+  enabled: false
+
+attestationReceipts:
+  enabled: true
+  # Placeholder documentation address (RFC 5737). The real egress address is
+  # an infrastructure value in the confidential-inference-internal
+  # repository. The chart renders it into a NetworkPolicy only, so it is not
+  # an input to the c8s allowlist.
+  evidenceEgressCidrs:
+    - 192.0.2.1/32
+  legacyC8s615: false
+  # cds-attest uses the measured node service at http://$(HOST_IP):8400.
+  evidenceBaseUrl: https://staging.api.confidential.ai
+  # c8s serves GET /operator-keys on CDS only. The c8s router serves
+  # /allowlist, /v1/discovery, /.well-known/c8s/ and the two .well-known PEM
+  # paths, and nothing else, so the front door answers this path from the
+  # gateway's own admin API with 401 missing_signature. The gateway reads it
+  # from CDS over RA-TLS instead. The NetworkPolicy workloads-to-c8s-cds
+  # already permits egress to c8s-system on port 8443.
+  # The staging cluster on c8s v0.26.1 is a fresh cluster, not an upgrade of
+  # the previous staging cluster, so the release counter restarts.
+  releaseId: staging-v1
+  # TODO(release-flow): sha256 of the final signed release-bundle.json. Filled
+  # by the release flow after the bundle is built with the real gateway
+  # digest and the live mesh CA, then tagged and signed.
+  releaseBundleSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  policyMode: operator
+  # The operator public key for /v0/staging (Infisical; phase A stored the
+  # key pair). expectedOperatorKeySetSha256 is
+  # sha256("c8s-operator-key-set-v1\0" + the 32 raw bytes of
+  # expectedOperatorPublicKeySha256), the same single-key-set formula
+  # conf-inference-prod uses.
+  expectedOperatorPublicKeySha256: sha256:aa03435a600e84035333fcc2dbb7dcc0c694b6a16674d28aa297c9ad5bcf1431
+  expectedOperatorKeySetSha256: sha256:1899ce71bec3104e8ada101f22f2f6f27154691bbbed572b94d974e264174111
+  targets:
+    - {target: gateway, workload: gateway, identity: gateway, url: http://127.0.0.1:8800}
+    - {target: sglang-router, workload: sglang-router, identity: sglang-router, url: http://sglang-router:8801}
+    - {target: inference-worker-0, workload: inference-worker-0, identity: inference-worker-0, url: http://inference-worker-0-0.inference-workers:8802}
+    - {target: metrics-collector, workload: metrics-collector, identity: metrics-collector, url: http://metrics-collector:8803}
+    - {target: kube-state-metrics, workload: kube-state-metrics, identity: kube-state-metrics, url: http://kube-state-metrics:8804}
+  certificateRenewInterval: 30s
+  gatewayPort: 8800
+  routerPort: 8801
+  firstWorkerPort: 8802
+  metricsCollectorPort: 8803
+  kubeStateMetricsPort: 8804
+  platform: tdx
+  attestationApiPort: 8400
+  resources:
+    requests: {cpu: 25m, memory: 32Mi}
+    limits: {cpu: 250m, memory: 128Mi}
+
+gateway:
+  attestedWorkload: gateway
+  c8sSecrets:
+    apiKeyPepper: {sourcePath: /confidential-inference/gateway/api-key-pepper}
+  secrets:
+    adminSigner:
+      secretName: staging-gateway-admin-mtls
+  service:
+    type: ClusterIP
+  protection:
+    trustedProxyCidrs: [10.52.0.0/16]
+    inferenceConcurrency: 48
+    inferenceQueue: 0
+    queueTimeoutSeconds: 2
+    perAddressConcurrency: 256
+    requestsPerAddressPerSecond: 256
+    perKeyConcurrency: 128
+  # API key registry. "dual" checks the gateway's own table first, then the
+  # snapshot the admin VM pushed, so the gateway keeps working unchanged
+  # while no snapshot has arrived.
+  #
+  # The admin VM pushes each snapshot over the existing signed admin
+  # channel, so this needs no url, no token and no poll interval. The
+  # gateway never calls the admin VM. Until the admin VM pushes its first
+  # snapshot, the gateway's own table answers every key check. That is the
+  # designed fallback, not a defect. The deployment detail lives in the
+  # confidential-inference-internal repository, not here.
+  keyRegistry:
+    mode: dual
+
+  state:
+    enabled: true
+    storageResources: {create: true}
+    absencePolicy: fail-closed
+    startupTimeoutSeconds: 60
+    databasePath: /var/lib/confidential-gateway/gateway.sqlite3
+    mountPath: /var/lib/confidential-gateway
+    claimName: gateway-state
+    persistentVolumeName: gateway-state
+    storageClassName: confidential-inference-gateway-state
+    storageNamespace: kube-system
+    hostStateRootPath: /var/lib/confidential-inference/gateway-state-root
+    hostMountPath: /var/lib/confidential-inference/gateway-state-root/data
+    devicePath: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_confai-gateway-state
+    diskSerial: confai-gateway-state
+    allowFormat: true
+    nodeName: gateway-node-1
+    size: 4Gi
+
+# One inference node, sglang simulator mode, no GPU.
+inference:
+  enabled: true
+  mode: simulator
+  replicas: 1
+  gpusPerReplica: 0
+  gpuArchitectures: []
+  attestedWorkloads: [inference-worker-0]
+  reasoningParser: deepseek-v4
+  autoscaling:
+    enabled: false
+    maxReplicas: 1
+  model:
+    name: deepseek-ai/DeepSeek-V4-Flash-0731
+    revision: 9e165c30e2704aec5d9d593cce3eebd58bbef1cb
+    c8sVolumeSource: /confidential-inference/volumes/dsv4
+    volumeNames: []
+    volumeDirectory: /models
+    mountVerification:
+      timeoutSeconds: 900
+      pollSeconds: 1
+      revisionMetadata: .model-lock-local-manifest.json
+      expectedFiles:
+        .model-lock-local-manifest.json: cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c
+        config.json: 6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023
+        model.safetensors.index.json: 98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b
+        tokenizer_config.json: 6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
+  resources:
+    cpu: 250m
+    memory: 512Mi
+  simulator:
+    outputMode: BLOCKING
+    maxTotalTokens: 8192
+    maxRunningRequests: 48
+    chatTemplate: chatml
+
+router:
+  attestedWorkload: sglang-router
+  enabled: true
+  resources:
+    cpu: 250m
+    memory: 512Mi
+
+metricsCollector:
+  enabled: true
+  attestedWorkload: metrics-collector
+
+kubeStateMetrics:
+  attestedWorkload: kube-state-metrics
+
+mockInference:
+  enabled: false
+
+dcgmExporter:
+  enabled: false
+
+nodeExporter:
+  enabled: false

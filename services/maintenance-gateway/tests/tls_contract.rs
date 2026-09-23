@@ -38,8 +38,7 @@ async fn serves_plain_http_behind_c8s_tls_lb() {
         serde_json::json!({
             "object":"list",
             "data":[
-                {"id":"deepseek-ai/DeepSeek-V4-Flash-0731","object":"model","owned_by":"confidential.ai"},
-                {"id":"MiniMaxAI/MiniMax-M3-MXFP8","object":"model","owned_by":"confidential.ai"}
+                {"id":"deepseek-ai/DeepSeek-V4-Flash-0731","object":"model","owned_by":"confidential.ai"}
             ]
         })
     );

@@ -711,7 +711,9 @@
         "additionalProperties": false,
         "required": [
           "apiKey",
-          "metadata"
+          "metadata",
+          "keyHash",
+          "pepperFingerprint"
         ],
         "properties": {
           "apiKey": {
@@ -725,6 +727,15 @@
           },
           "metadata": {
             "$ref": "#/components/schemas/ApiKeyMetadata"
+          },
+          "keyHash": {
+            "type": "string",
+            "description": "Base64url, no padding, of HMAC-SHA256(pepper, plaintext). The admin key registry stores this hash; it never receives the plaintext."
+          },
+          "pepperFingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Hex SHA-256 fingerprint of the gateway pepper that produced keyHash."
           }
         }
       },

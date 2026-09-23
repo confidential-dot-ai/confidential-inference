@@ -152,8 +152,15 @@ pub trait AttestationProvider: Send + Sync + 'static {
 
 #[derive(Debug)]
 pub enum AttestationError {
-    Unavailable,
-    Invalid,
+    /// The producer could not reach or read an upstream evidence source. The
+    /// string names the step that failed and carries no evidence bytes.
+    Unavailable(String),
+    /// The producer read the evidence and rejected it. The string names the
+    /// check that refused it and carries no evidence bytes.
+    Invalid(String),
+    /// The c8s node speaks a different attestation protocol than this build.
+    /// The string names the cause and comes from the c8s error body.
+    ProtocolMismatch(String),
 }
 
 pub struct UnavailableAttestation;
@@ -161,7 +168,9 @@ pub struct UnavailableAttestation;
 #[async_trait::async_trait]
 impl AttestationProvider for UnavailableAttestation {
     async fn response(&self, _: &[u8; 32]) -> Result<Value, AttestationError> {
-        Err(AttestationError::Unavailable)
+        Err(AttestationError::Unavailable(
+            "this gateway build has no attestation producer configured".to_owned(),
+        ))
     }
 }
 
@@ -723,13 +732,32 @@ async fn attestation_response(
             );
             response
         }
-        Err(AttestationError::Invalid) => {
+        // Every 5xx this handler emits names the step that failed. The
+        // gateway runs where kubelet logs and exec are disabled, so the
+        // response body is the only diagnosis channel. The detail never
+        // carries evidence bytes, key material, or a nonce.
+        Err(AttestationError::Invalid(detail)) => {
             release_failed_nonce(&state, &nonce);
-            client_error(StatusCode::BAD_GATEWAY, "attestation_invalid")
+            detailed_client_error(StatusCode::BAD_GATEWAY, "attestation_invalid", &detail)
         }
-        Err(AttestationError::Unavailable) => {
+        Err(AttestationError::Unavailable(detail)) => {
             release_failed_nonce(&state, &nonce);
-            client_error(StatusCode::SERVICE_UNAVAILABLE, "attestation_unavailable")
+            detailed_client_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "attestation_unavailable",
+                &detail,
+            )
+        }
+        // A protocol mismatch is version skew between this gateway and c8s.
+        // It is not failed attestation, and it gets its own code and a detail
+        // string so the cause is visible in the response itself.
+        Err(AttestationError::ProtocolMismatch(detail)) => {
+            release_failed_nonce(&state, &nonce);
+            detailed_client_error(
+                StatusCode::BAD_GATEWAY,
+                "attestation_protocol_mismatch",
+                &detail,
+            )
         }
     }
 }
@@ -785,6 +813,18 @@ fn client_error(status: StatusCode, code: &'static str) -> Response<Body> {
     (
         status,
         Json(json!({"error":{"code":code,"message":status.canonical_reason().unwrap_or("Request failed.")}})),
+    )
+        .into_response()
+}
+
+fn detailed_client_error(status: StatusCode, code: &'static str, detail: &str) -> Response<Body> {
+    (
+        status,
+        Json(json!({"error":{
+            "code": code,
+            "message": status.canonical_reason().unwrap_or("Request failed."),
+            "detail": detail,
+        }})),
     )
         .into_response()
 }
@@ -875,7 +915,7 @@ mod tests {
     ) -> Router {
         router(
             GatewayConfig {
-                catalog_model_ids: vec!["deepseek".to_owned(), "minimax-m3".to_owned()],
+                catalog_model_ids: vec!["deepseek".to_owned()],
                 inference_model_ids: vec!["deepseek".to_owned()],
                 upstream_base_url: "http://127.0.0.1:1".to_owned(),
                 maximum_body_bytes: 1_024,
@@ -917,8 +957,7 @@ mod tests {
             assert_eq!(
                 serde_json::from_slice::<Value>(&body).unwrap_or_default()["data"],
                 json!([
-                    {"id":"deepseek","object":"model","owned_by":"confidential.ai"},
-                    {"id":"minimax-m3","object":"model","owned_by":"confidential.ai"}
+                    {"id":"deepseek","object":"model","owned_by":"confidential.ai"}
                 ])
             );
         }

@@ -15,7 +15,10 @@ use confidential_gateway::{
     GatewayConfig, TracingAuditSink,
     admin_auth::{AdminRequestVerifier, require_signed_admin_request},
     api_keys::{GatewayState, admin_router},
-    attestation::{C8sAttestationConfig, C8sAttestationProvider},
+    attestation::{
+        C8S_ATTESTATION_PROTOCOL, C8S_ATTESTATION_PROTOCOL_COMMIT, C8sAttestationConfig,
+        C8sAttestationProvider,
+    },
     key_registry::KeyRegistryMode,
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
@@ -23,7 +26,6 @@ use confidential_gateway::{
 };
 use hyper_util::rt::TokioTimer;
 
-const MINIMAX_M3_MODEL_ID: &str = "MiniMaxAI/MiniMax-M3-MXFP8";
 // The gateway must never dial the router Service directly. The c8s
 // workload-proxy client owns this loopback port and provides the authenticated
 // hop to the named router workload.
@@ -64,6 +66,17 @@ struct Args {
     expected_operator_key_set_sha256: String,
     #[arg(long, env = "GATEWAY_C8S_POLICY_MODE", default_value = "operator")]
     c8s_policy_mode: String,
+    // The gateway and c8s run in lockstep on one attestation protocol. c8s
+    // serves the same receipt `version` string in both protocols, so the
+    // gateway cannot detect the protocol from a receipt and must not probe.
+    // This flag exists to make the pin explicit in the deployment, not to
+    // select a second protocol: only the pinned value is accepted.
+    #[arg(
+        long,
+        env = "GATEWAY_C8S_ATTESTATION_PROTOCOL",
+        default_value = "v1-xwing"
+    )]
+    c8s_attestation_protocol: String,
     #[arg(
         long,
         env = "GATEWAY_EXPECTED_STATIC_ALLOWLIST_SHA256",
@@ -251,10 +264,7 @@ async fn main() -> Result<()> {
     .context("load the fail-closed attestation producer")?;
     let protection = protection_config(&args);
     let inference_model_id = args.model;
-    let mut catalog_model_ids = vec![inference_model_id.clone()];
-    if inference_model_id != MINIMAX_M3_MODEL_ID {
-        catalog_model_ids.push(MINIMAX_M3_MODEL_ID.to_owned());
-    }
+    let catalog_model_ids = vec![inference_model_id.clone()];
     let public = router(
         GatewayConfig {
             catalog_model_ids,
@@ -377,6 +387,9 @@ fn protection_config(args: &Args) -> ProtectionConfig {
     }
 }
 
+/// The only value `GATEWAY_C8S_ATTESTATION_PROTOCOL` accepts.
+const PINNED_C8S_ATTESTATION_PROTOCOL: &str = "v1-xwing";
+
 fn validate_args(args: &Args) -> Result<()> {
     if args.environment.is_empty()
         || args.environment.len() > 63
@@ -438,6 +451,11 @@ fn validate_args(args: &Args) -> Result<()> {
     }
     if args.model.is_empty() || args.model.len() > 256 {
         bail!("GATEWAY_MODEL must identify one configured model");
+    }
+    if args.c8s_attestation_protocol != PINNED_C8S_ATTESTATION_PROTOCOL {
+        bail!(
+            "GATEWAY_C8S_ATTESTATION_PROTOCOL must be {PINNED_C8S_ATTESTATION_PROTOCOL}: this build speaks {C8S_ATTESTATION_PROTOCOL} and runs in lockstep with c8s {C8S_ATTESTATION_PROTOCOL_COMMIT}"
+        );
     }
     C8sAttestationProvider::from_config(C8sAttestationConfig {
         targets: &args.c8s_receipt_targets,
@@ -501,6 +519,7 @@ mod tests {
             expected_operator_public_key_sha256: format!("sha256:{}", "2".repeat(64)),
             expected_operator_key_set_sha256: format!("sha256:{}", "3".repeat(64)),
             c8s_policy_mode: "operator".to_owned(),
+            c8s_attestation_protocol: PINNED_C8S_ATTESTATION_PROTOCOL.to_owned(),
             expected_static_allowlist_sha256: String::new(),
             attestation_timeout_seconds: 30,
             attestation_maximum_evidence_bytes: 1_048_576,
@@ -562,7 +581,7 @@ mod tests {
     #[test]
     fn custom_environment_and_receipt_target_contract_pass() {
         let mut value = args();
-        value.environment = "integration-staging".to_owned();
+        value.environment = "staging".to_owned();
         value.model = "staging-simulator".to_owned();
         value.c8s_receipt_targets = "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802".to_owned();
         assert!(validate_args(&value).is_ok());
@@ -571,7 +590,7 @@ mod tests {
     #[test]
     fn configured_environment_accepts_its_explicit_model() {
         let mut value = args();
-        value.environment = "integration-staging".to_owned();
+        value.environment = "staging".to_owned();
         value.c8s_receipt_targets = "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802".to_owned();
         assert!(validate_args(&value).is_ok());
     }
@@ -584,6 +603,16 @@ mod tests {
         value.allow_direct_inference_url = true;
         assert!(validate_args(&value).is_ok());
         value.inference_url = "sglang-router:30000".to_owned();
+        assert!(validate_args(&value).is_err());
+    }
+
+    #[test]
+    fn only_the_pinned_c8s_attestation_protocol_is_accepted() {
+        let mut value = args();
+        assert!(validate_args(&value).is_ok());
+        value.c8s_attestation_protocol = "v1-session-pubkey".to_owned();
+        assert!(validate_args(&value).is_err());
+        value.c8s_attestation_protocol = String::new();
         assert!(validate_args(&value).is_err());
     }
 

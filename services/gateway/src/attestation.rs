@@ -1,33 +1,120 @@
 //! The fail-closed c8s evidence collector.
 
-use std::{
-    io::{BufReader, Cursor},
-    time::Duration,
-};
+use std::{io::Cursor, time::Duration};
 
+use crate::{AttestationError, AttestationProvider};
 use base64::Engine as _;
 use futures_util::StreamExt as _;
+use ml_kem::{FromSeed as _, kem::KeyExport as _};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use url::Url;
-use x509_parser::{
-    prelude::{FromDer, SubjectPublicKeyInfo},
-    public_key::PublicKey,
-};
-
-use crate::{AttestationError, AttestationProvider};
 
 const MAX_METADATA_BYTES: usize = 1_048_576;
-const OPERATOR_KEY_SET_DOMAIN: &[u8] = b"c8s-operator-key-set-v1\0";
-const MAX_OPERATOR_KEY_SET_BYTES: usize = 256 * 1_024;
+/// CDS route a verifier must read over its own attested session to learn the
+/// active c8s operator key set. The gateway cannot read it: the CDS leaf is
+/// self-signed and is trusted through TEE evidence, not a certificate chain.
+const C8S_OPERATOR_KEY_SET_ROUTE: &str = "/operator-keys";
+const MAX_PROTOCOL_ERROR_BYTES: usize = 8 * 1_024;
+const MAX_PROTOCOL_DETAIL_CHARACTERS: usize = 200;
 
-#[derive(Clone, Debug)]
-struct OperatorKeySet {
-    raw_pem: String,
-    canonical_pem: String,
-    digest: String,
-    c8s_digest: String,
-    fingerprints: Vec<String>,
+/// The one c8s attestation protocol this gateway speaks.
+///
+/// c8s kept the receipt `version` string identical across the two protocols,
+/// so a receipt cannot tell the gateway which protocol the node serves. The
+/// gateway must know the protocol before it sends the request. This build is
+/// therefore in lockstep with one pinned c8s commit. A node that serves the
+/// other protocol answers with a 4xx, and the gateway reports
+/// `attestation_protocol_mismatch`.
+pub const C8S_ATTESTATION_PROTOCOL: &str = "c8s/attest-pq/v1+xwing";
+
+/// The pinned c8s commit that serves `C8S_ATTESTATION_PROTOCOL`.
+pub const C8S_ATTESTATION_PROTOCOL_COMMIT: &str = "466ce79";
+
+/// Byte length of one ML-KEM-768 encapsulation key.
+const MLKEM768_ENCAPSULATION_KEY_BYTES: usize = 1_184;
+/// Byte length of one X25519 public key.
+const X25519_PUBLIC_KEY_BYTES: usize = 32;
+/// Byte length of one X-Wing encapsulation key.
+const XWING_ENCAPSULATION_KEY_BYTES: usize =
+    MLKEM768_ENCAPSULATION_KEY_BYTES + X25519_PUBLIC_KEY_BYTES;
+/// Byte length of one X-Wing ciphertext.
+const XWING_CIPHERTEXT_BYTES: usize = 1_120;
+/// Byte length of one c8s session identifier.
+const C8S_SESSION_ID_BYTES: usize = 16;
+
+/// Build one safe detail string for an attestation error.
+///
+/// The string names the step that failed and the exact source line that
+/// raised the error. It never carries evidence bytes, key material, a nonce,
+/// or any response body: a caller reads it to learn *where* the producer
+/// stopped, never *what* the producer read. `sanitize_detail` keeps it to
+/// printable ASCII and bounds its length.
+fn step_detail(reason: &str, line: u32) -> String {
+    sanitize_detail(&format!("{reason} (gateway attestation.rs:{line})"))
+}
+
+/// Raise `AttestationError::Invalid` with a detail that names the step.
+macro_rules! attestation_invalid {
+    ($($argument:tt)*) => {
+        AttestationError::Invalid(step_detail(&format!($($argument)*), line!()))
+    };
+}
+
+/// Raise `AttestationError::Unavailable` with a detail that names the step.
+macro_rules! attestation_unavailable {
+    ($($argument:tt)*) => {
+        AttestationError::Unavailable(step_detail(&format!($($argument)*), line!()))
+    };
+}
+
+/// One ephemeral X-Wing encapsulation key.
+///
+/// X-Wing is the hybrid of ML-KEM-768 and X25519. The encapsulation key is the
+/// ML-KEM-768 encapsulation key followed by the X25519 public key. The gateway
+/// generates one key for each attestation request and never decapsulates, so it
+/// drops both secret keys as soon as the public bytes exist. The key exists
+/// only to bind the receipt to this exact request.
+struct XWingEncapsulationKey {
+    encoded: String,
+}
+
+impl XWingEncapsulationKey {
+    /// Generate one ephemeral X-Wing encapsulation key.
+    fn generate() -> Result<Self, AttestationError> {
+        let mut seed = ml_kem::Seed::default();
+        getrandom::fill(&mut seed[..]).map_err(|_| {
+            attestation_unavailable!("generate one ephemeral X-Wing encapsulation key")
+        })?;
+        let (_decapsulation_key, encapsulation_key) = ml_kem::MlKem768::from_seed(&seed);
+        let mlkem_bytes = encapsulation_key.to_bytes();
+
+        let rng = ring::rand::SystemRandom::new();
+        let x25519_secret =
+            ring::agreement::EphemeralPrivateKey::generate(&ring::agreement::X25519, &rng)
+                .map_err(|_| {
+                    attestation_unavailable!("generate one ephemeral X-Wing encapsulation key")
+                })?;
+        let x25519_public = x25519_secret.compute_public_key().map_err(|_| {
+            attestation_unavailable!("generate one ephemeral X-Wing encapsulation key")
+        })?;
+
+        let mut material = Vec::with_capacity(XWING_ENCAPSULATION_KEY_BYTES);
+        material.extend_from_slice(mlkem_bytes.as_slice());
+        material.extend_from_slice(x25519_public.as_ref());
+        if material.len() != XWING_ENCAPSULATION_KEY_BYTES {
+            return Err(attestation_unavailable!(
+                "generate one ephemeral X-Wing encapsulation key"
+            ));
+        }
+        Ok(Self {
+            encoded: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&material),
+        })
+    }
+
+    fn as_str(&self) -> &str {
+        &self.encoded
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -43,7 +130,6 @@ struct ReceiptTarget {
 struct CollectedEvidence {
     receipts: Vec<Value>,
     mesh_ca_sha256: String,
-    operator_keys: Option<OperatorKeySet>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,21 +222,8 @@ impl C8sAttestationProvider {
             .connect_timeout(config.timeout.min(Duration::from_secs(10)))
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none());
-        if let Ok(mesh_ca_pem) = std::fs::read("/etc/c8s/certs/ca.crt") {
-            let mut added = 0usize;
-            let mut rest: &[u8] = &mesh_ca_pem;
-            while !rest.is_empty() {
-                let (remaining, pem) = x509_parser::pem::parse_x509_pem(rest)
-                    .map_err(|_| "the c8s mesh CA bundle is invalid".to_owned())?;
-                let cert = reqwest::Certificate::from_der(&pem.contents)
-                    .map_err(|_| "the c8s mesh CA certificate is invalid".to_owned())?;
-                client_builder = client_builder.add_root_certificate(cert);
-                added += 1;
-                rest = remaining;
-            }
-            if added == 0 {
-                return Err("the c8s mesh CA bundle is empty".to_owned());
-            }
+        for cert in mesh_ca_certificates()? {
+            client_builder = client_builder.add_root_certificate(cert);
         }
         let http = client_builder
             .build()
@@ -176,37 +249,57 @@ impl C8sAttestationProvider {
         target: &ReceiptTarget,
         nonce: &str,
     ) -> Result<Value, AttestationError> {
-        let ready_url = target
-            .base_url
-            .join("readyz")
-            .map_err(|_| AttestationError::Invalid)?;
-        let ready = self
-            .http
-            .get(ready_url)
-            .send()
-            .await
-            .map_err(|_| AttestationError::Unavailable)?;
+        let ready_url = target.base_url.join("readyz").map_err(|_| {
+            attestation_invalid!("target {} has an unusable readyz URL", target.target)
+        })?;
+        let ready = self.http.get(ready_url).send().await.map_err(|_| {
+            attestation_unavailable!(
+                "GET readyz on the {} cds-attest sidecar did not connect",
+                target.target
+            )
+        })?;
         if !ready.status().is_success() {
-            return Err(AttestationError::Unavailable);
+            return Err(attestation_unavailable!(
+                "GET readyz on the {} cds-attest sidecar answered {}",
+                target.target,
+                ready.status().as_u16()
+            ));
         }
         read_bounded(ready, 4_096).await?;
 
-        let mut receipt_url = target
+        let receipt_url = target
             .base_url
             .join(".well-known/c8s/attest-pq")
-            .map_err(|_| AttestationError::Invalid)?;
-        receipt_url.query_pairs_mut().append_pair("nonce", nonce);
+            .map_err(|_| {
+                attestation_invalid!("target {} has an unusable attest-pq URL", target.target)
+            })?;
+        // The c8s attest-pq endpoint is client-first at the pinned commit: the
+        // gateway POSTs the nonce and one ephemeral X-Wing encapsulation key,
+        // and c8s echoes that key in the receipt it signs.
+        let encapsulation_key = XWingEncapsulationKey::generate()?;
         let response = self
             .http
-            .get(receipt_url)
+            .post(receipt_url)
+            .json(&json!({"nonce": nonce, "xwing_ek": encapsulation_key.as_str()}))
             .send()
             .await
-            .map_err(|_| AttestationError::Unavailable)?;
-        require_success(&response)?;
+            .map_err(|_| {
+                attestation_unavailable!(
+                    "POST attest-pq on the {} cds-attest sidecar did not connect",
+                    target.target
+                )
+            })?;
+        let response = require_protocol_success(response, &target.target).await?;
         let body = read_bounded(response, self.maximum_receipt_bytes).await?;
-        let receipt: Value =
-            serde_json::from_slice(&body).map_err(|_| AttestationError::Invalid)?;
-        validate_standard_receipt(&receipt, nonce, "c8s/attest-pq/v1")?;
+        let receipt: Value = serde_json::from_slice(&body).map_err(|_| {
+            attestation_invalid!("the {} attest-pq receipt is not JSON", target.target)
+        })?;
+        validate_standard_receipt(
+            &receipt,
+            nonce,
+            "c8s/attest-pq/v1",
+            Some(encapsulation_key.as_str()),
+        )?;
         Ok(receipt)
     }
 
@@ -214,19 +307,19 @@ impl C8sAttestationProvider {
         let mut url = self
             .evidence_base_url
             .join(".well-known/c8s/attest-lb")
-            .map_err(|_| AttestationError::Invalid)?;
+            .map_err(|_| attestation_invalid!("the attest-lb URL is unusable"))?;
         url.query_pairs_mut().append_pair("nonce", nonce);
         let response = self
             .http
             .get(url)
             .send()
             .await
-            .map_err(|_| AttestationError::Unavailable)?;
-        require_success(&response)?;
+            .map_err(|_| attestation_unavailable!("GET attest-lb did not connect"))?;
+        require_success(&response, "GET attest-lb")?;
         let body = read_bounded(response, self.maximum_receipt_bytes).await?;
-        let receipt: Value =
-            serde_json::from_slice(&body).map_err(|_| AttestationError::Invalid)?;
-        validate_standard_receipt(&receipt, nonce, "c8s/attest-lb/v1")?;
+        let receipt: Value = serde_json::from_slice(&body)
+            .map_err(|_| attestation_invalid!("the attest-lb receipt is not JSON"))?;
+        validate_standard_receipt(&receipt, nonce, "c8s/attest-lb/v1", None)?;
         Ok(receipt)
     }
 
@@ -238,16 +331,17 @@ impl C8sAttestationProvider {
         let url = self
             .evidence_base_url
             .join(path)
-            .map_err(|_| AttestationError::Invalid)?;
+            .map_err(|_| attestation_invalid!("the {path} URL is unusable"))?;
         let response = self
             .http
             .get(url)
             .send()
             .await
-            .map_err(|_| AttestationError::Unavailable)?;
-        require_success(&response)?;
+            .map_err(|_| attestation_unavailable!("GET {path} did not connect"))?;
+        require_success(&response, &format!("GET {path}"))?;
         let bytes = read_bounded(response, limit).await?;
-        let document = serde_json::from_slice(&bytes).map_err(|_| AttestationError::Invalid)?;
+        let document = serde_json::from_slice(&bytes)
+            .map_err(|_| attestation_invalid!("the {path} document is not JSON"))?;
         Ok((document, bytes))
     }
 
@@ -258,21 +352,12 @@ impl C8sAttestationProvider {
     ) -> Result<CollectedEvidence, AttestationError> {
         let mut receipts = Vec::with_capacity(self.targets.len());
         let mut mesh_ca_sha256 = None;
-        let mut operator_keys: Option<OperatorKeySet> = None;
         for target in &self.targets {
             let identity = policy_identity(allowlist, &target.workload)?;
             if identity != target.identity {
-                return Err(AttestationError::Invalid);
+                return Err(attestation_invalid!("collect_workload_evidence"));
             }
             let receipt = self.fetch_receipt(target, nonce).await?;
-            if self.policy_mode == PolicyMode::Operator {
-                let receipt_operator_keys = receipt_operator_key_set(&receipt)?;
-                if let Some(expected) = &operator_keys {
-                    require_matching_operator_keys(expected, &receipt_operator_keys)?;
-                } else {
-                    operator_keys = Some(receipt_operator_keys);
-                }
-            }
             let receipt_mesh_ca = receipt_mesh_ca_sha256(&receipt)?;
             require_matching_mesh_ca(mesh_ca_sha256.as_deref(), &receipt_mesh_ca)?;
             mesh_ca_sha256.get_or_insert(receipt_mesh_ca);
@@ -286,8 +371,8 @@ impl C8sAttestationProvider {
         }
         Ok(CollectedEvidence {
             receipts,
-            mesh_ca_sha256: mesh_ca_sha256.ok_or(AttestationError::Invalid)?,
-            operator_keys,
+            mesh_ca_sha256: mesh_ca_sha256
+                .ok_or(attestation_invalid!("collect_workload_evidence"))?,
         })
     }
 
@@ -301,16 +386,6 @@ impl C8sAttestationProvider {
             return Ok(None);
         }
         let receipt = self.fetch_front_door_receipt(nonce).await?;
-        if self.policy_mode == PolicyMode::Operator {
-            let receipt_operator_keys = receipt_operator_key_set(&receipt)?;
-            require_matching_operator_keys(
-                evidence
-                    .operator_keys
-                    .as_ref()
-                    .ok_or(AttestationError::Invalid)?,
-                &receipt_operator_keys,
-            )?;
-        }
         let receipt_mesh_ca = receipt_mesh_ca_sha256(&receipt)?;
         require_matching_mesh_ca(Some(&evidence.mesh_ca_sha256), &receipt_mesh_ca)?;
         Ok(Some(json!({"source": "c8s-tls-lb", "receipt": receipt})))
@@ -332,58 +407,65 @@ impl AttestationProvider for C8sAttestationProvider {
         let tls_mode = discovery
             .pointer("/public_tls/mode")
             .and_then(Value::as_str)
-            .ok_or(AttestationError::Invalid)?;
+            .ok_or(attestation_invalid!(
+                "the c8s discovery document declares no public TLS mode"
+            ))?;
 
         let active_allowlist_sha256 = sha256_digest(&canonical_allowlist);
         if self.policy_mode == PolicyMode::Static
             && active_allowlist_sha256 != self.expected_static_allowlist_sha256
         {
-            return Err(AttestationError::Invalid);
+            return Err(attestation_invalid!(
+                "the active allowlist does not match the static allowlist digest this build pins"
+            ));
         }
         let evidence = self.collect_workload_evidence(&allowlist, &nonce).await?;
         let front_door = self
             .collect_front_door_evidence(&nonce, tls_mode, &evidence)
             .await?;
-        if self.policy_mode == PolicyMode::Operator {
-            let operator_keys = evidence
-                .operator_keys
-                .as_ref()
-                .ok_or(AttestationError::Invalid)?;
-            if operator_keys.digest != self.expected_operator_key_set_sha256
-                || !operator_keys
-                    .fingerprints
-                    .iter()
-                    .any(|fingerprint| fingerprint == &self.expected_operator_public_key_sha256)
-            {
-                return Err(AttestationError::Invalid);
-            }
-        }
 
-        let policy_trust = match self.policy_mode {
+        // c8s removed the operator key set from the receipt at the pinned
+        // commit, and the gateway cannot read it either: CDS serves
+        // `GET /operator-keys` over RA-TLS behind a self-signed certificate
+        // whose trust comes from a TEE evidence extension and a pinned launch
+        // measurement, not from any certificate authority. No CA-trusting TLS
+        // client can verify that certificate. So the gateway publishes only
+        // the pinned expectation and names the route the verifier must read
+        // for itself, over its own attested CDS session.
+        let mut trust = match self.policy_mode {
             PolicyMode::Static => json!({
-                "mode": "static",
-                "expectedAllowlistSha256": self.expected_static_allowlist_sha256,
-                "activeAllowlistSha256": active_allowlist_sha256,
-                "status": "evidence-present-requires-independent-verification",
-                "reason": "verify the sealed allowlist extension and embedded TEE evidence in the returned mesh CA chain",
+                "policyTrust": {
+                    "mode": "static",
+                    "expectedAllowlistSha256": self.expected_static_allowlist_sha256,
+                    "activeAllowlistSha256": active_allowlist_sha256,
+                    "status": "evidence-present-requires-independent-verification",
+                    "reason": "verify the sealed allowlist extension and embedded TEE evidence in the returned mesh CA chain",
+                }
             }),
-            PolicyMode::Operator => {
-                let operator_keys = evidence
-                    .operator_keys
-                    .as_ref()
-                    .ok_or(AttestationError::Invalid)?;
-                json!({
-                    "mode": "operator",
+            PolicyMode::Operator => json!({
+                "operatorTrust": {
                     "expectedPublicKeySpkiSha256": self.expected_operator_public_key_sha256,
                     "expectedKeySetSha256": self.expected_operator_key_set_sha256,
-                    "activeKeySetSha256": operator_keys.digest,
-                    "activeKeySetPem": operator_keys.canonical_pem,
-                    "activeKeySetC8sSha256": operator_keys.c8s_digest,
-                    "status": "evidence-present-and-release-matched",
-                    "reason": "the active operator key set was copied from every nonce-bound c8s receipt and matched the release commitment",
-                })
-            }
+                    "activeKeySetStatus": "requires-attested-cds-read",
+                    "cdsAttestedReadHint": C8S_OPERATOR_KEY_SET_ROUTE,
+                    "reason": "c8s binds this key set to no hardware evidence and serves it only on the CDS RA-TLS route named by cdsAttestedReadHint; read that route yourself over an attested CDS session with a pinned launch measurement, compute the c8s key-set digest, and compare it with expectedKeySetSha256",
+                }
+            }),
         };
+
+        let mut c8s = json!({
+            "discovery": discovery,
+            "activeAllowlist": {
+                "sha256": active_allowlist_sha256,
+                "document": allowlist,
+            },
+            "attestationProtocol": C8S_ATTESTATION_PROTOCOL,
+            "attestationProtocolC8sCommit": C8S_ATTESTATION_PROTOCOL_COMMIT,
+            "meshCaSha256": evidence.mesh_ca_sha256,
+        });
+        if let (Some(target), Some(source)) = (c8s.as_object_mut(), trust.as_object_mut()) {
+            target.append(source);
+        }
 
         Ok(json!({
             "schemaVersion": 2,
@@ -395,15 +477,7 @@ impl AttestationProvider for C8sAttestationProvider {
                 "bundleSha256": self.release_bundle_sha256,
                 "source": "operator-selected-public-release",
             },
-            "c8s": {
-                "discovery": discovery,
-                "activeAllowlist": {
-                    "sha256": active_allowlist_sha256,
-                    "document": allowlist,
-                },
-                "policyTrust": policy_trust,
-                "meshCaSha256": evidence.mesh_ca_sha256,
-            },
+            "c8s": c8s,
             "tls": {"mode": tls_mode, "binding": tls_binding(tls_mode)},
             "frontDoor": front_door,
             "gpuEvidence": gpu_evidence(&evidence.receipts),
@@ -412,22 +486,13 @@ impl AttestationProvider for C8sAttestationProvider {
     }
 }
 
-fn require_matching_operator_keys(
-    expected: &OperatorKeySet,
-    actual: &OperatorKeySet,
-) -> Result<(), AttestationError> {
-    if expected.raw_pem == actual.raw_pem && expected.digest == actual.digest {
-        Ok(())
-    } else {
-        Err(AttestationError::Invalid)
-    }
-}
-
 fn require_matching_mesh_ca(expected: Option<&str>, actual: &str) -> Result<(), AttestationError> {
     if expected.is_none_or(|value| value == actual) {
         Ok(())
     } else {
-        Err(AttestationError::Invalid)
+        Err(attestation_invalid!(
+            "the collected receipts disagree on the mesh CA digest"
+        ))
     }
 }
 
@@ -470,6 +535,17 @@ fn gpu_evidence(receipts: &[Value]) -> Value {
             })
         })
         .collect::<Vec<_>>();
+    if evidence.is_empty() {
+        // c8s deleted gpu_attested and nvidia_gpu from the receipt at the
+        // pinned commit. A CPU-only node set and a GPU node set both return no
+        // GPU field, so the gateway must not claim GPU evidence it does not
+        // hold.
+        return json!({
+            "status": "not-exposed-by-c8s",
+            "evidence": [],
+            "reason": "the pinned c8s protocol serves no gpu_attested or nvidia_gpu field, so this response carries no GPU evidence; a GPU claim needs the c8s attestation API",
+        });
+    }
     json!({
         "status": "raw-receipt-evidence",
         "evidence": evidence,
@@ -477,14 +553,96 @@ fn gpu_evidence(receipts: &[Value]) -> Value {
     })
 }
 
-fn require_success(response: &reqwest::Response) -> Result<(), AttestationError> {
+fn require_success(response: &reqwest::Response, step: &str) -> Result<(), AttestationError> {
+    let status = response.status().as_u16();
     if response.status().is_success() {
         Ok(())
     } else if response.status().is_server_error() {
-        Err(AttestationError::Unavailable)
+        Err(attestation_unavailable!("{step} answered {status}"))
     } else {
-        Err(AttestationError::Invalid)
+        Err(attestation_invalid!("{step} answered {status}"))
     }
+}
+
+/// Separate a protocol mismatch from invalid evidence.
+///
+/// c8s answers a request in the other protocol with a 4xx and a JSON error
+/// body. That is a version skew between this gateway and the node, not a
+/// failed attestation. The gateway reports it as its own error code and copies
+/// the c8s message, so an operator can name the cause without reading logs.
+async fn require_protocol_success(
+    response: reqwest::Response,
+    target: &str,
+) -> Result<reqwest::Response, AttestationError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    if status.is_server_error() {
+        let code = status.as_u16();
+        let body = read_bounded(response, MAX_PROTOCOL_ERROR_BYTES)
+            .await
+            .unwrap_or_default();
+        let c8s = c8s_error_code(&body);
+        return Err(attestation_unavailable!(
+            "POST attest-pq on the {target} cds-attest sidecar answered {code} {c8s}"
+        ));
+    }
+    let body = read_bounded(response, MAX_PROTOCOL_ERROR_BYTES)
+        .await
+        .unwrap_or_default();
+    Err(AttestationError::ProtocolMismatch(protocol_detail(
+        status.as_u16(),
+        &body,
+    )))
+}
+
+/// Read the c8s error code out of one c8s JSON error body.
+///
+/// c8s answers an error with `{"error": "<code>", "message": "..."}`. Only the
+/// code is copied, never the message and never any other field, so no upstream
+/// body content can reach the public response through this path.
+fn c8s_error_code(body: &[u8]) -> String {
+    let document = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    let code = document
+        .get("error")
+        .and_then(Value::as_str)
+        .or_else(|| document.get("code").and_then(Value::as_str))
+        .unwrap_or("with no c8s error code");
+    sanitize_detail(code)
+}
+
+/// Build one safe, short description of a c8s protocol error.
+fn protocol_detail(status: u16, body: &[u8]) -> String {
+    let document = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    let code = document
+        .get("error")
+        .and_then(Value::as_str)
+        .or_else(|| document.get("code").and_then(Value::as_str))
+        .unwrap_or("unknown");
+    let message = document
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("the c8s node returned no message");
+    let detail = format!(
+        "c8s .well-known/c8s/attest-pq answered {status} {code}: {message}; this gateway speaks {C8S_ATTESTATION_PROTOCOL} (c8s {C8S_ATTESTATION_PROTOCOL_COMMIT})"
+    );
+    sanitize_detail(&detail)
+}
+
+/// Keep printable ASCII only, and bound the length.
+fn sanitize_detail(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_graphic() || character == ' ' {
+                character
+            } else {
+                ' '
+            }
+        })
+        .take(MAX_PROTOCOL_DETAIL_CHARACTERS)
+        .collect()
 }
 
 fn parse_targets(targets: &str) -> Result<Vec<ReceiptTarget>, String> {
@@ -535,6 +693,32 @@ fn parse_targets(targets: &str) -> Result<Vec<ReceiptTarget>, String> {
     Ok(parsed)
 }
 
+/// Read the c8s mesh CA bundle every c8s workload pod carries.
+///
+/// The `get-cert` init container writes it to `/etc/c8s/certs/ca.crt`. An
+/// absent file yields an empty list: a `WebPKI` front door needs no extra root,
+/// and the evidence client only ever ADDS these roots.
+fn mesh_ca_certificates() -> Result<Vec<reqwest::Certificate>, String> {
+    let Ok(mesh_ca_pem) = std::fs::read("/etc/c8s/certs/ca.crt") else {
+        return Ok(Vec::new());
+    };
+    let mut certificates = Vec::new();
+    let mut rest: &[u8] = &mesh_ca_pem;
+    while !rest.is_empty() {
+        let (remaining, pem) = x509_parser::pem::parse_x509_pem(rest)
+            .map_err(|_| "the c8s mesh CA bundle is invalid".to_owned())?;
+        certificates.push(
+            reqwest::Certificate::from_der(&pem.contents)
+                .map_err(|_| "the c8s mesh CA certificate is invalid".to_owned())?,
+        );
+        rest = remaining;
+    }
+    if certificates.is_empty() {
+        return Err("the c8s mesh CA bundle is empty".to_owned());
+    }
+    Ok(certificates)
+}
+
 fn parse_evidence_base_url(value: &str) -> Result<Url, String> {
     let url = Url::parse(value).map_err(|_| "the c8s evidence URL is invalid".to_owned())?;
     let loopback_http = url.scheme() == "http"
@@ -581,122 +765,20 @@ fn validate_discovery(value: &Value) -> Result<(), AttestationError> {
             .pointer("/attestation/evidence")
             .is_some_and(Value::is_object)
     {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!(
+            "the c8s discovery document failed its shape check"
+        ));
     }
     Ok(())
-}
-
-/// Parse and commit to c8s's canonical operator public-key set.
-///
-/// c8s hashes each PKIX/SPKI DER key, sorts and de-duplicates those hashes,
-/// then hashes the domain separator and the resulting hashes. The PEM text is
-/// only a transport format and is canonicalized before it is returned.
-fn canonical_operator_key_set(bytes: &[u8]) -> Result<OperatorKeySet, AttestationError> {
-    if bytes.is_empty() || bytes.len() > MAX_OPERATOR_KEY_SET_BYTES {
-        return Err(AttestationError::Invalid);
-    }
-    let mut reader = BufReader::new(bytes);
-    let items = rustls_pemfile::read_all(&mut reader)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| AttestationError::Invalid)?;
-    let mut ders = Vec::<Vec<u8>>::new();
-    for item in items {
-        let der = match item {
-            rustls_pemfile::Item::SubjectPublicKeyInfo(key) => key.as_ref().to_vec(),
-            // c8s ignores other PEM blocks. In particular, do not copy a
-            // certificate or private-key block into the public policy.
-            _ => continue,
-        };
-        let (remaining, spki) =
-            SubjectPublicKeyInfo::from_der(&der).map_err(|_| AttestationError::Invalid)?;
-        if !remaining.is_empty() || !matches!(spki.parsed(), Ok(PublicKey::EC(_))) {
-            return Err(AttestationError::Invalid);
-        }
-        ders.push(der);
-    }
-    if ders.is_empty() {
-        return Err(AttestationError::Invalid);
-    }
-
-    let mut fingerprints = ders
-        .iter()
-        .map(|der| Sha256::digest(der).to_vec())
-        .collect::<Vec<_>>();
-    fingerprints.sort();
-    fingerprints.dedup();
-    let mut commitment = Sha256::new();
-    commitment.update(OPERATOR_KEY_SET_DOMAIN);
-    for fingerprint in &fingerprints {
-        commitment.update(fingerprint);
-    }
-
-    // Sort the public PEM output by the same fingerprint order. This makes
-    // the raw evidence stable across c8s and gateway implementations.
-    let mut indexed = ders
-        .into_iter()
-        .map(|der| (Sha256::digest(&der).to_vec(), der))
-        .collect::<Vec<_>>();
-    indexed.sort_by(|left, right| left.0.cmp(&right.0));
-    indexed.dedup_by(|left, right| left.0 == right.0);
-    let canonical_pem = indexed
-        .iter()
-        .map(|(_, der)| pem_public_key(der))
-        .collect::<String>();
-    let digest_bytes = commitment.finalize();
-    let digest_hex = hex::encode(digest_bytes);
-    Ok(OperatorKeySet {
-        raw_pem: String::from_utf8(bytes.to_vec()).map_err(|_| AttestationError::Invalid)?,
-        canonical_pem,
-        digest: format!("sha256:{digest_hex}"),
-        c8s_digest: digest_hex,
-        fingerprints: fingerprints
-            .into_iter()
-            .map(|fingerprint| format!("sha256:{}", hex::encode(fingerprint)))
-            .collect(),
-    })
-}
-
-fn receipt_operator_key_set(receipt: &Value) -> Result<OperatorKeySet, AttestationError> {
-    let pem = receipt
-        .get("operator_keys_pem")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty() && value.len() <= MAX_OPERATOR_KEY_SET_BYTES)
-        .ok_or(AttestationError::Invalid)?;
-    let c8s_digest = receipt
-        .get("operator_keys_sha256")
-        .and_then(Value::as_str)
-        .filter(|value| {
-            value.len() == 64
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        })
-        .ok_or(AttestationError::Invalid)?;
-    let mut policy = canonical_operator_key_set(pem.as_bytes())?;
-    if policy.c8s_digest != c8s_digest {
-        return Err(AttestationError::Invalid);
-    }
-    pem.clone_into(&mut policy.raw_pem);
-    Ok(policy)
-}
-
-fn pem_public_key(der: &[u8]) -> String {
-    let encoded = base64::engine::general_purpose::STANDARD.encode(der);
-    let mut pem = String::from("-----BEGIN PUBLIC KEY-----\n");
-    for chunk in encoded.as_bytes().chunks(64) {
-        // STANDARD encoding only emits ASCII.
-        pem.push_str(std::str::from_utf8(chunk).unwrap_or_default());
-        pem.push('\n');
-    }
-    pem.push_str("-----END PUBLIC KEY-----\n");
-    pem
 }
 
 fn validate_allowlist(value: &Value, bytes: &[u8]) -> Result<Vec<u8>, AttestationError> {
     if value.get("schema").and_then(Value::as_str) != Some("c8s.allowlist/v1")
         || !value.get("workloads").is_some_and(Value::is_object)
     {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!(
+            "the c8s allowlist document failed its shape check"
+        ));
     }
     // c8s serves the allowlist in two shapes. The branch this gateway was
     // built against (c8s 079aeb48, goal/production-attestation) serves a
@@ -710,7 +792,9 @@ fn validate_allowlist(value: &Value, bytes: &[u8]) -> Result<Vec<u8>, Attestatio
     match value.get("digests") {
         Some(digests) => {
             if !digests.is_object() {
-                return Err(AttestationError::Invalid);
+                return Err(attestation_invalid!(
+                    "the c8s allowlist document failed its shape check"
+                ));
             }
         }
         None => validate_folded_workload_digests(value)?,
@@ -726,7 +810,9 @@ fn validate_allowlist(value: &Value, bytes: &[u8]) -> Result<Vec<u8>, Attestatio
         || canonical.contains(&b'\n')
         || canonical.contains(&b'\r')
     {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!(
+            "the c8s allowlist document failed its shape check"
+        ));
     }
     Ok(canonical.to_vec())
 }
@@ -737,12 +823,17 @@ fn validate_allowlist(value: &Value, bytes: &[u8]) -> Result<Vec<u8>, Attestatio
 /// container in a workload entry. A container list that is null or absent
 /// carries no containers to check; Go serves an empty slice as either.
 fn validate_folded_workload_digests(value: &Value) -> Result<(), AttestationError> {
-    let workloads = value
-        .get("workloads")
-        .and_then(Value::as_object)
-        .ok_or(AttestationError::Invalid)?;
+    let workloads =
+        value
+            .get("workloads")
+            .and_then(Value::as_object)
+            .ok_or(attestation_invalid!(
+                "the folded allowlist workload digests failed their shape check"
+            ))?;
     for entry in workloads.values() {
-        let entry = entry.as_object().ok_or(AttestationError::Invalid)?;
+        let entry = entry.as_object().ok_or(attestation_invalid!(
+            "the folded allowlist workload digests failed their shape check"
+        ))?;
         for key in ["initContainers", "containers"] {
             let Some(list) = entry.get(key) else {
                 continue;
@@ -751,15 +842,22 @@ fn validate_folded_workload_digests(value: &Value) -> Result<(), AttestationErro
                 if list.is_null() {
                     continue;
                 }
-                return Err(AttestationError::Invalid);
+                return Err(attestation_invalid!(
+                    "the folded allowlist workload digests failed their shape check"
+                ));
             };
             for container in containers {
-                let digest = container
-                    .get("digest")
-                    .and_then(Value::as_str)
-                    .ok_or(AttestationError::Invalid)?;
+                let digest =
+                    container
+                        .get("digest")
+                        .and_then(Value::as_str)
+                        .ok_or(attestation_invalid!(
+                            "the folded allowlist workload digests failed their shape check"
+                        ))?;
                 if !valid_sha256_digest(digest) {
-                    return Err(AttestationError::Invalid);
+                    return Err(attestation_invalid!(
+                        "the folded allowlist workload digests failed their shape check"
+                    ));
                 }
             }
         }
@@ -771,17 +869,26 @@ fn admitted_launch(allowlist: &Value, workload: &str) -> Result<Value, Attestati
     let policy = allowlist
         .pointer(&format!("/workloads/{}", escape_pointer(workload)))
         .and_then(Value::as_object)
-        .ok_or(AttestationError::Invalid)?;
+        .ok_or(attestation_invalid!(
+            "an allowlist entry carries no admitted launch measurement"
+        ))?;
     let init_containers = policy
         .get("initContainers")
         .and_then(Value::as_array)
-        .ok_or(AttestationError::Invalid)?;
-    let containers = policy
-        .get("containers")
-        .and_then(Value::as_array)
-        .ok_or(AttestationError::Invalid)?;
+        .ok_or(attestation_invalid!(
+            "an allowlist entry carries no admitted launch measurement"
+        ))?;
+    let containers =
+        policy
+            .get("containers")
+            .and_then(Value::as_array)
+            .ok_or(attestation_invalid!(
+                "an allowlist entry carries no admitted launch measurement"
+            ))?;
     if containers.is_empty() {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!(
+            "an allowlist entry carries no admitted launch measurement"
+        ));
     }
     let init_launches = init_containers
         .iter()
@@ -802,30 +909,36 @@ fn policy_identity(allowlist: &Value, workload: &str) -> Result<String, Attestat
     let policy = allowlist
         .pointer(&format!("/workloads/{}", escape_pointer(workload)))
         .and_then(Value::as_object)
-        .ok_or(AttestationError::Invalid)?;
+        .ok_or(attestation_invalid!(
+            "an allowlist entry declares no usable workload identity"
+        ))?;
     let identity = policy
         .get("identity")
         .and_then(Value::as_str)
         .unwrap_or(workload);
     if !safe_name(identity) {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!(
+            "an allowlist entry declares no usable workload identity"
+        ));
     }
     Ok(identity.to_owned())
 }
 
 fn exact_container_launch(container: &Value) -> Result<Value, AttestationError> {
-    let object = container.as_object().ok_or(AttestationError::Invalid)?;
+    let object = container
+        .as_object()
+        .ok_or(attestation_invalid!("exact_container_launch"))?;
     let image = object
         .get("image")
         .and_then(Value::as_str)
-        .ok_or(AttestationError::Invalid)?;
+        .ok_or(attestation_invalid!("exact_container_launch"))?;
     let digest = object
         .get("digest")
         .and_then(Value::as_str)
         .filter(|value| valid_sha256_digest(value))
-        .ok_or(AttestationError::Invalid)?;
+        .ok_or(attestation_invalid!("exact_container_launch"))?;
     if !image.ends_with(digest) {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!("exact_container_launch"));
     }
     let mut argv = exact_argv(object.get("command"), false)?;
     argv.extend(exact_argv(object.get("args"), true)?);
@@ -835,30 +948,30 @@ fn exact_container_launch(container: &Value) -> Result<Value, AttestationError> 
 fn exact_argv(value: Option<&Value>, allow_deny: bool) -> Result<Vec<String>, AttestationError> {
     let policy = value
         .and_then(Value::as_object)
-        .ok_or(AttestationError::Invalid)?;
+        .ok_or(attestation_invalid!("exact_argv"))?;
     let name = policy
         .get("policy")
         .and_then(Value::as_str)
-        .ok_or(AttestationError::Invalid)?;
+        .ok_or(attestation_invalid!("exact_argv"))?;
     if name == "deny" && allow_deny {
         return Ok(Vec::new());
     }
     if name != "exact" {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!("exact_argv"));
     }
     let argv = policy
         .get("argv")
         .and_then(Value::as_array)
-        .ok_or(AttestationError::Invalid)?;
+        .ok_or(attestation_invalid!("exact_argv"))?;
     if argv.is_empty() {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!("exact_argv"));
     }
     argv.iter()
         .map(|item| {
             item.as_str()
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned)
-                .ok_or(AttestationError::Invalid)
+                .ok_or(attestation_invalid!("exact_argv"))
         })
         .collect()
 }
@@ -867,12 +980,16 @@ fn receipt_mesh_ca_sha256(receipt: &Value) -> Result<String, AttestationError> {
     let encoded = receipt
         .pointer("/identity_proof/mesh_ca_sha256")
         .and_then(Value::as_str)
-        .ok_or(AttestationError::Invalid)?;
+        .ok_or(attestation_invalid!(
+            "a c8s receipt carries no usable mesh CA digest"
+        ))?;
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(encoded)
-        .map_err(|_| AttestationError::Invalid)?;
+        .map_err(|_| attestation_invalid!("a c8s receipt carries no usable mesh CA digest"))?;
     if decoded.len() != 32 {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!(
+            "a c8s receipt carries no usable mesh CA digest"
+        ));
     }
     Ok(format!("sha256:{}", hex::encode(decoded)))
 }
@@ -918,14 +1035,20 @@ async fn read_bounded(
         .content_length()
         .is_some_and(|length| length > limit as u64)
     {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!(
+            "an upstream evidence body declares more than the {limit} byte limit"
+        ));
     }
     let mut body = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| AttestationError::Unavailable)?;
+        let chunk = chunk.map_err(|_| {
+            attestation_unavailable!("an upstream evidence body stopped before it ended")
+        })?;
         if body.len().saturating_add(chunk.len()) > limit {
-            return Err(AttestationError::Invalid);
+            return Err(attestation_invalid!(
+                "an upstream evidence body passed the {limit} byte limit"
+            ));
         }
         body.extend_from_slice(&chunk);
     }
@@ -936,73 +1059,90 @@ fn validate_standard_receipt(
     receipt: &Value,
     nonce: &str,
     expected_version: &str,
+    expected_xwing_ek: Option<&str>,
 ) -> Result<(), AttestationError> {
-    let object = receipt.as_object().ok_or(AttestationError::Invalid)?;
+    let object = receipt
+        .as_object()
+        .ok_or(attestation_invalid!("a c8s receipt failed its shape check"))?;
     if object.get("version").and_then(Value::as_str) != Some(expected_version)
         || object.get("platform").and_then(Value::as_str) != Some("tdx")
         || object.get("nonce").and_then(Value::as_str) != Some(nonce)
         || !object.get("evidence").is_some_and(Value::is_object)
     {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!("a c8s receipt failed its shape check"));
     }
     let certificate = object
         .get("cds_cert_pem")
         .and_then(Value::as_str)
         .filter(|value| value.len() <= 256 * 1_024)
-        .ok_or(AttestationError::Invalid)?;
+        .ok_or(attestation_invalid!("a c8s receipt failed its shape check"))?;
     let mut reader = Cursor::new(certificate.as_bytes());
     let certificates = rustls_pemfile::certs(&mut reader)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| AttestationError::Invalid)?;
+        .map_err(|_| attestation_invalid!("a c8s receipt failed its shape check"))?;
     if certificates.len() < 2 {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!("a c8s receipt failed its shape check"));
     }
 
     if expected_version == "c8s/attest-pq/v1" {
-        let session = object
-            .get("session_pubkey")
-            .and_then(Value::as_object)
-            .ok_or(AttestationError::Invalid)?;
-        decode_exact(session.get("x25519"), 32)?;
-        decode_exact(session.get("mlkem768"), 1_184)?;
+        // The pinned c8s protocol carries the X-Wing material and no
+        // session_pubkey. The receipt must echo the exact encapsulation key
+        // this gateway sent, which binds the receipt to this request.
+        let expected_xwing_ek = expected_xwing_ek
+            .ok_or(attestation_invalid!("a c8s receipt failed its shape check"))?;
+        let echoed = object
+            .get("xwing_ek")
+            .and_then(Value::as_str)
+            .ok_or(attestation_invalid!("a c8s receipt failed its shape check"))?;
+        if echoed != expected_xwing_ek {
+            return Err(attestation_invalid!("a c8s receipt failed its shape check"));
+        }
+        decode_exact(object.get("xwing_ek"), XWING_ENCAPSULATION_KEY_BYTES)?;
+        decode_exact(object.get("xwing_ct"), XWING_CIPHERTEXT_BYTES)?;
+        decode_exact(object.get("session_id"), C8S_SESSION_ID_BYTES)?;
+        if object.contains_key("session_pubkey") {
+            return Err(attestation_invalid!("a c8s receipt failed its shape check"));
+        }
     } else if expected_version == "c8s/attest-lb/v1" {
         decode_exact(object.get("serving_leaf_sha256"), 32)?;
     }
     let proof = object
         .get("identity_proof")
         .and_then(Value::as_object)
-        .ok_or(AttestationError::Invalid)?;
+        .ok_or(attestation_invalid!("a c8s receipt failed its shape check"))?;
     if proof.get("algorithm").and_then(Value::as_str) != Some("ecdsa-sha384") {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!("a c8s receipt failed its shape check"));
     }
     decode_exact(proof.get("leaf_sha256"), 32)?;
     decode_exact(proof.get("mesh_ca_sha256"), 32)?;
     let signature = proof
         .get("signature")
         .and_then(Value::as_str)
-        .ok_or(AttestationError::Invalid)?;
+        .ok_or(attestation_invalid!("a c8s receipt failed its shape check"))?;
     let signature_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(signature)
-        .map_err(|_| AttestationError::Invalid)?;
+        .map_err(|_| attestation_invalid!("a c8s receipt failed its shape check"))?;
     if signature_bytes.is_empty()
         || base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature_bytes) != signature
     {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!("a c8s receipt failed its shape check"));
     }
     Ok(())
 }
 
 fn decode_exact(value: Option<&Value>, length: usize) -> Result<(), AttestationError> {
-    let encoded = value
-        .and_then(Value::as_str)
-        .ok_or(AttestationError::Invalid)?;
+    let encoded = value.and_then(Value::as_str).ok_or(attestation_invalid!(
+        "a c8s receipt field decodes to the wrong length"
+    ))?;
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(encoded)
-        .map_err(|_| AttestationError::Invalid)?;
+        .map_err(|_| attestation_invalid!("a c8s receipt field decodes to the wrong length"))?;
     if decoded.len() != length
         || base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(decoded) != encoded
     {
-        return Err(AttestationError::Invalid);
+        return Err(attestation_invalid!(
+            "a c8s receipt field decodes to the wrong length"
+        ));
     }
     Ok(())
 }
@@ -1013,7 +1153,7 @@ mod tests {
 
     #[test]
     fn keeps_the_exact_c8s_allowlist_byte_order() {
-        let source = include_bytes!("../../../c8s/allowlists/integration-staging.json");
+        let source = include_bytes!("../../../c8s/allowlists/staging.json");
         let Ok(value) = serde_json::from_slice::<Value>(source) else {
             panic!("the public allowlist test fixture must contain JSON");
         };
@@ -1129,7 +1269,7 @@ mod tests {
 
     #[test]
     fn rejects_whitespace_outside_the_canonical_document() {
-        let source = include_bytes!("../../../c8s/allowlists/integration-staging.json");
+        let source = include_bytes!("../../../c8s/allowlists/staging.json");
         let Ok(value) = serde_json::from_slice::<Value>(source) else {
             panic!("the public allowlist test fixture must contain JSON");
         };

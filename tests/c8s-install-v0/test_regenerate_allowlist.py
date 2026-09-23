@@ -11,7 +11,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/regenerate-c8s-allowlist.py"
 POLICY_PATH = ROOT / "c8s/production-policy.json"
-STAGING_POLICY_PATH = ROOT / "c8s/integration-staging-policy.json"
+STAGING_POLICY_PATH = ROOT / "c8s/staging-policy.json"
 
 
 class RegenerateAllowlistTests(unittest.TestCase):
@@ -31,17 +31,17 @@ class RegenerateAllowlistTests(unittest.TestCase):
         error = self.module["RegenerationError"]
         with self.assertRaisesRegex(error, "--output"):
             self.module["validate_binding"](
-                self.policy, ROOT / "c8s/allowlists/integration-staging.json"
+                self.policy, ROOT / "c8s/allowlists/staging.json"
             )
 
     def test_staging_policy_is_repository_local(self) -> None:
         self.assertEqual(
-            self.staging_policy["output"], "c8s/allowlists/integration-staging.json"
+            self.staging_policy["output"], "c8s/allowlists/staging.json"
         )
         self.assertEqual(
-            self.staging_policy["chart"]["values"], "c8s/integration-staging-values.yaml"
+            self.staging_policy["chart"]["values"], "c8s/staging-values.yaml"
         )
-        self.assertEqual(self.staging_policy["environment"], "integration-staging")
+        self.assertEqual(self.staging_policy["environment"], "staging")
 
     def test_staging_binding_rejects_production_output(self) -> None:
         error = self.module["RegenerationError"]
@@ -59,7 +59,7 @@ class RegenerateAllowlistTests(unittest.TestCase):
         for path in (POLICY_PATH, STAGING_POLICY_PATH):
             with self.subTest(path=path):
                 loaded = self.module["load_policy"](path)
-                self.assertIn(loaded["environment"], ("production", "integration-staging"))
+                self.assertIn(loaded["environment"], ("production", "staging"))
 
     def test_parse_args_leaves_output_unset_by_default(self) -> None:
         argv = sys.argv
@@ -84,7 +84,7 @@ class RegenerateAllowlistTests(unittest.TestCase):
             with self.assertRaises(self.module["RegenerationError"]):
                 self.module["generate"](STAGING_POLICY_PATH, None, Path("/tmp/pinned-c8s"))
         self.assertEqual(
-            seen["output"], (ROOT / "c8s/allowlists/integration-staging.json").resolve()
+            seen["output"], (ROOT / "c8s/allowlists/staging.json").resolve()
         )
 
     def test_application_policy_has_no_identity_and_keeps_exact_peer_names(self) -> None:
@@ -123,20 +123,59 @@ class RegenerateAllowlistTests(unittest.TestCase):
             ["/usr/local/bin/confidential-gateway"],
         )
 
-    def test_application_policy_keeps_explicit_c8s_attestation_sidecar(self) -> None:
-        image = "example.invalid/c8s-operator@sha256:" + "2" * 64
-        args = ["cds-attest", "--expected-workload=gateway"]
+    def test_application_policy_drops_the_c8s_attestation_sidecar(self) -> None:
+        # cds-attest runs on a floor image (c8s-operator, admitted under any
+        # argv by the system floor) with argv[0] == "/c8s", one of c8s's
+        # InjectedEntrypoints. c8s's own WorkloadContainers drops such a
+        # container before workload matching runs, so a tenant workload entry
+        # must not declare it as a main container either -- declaring it
+        # there makes the entry permanently unmatchable (ErrNoMatch), because
+        # the container c8s reports never includes it. See the 2026-09-17
+        # staging mesh diagnosis deployment receipt.
+        sidecar_image = "example.invalid/c8s-operator@sha256:" + "2" * 64
+        app_image = "example.invalid/gateway@sha256:" + "3" * 64
+        sidecar_args = ["cds-attest", "--expected-workload=gateway"]
         docs = [{
             "kind": "Deployment",
             "metadata": {"name": "gateway"},
             "spec": {"template": {"metadata": {"annotations": {}}, "spec": {
-                "containers": [{"image": image, "command": ["/c8s"], "args": args}],
+                "containers": [
+                    {"image": app_image, "command": ["/usr/local/bin/gateway"], "args": []},
+                    {"image": sidecar_image, "command": ["/c8s"], "args": sidecar_args},
+                ],
             }}},
         }]
         policy = {
-            "systemImages": {image: "c8s-operator"},
+            "systemImages": {sidecar_image: sidecar_image},
             "workloads": [{"name": "gateway", "controller": "Deployment/gateway"}],
-            "imageConfigs": {image: [{"command": ["/c8s"], "args": args}]},
+            "imageConfigs": {
+                sidecar_image: [{"command": ["/c8s"], "args": sidecar_args}],
+                app_image: [{"command": ["/usr/local/bin/gateway"], "args": []}],
+            },
+        }
+        result = self.module["application_allowlist"](policy, docs)
+        containers = result["workloads"]["gateway"]["containers"]
+        self.assertEqual(len(containers), 1)
+        self.assertEqual(containers[0]["image"], app_image)
+
+    def test_application_policy_keeps_a_sidecar_sharing_a_floor_image_when_not_injected(self) -> None:
+        # A container on a floor image whose command is not one of c8s's
+        # InjectedEntrypoints (for example the mesh's workload-proxy) is never
+        # dropped by WorkloadContainers, so it must stay a declared main
+        # container.
+        image = "example.invalid/c8s-operator@sha256:" + "4" * 64
+        args = ["--mode=server", "--listen=0.0.0.0:9443"]
+        docs = [{
+            "kind": "Deployment",
+            "metadata": {"name": "gateway"},
+            "spec": {"template": {"metadata": {"annotations": {}}, "spec": {
+                "containers": [{"image": image, "command": ["/workload-proxy"], "args": args}],
+            }}},
+        }]
+        policy = {
+            "systemImages": {image: image},
+            "workloads": [{"name": "gateway", "controller": "Deployment/gateway"}],
+            "imageConfigs": {image: [{"command": ["/workload-proxy"], "args": args}]},
         }
         result = self.module["application_allowlist"](policy, docs)
         containers = result["workloads"]["gateway"]["containers"]

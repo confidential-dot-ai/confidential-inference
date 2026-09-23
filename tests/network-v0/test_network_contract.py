@@ -57,7 +57,7 @@ class NetworkContractTests(unittest.TestCase):
         ]
         self.assertEqual(public, [])
 
-    def test_gateway_ingress_accepts_tls_lb_and_metrics_only(self) -> None:
+    def test_gateway_ingress_accepts_the_front_door_and_metrics_only(self) -> None:
         ingress = named(self.documents, "NetworkPolicy", "gateway-ingress")["spec"]["ingress"]
         self.assertEqual(ingress[0]["ports"], [{"protocol": "TCP", "port": 9443}])
         self.assertEqual(
@@ -65,6 +65,43 @@ class NetworkContractTests(unittest.TestCase):
             {"app.kubernetes.io/name": "tls-lb"},
         )
         self.assertEqual(ingress[1]["ports"], [{"protocol": "TCP", "port": 9090}])
+
+    def test_front_door_pod_label_is_a_chart_value(self) -> None:
+        """c8s PR #606 renamed the front-door component `tls-lb` to `router`.
+
+        The gateway ingress policy and the gateway evidence egress policy must
+        both follow `c8s.frontDoorPodLabelName`. A hard-coded label makes the
+        front door -> gateway hop time out on a c8s pin that uses the other
+        name, because the namespace default-deny policy drops it.
+        """
+        output = subprocess.run(
+            [
+                "helm", "template", "example", str(CHART), *NEUTRAL_MODE,
+                "--set", "c8s.frontDoorPodLabelName=router",
+            ],
+            cwd=ROOT, check=True, text=True, capture_output=True,
+        ).stdout
+        documents = [item for item in yaml.safe_load_all(output) if item]
+
+        ingress = named(documents, "NetworkPolicy", "gateway-ingress")["spec"]["ingress"]
+        self.assertEqual(
+            ingress[0]["from"][0]["podSelector"]["matchLabels"],
+            {"app.kubernetes.io/name": "router"},
+        )
+
+        egress = named(documents, "NetworkPolicy", "gateway-to-router")["spec"]["egress"]
+        front_door = [
+            peer
+            for rule in egress
+            for peer in rule.get("to", [])
+            if peer.get("podSelector", {}).get("matchLabels", {}).get(
+                "app.kubernetes.io/name"
+            )
+        ]
+        self.assertEqual(
+            [peer["podSelector"]["matchLabels"] for peer in front_door],
+            [{"app.kubernetes.io/name": "router"}],
+        )
 
     def test_node_mode_attestation_can_reach_the_local_cvm_service(self) -> None:
         policies = [item for item in self.documents if item["kind"] == "NetworkPolicy"]

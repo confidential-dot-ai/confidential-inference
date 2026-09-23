@@ -57,19 +57,45 @@ class SourceLockTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def run_tool(self) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [
-                "python3",
-                str(SCRIPT),
-                "--repository",
-                str(self.repository),
-                "--lock",
-                str(self.lock),
-            ],
-            text=True,
-            capture_output=True,
+    def run_tool(self, commit: str | None = None) -> subprocess.CompletedProcess[str]:
+        arguments = [
+            "python3",
+            str(SCRIPT),
+            "--repository",
+            str(self.repository),
+            "--lock",
+            str(self.lock),
+        ]
+        if commit is not None:
+            arguments.extend(["--commit", commit])
+        return subprocess.run(arguments, text=True, capture_output=True)
+
+    def add_second_commit(self) -> str:
+        """Commit a second c8s source file and pin it as a further `commits`
+        list entry, alongside the existing top-level entry."""
+        second = self.repository / "second.go"
+        second.write_text("package second\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repository), "add", "second.go"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repository), "commit", "-qm", "second"], check=True,
         )
+        second_commit = subprocess.run(
+            ["git", "-C", str(self.repository), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        second_digest = "sha256:" + hashlib.sha256(b"package second\n").hexdigest()
+        value = json.loads(self.lock.read_text(encoding="utf-8"))
+        value["commits"] = [
+            {
+                "commit": second_commit,
+                "nodeImage": "example/node@sha256:" + "3" * 64,
+                "c8sOperatorImage": "example/c8s@sha256:" + "4" * 64,
+                "requiredVerifierFlags": ["--allowlist"],
+                "files": {"second.go": second_digest},
+            }
+        ]
+        self.lock.write_text(json.dumps(value), encoding="utf-8")
+        return second_commit
 
     def test_reads_the_pinned_commit_instead_of_the_dirty_tree(self) -> None:
         (self.repository / "proof.go").write_text("dirty\n", encoding="utf-8")
@@ -84,6 +110,49 @@ class SourceLockTests(unittest.TestCase):
         result = self.run_tool()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["candidateSourceStatus"], "not-declared")
+
+    def test_accepts_release_entry_metadata_used_by_the_public_lock(self) -> None:
+        value = json.loads(self.lock.read_text(encoding="utf-8"))
+        value["tag"] = "v0.26.5"
+        value["capabilities"] = {
+            "allowlistCanonicalize": False,
+            "gpuAttestationMode": "measured-boot-gate",
+            "frontDoorVerification": "external-teerminator",
+        }
+        value["attestationProtocol"] = "c8s/attest-pq/v1+xwing"
+        self.lock.write_text(json.dumps(value), encoding="utf-8")
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_unknown_release_entry_metadata(self) -> None:
+        value = json.loads(self.lock.read_text(encoding="utf-8"))
+        value["attestationProtocol"] = "unknown"
+        self.lock.write_text(json.dumps(value), encoding="utf-8")
+        result = self.run_tool()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("attestation protocol is invalid", result.stderr)
+
+    def test_rejects_unknown_gpu_attestation_mode(self) -> None:
+        value = json.loads(self.lock.read_text(encoding="utf-8"))
+        value["capabilities"] = {
+            "allowlistCanonicalize": False,
+            "gpuAttestationMode": "external-evidence-maybe",
+        }
+        self.lock.write_text(json.dumps(value), encoding="utf-8")
+        result = self.run_tool()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("capabilities are invalid", result.stderr)
+
+    def test_rejects_unknown_front_door_verification_mode(self) -> None:
+        value = json.loads(self.lock.read_text(encoding="utf-8"))
+        value["capabilities"] = {
+            "allowlistCanonicalize": False,
+            "frontDoorVerification": "implicit-success",
+        }
+        self.lock.write_text(json.dumps(value), encoding="utf-8")
+        result = self.run_tool()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("capabilities are invalid", result.stderr)
 
     def test_wrong_source_digest_fails_closed(self) -> None:
         value = json.loads(self.lock.read_text(encoding="utf-8"))
@@ -133,6 +202,41 @@ class SourceLockTests(unittest.TestCase):
         result = self.run_tool()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["candidateSourceStatus"], "verified")
+
+
+    def test_each_listed_commit_resolves_to_its_own_entry(self) -> None:
+        second_commit = self.add_second_commit()
+        result = self.run_tool(commit=self.commit)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["commit"], self.commit)
+        result = self.run_tool(commit=second_commit)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["commit"], second_commit)
+        self.assertEqual(payload["nodeImage"], "example/node@sha256:" + "3" * 64)
+        self.assertIn("second.go", payload["files"])
+
+    def test_unlisted_commit_fails_closed(self) -> None:
+        self.add_second_commit()
+        result = self.run_tool(commit="c" * 40)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not pinned in the source lock", result.stderr)
+
+    def test_commits_list_rejects_a_duplicate_commit(self) -> None:
+        value = json.loads(self.lock.read_text(encoding="utf-8"))
+        value["commits"] = [
+            {
+                "commit": self.commit,
+                "nodeImage": "example/node@sha256:" + "3" * 64,
+                "c8sOperatorImage": "example/c8s@sha256:" + "4" * 64,
+                "requiredVerifierFlags": ["--allowlist"],
+                "files": {"proof.go": "sha256:" + "0" * 64},
+            }
+        ]
+        self.lock.write_text(json.dumps(value), encoding="utf-8")
+        result = self.run_tool()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("same commit twice", result.stderr)
 
 
 if __name__ == "__main__":

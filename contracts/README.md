@@ -6,6 +6,113 @@
 
 `environment-spec.schema.json` defines the shape of one confidential inference deployment environment, including its confidential-compute boot images, network settings, and GPU count.
 
+`c8s-admission-source-lock.json` pins the c8s source commit a signed release may
+use. Each environment can cut its release from a different c8s commit, so the
+lock keeps its original single-entry shape at the top level (one commit, its
+digest-pinned node and operator images, its required verifier flags, and its
+per-file source hashes) and adds an optional `commits` list of further entries
+in the same shape. The verifier selects the entry whose `commit` field equals
+the release bundle's recorded `c8s.sourceCommit`, and fails closed if no entry
+matches — an unlisted c8s commit must never verify. `scripts/verify-c8s-admission-source.py`
+accepts `--commit` to check the c8s source tree against one specific pinned
+entry (the top-level one, or one from `commits`); without it, it checks the
+top-level entry, as before.
+
+The top-level entry (`079aeb48`) pins only the legacy baked production
+cluster's branch build, on the old `c8s/attest-pq/v1` protocol and static
+policy mode. It is the retired path: keep it only until that cluster is
+taken down, and add no new environment to it. Every current and future
+environment belongs in `commits[]`, on the shared `c8s/attest-pq/v1+xwing`
+protocol and the shared `requiredVerifierFlags` list -- staging (`466ce79`)
+candidate (`152d583`), and conf-inference-prod (`2ef376a8`) carry compatible
+`requiredVerifierFlags`, and `scripts/verify-public-attestation.py` picks
+its branch from that field, never from a hard-coded environment name, so
+no environment needs its own copy of this entry's shape.
+
+### The two c8s attestation protocols
+
+c8s serves two `attest-pq` protocols, both with the receipt `version` string
+`c8s/attest-pq/v1`, so the response cannot say which one it used. The gateway
+declares it instead, in the optional `c8s.attestationProtocol` field:
+
+- `c8s/attest-pq/v1` (old, production only, c8s `079aeb48`): the receipt
+  carries `session_pubkey`. The gateway must not send this value; its absence
+  means the old protocol.
+- `c8s/attest-pq/v1+xwing` (new, c8s `466ce79`, `152d583`, and `2ef376a8`): the receipt
+  carries `xwing_ek`, `xwing_ct`, and `session_id` instead of
+  `session_pubkey`. It also folded `GET /allowlist`, so
+  `c8s.activeAllowlist.document` may omit `digests`.
+
+`contracts/c8s-admission-source-lock.json` names the protocol each pinned c8s
+commit speaks in a new `attestationProtocol` field on the top-level entry and
+on each `commits` entry. `scripts/verify-public-attestation.py` reads that
+field, not the response, to pick its branch, and then checks that the
+response's own `c8s.attestationProtocol` agrees.
+
+GPU enforcement is a separate source-lock capability. Older entries use
+`receipt-evidence`. The verifier requires raw NVIDIA evidence from each GPU
+worker and verifies it with the pinned c8s GPU verifier. c8s v0.26.5 uses
+`measured-boot-gate`. Its measured node image checks every passed-through GPU
+before RKE2 starts. The systemd dependency blocks RKE2 on failure and powers
+off the node. This mode does not expose raw NVIDIA evidence to the relying
+party. The verifier therefore checks the measured node image and reports the
+boot-gate mode. It does not require raw NVIDIA receipt fields or the external
+attestation CLI. The source lock pins the boot-gate script, unit, and systemd
+preset so this rule fails closed if their source changes.
+
+c8s never binds the allowlist-write operator key set to hardware evidence at
+either commit (see `docs/ratls.md`), so on the new protocol the gateway can
+only report `requires-attested-cds-read` in `c8s.operatorTrust.activeKeySetStatus`
+— never `evidence-present-and-release-matched`, which the verifier now
+rejects outright on that protocol.
+
+The gateway also does not read the key set. c8s serves it on the CDS route
+`GET /operator-keys`, and CDS presents a self-signed RA-TLS certificate whose
+trust comes from a TEE evidence extension and a pinned launch measurement, not
+from any certificate authority. No CA-trusting TLS client can verify that
+certificate, so a gateway read cannot work at all. On the new protocol the
+gateway therefore publishes two fields and no live value:
+`expectedKeySetSha256`, the pinned c8s key-set commitment this deployment was
+built against, and `cdsAttestedReadHint`, the CDS route the reader must fetch.
+A `requires-attested-cds-read` response must carry `cdsAttestedReadHint` and
+must carry none of `activeKeySetSha256`, `activeKeySetPem` or
+`activeKeySetC8sSha256`. The schema enforces both halves.
+
+The verifier performs that read itself. `scripts/verify-public-attestation.py
+--cds-url <CDS RA-TLS base URL>` runs the pinned c8s CLI:
+
+    c8s verify <cds-url> --kind cds --mode ratls-cert \
+        --image-manifest <node manifest> -o json
+
+That command dials the CDS RA-TLS certificate, verifies its TEE evidence
+against the hardware signature chain, pins the launch measurement to the node
+image manifest, and returns the `/operator-keys` set it read over that same
+attested session as `operator_keys` — one SHA-256 SPKI fingerprint per key.
+The verifier recomputes the c8s key-set commitment from those fingerprints
+with the canonical formula (`pkg/operatorauth.KeySetDigest`: SHA-256 over
+`c8s-operator-key-set-v1\0` followed by the sorted, de-duplicated
+fingerprints) and requires it to equal **both** the release bundle's
+`operatorKeySetSha256` and the response's `expectedKeySetSha256`. The held
+operator public key must be a member of the set the attested read returned.
+
+Without `--cds-url` the verifier fails closed on the new protocol. It never
+skips the check.
+
+The response schema accepts exactly three receipt-set shapes: all six
+targets; the same six without `inference-worker-1` (staging, which runs one
+inference worker and both observability workloads); and the four core targets
+without `metrics-collector` and `kube-state-metrics`. Any other subset fails
+closed.
+
+`scripts/check-c8s-protocol-lockstep.py` guards the pairing itself. For each
+lock entry it reads the matching manifest under
+`contracts/c8s-attestation-protocols/<commit>.json` (the `cdsattest` route
+table and the `AttestationBundle`/receipt field names at that c8s commit,
+captured read-only from the `c8s` source) and fails the build if those fields
+disagree with the gateway's own declared protocol constant and test fixture
+field set. It runs offline, from files already committed to this repo, in
+`.github/workflows/v0-validation.yml`.
+
 Use `scripts/verify-public-attestation.py` for the complete public verification flow.
 
 The command fetches the HTTPS endpoint with a fresh nonce. It verifies the exact

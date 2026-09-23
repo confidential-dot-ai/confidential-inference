@@ -32,6 +32,12 @@ from release_signature import (
     verify_release_signature,
 )
 
+# Import the sibling module by absolute path rather than relying on the
+# caller (direct script execution, runpy.run_path, or a test harness) to
+# have already put this file's directory on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import c8s_allowlist_canonical
+
 
 ROOT = Path(__file__).resolve().parents[1]
 RESPONSE_SCHEMA = ROOT / "contracts/workload-attestation.schema.json"
@@ -47,6 +53,25 @@ class VerificationError(ValueError):
 
 class C8sPolicyRejection(VerificationError):
     """The receipt was not admitted by one candidate allowlist."""
+
+
+def _error_detail(response: http.client.HTTPResponse) -> str:
+    """Read the gateway error body's "detail" string, when it carries one.
+
+    The gateway answers every 5xx with a short detail that names the failing
+    step. The detail is printable ASCII and carries no evidence bytes, so it
+    is safe to repeat in a verdict line. A body that is absent, too large, or
+    not the expected shape yields an empty string.
+    """
+    try:
+        body = response.read(8192)
+        document = json.loads(body.decode("utf-8", "replace"))
+        detail = document["error"]["detail"]
+    except Exception:  # noqa: BLE001 - a failed read must never mask the status
+        return ""
+    if not isinstance(detail, str) or not detail:
+        return ""
+    return ": " + detail[:300]
 
 
 def read_bytes(path: Path, label: str, maximum_bytes: int | None = None) -> bytes:
@@ -132,6 +157,23 @@ PUBLIC_KEY_BLOCK_RE = re.compile(
 )
 
 
+def key_set_digest(fingerprints: list[bytes]) -> str:
+    """Return c8s's canonical operator key-set commitment.
+
+    This is `pkg/operatorauth.KeySetDigest` (c8s 466ce79): SHA-256 over the
+    domain separator, then over the sorted, de-duplicated SHA-256 fingerprints
+    of each key's PKIX/SPKI DER. The commitment is independent of PEM
+    formatting, key order, and duplicates, so a PEM bundle and a plain list of
+    fingerprints digest identically. Both callers below use this one function,
+    so a bundle read locally and a key set read over an attested CDS session
+    can never disagree by formula.
+    """
+    ordered = sorted(set(fingerprints))
+    return "sha256:" + hashlib.sha256(
+        OPERATOR_KEY_SET_DOMAIN + b"".join(ordered)
+    ).hexdigest()
+
+
 def canonical_operator_key_set(data: bytes, label: str) -> tuple[bytes, str, set[str]]:
     """Return c8s's canonical PEM, key-set commitment, and member fingerprints."""
     if not data or len(data) > 256 * 1024:
@@ -153,7 +195,7 @@ def canonical_operator_key_set(data: bytes, label: str) -> tuple[bytes, str, set
     if not ders:
         raise VerificationError(f"the {label} contains no public keys")
     fingerprints = sorted({hashlib.sha256(der).digest() for der in ders})
-    commitment = hashlib.sha256(OPERATOR_KEY_SET_DOMAIN + b"".join(fingerprints)).hexdigest()
+    commitment = key_set_digest(fingerprints)
     blocks = []
     for der in sorted(set(ders), key=lambda value: hashlib.sha256(value).digest()):
         encoded = base64.b64encode(der)
@@ -162,9 +204,113 @@ def canonical_operator_key_set(data: bytes, label: str) -> tuple[bytes, str, set
     canonical = b"".join(blocks)
     return (
         canonical,
-        "sha256:" + commitment,
+        commitment,
         {"sha256:" + fingerprint.hex() for fingerprint in fingerprints},
     )
+
+
+#: The one CDS route that serves the c8s operator key set. The gateway names
+#: it in c8s.operatorTrust.cdsAttestedReadHint; the verifier requires exactly
+#: this value, so a response can never steer the reader at another route.
+CDS_OPERATOR_KEY_SET_ROUTE = "/operator-keys"
+
+
+def validate_cds_url(value: str) -> str:
+    """Accept only a bare HTTPS base URL for the CDS RA-TLS endpoint."""
+    parts = urlsplit(value)
+    if (
+        parts.scheme != "https"
+        or not parts.hostname
+        or parts.path not in ("", "/")
+        or parts.query
+        or parts.fragment
+        or parts.username
+        or parts.password
+    ):
+        raise VerificationError(
+            "--cds-url must be a bare https://host:port base URL for the CDS RA-TLS endpoint"
+        )
+    return value.rstrip("/")
+
+
+def read_attested_operator_key_set(
+    args: argparse.Namespace,
+) -> tuple[str, set[str], str]:
+    """Read the c8s operator key set over an attested CDS session.
+
+    The gateway cannot make this read. CDS serves `GET /operator-keys` over
+    RA-TLS behind a self-signed certificate whose trust comes from a TEE
+    evidence extension and a pinned launch measurement, not from a certificate
+    authority, so no CA-trusting TLS client can verify it. The pinned c8s CLI
+    is that client: `c8s verify <cds-url> --kind cds --mode ratls-cert` dials
+    the RA-TLS certificate, verifies its evidence against the hardware
+    signature chain, pins the launch measurement against the node image
+    manifest, and reports the `/operator-keys` set it read over that same
+    session (`internal/cmds/verify/operatorkeys.go`, c8s 466ce79).
+
+    Returns the c8s key-set commitment, the member fingerprints, and the
+    attested launch measurement, so the caller can compare all three.
+    """
+    command = [
+        args.c8s, "verify", args.cds_url,
+        "--kind", "cds",
+        "--mode", "ratls-cert",
+        "--image-manifest", str(args.node_manifest),
+        *policy_verifier_flags(args),
+        "--operator-keys", str(args.operator_public_key),
+        "-o", "json",
+    ]
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True,
+            timeout=args.verifier_timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise VerificationError(
+            "the attested CDS operator-key read did not run"
+        ) from error
+    if result.returncode != 0:
+        raise VerificationError(
+            "the attested CDS operator-key read failed: c8s verify exited "
+            f"{result.returncode}"
+        )
+    try:
+        verdict = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise VerificationError(
+            "the attested CDS operator-key read returned invalid JSON"
+        ) from error
+    required = {
+        "verified": True,
+        "backend": "attestation-go",
+        "platform": "tdx",
+        "measurement_pinned": True,
+        "debug": False,
+    }
+    for field, expected in required.items():
+        if verdict.get(field) != expected:
+            raise VerificationError(
+                f"the attested CDS session is not trustworthy: {field} is not {expected!r}"
+            )
+    note = verdict.get("operator_keys_note")
+    expected_note = "matched: the set served over the attested cert equals --operator-keys"
+    if note != expected_note:
+        raise VerificationError(
+            "the attested CDS read did not pin the operator key set: " + str(note)
+        )
+    served = verdict.get("operator_keys")
+    if not isinstance(served, list) or not served:
+        raise VerificationError("the attested CDS read returned no operator keys")
+    fingerprints: list[bytes] = []
+    for item in served:
+        if not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item):
+            raise VerificationError("the attested CDS read returned a malformed fingerprint")
+        fingerprints.append(bytes.fromhex(item))
+    measurement = verdict.get("measurement")
+    if not isinstance(measurement, str) or not re.fullmatch(r"[0-9a-f]{96}", measurement):
+        raise VerificationError("the attested CDS session reports no launch measurement")
+    members = {"sha256:" + fingerprint.hex() for fingerprint in fingerprints}
+    return key_set_digest(fingerprints), members, measurement
 
 
 def operator_key_set_from_path(path: Path) -> tuple[bytes, str, set[str]]:
@@ -225,15 +371,42 @@ def source_lock_node_image(
     return node_image
 
 
+def source_lock_entries(source_lock: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return every c8s commit the source lock pins, as full entries.
+
+    The lock keeps its original single-entry shape at the top level (so an
+    older reader, and every pin except `commit` itself, is unaffected), and
+    adds an optional `commits` list of further entries with the same shape.
+    A signed release may use the c8s commit any one of these entries names;
+    no other c8s commit is trusted.
+    """
+    entries = [source_lock]
+    extra = source_lock.get("commits", [])
+    if isinstance(extra, list):
+        entries.extend(entry for entry in extra if isinstance(entry, dict))
+    return entries
+
+
+def select_source_lock_entry(
+    source_lock: dict[str, Any], release_commit: str,
+) -> dict[str, Any]:
+    for entry in source_lock_entries(source_lock):
+        commit = entry.get("commit")
+        if not isinstance(commit, str) or SOURCE_COMMIT_RE.fullmatch(commit) is None:
+            continue
+        if commit == release_commit:
+            return entry
+    raise VerificationError("the release uses a different c8s source commit")
+
+
 def validate_source_policy(
     release: dict[str, Any], manifest: dict[str, Any], source_lock: dict[str, Any],
     node_source_lock: dict[str, Any],
-) -> None:
-    commit = source_lock.get("commit")
-    if not isinstance(commit, str) or SOURCE_COMMIT_RE.fullmatch(commit) is None:
-        raise VerificationError("the c8s source lock commit is invalid")
-    if release["c8s"]["sourceCommit"] != commit:
-        raise VerificationError("the release uses a different c8s source commit")
+) -> dict[str, Any]:
+    release_commit = release["c8s"]["sourceCommit"]
+    if not isinstance(release_commit, str) or SOURCE_COMMIT_RE.fullmatch(release_commit) is None:
+        raise VerificationError("the release c8s source commit is invalid")
+    selected_entry = select_source_lock_entry(source_lock, release_commit)
     expected_node = source_lock_node_image(
         node_source_lock, release["release"]["environment"]
     )
@@ -257,6 +430,7 @@ def validate_source_policy(
         raise VerificationError("the node manifest lacks the TDX image tuple") from error
     if measured != release["c8s"]["measurements"]:
         raise VerificationError("the node manifest differs from the release measurements")
+    return selected_entry
 
 
 def argv_from_allowlist(container: dict[str, Any], label: str) -> list[str]:
@@ -330,23 +504,76 @@ def expected_targets(
     return tuple(pairs)
 
 
+# Set by canonicalize_allowlist on every call, for the final report and for
+# scripts/ci-validate.sh output: which method produced the canonical bytes
+# the verifier trusted. Not thread-safe, but this script is single-threaded.
+CANONICALIZATION_METHODS_USED: set[str] = set()
+
+
 def canonicalize_allowlist(
     executable: str, path: Path, timeout: int, label: str,
+    capabilities: dict[str, Any] | None = None,
 ) -> bytes:
-    """Use the pinned c8s schema implementation as the canonicalization authority."""
+    """Produce the canonical allowlist bytes c8s would sign off on.
+
+    c8s commit 75af991a removed the offline `c8s allowlist canonicalize
+    <file>` command (see scripts/c8s_allowlist_canonical.py); every c8s tag
+    after that commit needs a live CDS connection to turn a file into
+    canonical bytes via `c8s allowlist export`, which this offline verifier
+    cannot use. capabilities (the matched contracts/c8s-admission-source-lock.json
+    entry's "capabilities" object) says which case applies:
+
+    - {"allowlistCanonicalize": true} (or capabilities omitted, for backward
+      compatibility with older lock entries): shell out to the pinned c8s
+      binary, unchanged from before this function grew capability branching.
+    - {"allowlistCanonicalize": false}: reproduce the canonical bytes in
+      Python via c8s_allowlist_canonical.canonicalize_mainline(), verified
+      byte-identical against pkg/allowlist.Canonical() at c8s 466ce79
+      (v0.20.4) for every allowlist this repository pins. This is a genuine
+      independent canonicalization, not a weakened check: validate_allowlist
+      still requires the file's bytes to equal these bytes and their SHA-256
+      to equal the release's pinned allowlistDigest.
+
+    A document shape the Python reproduction cannot cover (see that module's
+    docstring) fails closed with VerificationError, not a silent pass.
+    """
+    can_use_native = capabilities is None or capabilities.get("allowlistCanonicalize", True)
+    if can_use_native:
+        try:
+            result = subprocess.run(
+                [executable, "allowlist", "canonicalize", str(path)],
+                capture_output=True,
+                timeout=timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise VerificationError(f"the c8s canonicalizer did not run for the {label}") from error
+        if result.returncode != 0 or not result.stdout:
+            raise VerificationError(f"c8s rejected the {label}")
+        if len(result.stdout) > MAX_ALLOWLIST_BYTES:
+            raise VerificationError(f"the canonical {label} is too large")
+        CANONICALIZATION_METHODS_USED.add("c8s-cli")
+        return result.stdout
+
+    print(
+        f"note: the pinned c8s binary has no offline 'allowlist canonicalize' "
+        f"(capability allowlistCanonicalize=false); canonicalizing the {label} "
+        "with the verified Python reproduction of pkg/allowlist.Canonical() instead "
+        "(scripts/c8s_allowlist_canonical.py)",
+        file=sys.stderr,
+    )
+    document = read_json(path, label)
     try:
-        result = subprocess.run(
-            [executable, "allowlist", "canonicalize", str(path)],
-            capture_output=True,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise VerificationError(f"the c8s canonicalizer did not run for the {label}") from error
-    if result.returncode != 0 or not result.stdout:
-        raise VerificationError(f"c8s rejected the {label}")
-    if len(result.stdout) > MAX_ALLOWLIST_BYTES:
+        canonical = c8s_allowlist_canonical.canonicalize_mainline(document)
+    except c8s_allowlist_canonical.UnsupportedAllowlistShape as error:
+        raise VerificationError(
+            f"skipped: the {label} cannot be canonicalized without the pinned c8s "
+            f"binary (capability allowlistCanonicalize=false) and the Python "
+            f"reproduction does not cover its shape: {error}"
+        ) from error
+    if len(canonical) > MAX_ALLOWLIST_BYTES:
         raise VerificationError(f"the canonical {label} is too large")
-    return result.stdout
+    CANONICALIZATION_METHODS_USED.add("python-mainline-reproduction")
+    return canonical
 
 
 def validate_allowlist(
@@ -397,7 +624,7 @@ def allowlist_matches_target(
 def trusted_allowlists(
     release: dict[str, Any], expected: tuple[tuple[str, str, str], ...],
     current_path: Path, history_directory: Path | None, current: tuple[str, bytes],
-    c8s: str, timeout: int,
+    c8s: str, timeout: int, capabilities: dict[str, Any] | None = None,
 ) -> list[tuple[str, bytes, dict[str, Any]]]:
     """Load the current and retained allowlists used by still-running pods."""
     current_digest, current_bytes = current
@@ -410,7 +637,9 @@ def trusted_allowlists(
         document = read_json(path, "historical allowlist")
         if document.get("schema") != "c8s.allowlist/v1":
             raise VerificationError("a historical allowlist has the wrong schema")
-        canonical = canonicalize_allowlist(c8s, path, timeout, "historical allowlist")
+        canonical = canonicalize_allowlist(
+            c8s, path, timeout, "historical allowlist", capabilities
+        )
         if raw not in (canonical, canonical + b"\n"):
             raise VerificationError("a historical allowlist differs from c8s canonical bytes")
         digest = sha256(canonical)
@@ -459,10 +688,35 @@ def policy_verifier_flags(args: argparse.Namespace) -> list[str]:
     return ["--operator-pkey", str(args.operator_public_key)]
 
 
+#: Old c8s (079aeb48): the receipt carries session_pubkey, and c8s never
+#: proves the allowlist-write operator key set. The gateway omits
+#: c8s.attestationProtocol on this protocol.
+OLD_ATTESTATION_PROTOCOL = "c8s/attest-pq/v1"
+#: New c8s (466ce79 and 2ef376a8): the receipt carries xwing_ek/xwing_ct/
+#: session_id instead of session_pubkey, and serves no GPU field.
+XWING_ATTESTATION_PROTOCOL = "c8s/attest-pq/v1+xwing"
+
+
+def expected_attestation_protocol(source_lock_entry: dict[str, Any]) -> str:
+    """Return the c8s attestation protocol the pinned source lock entry speaks.
+
+    A lock entry with no attestationProtocol field pins the old protocol, so
+    an unlisted (and thus untested) c8s commit can never silently pass as the
+    new one.
+    """
+    protocol = source_lock_entry.get("attestationProtocol", OLD_ATTESTATION_PROTOCOL)
+    if protocol not in (OLD_ATTESTATION_PROTOCOL, XWING_ATTESTATION_PROTOCOL):
+        raise VerificationError("the source lock names an unknown c8s attestation protocol")
+    return protocol
+
+
 def validate_response_evidence(
     response: dict[str, Any], release: dict[str, Any], release_digest: str,
     allowlist: dict[str, Any], canonical_allowlist: bytes, operator_digest: str | None,
     operator_key_set_digest: str | None, mesh_ca_der_digest: str,
+    attestation_protocol: str, gpu_required: bool,
+    attested_key_set: tuple[str, set[str], str] | None = None,
+    gpu_mode: str = "receipt-evidence",
 ) -> None:
     """Bind the gateway envelope to the held public release inputs."""
     if response["release"] != {
@@ -474,6 +728,20 @@ def validate_response_evidence(
     active = response["c8s"]["activeAllowlist"]
     if active["document"] != allowlist or active["sha256"] != sha256(canonical_allowlist):
         raise VerificationError("the active c8s allowlist differs from the trusted release")
+    response_protocol = response["c8s"].get("attestationProtocol", OLD_ATTESTATION_PROTOCOL)
+    if response_protocol != attestation_protocol:
+        raise VerificationError(
+            "the response c8s attestation protocol differs from the pinned source lock entry"
+        )
+    gpu_status = response["gpuEvidence"]["status"]
+    if gpu_required and gpu_mode == "receipt-evidence" and gpu_status == "not-exposed-by-c8s":
+        raise VerificationError(
+            "the response claims c8s exposes no GPU evidence, but the release requires it"
+        )
+    if gpu_required and gpu_mode == "measured-boot-gate" and gpu_status != "not-exposed-by-c8s":
+        raise VerificationError(
+            "the response GPU evidence status differs from the measured boot-gate protocol"
+        )
     mode = release_policy_mode(release)
     policy = response["c8s"].get("policyTrust")
     if mode == "static":
@@ -490,7 +758,7 @@ def validate_response_evidence(
             raise VerificationError("the response mesh CA fingerprint differs from the held mesh CA")
         if response["tls"]["mode"] != response["c8s"]["discovery"]["public_tls"]["mode"]:
             raise VerificationError("the response TLS mode differs from c8s discovery")
-        if response["gpuEvidence"]["status"] == "verified":
+        if gpu_status == "verified":
             raise VerificationError("the response claims GPU verification without a c8s GPU verifier")
         return
 
@@ -504,28 +772,72 @@ def validate_response_evidence(
         raise VerificationError("the release does not pin the expected operator key set")
     if operator.get("expectedKeySetSha256") != expected_key_set:
         raise VerificationError("the response operator key-set expectation differs from the release")
-    active_pem = operator.get("activeKeySetPem")
-    if not isinstance(active_pem, str):
-        raise VerificationError("the response does not expose the active operator key set")
-    try:
-        active_pem_bytes = active_pem.encode("ascii")
-    except UnicodeEncodeError as error:
-        raise VerificationError("the active operator key set is not ASCII PEM") from error
-    _, active_digest, active_members = canonical_operator_key_set(
-        active_pem_bytes, "active operator key set"
+    # c8s binds this key set to no hardware evidence at either protocol (see
+    # docs/ratls.md), so the new protocol may only ever claim the honest
+    # requires-attested-cds-read status. A response that claims the stronger
+    # evidence-present-and-release-matched status on this protocol is lying
+    # about what c8s can prove, and must fail closed here.
+    required_status = (
+        "requires-attested-cds-read"
+        if attestation_protocol == XWING_ATTESTATION_PROTOCOL
+        else "evidence-present-and-release-matched"
     )
-    if (
-        operator.get("status", operator.get("activeKeySetStatus")) != "evidence-present-and-release-matched"
-        or operator.get("activeKeySetSha256") != active_digest
-        or active_digest != expected_key_set
-        or operator_digest not in active_members
-    ):
+    if operator.get("status", operator.get("activeKeySetStatus")) != required_status:
         raise VerificationError("the active operator key set is not the pinned policy")
+    if attestation_protocol == XWING_ATTESTATION_PROTOCOL:
+        # The gateway cannot read the key set: the CDS leaf is self-signed and
+        # is trusted through TEE evidence, not a certificate chain. So the
+        # response must claim no active key set at all, must name the CDS
+        # route, and the verifier must have made that attested read itself.
+        for field in ("activeKeySetSha256", "activeKeySetPem", "activeKeySetC8sSha256"):
+            if field in operator:
+                raise VerificationError(
+                    "the response claims a live operator key set the gateway cannot read"
+                )
+        if operator.get("cdsAttestedReadHint") != CDS_OPERATOR_KEY_SET_ROUTE:
+            raise VerificationError(
+                "the response does not name the CDS operator-key route to read"
+            )
+        if attested_key_set is None:
+            raise VerificationError(
+                "this protocol requires an attested CDS read of the operator key set: "
+                "pass --cds-url with the CDS RA-TLS endpoint reachable to this verifier"
+            )
+        active_digest, active_members, _ = attested_key_set
+        if active_digest != expected_key_set:
+            raise VerificationError(
+                "the attested CDS operator key set differs from the release key-set commitment"
+            )
+        if active_digest != operator.get("expectedKeySetSha256"):
+            raise VerificationError(
+                "the attested CDS operator key set differs from the response key-set expectation"
+            )
+        if operator_digest not in active_members:
+            raise VerificationError(
+                "the held operator key is not a member of the attested CDS key set"
+            )
+    else:
+        active_pem = operator.get("activeKeySetPem")
+        if not isinstance(active_pem, str):
+            raise VerificationError("the response does not expose the active operator key set")
+        try:
+            active_pem_bytes = active_pem.encode("ascii")
+        except UnicodeEncodeError as error:
+            raise VerificationError("the active operator key set is not ASCII PEM") from error
+        _, active_digest, active_members = canonical_operator_key_set(
+            active_pem_bytes, "active operator key set"
+        )
+        if (
+            operator.get("activeKeySetSha256") != active_digest
+            or active_digest != expected_key_set
+            or operator_digest not in active_members
+        ):
+            raise VerificationError("the active operator key set is not the pinned policy")
     if response["c8s"]["meshCaSha256"] != mesh_ca_der_digest:
         raise VerificationError("the response mesh CA fingerprint differs from the held mesh CA")
     if response["tls"]["mode"] != response["c8s"]["discovery"]["public_tls"]["mode"]:
         raise VerificationError("the response TLS mode differs from c8s discovery")
-    if response["gpuEvidence"]["status"] == "verified":
+    if gpu_status == "verified":
         raise VerificationError("the response claims GPU verification without a c8s GPU verifier")
 
 
@@ -591,7 +903,13 @@ def fetch_response(args: argparse.Namespace) -> tuple[dict[str, Any], str, str, 
         response = connection.getresponse()
         peer = connection.sock.getpeercert(binary_form=True) if connection.sock else None
         if response.status != 200:
-            raise VerificationError(f"the public endpoint returned HTTP {response.status}")
+            # The gateway names the step that failed in the error body's
+            # "detail" field. Repeat it here, so one verifier run says where
+            # the producer stopped without any access to the cluster.
+            raise VerificationError(
+                f"the public endpoint returned HTTP {response.status}"
+                + _error_detail(response)
+            )
         length = response.getheader("Content-Length")
         if length is not None and int(length) > args.maximum_response_bytes:
             raise VerificationError("the public response exceeds the size limit")
@@ -621,7 +939,15 @@ def fetch_response(args: argparse.Namespace) -> tuple[dict[str, Any], str, str, 
     return value, sha256(spki), sha256(leaf_der), leaf_der
 
 
-def verify_c8s_version(executable: str, commit: str, timeout: int) -> str:
+def verify_c8s_version(executable: str, commit: str, timeout: int, tag: str | None = None) -> str:
+    """Fail closed unless the binary's own `--version` text names this source lock entry.
+
+    Cobra's version text carries whatever `git describe` produced at build
+    time. Off an exact tag, `git describe` prints only the tag string, with
+    no commit hash — so a tagged release build is checked against the
+    entry's `tag` (when the lock names one); every other build is still
+    checked against the entry's commit hash, exactly as before.
+    """
     try:
         result = subprocess.run(
             [executable, "--version"], capture_output=True, text=True, timeout=timeout
@@ -635,6 +961,8 @@ def verify_c8s_version(executable: str, commit: str, timeout: int) -> str:
         or f"g{short_commit}" in version
         or re.search(rf"(?<![0-9a-f]){short_commit}(?![0-9a-f])", version) is not None
     )
+    if not version_matches and isinstance(tag, str) and tag:
+        version_matches = re.search(rf"(?<![\w.-]){re.escape(tag)}(?![\w.-])", version) is not None
     if result.returncode != 0 or not version_matches:
         raise VerificationError("the c8s verifier does not match the source lock")
     return version.splitlines()[0]
@@ -784,6 +1112,39 @@ def required_gpu_policy(release: dict[str, Any], target: str, workload: str) -> 
     return None
 
 
+def gpu_attestation_mode(source_lock_entry: dict[str, Any]) -> str:
+    """Return how the pinned c8s release enforces required GPU policy.
+
+    Older c8s releases copied raw NVIDIA evidence into each workload receipt.
+    Current node images instead verify every passed-through GPU in a measured,
+    fail-closed boot unit that RKE2 requires. That verdict stays inside the
+    node, so an external verifier checks the measured gate and must not demand
+    receipt fields that this protocol does not expose.
+    """
+    capabilities = source_lock_entry.get("capabilities")
+    mode = (
+        capabilities.get("gpuAttestationMode", "receipt-evidence")
+        if isinstance(capabilities, dict)
+        else "receipt-evidence"
+    )
+    if mode not in {"receipt-evidence", "measured-boot-gate"}:
+        raise VerificationError("the source lock names an unknown GPU attestation mode")
+    return mode
+
+
+def front_door_verification_mode(source_lock_entry: dict[str, Any]) -> str:
+    """Return the verifier that owns the public front-door TEE check."""
+    capabilities = source_lock_entry.get("capabilities")
+    mode = (
+        capabilities.get("frontDoorVerification", "c8s-cli")
+        if isinstance(capabilities, dict)
+        else "c8s-cli"
+    )
+    if mode not in {"c8s-cli", "external-teerminator"}:
+        raise VerificationError("the source lock names an unknown front-door verification mode")
+    return mode
+
+
 def verify_gpu_receipt(
     item: dict[str, Any], policy: dict[str, Any], receipt: dict[str, Any],
     report_data_hex: str, args: argparse.Namespace, allowlist_path: Path,
@@ -909,6 +1270,7 @@ def verify_gpu_receipt(
 def verify_receipt_with_trusted_allowlists(
     item: dict[str, Any], args: argparse.Namespace,
     release: dict[str, Any], allowlists: list[tuple[str, Path, dict[str, Any]]],
+    verify_external_gpu_evidence: bool,
 ) -> dict[str, str]:
     """Verify one receipt against the exact retained policy which admitted it."""
     attempted = False
@@ -923,7 +1285,7 @@ def verify_receipt_with_trusted_allowlists(
         except C8sPolicyRejection:
             continue
         gpu_policy = required_gpu_policy(release, item["target"], item["workload"])
-        if gpu_policy is not None:
+        if gpu_policy is not None and verify_external_gpu_evidence:
             result["gpu"] = verify_gpu_receipt(
                 item, gpu_policy, item["receipt"],
                 result["reportDataHex"], args, path,
@@ -1039,7 +1401,7 @@ def verify_front_door(
 
 def validate_tls_binding(
     response: dict[str, Any], public_leaf_der_sha256: str, public_leaf_der: bytes,
-    front_door_verdict: dict[str, Any] | None,
+    front_door_verdict: dict[str, Any] | None, require_verdict: bool = True,
 ) -> bool:
     """Bind the live TLS leaf to the separate c8s attest-lb front-door receipt."""
     if response["tls"]["mode"] == "webpki":
@@ -1060,6 +1422,8 @@ def validate_tls_binding(
     expected = hashlib.sha256(public_leaf_der).digest()
     if b64url_decode(serving_leaf, "serving leaf") != expected:
         raise VerificationError("the front-door receipt is bound to a different TLS leaf")
+    if not require_verdict:
+        return False
     if front_door_verdict is None or front_door_verdict.get("tls_binding_verified") is not True:
         raise VerificationError("the c8s verifier did not confirm the front-door TLS leaf")
     if front_door_verdict.get("serving_leaf_sha256") != serving_leaf:
@@ -1110,9 +1474,14 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         required_gpu_policy(release, target, workload) is not None
         for target, workload, _ in targets
     )
+    source_lock_entry = validate_source_policy(release, manifest, source_lock, node_source_lock)
+    selected_gpu_mode = gpu_attestation_mode(source_lock_entry)
+    selected_front_door_mode = front_door_verification_mode(source_lock_entry)
+    verify_external_gpu_evidence = gpu_required and selected_gpu_mode == "receipt-evidence"
+    attestation_protocol = expected_attestation_protocol(source_lock_entry)
     args.attestation_cli_sha256 = ""
     args.gpu_verifier_environment = None
-    if gpu_required:
+    if verify_external_gpu_evidence:
         if args.attestation_cli is None:
             raise VerificationError(
                 "GPU evidence requires --attestation-cli built from the pinned attestation-rs source"
@@ -1124,7 +1493,6 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         environment = os.environ.copy()
         environment["PATH"] = str(attestation_cli.parent) + os.pathsep + environment.get("PATH", "")
         args.gpu_verifier_environment = environment
-    validate_source_policy(release, manifest, source_lock, node_source_lock)
     if args.operator_public_key is None:
         raise VerificationError(
             "verification requires --operator-public-key: c8s pins RTMR[3] to "
@@ -1142,9 +1510,15 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         mesh_ca_digest = release["c8s"]["meshCa"]["certificateSha256"]
         if mesh_ca_digest not in {mesh_ca_der_digest, mesh_ca_file_digest}:
             raise VerificationError("the held mesh CA differs from the release")
-    version = verify_c8s_version(args.c8s, source_lock["commit"], args.verifier_timeout_seconds)
+    entry_tag = source_lock_entry.get("tag")
+    version = verify_c8s_version(
+        args.c8s, source_lock_entry["commit"], args.verifier_timeout_seconds,
+        tag=entry_tag if isinstance(entry_tag, str) else None,
+    )
+    allowlist_capabilities = source_lock_entry.get("capabilities")
     canonical_from_c8s = canonicalize_allowlist(
-        args.c8s, args.allowlist, args.verifier_timeout_seconds, "canonical allowlist"
+        args.c8s, args.allowlist, args.verifier_timeout_seconds, "canonical allowlist",
+        allowlist_capabilities,
     )
     allowlist_digest, canonical_allowlist = validate_allowlist(
         release, allowlist, allowlist_bytes, canonical_from_c8s, targets
@@ -1152,20 +1526,33 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     allowlist_documents = trusted_allowlists(
         release, targets, args.allowlist, args.allowlist_history,
         (allowlist_digest, canonical_allowlist), args.c8s, args.verifier_timeout_seconds,
+        allowlist_capabilities,
     )
     model_root = validate_model_policy(release)
     release_digest = sha256(release_bytes)
     response, public_spki, public_leaf_der_sha256, public_leaf_der = fetch_response(args)
     validate_schema(response, RESPONSE_SCHEMA, "public attestation response")
-    required_c8s_flags: set[str] = set(source_lock.get("requiredVerifierFlags", []))
+    required_c8s_flags: set[str] = set(source_lock_entry.get("requiredVerifierFlags", []))
+    if (
+        args.policy_mode == "operator"
+        and source_lock_entry.get("attestationProtocol") == XWING_ATTESTATION_PROTOCOL
+    ):
+        # The attested CDS operator-key read needs all four of these.
+        required_c8s_flags.update({"--kind", "--mode", "--image-manifest", "--operator-keys"})
     if args.policy_mode == "static":
         required_c8s_flags.add("--static-allowlist")
-    if response.get("tls", {}).get("mode") in {"tee-webpki", "cds", "acme"}:
+    if (
+        selected_front_door_mode == "c8s-cli"
+        and response.get("tls", {}).get("mode") in {"tee-webpki", "cds", "acme"}
+    ):
         required_c8s_flags.update({
             "--mode", "attest-lb", "--attestation-nonce", "--observed-serving-cert",
         })
     for item in response.get("receipts", []):
-        if required_gpu_policy(release, item["target"], item["workload"]) is not None:
+        if (
+            verify_external_gpu_evidence
+            and required_gpu_policy(release, item["target"], item["workload"]) is not None
+        ):
             required_c8s_flags.update({
                 "--nvidia-gpu-user-nonce", "--nvidia-gpu-required",
                 "--nvidia-gpu-expected-arch", "--attestation-cli-sha256",
@@ -1189,9 +1576,26 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             raise VerificationError("the release operator key-set commitment differs from the held key")
         if operator_digest not in operator_key_set_members:
             raise VerificationError("the held operator key is not a member of the expected key set")
+    # On the new protocol the gateway publishes only its pinned key-set
+    # expectation, so the verifier must read the live key set for itself over
+    # an attested CDS session. Without --cds-url there is nothing to compare
+    # the pin against, and the run fails closed rather than skipping the check.
+    attested_key_set: tuple[str, set[str], str] | None = None
+    if args.policy_mode == "operator" and attestation_protocol == XWING_ATTESTATION_PROTOCOL:
+        if args.cds_url is None:
+            raise VerificationError(
+                "this release speaks " + XWING_ATTESTATION_PROTOCOL + ", on which the gateway "
+                "cannot read the c8s operator key set (CDS serves GET /operator-keys over "
+                "RA-TLS behind a self-signed certificate). Pass --cds-url with the CDS RA-TLS "
+                "base URL reachable to this verifier, so the operator key set is read here "
+                "over an attested session and compared with the pinned key-set commitment"
+            )
+        args.cds_url = validate_cds_url(args.cds_url)
+        attested_key_set = read_attested_operator_key_set(args)
     validate_response_evidence(
         response, release, release_digest, allowlist, canonical_allowlist,
         operator_digest, operator_key_set_digest, mesh_ca_der_digest,
+        attestation_protocol, gpu_required, attested_key_set, selected_gpu_mode,
     )
     for item in response["receipts"]:
         if item["admittedLaunch"] != expected_admitted_launch(allowlist, item["workload"]):
@@ -1213,14 +1617,20 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         try:
             receipts = [
                 verify_receipt_with_trusted_allowlists(
-                    item, args, release, materialized_allowlists
+                    item, args, release, materialized_allowlists,
+                    verify_external_gpu_evidence,
                 ) for item in response["receipts"]
             ]
         finally:
             args.operator_public_key = original_operator_path
-    front_door_verdict = verify_front_door(response, args, public_leaf_der, release)
+    front_door_verdict = (
+        verify_front_door(response, args, public_leaf_der, release)
+        if selected_front_door_mode == "c8s-cli"
+        else None
+    )
     public_tls_attested = validate_tls_binding(
-        response, public_leaf_der_sha256, public_leaf_der, front_door_verdict
+        response, public_leaf_der_sha256, public_leaf_der, front_door_verdict,
+        require_verdict=selected_front_door_mode == "c8s-cli",
     )
     gpu_targets = [
         item["target"] for item in response["receipts"]
@@ -1257,19 +1667,32 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "operatorPublicKeySha256": operator_digest,
         "operatorKeySetSha256": operator_key_set_digest,
         "activeOperatorKeySetVerified": args.policy_mode == "operator",
+        "operatorKeySetSource": (
+            "attested-cds-read" if attested_key_set is not None else "response-reported"
+        ),
+        "attestedCdsLaunchMeasurement": (
+            attested_key_set[2] if attested_key_set is not None else None
+        ),
         "meshCaSha256": mesh_ca_der_digest,
         "currentAllowlistSha256": allowlist_digest,
+        "allowlistCanonicalizationMethods": sorted(CANONICALIZATION_METHODS_USED),
         "trustedAllowlistSha256s": [item[0] for item in allowlist_documents],
         "publicTlsSpkiSha256": public_spki,
         "publicTlsKeyAttested": public_tls_attested,
-        # Non-GPU workloads are expected in the receipt set. Check GPU
-        # evidence only for the targets whose trusted release policy requires
-        # it. Each such target must have passed verify_gpu_receipt above.
-        "gpuEvidenceVerified": bool(gpu_targets)
+        "frontDoorVerification": selected_front_door_mode,
+        "attestationProtocol": attestation_protocol,
+        "gpuAttestationMode": selected_gpu_mode if gpu_targets else "not-required",
+        # In receipt-evidence mode, each required GPU target passed the raw
+        # NVIDIA evidence verifier above. In measured-boot-gate mode, the
+        # verified node image enforces GPU checks before RKE2 can start.
+        "gpuEvidenceVerified": verify_external_gpu_evidence
+        and bool(gpu_targets)
         and all(
             "gpu" in item for item in receipts
             if item["target"] in gpu_targets
         ),
+        "gpuBootGateEnforcedByMeasuredImage": bool(gpu_targets)
+        and selected_gpu_mode == "measured-boot-gate",
         "modelDmVerityRootPolicy": model_root,
         "c8sVerifierVersion": version,
         "intelCollateralVerifiedBy": "c8s attestation-go",
@@ -1279,11 +1702,20 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             "This receipt does not prove current workload liveness.",
             "The model root is a release policy check, not proof of current model use.",
             (
-                "The active operator key set is checked against the release key-set commitment and held key."
+                (
+                    "The active operator key set was read from CDS over an attested session "
+                    "and checked against the release key-set commitment and held key."
+                    if attested_key_set is not None
+                    else "The active operator key set is checked against the release key-set commitment and held key."
+                )
                 if args.policy_mode == "operator"
                 else "The c8s verifier checks the sealed allowlist digest in the attested mesh CA."
             ),
-            "Raw NVIDIA worker evidence is exposed, but cryptographic GPU verification requires the c8s GPU verifier.",
+            (
+                "The measured c8s node image verifies each passed-through GPU before RKE2 starts; raw NVIDIA evidence is not exposed externally."
+                if selected_gpu_mode == "measured-boot-gate"
+                else "Raw NVIDIA worker evidence is exposed, but cryptographic GPU verification requires the c8s GPU verifier."
+            ),
         ],
     }
 
@@ -1322,7 +1754,19 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--attestation-cli",
         type=Path,
-        help="attestation-cli built from the attestation-rs commit pinned by c8s",
+        help=(
+            "attestation-cli built from the attestation-rs commit pinned by c8s; "
+            "required only for source-lock entries that use receipt-evidence GPU attestation"
+        ),
+    )
+    result.add_argument(
+        "--cds-url",
+        help=(
+            "CDS RA-TLS base URL reachable to this verifier (for example "
+            "https://127.0.0.1:30808). Required on " + XWING_ATTESTATION_PROTOCOL + ": "
+            "the operator key set is read from " + CDS_OPERATOR_KEY_SET_ROUTE + " over an "
+            "attested session with the pinned c8s CLI"
+        ),
     )
     result.add_argument("--endpoint-ca", type=Path)
     result.add_argument(

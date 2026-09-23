@@ -27,13 +27,9 @@
           "path": "images/sglang/patches/sglang-simulator-replay-only.patch",
           "sha256": "7b9116115b440bcfd6b06ff00e410bc779cabe2e2a86ee75d3d8851a4dbe302e"
         },
-        "toolCallsPatch": {
-          "path": "images/sglang/patches/sglang-simulator-tool-calls.patch",
-          "sha256": "3348e274f0a22bf4b86531ec44e66faf3ee2f6aa9e46d18c1681232652274c25"
-        },
-        "reasoningPatch": {
-          "path": "images/sglang/patches/sglang-simulator-reasoning.patch",
-          "sha256": "ea8ca140615a74476e99fab6f8b26c822897531b7fe6ca0adebb46b66c4ed8c5"
+        "parserFlagsNoopPatch": {
+          "path": "images/sglang/patches/sglang-simulator-parser-flags-noop.patch",
+          "sha256": "9c654801f916b9d57eb3981dacdde5a3624d5b29e4d352c20822a64ae51f9306"
         }
       }
     },
@@ -164,6 +160,33 @@
       ]
     }
   },
+  "environmentRoles": {
+    "candidate": {
+      "sglang-router": {
+        "argv": [
+          "python3",
+          "-m",
+          "sglang_router.launch_router",
+          "--service-discovery",
+          "--service-discovery-namespace=confidential-inference-candidate",
+          "--service-discovery-port=30000",
+          "--selector=app.kubernetes.io/component=inference-worker",
+          "--policy=cache_aware",
+          "--cache-threshold=0.3",
+          "--balance-abs-threshold=64",
+          "--balance-rel-threshold=1.5",
+          "--eviction-interval-secs=60",
+          "--max-tree-size=67108864",
+          "--health-check-endpoint=/health",
+          "--worker-startup-timeout-secs=3600",
+          "--host=0.0.0.0",
+          "--port=30000",
+          "--prometheus-host=0.0.0.0",
+          "--prometheus-port=29000"
+        ]
+      }
+    }
+  },
   "simulatorRoles": {
     "inference-worker-0": {
       "argv": [
@@ -222,7 +245,7 @@
         "--max-tree-size=67108864",
         "--health-check-endpoint=/health",
         "--worker-startup-timeout-secs=3600",
-        "--host=127.0.0.1",
+        "--host=0.0.0.0",
         "--port=30000",
         "--prometheus-host=0.0.0.0",
         "--prometheus-port=29000"
@@ -237,21 +260,40 @@
   "nodeEvidenceArtifact": {
     "digest": "sha256:026e62bf69fe05eecfc8809c6be0539d098f3d42be8a6c8f196200d018b50a7c"
   },
+  "nodeEvidenceArtifacts": {
+    "conf-inference-prod": {
+      "digest": "sha256:026e62bf69fe05eecfc8809c6be0539d098f3d42be8a6c8f196200d018b50a7c"
+    },
+    "candidate": {
+      "digest": "sha256:6ef7b6571de8790476701119f921638ae3dd0b03c2d8d28737e9d22d5fb06727"
+    },
+    "production": {
+      "digest": "sha256:026e62bf69fe05eecfc8809c6be0539d098f3d42be8a6c8f196200d018b50a7c"
+    },
+    "staging": {
+      "digest": "sha256:97c41cb38bab6a7c6858ef0ecc50bd076f70d262f150b2fa8759311ec55be582"
+    }
+  },
   "nodeImages": {
     "conf-inference-prod": {
       "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
       "digest": "sha256:77c30f0ed4cc9c0009de9c7be223e129fa8e10980b6ca5d2d17fe0d0743cd1a8",
       "sourceCommit": "2ef376a875010ac98542ab5f2f770aeb95b0082f"
     },
+    "candidate": {
+      "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
+      "digest": "sha256:3c57e9a637372faceae676f992f6a4967c0da41e3f9b5ad64d5dc7ff51f71a2e",
+      "sourceCommit": "152d58336dfb8ed1aabe515927da1569c8970ca1"
+    },
     "production": {
       "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
       "digest": "sha256:cdc98a230169ff62599084f8f791c022e983c803c0d950c6f43e38d2009dfe3d",
       "sourceCommit": "fd6355414f79c6b3d3657e1abca04a6edc90550f"
     },
-    "integration-staging": {
+    "staging": {
       "reference": "ghcr.io/confidential-dot-ai/node-guest-base",
-      "digest": "sha256:1f0483d38744fa3bef8964ba3fcfe5596db4ba02675dd6eff1a17cacfa488d02",
-      "sourceCommit": "fd6355414f79c6b3d3657e1abca04a6edc90550f"
+      "digest": "sha256:84fadd3dbc1c6bd94320ac22a9bdeb9483420b4deb8c9acf72325843ea175a57",
+      "sourceCommit": "7b951aec9e3e52e87dcc764924ab0d972774e69c"
     }
   },
   "alternateArgvRoles": {

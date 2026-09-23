@@ -30,7 +30,6 @@ spec:
       {{- end }}
       serviceAccountName: metrics-collector
       securityContext:
-        {{- include "confidential-inference.workloadClaimsSupplementalGroup" . | nindent 8 }}
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -89,9 +88,6 @@ spec:
         {{- include "confidential-inference.cdsAttestSidecar" (dict "root" . "host" "0.0.0.0" "port" .Values.attestationReceipts.metricsCollectorPort "workload" .Values.metricsCollector.attestedWorkload) | nindent 8 }}
         {{- end }}
       volumes:
-        {{- if and .Values.attestationReceipts.enabled (not .Values.attestationReceipts.legacyC8s615) }}
-        {{- include "confidential-inference.workloadClaimsVolume" . | nindent 8 }}
-        {{- end }}
         - name: config
           configMap:
             name: metrics-collector

@@ -1,9 +1,9 @@
 {
   "schema": "confidential.ai/confos-builder-lock/v1",
   "repository": "https://github.com/confidential-dot-ai/confidential-os-builder.git",
-  "commit": "f5a9c24643450ef6cbb857156e77acf3e76d5cee",
-  "c8sSourceCommit": "fd6355414f79c6b3d3657e1abca04a6edc90550f",
-  "c8sImageTag": "079aeb4",
+  "commit": "e630fd13b5fca9d66c9549faa54427dd027806a4",
+  "c8sSourceCommit": "152d58336dfb8ed1aabe515927da1569c8970ca1",
+  "c8sImageTag": "152d583",
   "mkosi": {
     "repository": "https://github.com/systemd/mkosi.git",
     "commit": "84af20892b61c8e177e391f997ded8b4cb5514f2"
@@ -17,11 +17,14 @@
   },
   "platform": "tdx",
   "profile": "images/control-plane-node/profile/control-plane-state",
-  "integrationStagingSignedStage": {
-    "source": "ghcr.io/confidential-dot-ai/node-guest-base:rke2-tdx-079aeb4-cpd7d608446a88-saae4ed02814fa",
-    "digest": "sha256:4f611a8b321570cff6ba880253f3b5649828284c2621a9a86cfda59c9d70cd85",
-    "moduleSigningCertificateSha256": "7c9f63b0206dc794e5be126b86ce50c68cd33d1c22ecd5979984614c476a986e",
-    "attestationApiSha256": "1bfd19eed8fec3e4a8a0ae8b0c62fc4835558395d9137d51df3ede6f590037c1",
-    "libnvatSha256": "1dd6c5429632c8c9ae59aa687cf96593f01c5597afe342f72ec3d8d5ddb0bbae"
+  "stagingSignedStage": {
+    "digest": "sha256:84fadd3dbc1c6bd94320ac22a9bdeb9483420b4deb8c9acf72325843ea175a57"
+  },
+  "candidateSignedStage": {
+    "source": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:6ef7b6571de8790476701119f921638ae3dd0b03c2d8d28737e9d22d5fb06727",
+    "digest": "sha256:3c57e9a637372faceae676f992f6a4967c0da41e3f9b5ad64d5dc7ff51f71a2e",
+    "c8sRelease": "v0.26.5",
+    "c8sSourceCommit": "152d58336dfb8ed1aabe515927da1569c8970ca1",
+    "confosSourceCommit": "e630fd13b5fca9d66c9549faa54427dd027806a4"
   }
 }

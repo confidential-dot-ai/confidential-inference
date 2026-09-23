@@ -115,7 +115,7 @@
         "operationId": "listModels",
         "tags": ["models"],
         "summary": "List the advertised model catalog",
-        "description": "The gateway lists every configured catalog model, not only the model accepted for inference (services/gateway/src/lib.rs, `models`; services/gateway/src/main.rs builds the catalog from `GATEWAY_MODEL` plus a second fixed catalog entry). During an outage the gateway returns an empty `data` array with status 200. This route requires no bearer token.",
+        "description": "The gateway lists the model accepted for inference. During an outage the gateway returns an empty `data` array with status 200. This route requires no bearer token.",
         "responses": {
           "200": {
             "description": "The model catalog. `data` is empty when the gateway is unavailable for inference.",
@@ -125,8 +125,7 @@
                 "example": {
                   "object": "list",
                   "data": [
-                    {"id": "deepseek-ai/DeepSeek-V4-Flash-0731", "object": "model", "owned_by": "confidential.ai"},
-                    {"id": "MiniMaxAI/MiniMax-M3-MXFP8", "object": "model", "owned_by": "confidential.ai"}
+                    {"id": "deepseek-ai/DeepSeek-V4-Flash-0731", "object": "model", "owned_by": "confidential.ai"}
                   ]
                 }
               }

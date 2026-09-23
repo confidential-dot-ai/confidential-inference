@@ -32,8 +32,7 @@
                 "example": {
                   "object": "list",
                   "data": [
-                    {"id": "deepseek-ai/DeepSeek-V4-Flash-0731", "object": "model", "owned_by": "confidential.ai"},
-                    {"id": "MiniMaxAI/MiniMax-M3-MXFP8", "object": "model", "owned_by": "confidential.ai"}
+                    {"id": "deepseek-ai/DeepSeek-V4-Flash-0731", "object": "model", "owned_by": "confidential.ai"}
                   ]
                 }
               }
@@ -154,16 +153,6 @@
                 "required": ["id", "object", "owned_by"],
                 "properties": {
                   "id": {"const": "deepseek-ai/DeepSeek-V4-Flash-0731"},
-                  "object": {"const": "model"},
-                  "owned_by": {"const": "confidential.ai"}
-                }
-              },
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["id", "object", "owned_by"],
-                "properties": {
-                  "id": {"const": "MiniMaxAI/MiniMax-M3-MXFP8"},
                   "object": {"const": "model"},
                   "owned_by": {"const": "confidential.ai"}
                 }

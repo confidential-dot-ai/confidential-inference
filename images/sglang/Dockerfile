@@ -16,8 +16,7 @@ LABEL ai.confidential.sglang.flashinfer-cc.revision="64121c62a8dca7f5d1fdd39c815
 LABEL ai.confidential.sglang.patch.sha256="da0afb59209a6bce8a910b21c6e63fcde768f5b82675bfa2bd22ae230c978570"
 LABEL ai.confidential.sglang.simulator.revision="5e6af31ae3fe8d95f83bab8c78e4db834142b313"
 LABEL ai.confidential.sglang.simulator.patch.sha256="7b9116115b440bcfd6b06ff00e410bc779cabe2e2a86ee75d3d8851a4dbe302e"
-LABEL ai.confidential.sglang.simulator.tool-calls-patch.sha256="3348e274f0a22bf4b86531ec44e66faf3ee2f6aa9e46d18c1681232652274c25"
-LABEL ai.confidential.sglang.simulator.reasoning-patch.sha256="ea8ca140615a74476e99fab6f8b26c822897531b7fe6ca0adebb46b66c4ed8c5"
+LABEL ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256="9c654801f916b9d57eb3981dacdde5a3624d5b29e4d352c20822a64ae51f9306"
 LABEL ai.confidential.flashinfer.version="0.6.17"
 LABEL ai.confidential.flashinfer.revision="a0a6b019b9b27d49d209f85d028a1ae5a9b347d7"
 LABEL ai.confidential.flashinfer.cuda-ipc-patch.sha256="62d607a31de4662de8e54a70140b72cc7bfd87cdad5d5850e0e0893f0a13bfff"
@@ -30,8 +29,7 @@ RUN --mount=type=bind,source=patches/cc-optimizations-v0518.patch,target=/run-sr
     --mount=type=bind,source=gpu_metrics.py,target=/run-src/gpu-metrics,readonly \
     --mount=type=bind,source=simulator-upstream,target=/run-src/sglang-simulator,readonly \
     --mount=type=bind,source=patches/sglang-simulator-replay-only.patch,target=/run-src/sglang-simulator-replay-only.patch,readonly \
-    --mount=type=bind,source=patches/sglang-simulator-tool-calls.patch,target=/run-src/sglang-simulator-tool-calls.patch,readonly \
-    --mount=type=bind,source=patches/sglang-simulator-reasoning.patch,target=/run-src/sglang-simulator-reasoning.patch,readonly \
+    --mount=type=bind,source=patches/sglang-simulator-parser-flags-noop.patch,target=/run-src/sglang-simulator-parser-flags-noop.patch,readonly \
     install -D -m 0644 /run-src/cc-optimizations.patch /tmp/cc-optimizations.patch \
     && install -D -m 0644 /run-src/patch-flashinfer-cuda-ipc.py /tmp/patch-flashinfer-cuda-ipc.py \
     && cd /sgl-workspace/sglang \
@@ -46,10 +44,8 @@ RUN --mount=type=bind,source=patches/cc-optimizations-v0518.patch,target=/run-sr
     && cd /opt/confidential-inference/sglang-simulator \
     && git apply --check /run-src/sglang-simulator-replay-only.patch \
     && git apply /run-src/sglang-simulator-replay-only.patch \
-    && git apply --check /run-src/sglang-simulator-tool-calls.patch \
-    && git apply /run-src/sglang-simulator-tool-calls.patch \
-    && git apply --check /run-src/sglang-simulator-reasoning.patch \
-    && git apply /run-src/sglang-simulator-reasoning.patch \
+    && git apply --check /run-src/sglang-simulator-parser-flags-noop.patch \
+    && git apply /run-src/sglang-simulator-parser-flags-noop.patch \
     && install -D -m 0555 /run-src/wait-for-model /usr/local/bin/wait-for-model \
     && install -D -m 0555 /run-src/gpu-metrics /usr/local/bin/gpu-metrics \
     && rm /tmp/cc-optimizations.patch /tmp/patch-flashinfer-cuda-ipc.py

@@ -209,7 +209,7 @@ class ControlPlaneNodeProfileTests(unittest.TestCase):
         self.assertNotIn("rke2recovery", readme)
 
     def test_readme_documents_the_enforced_scratch_disk_minimum(self):
-        """integration-staging-v9 gave every CVM a 32Gi confai-scratch disk.
+        """An early staging release gave every CVM a 32Gi confai-scratch disk.
 
         The c8s base image's scratch-enforce.service carries
         FailureAction=poweroff-force and refuses any scratch device below

@@ -51,8 +51,9 @@ the request to one of the sglang inference workers.
   attestation-rs verifiers.
 - The measured ConfOS node image (`images/control-plane-node/README.md`).
 - The Sigstore-signed release bundle (`releases/README.md`, "Trust limits").
-- The c8s verifier at the pinned commit
-  (`contracts/c8s-admission-source-lock.json`).
+- The c8s verifier at a pinned commit
+  (`contracts/c8s-admission-source-lock.json`, which lists one entry per
+  trusted c8s commit; a release naming any other c8s commit fails closed).
 
 ## 3. What a verified attestation proves, and does not prove
 
@@ -122,17 +123,15 @@ runs now (`README.md`, "What attestation proves").
   TDX, `RTMR[0]` cannot be pinned by the verifier's `--rtmr` flag (c8s
   `internal/cmds/verify/verify.go`, flag help for `--rtmr`, at commit
   `079aeb48`).
-- **GPU evidence is verified by the offline client verifier, not at
-  certificate issuance.** The mesh CA certificate does not carry a GPU
-  attestation result; the offline verifier calls a separate c8s GPU verifier
-  with a CPU-report-derived nonce after the fact
-  (`services/gateway/ATTESTATION.md`: "TLS-LB-local GPU evidence never
-  proves a worker GPU... c8s does not collect GPU evidence in the guest or
-  require it at certificate issuance" — the second half of this sentence
-  quotes `c8s/README.md`, "Known gaps and open items": "GPU attestation is
-  not wired end to end... c8s does not collect GPU evidence in the guest or
-  require it at certificate issuance, so no positive GPU attestation reaches
-  the relying party.").
+- **c8s v0.26.5 enforces GPU attestation as a measured boot gate.** The node
+  image checks confidential-computing mode and nonce-bound evidence for every
+  passed-through NVIDIA GPU. RKE2 requires this systemd unit. A failure powers
+  off the node, so a GPU workload cannot join or run after a failed check. The
+  verdict stays inside the node and raw NVIDIA evidence does not reach the
+  relying party. The offline verifier checks the measured node image and
+  reports this enforcement mode. The source lock pins the gate script, its
+  systemd unit, and the preset that enables the dependency
+  (`contracts/c8s-admission-source-lock.json`, c8s commit `152d583`).
 - **The tls-lb-to-gateway hop is plain HTTP inside the cluster network.**
   Public TLS terminates at tls-lb, inside the TEE; the hop to the gateway
   process is HTTP, gated by the c8s allowlist and carried over the mesh
