@@ -64,6 +64,28 @@ async fn spawn_upstream() -> (SocketAddr, oneshot::Sender<()>) {
     (address, stop_tx)
 }
 
+async fn spawn_unavailable_upstream() -> (SocketAddr, oneshot::Sender<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    let address = listener.local_addr().unwrap_or_else(|_| unreachable!());
+    let (stop_tx, stop_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            Router::new().route(
+                "/v1/chat/completions",
+                post(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+            ),
+        )
+        .with_graceful_shutdown(async {
+            let _ = stop_rx.await;
+        })
+        .await;
+    });
+    (address, stop_tx)
+}
+
 async fn spawn_redirect_upstream(
     status: StatusCode,
     location: String,
@@ -196,6 +218,33 @@ async fn gateway_does_not_authorize_an_unknown_model_for_forwarding() {
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default()["error"]["code"],
         "model_not_authorized"
+    );
+    let _ = stop.send(());
+}
+
+#[tokio::test]
+async fn gateway_normalizes_an_unavailable_inference_router() {
+    let (address, stop) = spawn_unavailable_upstream().await;
+    let response = app(address)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", "Bearer accepted")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"model":"deepseek"}).to_string()))
+                .unwrap_or_else(|_| unreachable!()),
+        )
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()[header::RETRY_AFTER], "30");
+    let body = axum::body::to_bytes(response.into_body(), 1_024)
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap_or_default()["error"]["code"],
+        "inference_unavailable"
     );
     let _ = stop.send(());
 }
