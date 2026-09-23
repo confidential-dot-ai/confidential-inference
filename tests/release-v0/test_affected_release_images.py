@@ -37,11 +37,22 @@ class AffectedReleaseImagesTests(unittest.TestCase):
             names(
                 [
                     "README.md",
+                    "images/gateway/README.md",
+                    "images/gateway/build.sh",
+                    "images/metrics-collector/source.lock",
+                    "images/sglang/README.md",
+                    "services/gateway/tests/fake_upstream.rs",
                     "helm/confidential-inference/values.yaml",
                     ".github/workflows/release-images.yml",
                 ]
             ),
             [],
+        )
+
+    def test_sglang_build_mount_selects_sglang(self) -> None:
+        self.assertEqual(
+            names(["images/sglang/simulator-upstream/src/usercustomize.py"]),
+            ["sglang"],
         )
 
     def test_base_ref_accepts_only_release_tags_or_full_commits(self) -> None:

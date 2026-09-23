@@ -32,8 +32,10 @@ RUST_IMAGE_INPUTS = (
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    "services/gateway/**",
-    "services/maintenance-gateway/**",
+    "services/gateway/Cargo.toml",
+    "services/gateway/src/**",
+    "services/maintenance-gateway/Cargo.toml",
+    "services/maintenance-gateway/src/**",
 )
 BASE_REF = re.compile(
     r"(?:[0-9a-f]{40}|v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\."
@@ -45,35 +47,46 @@ IMAGES = (
         ".",
         "images/gateway/Dockerfile",
         "Confidential Inference gateway",
-        (*RUST_IMAGE_INPUTS, "images/gateway/**"),
+        (
+            *RUST_IMAGE_INPUTS,
+            "images/gateway/Dockerfile",
+            "images/gateway/Dockerfile.dockerignore",
+        ),
     ),
     Image(
         "maintenance-gateway",
         ".",
         "images/maintenance-gateway/Dockerfile",
         "Confidential Inference maintenance gateway",
-        (*RUST_IMAGE_INPUTS, "images/maintenance-gateway/**"),
+        (*RUST_IMAGE_INPUTS, "images/maintenance-gateway/Dockerfile"),
     ),
     Image(
         "sglang",
         "images/sglang",
         "images/sglang/Dockerfile",
         "Confidential Inference SGLang",
-        ("images/sglang/**",),
+        (
+            "images/sglang/Dockerfile",
+            "images/sglang/gpu_metrics.py",
+            "images/sglang/patch_flashinfer_cuda_ipc.py",
+            "images/sglang/wait_for_model.py",
+            "images/sglang/patches/**",
+            "images/sglang/simulator-upstream/**",
+        ),
     ),
     Image(
         "metrics-collector",
         "images/metrics-collector",
         "images/metrics-collector/Dockerfile",
         "Confidential Inference metrics collector",
-        ("images/metrics-collector/**",),
+        ("images/metrics-collector/Dockerfile",),
     ),
     Image(
         "kube-state-metrics",
         "images/kube-state-metrics",
         "images/kube-state-metrics/Dockerfile",
         "Confidential Inference kube-state metrics",
-        ("images/kube-state-metrics/**",),
+        ("images/kube-state-metrics/Dockerfile",),
     ),
 )
 
