@@ -401,15 +401,13 @@ def select_source_lock_entry(
 
 def validate_source_policy(
     release: dict[str, Any], manifest: dict[str, Any], source_lock: dict[str, Any],
-    node_source_lock: dict[str, Any],
+    node_source_lock: dict[str, Any], deployment_target: str,
 ) -> dict[str, Any]:
     release_commit = release["c8s"]["sourceCommit"]
     if not isinstance(release_commit, str) or SOURCE_COMMIT_RE.fullmatch(release_commit) is None:
         raise VerificationError("the release c8s source commit is invalid")
     selected_entry = select_source_lock_entry(source_lock, release_commit)
-    expected_node = source_lock_node_image(
-        node_source_lock, release["release"]["environment"]
-    )
+    expected_node = source_lock_node_image(node_source_lock, deployment_target)
     node_commit = expected_node.get("sourceCommit")
     if not isinstance(node_commit, str) or SOURCE_COMMIT_RE.fullmatch(node_commit) is None:
         raise VerificationError("the node source lock commit is invalid")
@@ -1467,14 +1465,21 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     if release_signature["releaseBundleBytesSha256"] != sha256(release_bytes):
         raise VerificationError("the verified signature covers different release bytes")
     release_trust_policy_digest = release_signature["releaseTrustPolicySha256"]
-    if release["release"]["environment"] != args.environment:
-        raise VerificationError("the release environment differs from the requested environment")
+    expected_release_environment = (
+        args.release_environment or args.deployment_target
+    )
+    if release["release"]["environment"] != expected_release_environment:
+        raise VerificationError(
+            "the release environment differs from the requested release environment"
+        )
     targets = expected_targets(release, args.expected_target)
     gpu_required = any(
         required_gpu_policy(release, target, workload) is not None
         for target, workload, _ in targets
     )
-    source_lock_entry = validate_source_policy(release, manifest, source_lock, node_source_lock)
+    source_lock_entry = validate_source_policy(
+        release, manifest, source_lock, node_source_lock, args.deployment_target
+    )
     selected_gpu_mode = gpu_attestation_mode(source_lock_entry)
     selected_front_door_mode = front_door_verification_mode(source_lock_entry)
     verify_external_gpu_evidence = gpu_required and selected_gpu_mode == "receipt-evidence"
@@ -1642,7 +1647,9 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "verifiedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "scope": "launch-or-admission-only",
         "operationalStatus": "not-verified",
-        "environment": args.environment,
+        "environment": args.deployment_target,
+        "releaseEnvironment": release["release"]["environment"],
+        "deploymentTarget": args.deployment_target,
         "endpoint": urlsplit(args.endpoint)._replace(query="", fragment="").geturl(),
         "nonceSha256": sha256(b64url_decode(args.nonce, "nonce")),
         "releaseBundleBytesSha256": release_digest,
@@ -1745,7 +1752,21 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument("--mesh-ca", required=True, type=Path)
-    result.add_argument("--environment", required=True)
+    result.add_argument(
+        "--deployment-target", "--environment",
+        dest="deployment_target",
+        required=True,
+        help=(
+            "live deployment target used to select its node image policy; "
+            "--environment remains as a compatibility alias"
+        ),
+    )
+    result.add_argument(
+        "--release-environment",
+        help=(
+            "expected signed release channel; defaults to the deployment target"
+        ),
+    )
     result.add_argument(
         "--expected-target", action="append", default=[], metavar="TARGET=WORKLOAD",
         help="bind a legacy release bundle to one expected receipt target",
