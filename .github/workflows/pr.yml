@@ -43,14 +43,14 @@ jobs:
                 ;;
               services/gateway/*) gateway=true ;;
               services/maintenance-gateway/*) maintenance=true ;;
-              scripts/validate-release-tag.py|tests/release-v0/test_release_tag.py|.github/workflows/release-bundle.yml)
+              scripts/validate-release-tag.py|scripts/affected-release-images.py|tests/release-v0/test_release_tag.py|tests/release-v0/test_affected_release_images.py|.github/workflows/release-bundle.yml|.github/workflows/release-images.yml)
                 python=true
                 release=true
                 ;;
               scripts/*.py|images/*/*.py) python=true ;;
               helm/confidential-inference/*) helm_app=true ;;
               helm/maintenance-gateway/*) helm_maintenance=true ;;
-              contracts/*.json|c8s/*.json|releases/*.json|releases/*/*.json|images/*/source.lock)
+              contracts/*.json|c8s/*.json|releases/*.json|images/*/source.lock)
                 config=true
                 ;;
               .github/workflows/pr.yml)
@@ -104,7 +104,9 @@ jobs:
 
       - name: Test release rules
         if: steps.changes.outputs.release == 'true'
-        run: python3 -m unittest tests/release-v0/test_release_tag.py
+        run: |
+          python3 -m unittest tests/release-v0/test_release_tag.py
+          python3 -m unittest tests/release-v0/test_affected_release_images.py
 
       - name: Set up Helm
         if: steps.changes.outputs.helm_app == 'true' || steps.changes.outputs.helm_maintenance == 'true'

@@ -25,10 +25,10 @@ receipts in a separate private repository.
 
 ## Build and publish
 
-The image workflow reads each Dockerfile and source lock from this repository.
-It builds and publishes an OCI image once for one exact Git commit. The release
-record must use the Linux AMD64 image digest. It must not use the
-multi-platform index digest.
+The manual image workflow takes an intended release candidate and a prior
+release ref. It builds and publishes only images whose build inputs changed
+between that ref and `main`. The release record must use each Linux AMD64 image
+digest. It must not use a multi-platform index digest.
 
 ```sh
 ./images/gateway/build.sh
@@ -247,9 +247,10 @@ Python change, tests release rules only after a release-tooling change, lints
 only changed Helm charts, and parses only changed configuration. Documentation
 changes do not start documentation checks.
 
-`.github/workflows/release-images.yml` is manual. It does not run on pull requests
-or pushes to `main`. `.github/workflows/release-bundle.yml` runs only for
-protected release tags.
+`.github/workflows/release-images.yml` is manual. It selects affected images for
+an intended release candidate. It does not run on pull requests or pushes to
+`main`. `.github/workflows/release-bundle.yml` runs only for protected release
+tags.
 
 ## Project policy
 
