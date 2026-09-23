@@ -478,6 +478,45 @@
         "--port=8080",
         "--telemetry-port=8081"
       ]
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:3532143fd358d46acc2b3eb4902e5c5baae3691e53825aec1d51e1e9ab6c62a4": {
+      "build": {
+        "commit": "2fc96ec4ec364f6e9f087bf9e7341306ac0b3b53",
+        "context": ".",
+        "dockerfile": "images/gateway/Dockerfile",
+        "platform": "linux/amd64",
+        "repository": "https://github.com/confidential-dot-ai/confidential-inference"
+      },
+      "cmd": [],
+      "entrypoint": [
+        "/usr/local/bin/confidential-gateway"
+      ]
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway@sha256:f6908874f425daed5cbb21f891cd7800298b3f9fe4af69eac7313ac8a8a68eb3": {
+      "build": {
+        "commit": "2fc96ec4ec364f6e9f087bf9e7341306ac0b3b53",
+        "context": ".",
+        "dockerfile": "images/maintenance-gateway/Dockerfile",
+        "platform": "linux/amd64",
+        "repository": "https://github.com/confidential-dot-ai/confidential-inference"
+      },
+      "cmd": [],
+      "entrypoint": [
+        "/usr/local/bin/maintenance-gateway"
+      ]
+    },
+    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:07bb13c3be6f8f2c3cbfaac4757b04904bb864e546fdc10de57aae2a28f8d88d": {
+      "build": {
+        "commit": "2fc96ec4ec364f6e9f087bf9e7341306ac0b3b53",
+        "context": "images/sglang",
+        "dockerfile": "images/sglang/Dockerfile",
+        "platform": "linux/amd64",
+        "repository": "https://github.com/confidential-dot-ai/confidential-inference"
+      },
+      "cmd": [],
+      "entrypoint": [
+        "/opt/nvidia/nvidia_entrypoint.sh"
+      ]
     }
   }
 }

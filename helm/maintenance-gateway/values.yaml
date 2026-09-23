@@ -1,6 +1,6 @@
 environment: example-fallback
 replicaCount: 1
-image: ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway@sha256:88a07a341edecf4fa31bcb7344bacbdcf8b64a6f6056782d20db78c62708e626
+image: ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway@sha256:f6908874f425daed5cbb21f891cd7800298b3f9fe4af69eac7313ac8a8a68eb3
 imagePullSecretName: fallback-ghcr-pull
 service:
   type: ClusterIP
