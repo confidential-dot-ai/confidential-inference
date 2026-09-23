@@ -117,6 +117,7 @@ class SourceLockTests(unittest.TestCase):
         value["capabilities"] = {
             "allowlistCanonicalize": False,
             "gpuAttestationMode": "measured-boot-gate",
+            "frontDoorVerification": "external-teerminator",
         }
         value["attestationProtocol"] = "c8s/attest-pq/v1+xwing"
         self.lock.write_text(json.dumps(value), encoding="utf-8")
@@ -136,6 +137,17 @@ class SourceLockTests(unittest.TestCase):
         value["capabilities"] = {
             "allowlistCanonicalize": False,
             "gpuAttestationMode": "external-evidence-maybe",
+        }
+        self.lock.write_text(json.dumps(value), encoding="utf-8")
+        result = self.run_tool()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("capabilities are invalid", result.stderr)
+
+    def test_rejects_unknown_front_door_verification_mode(self) -> None:
+        value = json.loads(self.lock.read_text(encoding="utf-8"))
+        value["capabilities"] = {
+            "allowlistCanonicalize": False,
+            "frontDoorVerification": "implicit-success",
         }
         self.lock.write_text(json.dumps(value), encoding="utf-8")
         result = self.run_tool()

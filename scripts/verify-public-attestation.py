@@ -1129,6 +1129,19 @@ def gpu_attestation_mode(source_lock_entry: dict[str, Any]) -> str:
     return mode
 
 
+def front_door_verification_mode(source_lock_entry: dict[str, Any]) -> str:
+    """Return the verifier that owns the public front-door TEE check."""
+    capabilities = source_lock_entry.get("capabilities")
+    mode = (
+        capabilities.get("frontDoorVerification", "c8s-cli")
+        if isinstance(capabilities, dict)
+        else "c8s-cli"
+    )
+    if mode not in {"c8s-cli", "external-teerminator"}:
+        raise VerificationError("the source lock names an unknown front-door verification mode")
+    return mode
+
+
 def verify_gpu_receipt(
     item: dict[str, Any], policy: dict[str, Any], receipt: dict[str, Any],
     report_data_hex: str, args: argparse.Namespace, allowlist_path: Path,
@@ -1385,7 +1398,7 @@ def verify_front_door(
 
 def validate_tls_binding(
     response: dict[str, Any], public_leaf_der_sha256: str, public_leaf_der: bytes,
-    front_door_verdict: dict[str, Any] | None,
+    front_door_verdict: dict[str, Any] | None, require_verdict: bool = True,
 ) -> bool:
     """Bind the live TLS leaf to the separate c8s attest-lb front-door receipt."""
     if response["tls"]["mode"] == "webpki":
@@ -1406,6 +1419,8 @@ def validate_tls_binding(
     expected = hashlib.sha256(public_leaf_der).digest()
     if b64url_decode(serving_leaf, "serving leaf") != expected:
         raise VerificationError("the front-door receipt is bound to a different TLS leaf")
+    if not require_verdict:
+        return False
     if front_door_verdict is None or front_door_verdict.get("tls_binding_verified") is not True:
         raise VerificationError("the c8s verifier did not confirm the front-door TLS leaf")
     if front_door_verdict.get("serving_leaf_sha256") != serving_leaf:
@@ -1458,6 +1473,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     )
     source_lock_entry = validate_source_policy(release, manifest, source_lock, node_source_lock)
     selected_gpu_mode = gpu_attestation_mode(source_lock_entry)
+    selected_front_door_mode = front_door_verification_mode(source_lock_entry)
     verify_external_gpu_evidence = gpu_required and selected_gpu_mode == "receipt-evidence"
     attestation_protocol = expected_attestation_protocol(source_lock_entry)
     args.attestation_cli_sha256 = ""
@@ -1522,7 +1538,10 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         required_c8s_flags.update({"--kind", "--mode", "--image-manifest", "--operator-keys"})
     if args.policy_mode == "static":
         required_c8s_flags.add("--static-allowlist")
-    if response.get("tls", {}).get("mode") in {"tee-webpki", "cds", "acme"}:
+    if (
+        selected_front_door_mode == "c8s-cli"
+        and response.get("tls", {}).get("mode") in {"tee-webpki", "cds", "acme"}
+    ):
         required_c8s_flags.update({
             "--mode", "attest-lb", "--attestation-nonce", "--observed-serving-cert",
         })
@@ -1601,9 +1620,14 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             ]
         finally:
             args.operator_public_key = original_operator_path
-    front_door_verdict = verify_front_door(response, args, public_leaf_der, release)
+    front_door_verdict = (
+        verify_front_door(response, args, public_leaf_der, release)
+        if selected_front_door_mode == "c8s-cli"
+        else None
+    )
     public_tls_attested = validate_tls_binding(
-        response, public_leaf_der_sha256, public_leaf_der, front_door_verdict
+        response, public_leaf_der_sha256, public_leaf_der, front_door_verdict,
+        require_verdict=selected_front_door_mode == "c8s-cli",
     )
     gpu_targets = [
         item["target"] for item in response["receipts"]
@@ -1652,6 +1676,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "trustedAllowlistSha256s": [item[0] for item in allowlist_documents],
         "publicTlsSpkiSha256": public_spki,
         "publicTlsKeyAttested": public_tls_attested,
+        "frontDoorVerification": selected_front_door_mode,
         "attestationProtocol": attestation_protocol,
         "gpuAttestationMode": selected_gpu_mode if gpu_targets else "not-required",
         # In receipt-evidence mode, each required GPU target passed the raw
