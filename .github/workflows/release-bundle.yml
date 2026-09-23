@@ -203,12 +203,17 @@ jobs:
             echo "The release tag changed during publication. Refusing publication." >&2
             exit 1
           fi
+          release_flags=()
+          if [[ "$RELEASE_TAG" =~ -rc\.[0-9]+$ ]]; then
+            release_flags+=(--prerelease)
+          fi
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --target "$expected_commit" \
             --title "$RELEASE_TAG" \
             --notes "Signed Confidential Inference release bundle." \
+            "${release_flags[@]}" \
             "dist/release-bundle.json#Release bundle" \
             "dist/release-bundle.sigstore.json#Sigstore verification bundle" \
             "dist/release-tag-commit.txt#Signed tag commit"

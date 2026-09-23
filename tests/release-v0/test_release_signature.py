@@ -29,6 +29,12 @@ def pre_history_bundle_paths() -> set[Path]:
 
 
 class ReleaseSignatureTests(unittest.TestCase):
+    def test_release_candidates_are_published_as_prereleases(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('[[ "$RELEASE_TAG" =~ -rc\\.[0-9]+$ ]]', workflow)
+        self.assertIn('release_flags+=(--prerelease)', workflow)
+        self.assertIn('"${release_flags[@]}"', workflow)
+
     def test_policy_and_release_pin_the_exact_trusted_inputs(self) -> None:
         policy_bytes = POLICY.read_bytes()
         policy = json.loads(policy_bytes)
