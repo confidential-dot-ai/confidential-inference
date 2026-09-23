@@ -1134,7 +1134,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         raise BundleError("the release trust policy must be inside this repository") from error
     bundle = {
         "schemaVersion": 2,
-        "release": {"name": args.release_name, "environment": args.environment},
+        "release": {
+            "name": args.release_name,
+            "environment": args.release_environment or args.environment,
+        },
         "releaseTrust": {
             "policyPath": release_trust_path,
             "policySha256": "sha256:" + hashlib.sha256(release_trust_bytes).hexdigest(),
@@ -1206,6 +1209,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mesh-ca-sha256")
     parser.add_argument("--c8s-install-input", type=Path)
     parser.add_argument("--environment", required=True)
+    parser.add_argument(
+        "--release-environment",
+        help=(
+            "release channel recorded in the bundle; defaults to --environment. "
+            "Use this when a production release is rendered for a candidate target."
+        ),
+    )
     parser.add_argument(
         "--allow-dirty-source",
         action="store_true",
