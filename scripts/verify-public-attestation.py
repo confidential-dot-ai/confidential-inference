@@ -256,6 +256,8 @@ def read_attested_operator_key_set(
         "--kind", "cds",
         "--mode", "ratls-cert",
         "--image-manifest", str(args.node_manifest),
+        *policy_verifier_flags(args),
+        "--operator-keys", str(args.operator_public_key),
         "-o", "json",
     ]
     try:
@@ -291,9 +293,10 @@ def read_attested_operator_key_set(
                 f"the attested CDS session is not trustworthy: {field} is not {expected!r}"
             )
     note = verdict.get("operator_keys_note")
-    if isinstance(note, str) and note:
+    expected_note = "matched: the set served over the attested cert equals --operator-keys"
+    if note != expected_note:
         raise VerificationError(
-            "the attested CDS read returned no operator key set: " + note
+            "the attested CDS read did not pin the operator key set: " + str(note)
         )
     served = verdict.get("operator_keys")
     if not isinstance(served, list) or not served:
