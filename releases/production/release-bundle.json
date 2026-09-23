@@ -1,5 +1,5 @@
 {
-  "allowlistDigest": "sha256:6c73c00479f019dedc7adb3a895c75d616e27fab4300630e98045f078a59afdd",
+  "allowlistDigest": "sha256:eb60199e3664fc2480688a309e50c55e5eebb42f38aa5f20b98b519f998a0dcc",
   "c8s": {
     "attestationTargets": [
       {
@@ -44,7 +44,7 @@
     "confosSourceCommit": "e630fd13b5fca9d66c9549faa54427dd027806a4",
     "frontDoorWorkload": "c8s-router",
     "imageTag": "152d583",
-    "installInputDigest": "sha256:388d1d7084c65f0a1a46de7a68db4e4cb59d03a51261135329a3e0d50e592334",
+    "installInputDigest": "sha256:c642183b2a3140825882c61c190e39ebc897635d7a1a2a4688c5b7691b02584f",
     "measurements": {
       "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
       "rtmr1": "70f5d4740bab2ead4193c069a156052128854f87835b7828e78b821c31af2e4145fe11ce903686c0650bfb4efb2ade6c",
@@ -114,7 +114,7 @@
   },
   "release": {
     "environment": "production",
-    "name": "v0.13.28-rc.1"
+    "name": "v0.13.28-rc.2"
   },
   "releaseTrust": {
     "policyPath": "releases/trust/release-signing-policy.json",
@@ -123,7 +123,7 @@
   },
   "schemaVersion": 2,
   "source": {
-    "commit": "ce49c84639c980806e00fb30dbbc5b3fb1ea27e8",
+    "commit": "f7a2489dc565ff2158f99a903279e98f87e7bded",
     "repository": "https://github.com/confidential-dot-ai/confidential-inference"
   },
   "workloads": [
