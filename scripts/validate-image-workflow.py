@@ -168,7 +168,7 @@ def validate(text: str) -> list[str]:
     ):
         if policy_text.count(label) < 3:
             errors.append(f"clean and published builds must use the same OCI label: {label}")
-    pull_request_block = text.split("pull_request:", 1)[1].split("push:", 1)[0]
+    pull_request_block = text.split("pull_request:", 1)[1].split("workflow_dispatch:", 1)[0]
     if "publish" in pull_request_block:
         errors.append("the pull request trigger must not enable publication")
 

@@ -17,23 +17,6 @@ on:
       - "helm/**"
       - "scripts/**"
       - "tests/image-workflow/**"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/v0-images.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "rust-toolchain.toml"
-      - "images/gateway/**"
-      - "images/sglang/**"
-      - "services/gateway/**"
-      - "services/maintenance-gateway/**"
-      - "images/maintenance-gateway/**"
-      - "images/metrics-collector/**"
-      - "images/kube-state-metrics/**"
-      - "helm/**"
-      - "scripts/**"
-      - "tests/image-workflow/**"
   workflow_dispatch:
     inputs:
       publish:
