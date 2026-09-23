@@ -57,6 +57,12 @@ struct MetricsState {
     output_tokens_per_request: BTreeMap<ModelKeyLabels, Histogram>,
     cache_read_tokens: BTreeMap<ModelKeyLabels, u64>,
     finish_reasons: BTreeMap<ModelReasonLabels, u64>,
+    key_registry_stale_seconds: f64,
+    key_registry_push_rejections: BTreeMap<&'static str, u64>,
+    key_registry_revision: i64,
+    key_registry_pepper_mismatch_rows: u64,
+    key_registry_pepper_mismatch: u64,
+    api_key_accepted: BTreeMap<&'static str, u64>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -347,6 +353,50 @@ impl GatewayMetrics {
             })
             .or_default();
         *entry = entry.saturating_add(amount);
+    }
+
+    /// Record how many seconds have passed since the last successful key
+    /// applied key registry snapshot push. The push route sets it.
+    pub fn set_key_registry_stale_seconds(&self, seconds: f64) {
+        recover_lock(&self.state).key_registry_stale_seconds = seconds;
+    }
+
+    /// Count one refused key registry snapshot push under a fixed reason
+    /// code. The admin VM reads the same reason from the response body.
+    pub fn record_key_registry_push_rejection(&self, reason: &'static str) {
+        let mut state = recover_lock(&self.state);
+        *state
+            .key_registry_push_rejections
+            .entry(reason)
+            .or_default() += 1;
+    }
+
+    /// Record the cached key registry snapshot revision.
+    pub fn set_key_registry_revision(&self, revision: i64) {
+        recover_lock(&self.state).key_registry_revision = revision;
+    }
+
+    /// Record the number of rows the latest snapshot skipped for a pepper
+    /// fingerprint mismatch.
+    pub fn set_key_registry_pepper_mismatch_rows(&self, rows: u64) {
+        recover_lock(&self.state).key_registry_pepper_mismatch_rows = rows;
+    }
+
+    /// Record whether the last pushed snapshot named a different pepper
+    /// than this gateway holds.
+    ///
+    /// The gauge reads 1 while the two peppers differ and 0 once a
+    /// matching snapshot arrives. An alert on this gauge tells an operator
+    /// that the admin backend and the gateway hold different peppers, so
+    /// no new key can work until one side is corrected.
+    pub fn set_key_registry_pepper_mismatch(&self, mismatch: bool) {
+        recover_lock(&self.state).key_registry_pepper_mismatch = u64::from(mismatch);
+    }
+
+    /// Count one authenticated request by which key source matched it.
+    pub fn record_api_key_accepted(&self, source: &'static str) {
+        let mut state = recover_lock(&self.state);
+        *state.api_key_accepted.entry(source).or_default() += 1;
     }
 
     /// Only the contract's bounded `OpenAI` finish reasons are emitted.
@@ -652,6 +702,88 @@ impl MetricsSource for GatewayMetrics {
         }
         render_header(
             &mut output,
+            "gateway_key_registry_stale_seconds",
+            "Seconds since the last applied key registry snapshot push",
+            "gauge",
+        );
+        render_sample_float(
+            &mut output,
+            "gateway_key_registry_stale_seconds",
+            &[],
+            &self.environment,
+            state.key_registry_stale_seconds,
+        );
+        render_header(
+            &mut output,
+            "gateway_key_registry_push_rejected_total",
+            "Count of refused key registry snapshot pushes by reason",
+            "counter",
+        );
+        for (reason, value) in &state.key_registry_push_rejections {
+            render_sample(
+                &mut output,
+                "gateway_key_registry_push_rejected_total",
+                &[("reason", reason)],
+                &self.environment,
+                *value,
+            );
+        }
+        render_header(
+            &mut output,
+            "gateway_key_registry_revision",
+            "The key registry snapshot revision this gateway holds",
+            "gauge",
+        );
+        render_sample(
+            &mut output,
+            "gateway_key_registry_revision",
+            &[],
+            &self.environment,
+            u64::try_from(state.key_registry_revision).unwrap_or(0),
+        );
+        render_header(
+            &mut output,
+            "gateway_key_registry_pepper_mismatch_rows",
+            "Rows the latest key registry snapshot skipped for a pepper fingerprint mismatch",
+            "gauge",
+        );
+        render_sample(
+            &mut output,
+            "gateway_key_registry_pepper_mismatch_rows",
+            &[],
+            &self.environment,
+            state.key_registry_pepper_mismatch_rows,
+        );
+        render_header(
+            &mut output,
+            "gateway_key_registry_pepper_mismatch",
+            "One while the last pushed key registry snapshot named a different pepper than the gateway holds",
+            "gauge",
+        );
+        render_sample(
+            &mut output,
+            "gateway_key_registry_pepper_mismatch",
+            &[],
+            &self.environment,
+            state.key_registry_pepper_mismatch,
+        );
+        render_header(
+            &mut output,
+            "gateway_api_key_accepted_total",
+            "Count of accepted API key authentications by source",
+            "counter",
+        );
+        for (source, value) in &state.api_key_accepted {
+            render_sample(
+                &mut output,
+                "gateway_api_key_accepted_total",
+                &[("source", source)],
+                &self.environment,
+                *value,
+            );
+        }
+        render_header(
+            &mut output,
             "confidential_gateway_process_configured",
             "Gateway process passed startup configuration checks",
             "gauge",
@@ -864,5 +996,50 @@ mod tests {
         assert!(!rendered.contains("unbounded-value"));
         assert!(!rendered.contains("prompt"));
         assert!(!rendered.contains("Authorization"));
+    }
+
+    #[test]
+    fn renders_key_registry_and_source_metrics() {
+        let metrics = GatewayMetrics::new("staging");
+        metrics.set_key_registry_stale_seconds(12.5);
+        metrics.record_key_registry_push_rejection("stale_revision");
+        metrics.set_key_registry_revision(42);
+        metrics.set_key_registry_pepper_mismatch_rows(2);
+        metrics.set_key_registry_pepper_mismatch(true);
+        metrics.record_api_key_accepted("local");
+        metrics.record_api_key_accepted("registry");
+        metrics.record_api_key_accepted("registry");
+        let rendered = metrics.render_prometheus();
+
+        for name in [
+            "gateway_key_registry_stale_seconds",
+            "gateway_key_registry_push_rejected_total",
+            "gateway_key_registry_revision",
+            "gateway_key_registry_pepper_mismatch_rows",
+            "gateway_key_registry_pepper_mismatch",
+            "gateway_api_key_accepted_total",
+        ] {
+            assert!(rendered.contains(name), "missing {name}");
+        }
+        assert!(rendered.contains("gateway_key_registry_stale_seconds{env=\"staging\"} 12.5"));
+        assert!(rendered.contains(
+            "gateway_key_registry_push_rejected_total{env=\"staging\",reason=\"stale_revision\"} 1"
+        ));
+        assert!(rendered.contains("gateway_key_registry_revision{env=\"staging\"} 42"));
+        assert!(rendered.contains("gateway_key_registry_pepper_mismatch_rows{env=\"staging\"} 2"));
+        assert!(rendered.contains("gateway_key_registry_pepper_mismatch{env=\"staging\"} 1"));
+        metrics.set_key_registry_pepper_mismatch(false);
+        assert!(
+            metrics
+                .render_prometheus()
+                .contains("gateway_key_registry_pepper_mismatch{env=\"staging\"} 0")
+        );
+        assert!(
+            rendered.contains("gateway_api_key_accepted_total{env=\"staging\",source=\"local\"} 1")
+        );
+        assert!(
+            rendered
+                .contains("gateway_api_key_accepted_total{env=\"staging\",source=\"registry\"} 2")
+        );
     }
 }

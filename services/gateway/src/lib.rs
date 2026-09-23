@@ -27,6 +27,7 @@ use uuid::Uuid;
 pub mod admin_auth;
 pub mod api_keys;
 pub mod attestation;
+pub mod key_registry;
 pub mod metrics;
 pub mod protection;
 
@@ -39,6 +40,24 @@ pub trait ApiKeyVerifier: Send + Sync + 'static {
     /// Return the stable record ID only when the supplied key is revoked.
     fn verify_revoked_bearer(&self, _bearer: &str) -> Option<String> {
         None
+    }
+
+    /// Return the stable record ID and the source that matched it.
+    ///
+    /// The gateway state overrides this to report `"local"` or `"registry"`.
+    /// The default reports every match as `"local"`, so a verifier with one
+    /// key source needs no change.
+    fn verify_bearer_with_source(&self, bearer: &str) -> Option<(String, &'static str)> {
+        self.verify_bearer(bearer).map(|key_id| (key_id, "local"))
+    }
+
+    /// Return whether this verifier can authenticate a request right now.
+    ///
+    /// A verifier that reads only a registry cache is not ready before its
+    /// first successful snapshot fetch: it holds no key material yet, so it
+    /// must refuse every request rather than reject every key as invalid.
+    fn is_ready(&self) -> bool {
+        true
     }
 }
 
@@ -329,6 +348,10 @@ async fn proxy_inference(
             .headers_mut()
             .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
         return response;
+    }
+    if !state.keys.is_ready() {
+        state.metrics.record_rejection("key_registry_not_ready");
+        return client_error(StatusCode::SERVICE_UNAVAILABLE, "key_registry_not_ready");
     }
     let key_id = match authenticate(&state, request.headers()) {
         Authentication::Active(key_id) => key_id,
@@ -730,7 +753,8 @@ fn authenticate(state: &AppState, headers: &HeaderMap) -> Authentication {
     if bearer.is_empty() || bearer.len() > 256 {
         return Authentication::Invalid;
     }
-    if let Some(key_id) = state.keys.verify_bearer(bearer) {
+    if let Some((key_id, source)) = state.keys.verify_bearer_with_source(bearer) {
+        state.metrics.record_api_key_accepted(source);
         Authentication::Active(key_id)
     } else if let Some(key_id) = state.keys.verify_revoked_bearer(bearer) {
         Authentication::Revoked(key_id)
@@ -809,8 +833,40 @@ mod tests {
         fn record(&self, _: AuditEvent) {}
     }
 
+    /// A `registry`-mode verifier before its first successful snapshot
+    /// fetch: it holds no key material, so it must refuse every request.
+    struct NotReadyKeys;
+    impl ApiKeyVerifier for NotReadyKeys {
+        fn verify_bearer(&self, _value: &str) -> Option<String> {
+            None
+        }
+
+        fn is_ready(&self) -> bool {
+            false
+        }
+    }
+
     fn app(availability: GatewayAvailability) -> Router {
         app_with_attestation(availability, Arc::new(UnavailableAttestation))
+    }
+
+    fn app_with_keys(keys: Arc<dyn ApiKeyVerifier>) -> Router {
+        router(
+            GatewayConfig {
+                catalog_model_ids: vec!["deepseek".to_owned()],
+                inference_model_ids: vec!["deepseek".to_owned()],
+                upstream_base_url: "http://127.0.0.1:1".to_owned(),
+                maximum_body_bytes: 1_024,
+                upstream_timeout: Duration::from_secs(1),
+                protection: ProtectionConfig::default(),
+            },
+            keys,
+            Arc::new(Audit),
+            Arc::new(GatewayMetrics::new("test")),
+            GatewayAvailability::default(),
+            Arc::new(UnavailableAttestation),
+            reqwest::Client::new(),
+        )
     }
 
     fn app_with_attestation(
@@ -931,6 +987,31 @@ mod tests {
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers()[header::RETRY_AFTER], "30");
+    }
+
+    #[tokio::test]
+    async fn a_cold_start_registry_verifier_answers_service_unavailable() {
+        let app = app_with_keys(Arc::new(NotReadyKeys));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header(authorization().0, authorization().1)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"model":"deepseek"}"#))
+                    .unwrap_or_else(|_| unreachable!()),
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 1_024)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap_or_default()["error"]["code"],
+            "key_registry_not_ready"
+        );
     }
 
     #[tokio::test]

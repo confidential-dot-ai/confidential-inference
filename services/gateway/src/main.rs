@@ -16,6 +16,7 @@ use confidential_gateway::{
     admin_auth::{AdminRequestVerifier, require_signed_admin_request},
     api_keys::{GatewayState, admin_router},
     attestation::{C8sAttestationConfig, C8sAttestationProvider},
+    key_registry::KeyRegistryMode,
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
     router,
@@ -174,6 +175,14 @@ struct Args {
     endpoint_drain_seconds: u64,
     #[arg(long, env = "GATEWAY_TRUSTED_PROXY_CIDRS", value_delimiter = ',')]
     trusted_proxy_cidrs: Vec<ipnet::IpNet>,
+    /// How the gateway answers an API key check. `local` reads the
+    /// `api_keys` table alone. `dual` reads that table first, then the
+    /// pushed snapshot. `registry` reads the pushed snapshot alone and
+    /// disables the local mint. The admin VM pushes every snapshot; the
+    /// gateway never calls the admin VM, so this needs no URL and no
+    /// token.
+    #[arg(long, env = "GATEWAY_KEY_REGISTRY_MODE", default_value = "local")]
+    key_registry_mode: KeyRegistryMode,
 }
 
 #[tokio::main]
@@ -215,6 +224,10 @@ async fn main() -> Result<()> {
     };
     let availability = gateway_state.availability_handle();
     let metrics = Arc::new(GatewayMetrics::new(args.environment.clone()));
+    let gateway_state = gateway_state
+        .with_mode(args.key_registry_mode)
+        .with_environment(&args.environment)
+        .with_metrics(metrics.clone());
     let timeout = Duration::from_secs(args.upstream_timeout_seconds);
     let http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -520,6 +533,7 @@ mod tests {
             shutdown_grace_seconds: 900,
             endpoint_drain_seconds: 35,
             trusted_proxy_cidrs: Vec::new(),
+            key_registry_mode: KeyRegistryMode::Local,
         }
     }
 
@@ -589,6 +603,21 @@ mod tests {
         value.c8s_receipt_targets =
             "gateway|gateway|gateway=https://attestation.example:8800".to_owned();
         assert!(validate_args(&value).is_err());
+    }
+
+    #[test]
+    fn every_key_registry_mode_needs_no_extra_configuration() {
+        // The admin VM pushes each snapshot over the signed admin channel,
+        // so no mode needs a registry URL, a token file or a poll interval.
+        for mode in [
+            KeyRegistryMode::Local,
+            KeyRegistryMode::Dual,
+            KeyRegistryMode::Registry,
+        ] {
+            let mut value = args();
+            value.key_registry_mode = mode;
+            assert!(validate_args(&value).is_ok());
+        }
     }
 
     #[test]

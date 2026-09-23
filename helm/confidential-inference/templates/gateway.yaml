@@ -175,6 +175,8 @@ spec:
               value: {{ .Values.environment | quote }}
             - name: GATEWAY_METRICS_API_KEY_LABEL_ALLOWLIST
               value: {{ join "," .Values.metricsCollector.approvedApiKeyLabels | quote }}
+            - name: GATEWAY_KEY_REGISTRY_MODE
+              value: {{ .Values.gateway.keyRegistry.mode | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.gateway.containerPorts.public }}

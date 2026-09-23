@@ -15,7 +15,7 @@ use axum::{
     extract::{Path as AxumPath, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
@@ -26,7 +26,14 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{ApiKeyVerifier, GatewayAvailability};
+use crate::{
+    ApiKeyVerifier, GatewayAvailability,
+    key_registry::{
+        KeyRegistryMode, RegistrySnapshotKey, RevisionDecision, SnapshotPush, SnapshotPushResult,
+        revision_decision, validate_push,
+    },
+    metrics::GatewayMetrics,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 const KEY_BYTES: usize = 32;
@@ -40,6 +47,8 @@ const EXPORT_SCHEMA: &str = "confidential.ai/gateway-api-key-export/v1";
 const PEPPER_FINGERPRINT_CONTEXT: &[u8] = b"confidential.ai/gateway-pepper-fingerprint/v1";
 const FREEZE_SECONDS: i64 = 600;
 const MAX_IMPORT_KEYS: usize = 10_000;
+/// How many characters of a pepper fingerprint an error detail prints.
+const FINGERPRINT_PREFIX_CHARACTERS: usize = 12;
 
 #[derive(Debug, Error)]
 pub enum StateError {
@@ -71,6 +80,17 @@ pub enum StateError {
     PepperMismatch,
     #[error("the import conflicts with an existing record")]
     ImportConflict,
+    #[error("the gateway mints no key in registry mode")]
+    LocalMintDisabled,
+    #[error("the pushed snapshot revision is lower than the cached revision")]
+    StaleRevision,
+    #[error("the pushed snapshot names a different pepper than the gateway holds")]
+    SnapshotPepperMismatch {
+        /// The fingerprint of the pepper this gateway holds.
+        expected: String,
+        /// The fingerprint the pushed snapshot named.
+        received: String,
+    },
 }
 
 #[derive(Clone)]
@@ -79,6 +99,9 @@ pub struct GatewayState {
     pepper: Arc<Vec<u8>>,
     availability: GatewayAvailability,
     database_path: Option<Arc<PathBuf>>,
+    mode: KeyRegistryMode,
+    environment: Arc<String>,
+    metrics: Option<Arc<GatewayMetrics>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -197,7 +220,11 @@ fn verify_database_integrity(database: &Connection) -> Result<(), StateError> {
         return Err(StateError::Corrupt);
     }
     let schema: i64 = database.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if schema != 1 {
+    // Version 1 predates the key registry cache (`registry_keys`,
+    // `registry_metadata`). Version 2 adds those tables additively, in place,
+    // and never drops or clears `api_keys`. The gateway accepts both because
+    // `from_connection` migrates a version 1 database to version 2 on open.
+    if schema != 1 && schema != 2 {
         return Err(StateError::Corrupt);
     }
     Ok(())
@@ -257,6 +284,10 @@ pub struct ApiKeyMetadata {
 struct CreatedApiKey {
     api_key: String,
     metadata: ApiKeyMetadata,
+    /// The gateway mints the plaintext and computes this hash with its own
+    /// pepper. The admin registry stores this hash, never the plaintext.
+    key_hash: String,
+    pepper_fingerprint: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -331,6 +362,88 @@ struct FreezeStatus {
 struct ErrorBody {
     code: &'static str,
     message: &'static str,
+}
+
+/// An error body that carries one extra line of operator detail.
+///
+/// The snapshot push refusal uses it. The detail names the two pepper
+/// fingerprint prefixes, so an operator sees which side is stale without
+/// a second request. A fingerprint reveals no pepper: it is a one-way
+/// digest over a domain separation string and the pepper.
+#[derive(Serialize)]
+struct DetailedErrorBody {
+    code: &'static str,
+    message: &'static str,
+    detail: String,
+}
+
+/// The first 12 characters of a pepper fingerprint.
+///
+/// A prefix is enough to tell two peppers apart in a log line, and it is
+/// the same length the operator tools print.
+fn fingerprint_prefix(fingerprint: &str) -> &str {
+    let end = fingerprint
+        .char_indices()
+        .nth(FINGERPRINT_PREFIX_CHARACTERS)
+        .map_or(fingerprint.len(), |(index, _)| index);
+    &fingerprint[..end]
+}
+
+/// The outcome of applying one accepted key registry snapshot.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RegistryApplyOutcome {
+    pub accepted: i64,
+    pub skipped_pepper_mismatch: i64,
+}
+
+/// The body of `GET /admin/v1/api-keys/source`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistrySourceStatus {
+    mode: KeyRegistryMode,
+    cached_revision: Option<i64>,
+    #[serde(rename = "lastSuccessUnix")]
+    last_success_unix: Option<i64>,
+    pub(crate) stale_seconds: Option<i64>,
+    row_count: i64,
+    pepper_mismatch_count: i64,
+    /// The fingerprint of the pepper this gateway holds. The admin VM
+    /// compares it against the snapshot it would push, so a pepper change
+    /// shows up as drift.
+    pepper_fingerprint: String,
+}
+
+fn scan_api_keys(database: &Connection, verifier: &[u8], revoked: bool) -> Option<String> {
+    let query = if revoked {
+        "SELECT id,verifier FROM api_keys WHERE revoked_at_unix IS NOT NULL"
+    } else {
+        "SELECT id,verifier FROM api_keys WHERE revoked_at_unix IS NULL"
+    };
+    scan_verifier_column(database, query, verifier)
+}
+
+fn scan_registry_keys(database: &Connection, verifier: &[u8], revoked: bool) -> Option<String> {
+    let query = if revoked {
+        "SELECT id,key_hash FROM registry_keys WHERE revoked_at_unix IS NOT NULL"
+    } else {
+        "SELECT id,key_hash FROM registry_keys WHERE revoked_at_unix IS NULL"
+    };
+    scan_verifier_column(database, query, verifier)
+}
+
+fn scan_verifier_column(database: &Connection, query: &str, verifier: &[u8]) -> Option<String> {
+    let mut statement = database.prepare(query).ok()?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .ok()?;
+    for (id, expected) in rows.flatten() {
+        if expected.len() == verifier.len() && bool::from(expected.ct_eq(verifier)) {
+            return Some(id);
+        }
+    }
+    None
 }
 
 impl GatewayState {
@@ -471,15 +584,202 @@ impl GatewayState {
                frozen_by TEXT
              );
              INSERT OR IGNORE INTO freeze_state (singleton,until_unix) VALUES (1,0);
-             PRAGMA user_version=1;",
+             CREATE TABLE IF NOT EXISTS registry_keys (
+               id TEXT PRIMARY KEY,
+               name TEXT NOT NULL,
+               owner TEXT NOT NULL,
+               prefix TEXT NOT NULL,
+               key_hash BLOB NOT NULL,
+               pepper_fingerprint TEXT NOT NULL,
+               tags_json TEXT NOT NULL,
+               created_at_unix INTEGER NOT NULL,
+               created_by TEXT NOT NULL,
+               revoked_at_unix INTEGER,
+               revoked_by TEXT,
+               version INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS registry_metadata (
+               singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+               environment TEXT,
+               cached_revision INTEGER,
+               last_success_unix INTEGER,
+               pepper_mismatch_count INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT OR IGNORE INTO registry_metadata (singleton,pepper_mismatch_count)
+               VALUES (1,0);
+             PRAGMA user_version=2;",
         )?;
         let state = Self {
             database: Arc::new(Mutex::new(database)),
             pepper: Arc::new(pepper),
             availability: GatewayAvailability::new(available),
             database_path,
+            mode: KeyRegistryMode::Local,
+            environment: Arc::new(String::new()),
+            metrics: None,
         };
         Ok(state)
+    }
+
+    /// Set the key registry read mode.
+    ///
+    /// `local` (the default) answers verification from `api_keys` alone.
+    /// `dual` checks `api_keys` first, then the registry cache. `registry`
+    /// answers from the registry cache alone. The mint, list, and revoke
+    /// admin routes keep working in every mode.
+    #[must_use]
+    pub fn with_mode(mut self, mode: KeyRegistryMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> KeyRegistryMode {
+        self.mode
+    }
+
+    /// Name the environment this gateway serves.
+    ///
+    /// The snapshot push route refuses a body that names another
+    /// environment. An empty name (the default in a unit test) accepts any
+    /// name. `main.rs` always sets it.
+    #[must_use]
+    pub fn with_environment(mut self, environment: &str) -> Self {
+        self.environment = Arc::new(environment.to_owned());
+        self
+    }
+
+    /// Give the state the metric registry, so the snapshot push route can
+    /// record what it applied and what it refused.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<GatewayMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    fn record_push_rejection(&self, reason: &'static str) {
+        if let Some(metrics) = &self.metrics {
+            metrics.record_key_registry_push_rejection(reason);
+        }
+    }
+
+    fn record_push_applied(&self, revision: i64, skipped_pepper_mismatch: i64) {
+        if let Some(metrics) = &self.metrics {
+            metrics.set_key_registry_revision(revision);
+            metrics.set_key_registry_pepper_mismatch_rows(
+                u64::try_from(skipped_pepper_mismatch).unwrap_or(0),
+            );
+            metrics.set_key_registry_stale_seconds(0.0);
+        }
+    }
+
+    /// Refuse a snapshot whose pepper is not the pepper this gateway holds.
+    ///
+    /// Every row of such a snapshot carries a hash this gateway can never
+    /// match, so applying it would replace a working cache with rows that
+    /// authenticate nothing. The gateway refuses the whole body instead
+    /// and keeps the cache it already serves.
+    ///
+    /// An empty `pepperFingerprint` states nothing. An older admin backend
+    /// sends one, so the gateway keeps its per-row rule for that case.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError::SnapshotPepperMismatch` when the two
+    /// fingerprints differ.
+    fn check_snapshot_pepper(&self, push: &SnapshotPush) -> Result<(), StateError> {
+        if push.pepper_fingerprint.is_empty() {
+            return Ok(());
+        }
+        let expected = pepper_fingerprint(&self.pepper);
+        if bool::from(
+            expected
+                .as_bytes()
+                .ct_eq(push.pepper_fingerprint.as_bytes()),
+        ) {
+            if let Some(metrics) = &self.metrics {
+                metrics.set_key_registry_pepper_mismatch(false);
+            }
+            return Ok(());
+        }
+        self.record_push_rejection("pepper_mismatch");
+        if let Some(metrics) = &self.metrics {
+            metrics.set_key_registry_pepper_mismatch(true);
+        }
+        tracing::error!(
+            expected = fingerprint_prefix(&expected),
+            received = fingerprint_prefix(&push.pepper_fingerprint),
+            "refused a pushed key registry snapshot: the pepper does not match"
+        );
+        Err(StateError::SnapshotPepperMismatch {
+            expected,
+            received: push.pepper_fingerprint.clone(),
+        })
+    }
+
+    /// Apply one pushed snapshot, after the revision rule and the contract
+    /// check.
+    ///
+    /// The admin channel has already verified the ECDSA P-256 signature
+    /// over this body, so this function trusts the bytes and checks only
+    /// the contract and the revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError::Invalid` for a wrong schema or environment,
+    /// `StateError::StaleRevision` for a revision below the cached one, and
+    /// a database error when the transaction fails. On any error the cache
+    /// is left exactly as it was.
+    pub fn push_registry_snapshot(
+        &self,
+        push: &SnapshotPush,
+    ) -> Result<SnapshotPushResult, StateError> {
+        self.require_available()?;
+        if let Err(rejection) = validate_push(push, &self.environment) {
+            let _ = rejection;
+            self.record_push_rejection("invalid_request");
+            return Err(StateError::Invalid);
+        }
+        self.check_snapshot_pepper(push)?;
+        let cached_revision = self.registry_cached_revision()?;
+        match revision_decision(cached_revision, push.revision) {
+            RevisionDecision::Refuse => {
+                self.record_push_rejection("stale_revision");
+                Err(StateError::StaleRevision)
+            }
+            RevisionDecision::AlreadyHeld => {
+                // The admin VM re-sent the revision this gateway already
+                // holds. Nothing is written, and the push counts as an
+                // acknowledgement.
+                self.record_push_applied(push.revision, 0);
+                Ok(SnapshotPushResult {
+                    revision: push.revision,
+                    cached_revision: push.revision,
+                    accepted: 0,
+                    skipped_pepper_mismatch: 0,
+                    applied: false,
+                })
+            }
+            RevisionDecision::Apply => {
+                let outcome = self
+                    .apply_registry_snapshot(&push.environment, push.revision, &push.keys)
+                    .inspect_err(|_| self.record_push_rejection("apply_failed"))?;
+                self.record_push_applied(push.revision, outcome.skipped_pepper_mismatch);
+                tracing::info!(
+                    revision = push.revision,
+                    accepted = outcome.accepted,
+                    skipped_pepper_mismatch = outcome.skipped_pepper_mismatch,
+                    "applied a pushed key registry snapshot"
+                );
+                Ok(SnapshotPushResult {
+                    revision: push.revision,
+                    cached_revision: push.revision,
+                    accepted: outcome.accepted,
+                    skipped_pepper_mismatch: outcome.skipped_pepper_mismatch,
+                    applied: true,
+                })
+            }
+        }
     }
 
     #[must_use]
@@ -517,45 +817,192 @@ impl GatewayState {
 
     #[must_use]
     pub fn verify(&self, value: &str) -> Option<String> {
-        self.verify_with_revocation(value, false)
+        self.verify_with_revocation(value, false).map(|(id, _)| id)
     }
 
     #[must_use]
     pub fn verify_revoked(&self, value: &str) -> Option<String> {
-        self.verify_with_revocation(value, true)
+        self.verify_with_revocation(value, true).map(|(id, _)| id)
     }
 
-    fn verify_with_revocation(&self, value: &str, revoked: bool) -> Option<String> {
+    /// Verify a bearer token and report which key source matched it.
+    ///
+    /// `local` mode never looks at the registry cache. `registry` mode never
+    /// looks at `api_keys`. `dual` mode checks `api_keys` first, so an
+    /// operator can promote a key to the registry without a coincident
+    /// verification gap.
+    #[must_use]
+    pub fn verify_with_source(&self, value: &str) -> Option<(String, &'static str)> {
+        self.verify_with_revocation(value, false)
+    }
+
+    /// Return `false` only for `registry` mode before the first successful
+    /// snapshot fetch. A registry-only gateway holds no key material yet, so
+    /// it must refuse every request rather than reject every key as invalid.
+    #[must_use]
+    pub fn registry_ready(&self) -> bool {
+        if self.mode != KeyRegistryMode::Registry {
+            return true;
+        }
+        self.registry_cached_revision().unwrap_or(None).is_some()
+    }
+
+    fn verify_with_revocation(&self, value: &str, revoked: bool) -> Option<(String, &'static str)> {
         if !self.is_available() {
             return None;
         }
         let verifier = verifier(&self.pepper, value).ok()?;
         let database = self.database.lock().ok()?;
-        let query = if revoked {
-            "SELECT id,verifier FROM api_keys WHERE revoked_at_unix IS NOT NULL"
-        } else {
-            "SELECT id,verifier FROM api_keys WHERE revoked_at_unix IS NULL"
-        };
-        let mut statement = database.prepare(query).ok()?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-            })
-            .ok()?;
-        for (id, expected) in rows.flatten() {
-            if expected.len() == verifier.len() && bool::from(expected.ct_eq(&verifier)) {
-                return Some(id);
+        match self.mode {
+            KeyRegistryMode::Local => {
+                scan_api_keys(&database, &verifier, revoked).map(|id| (id, "local"))
             }
+            KeyRegistryMode::Registry => {
+                scan_registry_keys(&database, &verifier, revoked).map(|id| (id, "registry"))
+            }
+            KeyRegistryMode::Dual => scan_api_keys(&database, &verifier, revoked)
+                .map(|id| (id, "local"))
+                .or_else(|| {
+                    scan_registry_keys(&database, &verifier, revoked).map(|id| (id, "registry"))
+                }),
         }
-        None
+    }
+
+    /// Apply an accepted key registry snapshot in one transaction.
+    ///
+    /// A row whose pepper fingerprint does not match this gateway's own
+    /// pepper is skipped and counted, and the rest of the snapshot is still
+    /// served. The snapshot fully replaces the cached rows: the registry
+    /// serves a complete list on every fetch, not a diff, so a removed or
+    /// revoked row leaves accordingly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database is unavailable or the transaction
+    /// fails. On an error the cache is left exactly as it was.
+    pub fn apply_registry_snapshot(
+        &self,
+        environment: &str,
+        revision: i64,
+        keys: &[RegistrySnapshotKey],
+    ) -> Result<RegistryApplyOutcome, StateError> {
+        self.require_available()?;
+        let now = unix_time();
+        let expected_fingerprint = pepper_fingerprint(&self.pepper);
+        let mut database = self.database.lock().map_err(|_| StateError::Lock)?;
+        let transaction = database.transaction()?;
+        let mut accepted = 0_i64;
+        let mut skipped_pepper_mismatch = 0_i64;
+        transaction.execute("DELETE FROM registry_keys", [])?;
+        for key in keys {
+            if !bool::from(
+                expected_fingerprint
+                    .as_bytes()
+                    .ct_eq(key.pepper_fingerprint.as_bytes()),
+            ) {
+                skipped_pepper_mismatch += 1;
+                continue;
+            }
+            let key_hash = URL_SAFE_NO_PAD
+                .decode(&key.key_hash)
+                .map_err(|_| StateError::Invalid)?;
+            let tags = serde_json::to_string(&key.tags).map_err(|_| StateError::Invalid)?;
+            transaction.execute(
+                "INSERT INTO registry_keys
+                 (id,name,owner,prefix,key_hash,pepper_fingerprint,tags_json,
+                  created_at_unix,created_by,revoked_at_unix,revoked_by,version)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                params![
+                    key.id,
+                    key.name,
+                    key.owner,
+                    key.prefix,
+                    key_hash,
+                    key.pepper_fingerprint,
+                    tags,
+                    parse_timestamp(&key.created_at)?,
+                    key.created_by,
+                    key.revoked_at.as_deref().map(parse_timestamp).transpose()?,
+                    key.revoked_by,
+                    key.version,
+                ],
+            )?;
+            accepted += 1;
+        }
+        transaction.execute(
+            "UPDATE registry_metadata
+             SET environment=?1,cached_revision=?2,last_success_unix=?3,pepper_mismatch_count=?4
+             WHERE singleton=1",
+            params![environment, revision, now, skipped_pepper_mismatch],
+        )?;
+        transaction.commit()?;
+        self.finish_mutation(&database)?;
+        Ok(RegistryApplyOutcome {
+            accepted,
+            skipped_pepper_mismatch,
+        })
+    }
+
+    /// Read the cached key registry snapshot revision, if any fetch has ever
+    /// succeeded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database lock or query fails.
+    pub fn registry_cached_revision(&self) -> Result<Option<i64>, StateError> {
+        let database = self.database.lock().map_err(|_| StateError::Lock)?;
+        Ok(database.query_row(
+            "SELECT cached_revision FROM registry_metadata WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Read the key registry source status for `GET /admin/v1/api-keys/source`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database is unavailable.
+    pub fn registry_source_status(&self) -> Result<RegistrySourceStatus, StateError> {
+        self.require_available()?;
+        let database = self.database.lock().map_err(|_| StateError::Lock)?;
+        let (cached_revision, last_success_unix, pepper_mismatch_count): (
+            Option<i64>,
+            Option<i64>,
+            i64,
+        ) = database.query_row(
+            "SELECT cached_revision,last_success_unix,pepper_mismatch_count
+             FROM registry_metadata WHERE singleton=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let row_count: i64 =
+            database.query_row("SELECT COUNT(*) FROM registry_keys", [], |row| row.get(0))?;
+        let stale_seconds = last_success_unix.map(|value| (unix_time() - value).max(0));
+        Ok(RegistrySourceStatus {
+            mode: self.mode,
+            cached_revision,
+            last_success_unix,
+            stale_seconds,
+            row_count,
+            pepper_mismatch_count,
+            pepper_fingerprint: pepper_fingerprint(&self.pepper),
+        })
     }
 
     fn create(
         &self,
         request: &CreateApiKeyRequest,
         idempotency_key: &str,
-    ) -> Result<(bool, String, ApiKeyMetadata), StateError> {
+    ) -> Result<(bool, String, ApiKeyMetadata, String), StateError> {
         self.require_available()?;
+        // In `registry` mode the admin VM mints every key with the pepper
+        // it reads from Infisical. A local mint would create a row the
+        // registry does not know, and the next pushed snapshot would erase
+        // it. Refuse the mint instead of losing it.
+        if self.mode == KeyRegistryMode::Registry {
+            return Err(StateError::LocalMintDisabled);
+        }
         validate_create(request)?;
         validate_idempotency(idempotency_key)?;
         let request_hash = json_hash(request)?;
@@ -570,7 +1017,7 @@ impl GatewayState {
         )? {
             let metadata = read_metadata(&transaction, &resource_id)?;
             transaction.commit()?;
-            return Ok((true, String::new(), metadata));
+            return Ok((true, String::new(), metadata, String::new()));
         }
         require_not_frozen(&transaction)?;
         let mut secret = [0_u8; KEY_BYTES];
@@ -606,7 +1053,7 @@ impl GatewayState {
         let metadata = read_metadata(&transaction, &id)?;
         transaction.commit()?;
         self.finish_mutation(&database)?;
-        Ok((false, plaintext, metadata))
+        Ok((false, plaintext, metadata, URL_SAFE_NO_PAD.encode(&digest)))
     }
 
     fn list(&self, cursor: Option<&str>, limit: u16) -> Result<ApiKeyList, StateError> {
@@ -939,6 +1386,14 @@ impl ApiKeyVerifier for GatewayState {
     fn verify_revoked_bearer(&self, bearer: &str) -> Option<String> {
         self.verify_revoked(bearer)
     }
+
+    fn verify_bearer_with_source(&self, bearer: &str) -> Option<(String, &'static str)> {
+        self.verify_with_source(bearer)
+    }
+
+    fn is_ready(&self) -> bool {
+        self.registry_ready()
+    }
 }
 
 pub fn admin_router(state: GatewayState) -> Router {
@@ -951,7 +1406,32 @@ pub fn admin_router(state: GatewayState) -> Router {
         .route("/admin/v1/api-keys/import", post(import_keys))
         .route("/admin/v1/api-keys/freeze", post(freeze_keys))
         .route("/admin/v1/api-keys/unfreeze", post(unfreeze_keys))
+        .route("/admin/v1/api-keys/source", get(key_source))
+        .route("/admin/v1/api-keys/snapshot", put(push_snapshot))
         .with_state(state)
+}
+
+/// Apply one snapshot the admin VM pushed.
+///
+/// The admin VM owns the key record. It pushes the complete snapshot on
+/// every change, and again when a drift probe shows this gateway holds an
+/// older revision. The gateway stores the rows and answers every request
+/// from its own table, so the request path never calls the admin VM.
+async fn push_snapshot(
+    State(state): State<GatewayState>,
+    Json(push): Json<SnapshotPush>,
+) -> Response {
+    match state.push_registry_snapshot(&push) {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn key_source(State(state): State<GatewayState>) -> Response {
+    match state.registry_source_status() {
+        Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+        Err(error) => error_response(error),
+    }
 }
 
 async fn admin_health(State(state): State<GatewayState>) -> impl IntoResponse {
@@ -1042,7 +1522,7 @@ async fn create_key(
         return error_response(StateError::Invalid);
     };
     match state.create(&request, idempotency_key) {
-        Ok((replayed, plaintext, metadata)) => {
+        Ok((replayed, plaintext, metadata, key_hash)) => {
             let version = metadata.version;
             if replayed {
                 json_response(StatusCode::OK, &metadata, version, true)
@@ -1052,6 +1532,8 @@ async fn create_key(
                     &CreatedApiKey {
                         api_key: plaintext,
                         metadata,
+                        key_hash,
+                        pepper_fingerprint: pepper_fingerprint(&state.pepper),
                     },
                     version,
                     false,
@@ -1131,6 +1613,21 @@ fn json_response<T: Serialize>(
 
 #[allow(clippy::needless_pass_by_value)]
 fn error_response(error: StateError) -> Response {
+    if let StateError::SnapshotPepperMismatch { expected, received } = &error {
+        return (
+            StatusCode::CONFLICT,
+            Json(DetailedErrorBody {
+                code: "pepper_mismatch",
+                message: "The pushed snapshot names a different pepper than the gateway holds.",
+                detail: format!(
+                    "the gateway holds pepper {}, the snapshot names pepper {}",
+                    fingerprint_prefix(expected),
+                    fingerprint_prefix(received),
+                ),
+            }),
+        )
+            .into_response();
+    }
     let (status, code, message) = match error {
         StateError::Invalid | StateError::Random => (
             StatusCode::BAD_REQUEST,
@@ -1162,6 +1659,23 @@ fn error_response(error: StateError) -> Response {
             StatusCode::CONFLICT,
             "import_conflict",
             "The import conflicts with an existing record.",
+        ),
+        StateError::LocalMintDisabled => (
+            StatusCode::CONFLICT,
+            "local_mint_disabled",
+            "The gateway runs in registry mode. The admin VM mints every key.",
+        ),
+        StateError::StaleRevision => (
+            StatusCode::CONFLICT,
+            "stale_revision",
+            "The pushed snapshot revision is lower than the cached revision.",
+        ),
+        // The detailed branch above answers this variant. This arm keeps
+        // the match exhaustive.
+        StateError::SnapshotPepperMismatch { .. } => (
+            StatusCode::CONFLICT,
+            "pepper_mismatch",
+            "The pushed snapshot names a different pepper than the gateway holds.",
         ),
         StateError::Database(_)
         | StateError::Lock
@@ -1566,13 +2080,13 @@ mod tests {
     #[test]
     fn plaintext_appears_once_and_the_verifier_survives() {
         let state = state();
-        let (replayed, plaintext, metadata) = state
+        let (replayed, plaintext, metadata, _key_hash) = state
             .create(&request(), "create-request-0001")
             .unwrap_or_else(|_| unreachable!());
         assert!(!replayed);
         assert!(!plaintext.is_empty());
         assert_eq!(state.verify(&plaintext), Some(metadata.id.clone()));
-        let (replayed, second_plaintext, second_metadata) = state
+        let (replayed, second_plaintext, second_metadata, _key_hash) = state
             .create(&request(), "create-request-0001")
             .unwrap_or_else(|_| unreachable!());
         assert!(replayed);
@@ -1583,7 +2097,7 @@ mod tests {
     #[test]
     fn revoke_checks_the_version_and_disables_the_key() {
         let state = state();
-        let (_, plaintext, metadata) = state
+        let (_, plaintext, metadata, _key_hash) = state
             .create(&request(), "create-request-0002")
             .unwrap_or_else(|_| unreachable!());
         let audit = AuditContext {
@@ -1606,7 +2120,7 @@ mod tests {
     #[tokio::test]
     async fn delete_route_revokes_and_replays_with_audit_metadata() {
         let state = state();
-        let (_, _, metadata) = state
+        let (_, _, metadata, _key_hash) = state
             .create(&request(), "delete-create-0001")
             .unwrap_or_else(|_| unreachable!());
         let app = admin_router(state);
@@ -1675,7 +2189,7 @@ mod tests {
             &mountinfo_path,
         )
         .unwrap_or_else(|_| unreachable!());
-        let (_, plaintext, _) = state
+        let (_, plaintext, _, _key_hash) = state
             .create(&request(), "durable-create-0001")
             .unwrap_or_else(|_| unreachable!());
         drop(state);
@@ -1688,6 +2202,97 @@ mod tests {
         )
         .unwrap_or_else(|_| unreachable!());
         assert!(reopened.verify(&plaintext).is_some());
+    }
+
+    #[test]
+    fn a_version_1_database_migrates_to_version_2_without_data_loss() {
+        let (_directory, database_path, mountinfo_path, pepper) = persistent_fixture("production");
+        let plaintext = "ci_pre-migration-key";
+        let digest = verifier(&pepper, plaintext).unwrap_or_else(|_| unreachable!());
+        {
+            // Build a version-1 database by hand, the shape a gateway build
+            // before this PR would have left on disk.
+            let legacy = Connection::open(&database_path).unwrap_or_else(|_| unreachable!());
+            legacy
+                .execute_batch(
+                    "PRAGMA journal_mode=WAL;
+                     CREATE TABLE state_metadata (
+                       singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                       revision INTEGER NOT NULL CHECK(revision>=0)
+                     );
+                     INSERT INTO state_metadata (singleton,revision) VALUES (1,0);
+                     CREATE TABLE api_keys (
+                       id TEXT PRIMARY KEY,
+                       name TEXT NOT NULL,
+                       prefix TEXT NOT NULL,
+                       tags_json TEXT NOT NULL,
+                       verifier BLOB NOT NULL,
+                       created_at_unix INTEGER NOT NULL,
+                       created_by TEXT NOT NULL,
+                       revoked_at_unix INTEGER,
+                       revoked_by TEXT,
+                       version INTEGER NOT NULL
+                     );
+                     CREATE TABLE idempotency (
+                       key TEXT PRIMARY KEY,
+                       operation TEXT NOT NULL,
+                       request_sha256 BLOB NOT NULL,
+                       resource_id TEXT NOT NULL
+                     );
+                     CREATE TABLE audit_events (
+                       id TEXT PRIMARY KEY,
+                       operation TEXT NOT NULL,
+                       resource_id TEXT NOT NULL,
+                       actor TEXT NOT NULL,
+                       reason TEXT NOT NULL,
+                       at_unix INTEGER NOT NULL
+                     );
+                     CREATE TABLE freeze_state (
+                       singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                       until_unix INTEGER NOT NULL DEFAULT 0,
+                       frozen_by TEXT
+                     );
+                     INSERT INTO freeze_state (singleton,until_unix) VALUES (1,0);
+                     PRAGMA user_version=1;",
+                )
+                .unwrap_or_else(|_| unreachable!());
+            legacy
+                .execute(
+                    "INSERT INTO api_keys
+                     (id,name,prefix,tags_json,verifier,created_at_unix,created_by,version)
+                     VALUES ('key_legacy','pre-migration','ci_pre-mig','[]',?1,0,'operator',1)",
+                    params![digest],
+                )
+                .unwrap_or_else(|_| unreachable!());
+            legacy
+                .execute_batch("PRAGMA wal_checkpoint(FULL);")
+                .unwrap_or_else(|_| unreachable!());
+        }
+
+        let migrated = GatewayState::open_persistent_with_mountinfo(
+            &database_path,
+            pepper,
+            "production",
+            STATE_DISK_SERIAL,
+            &mountinfo_path,
+        )
+        .unwrap_or_else(|_| unreachable!());
+
+        // The pre-existing key still verifies: migration never dropped or
+        // cleared `api_keys`.
+        assert_eq!(migrated.verify(plaintext), Some("key_legacy".to_owned()));
+        let status = migrated
+            .registry_source_status()
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(status.row_count, 0);
+
+        let schema: i64 = migrated
+            .database
+            .lock()
+            .unwrap_or_else(|_| unreachable!())
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(schema, 2);
     }
 
     #[test]
@@ -1825,7 +2430,7 @@ mod tests {
         for index in 0..100 {
             let mut created = request();
             created.name = format!("traffic key {index}");
-            let (_, plaintext, metadata) = source
+            let (_, plaintext, metadata, _key_hash) = source
                 .create(&created, &format!("round-trip-create-{index:04}"))
                 .unwrap_or_else(|_| unreachable!());
             plaintexts.push((plaintext, metadata.id));
@@ -1851,7 +2456,7 @@ mod tests {
     #[test]
     fn a_conflicting_record_refuses_the_whole_import() {
         let source = state();
-        let (_, _, metadata) = source
+        let (_, _, metadata, _key_hash) = source
             .create(&request(), "conflict-create-0001")
             .unwrap_or_else(|_| unreachable!());
         let envelope = source.export().unwrap_or_else(|_| unreachable!());
@@ -1892,7 +2497,7 @@ mod tests {
     #[test]
     fn a_freeze_refuses_a_mint_and_a_revoke() {
         let state = state();
-        let (_, _, metadata) = state
+        let (_, _, metadata, _key_hash) = state
             .create(&request(), "freeze-create-0001")
             .unwrap_or_else(|_| unreachable!());
         let (replayed, status) = state
