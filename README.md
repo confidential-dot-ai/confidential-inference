@@ -4,6 +4,9 @@ This repository contains the public confidential-inference product. It is the
 source for the OCI workloads, the TDX node image, the Kubernetes chart, the c8s
 policy tools, and the attestation verifier.
 
+Before you contribute or create a release, read the
+[developer workflow](docs/runbooks/developer-workflow.md).
+
 Live environment configuration does not belong here. Operators keep machine
 names, addresses, domains, resource sizes, secret paths, and deployment
 receipts in a separate private repository.
