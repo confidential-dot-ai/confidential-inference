@@ -134,6 +134,14 @@ class ReleaseBundleTests(unittest.TestCase):
         # The pod allocation itself is unchanged: tensor parallelism stays at 4.
         self.assertIn("--tp=4", workloads["inference-worker-0"]["argv"])
 
+    def test_release_channel_can_differ_from_the_render_target(self) -> None:
+        result, output = self.run_tool(
+            "--release-environment", "production", "--fixture"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        bundle = json.loads(output.read_text())
+        self.assertEqual(bundle["release"]["environment"], "production")
+
     def test_attested_gpu_count_below_the_allocation_is_rejected(self) -> None:
         values = self.attested_values(2)
         result, _ = self.run_tool("--values", str(values), "--fixture")
