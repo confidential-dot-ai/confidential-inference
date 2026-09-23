@@ -80,6 +80,8 @@ def main() -> None:
     gateway_env = {item["name"]: item["value"] for item in gateway_container["env"]}
     assert gateway_env["GATEWAY_ENDPOINT_DRAIN_SECONDS"] == "35"
     assert gateway_env["GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256"].startswith("sha256:")
+    assert gateway_container["readinessProbe"]["httpGet"]["path"] == "/ready"
+    assert gateway_container["livenessProbe"]["httpGet"]["path"] == "/health"
     assert gateway["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 960
     for workload in workloads:
         for container in workload["spec"]["template"]["spec"]["containers"]:

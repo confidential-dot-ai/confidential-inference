@@ -73,11 +73,11 @@
       "get": {
         "operationId": "getReady",
         "tags": ["health"],
-        "summary": "Report whether the gateway can serve inference",
-        "description": "When the gateway state store failed to open, the gateway runs in outage-only mode and reports 503 without calling the upstream. Otherwise the gateway calls the upstream `/health` route and reports the result (services/gateway/src/lib.rs, `ready`).",
+        "summary": "Report whether the gateway can serve its local API routes",
+        "description": "When the gateway state store failed to open, the gateway runs in outage-only mode and reports 503. Otherwise it reports 200 without calling the inference upstream. Inference availability does not control gateway readiness (services/gateway/src/lib.rs, `ready`).",
         "responses": {
           "200": {
-            "description": "The upstream reported healthy.",
+            "description": "The gateway can serve its local API routes.",
             "content": {
               "application/json": {
                 "schema": {
@@ -91,19 +91,16 @@
             }
           },
           "503": {
-            "description": "Either the gateway runs in outage-only mode (`status: outage_only`), or the upstream health check failed (`status: not_ready`).",
+            "description": "The gateway runs in outage-only mode (`status: outage_only`).",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "additionalProperties": false,
                   "required": ["status"],
-                  "properties": {"status": {"enum": ["outage_only", "not_ready"]}}
+                  "properties": {"status": {"const": "outage_only"}}
                 },
-                "examples": {
-                  "outageOnly": {"value": {"status": "outage_only"}},
-                  "notReady": {"value": {"status": "not_ready"}}
-                }
+                "example": {"status": "outage_only"}
               }
             }
           }
@@ -115,10 +112,10 @@
         "operationId": "listModels",
         "tags": ["models"],
         "summary": "List the advertised model catalog",
-        "description": "The gateway lists the model accepted for inference. During an outage the gateway returns an empty `data` array with status 200. This route requires no bearer token.",
+        "description": "The gateway lists its configured model catalog without calling the inference upstream. This route remains available during an inference outage and requires no bearer token.",
         "responses": {
           "200": {
-            "description": "The model catalog. `data` is empty when the gateway is unavailable for inference.",
+            "description": "The configured model catalog.",
             "content": {
               "application/json": {
                 "schema": {"$ref": "#/components/schemas/ModelList"},
@@ -193,7 +190,7 @@
           "408": {"$ref": "#/components/responses/RequestBodyTimeout"},
           "413": {"$ref": "#/components/responses/RequestTooLarge"},
           "429": {"$ref": "#/components/responses/InferenceCapacity"},
-          "502": {"$ref": "#/components/responses/UpstreamUnavailable"}
+          "503": {"$ref": "#/components/responses/InferenceUnavailable"}
         }
       }
     },
@@ -243,7 +240,7 @@
           "408": {"$ref": "#/components/responses/RequestBodyTimeout"},
           "413": {"$ref": "#/components/responses/RequestTooLarge"},
           "429": {"$ref": "#/components/responses/InferenceCapacity"},
-          "502": {"$ref": "#/components/responses/UpstreamUnavailable"}
+          "503": {"$ref": "#/components/responses/InferenceUnavailable"}
         }
       }
     },
@@ -648,7 +645,7 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["error"],
-        "description": "The exact shape the gateway itself emits for a synthesized error (services/gateway/src/lib.rs, `client_error`; services/gateway/src/protection.rs, `error`). This differs from the four-field OpenAI error shape: the gateway sets only `code` and `message`. When the upstream sglang-router itself returns a non-2xx status, the gateway streams that response body through unchanged, in whatever shape the upstream used.",
+        "description": "The exact shape the gateway itself emits for a synthesized error (services/gateway/src/lib.rs, `client_error`; services/gateway/src/protection.rs, `error`). This differs from the four-field OpenAI error shape: the gateway sets only `code` and `message`. The gateway normalizes an upstream 503. It streams other upstream non-2xx responses unchanged.",
         "properties": {
           "error": {
             "type": "object",
@@ -720,12 +717,18 @@
           }
         }
       },
-      "UpstreamUnavailable": {
-        "description": "The gateway could not reach the sglang-router upstream.",
+      "InferenceUnavailable": {
+        "description": "The gateway could not reach the inference router, or the router reported that inference was unavailable.",
+        "headers": {
+          "Retry-After": {
+            "description": "The number of seconds to wait before a retry.",
+            "schema": {"const": "30"}
+          }
+        },
         "content": {
           "application/json": {
             "schema": {"$ref": "#/components/schemas/GatewayError"},
-            "example": {"error": {"code": "upstream_unavailable", "message": "Bad Gateway"}}
+            "example": {"error": {"code": "inference_unavailable", "message": "Inference is temporarily unavailable."}}
           }
         }
       },

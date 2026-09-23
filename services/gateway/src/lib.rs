@@ -287,31 +287,10 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response<Body> {
         )
             .into_response();
     }
-    match state
-        .http
-        .get(format!("{}/health", state.config.upstream_base_url))
-        .send()
-        .await
-    {
-        Ok(response) if response.status().is_success() => {
-            state.metrics.set_upstream_reachable(true);
-            (StatusCode::OK, Json(json!({"status":"ready"}))).into_response()
-        }
-        _ => {
-            state.metrics.set_upstream_reachable(false);
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"status":"not_ready"})),
-            )
-                .into_response()
-        }
-    }
+    (StatusCode::OK, Json(json!({"status":"ready"}))).into_response()
 }
 
 async fn models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response<Body> {
-    if !state.availability.is_available() {
-        return (StatusCode::OK, Json(json!({"object":"list","data":[]}))).into_response();
-    }
     let models: Vec<_> = state
         .config
         .catalog_model_ids
@@ -417,20 +396,34 @@ async fn proxy_inference(
         .await;
     let Ok(upstream) = upstream else {
         state.metrics.set_upstream_reachable(false);
-        state.metrics.record_request(model, &key_id, 502);
+        state.metrics.record_request(model, &key_id, 503);
         state
             .metrics
-            .observe_request_duration(model, 502, started.elapsed().as_secs_f64());
+            .observe_request_duration(model, 503, started.elapsed().as_secs_f64());
         state.audit.record(AuditEvent {
             request_id,
             route,
-            status: 502,
+            status: 503,
             key_id: Some(key_id),
         });
-        return client_error(StatusCode::BAD_GATEWAY, "upstream_unavailable");
+        return inference_unavailable();
     };
     state.metrics.set_upstream_reachable(true);
     let status = upstream.status();
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        state.metrics.set_upstream_reachable(false);
+        state.metrics.record_request(model, &key_id, 503);
+        state
+            .metrics
+            .observe_request_duration(model, 503, started.elapsed().as_secs_f64());
+        state.audit.record(AuditEvent {
+            request_id,
+            route,
+            status: 503,
+            key_id: Some(key_id),
+        });
+        return inference_unavailable();
+    }
     let content_type = upstream.headers().get(header::CONTENT_TYPE).cloned();
     let is_event_stream = content_type
         .as_ref()
@@ -817,6 +810,21 @@ fn client_error(status: StatusCode, code: &'static str) -> Response<Body> {
         .into_response()
 }
 
+fn inference_unavailable() -> Response<Body> {
+    let mut response = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({"error":{
+            "code":"inference_unavailable",
+            "message":"Inference is temporarily unavailable."
+        }})),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+    response
+}
+
 fn detailed_client_error(status: StatusCode, code: &'static str, detail: &str) -> Response<Body> {
     (
         status,
@@ -990,7 +998,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unavailable_state_hides_models_and_rejects_inference() {
+    async fn unavailable_state_keeps_the_catalog_and_rejects_inference() {
         let app = app(GatewayAvailability::new(false));
         let response = app
             .clone()
@@ -1009,7 +1017,9 @@ mod tests {
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(
             serde_json::from_slice::<Value>(&body).unwrap_or_default()["data"],
-            json!([])
+            json!([
+                {"id":"deepseek","object":"model","owned_by":"confidential.ai"}
+            ])
         );
 
         let response = app
@@ -1026,6 +1036,52 @@ mod tests {
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers()[header::RETRY_AFTER], "30");
+    }
+
+    #[tokio::test]
+    async fn readiness_does_not_depend_on_inference() {
+        let response = app(GatewayAvailability::default())
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap_or_else(|_| unreachable!()),
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1_024)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap_or_default(),
+            json!({"status":"ready"})
+        );
+    }
+
+    #[tokio::test]
+    async fn unreachable_inference_returns_a_structured_503() {
+        let response = app(GatewayAvailability::default())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header(authorization().0, authorization().1)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"model":"deepseek"}"#))
+                    .unwrap_or_else(|_| unreachable!()),
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "30");
+        let body = to_bytes(response.into_body(), 1_024)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap_or_default()["error"]["code"],
+            "inference_unavailable"
+        );
     }
 
     #[tokio::test]
