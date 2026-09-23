@@ -52,6 +52,7 @@
       "required": ["enabled", "legacyC8s615", "evidenceBaseUrl", "releaseId", "releaseBundleSha256", "policyMode", "targets", "certificateRenewInterval", "gatewayPort", "routerPort", "firstWorkerPort", "metricsCollectorPort", "kubeStateMetricsPort", "platform", "attestationApiPort", "resources"],
       "properties": {
         "enabled": {"type": "boolean"},
+        "gpuEvidenceFlagEnabled": {"type": "boolean"},
         "legacyC8s615": {"type": "boolean"},
         "evidenceBaseUrl": {"type": "string", "pattern": "^https://[^/?#]+(?::[0-9]{1,5})?$"},
         "evidenceEgressCidrs": {

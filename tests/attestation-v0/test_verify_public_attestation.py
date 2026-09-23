@@ -36,11 +36,10 @@ TARGETS = {
         ("metrics-collector", "metrics-collector", "metrics-collector"),
         ("kube-state-metrics", "kube-state-metrics", "kube-state-metrics"),
     ),
-    "integration-staging": (
+    "staging": (
         ("gateway", "gateway", "gateway"),
         ("sglang-router", "sglang-router", "sglang-router"),
         ("inference-worker-0", "inference-worker-0", "inference-worker-0"),
-        ("inference-worker-1", "inference-worker-1", "inference-worker-1"),
     ),
 }
 
@@ -302,8 +301,8 @@ print(json.dumps(result))
     def configure(self, environment: str):
         self.environment = environment
         release_name = (
-            "integration-staging-v0"
-            if environment == "integration-staging"
+            "staging-v0"
+            if environment == "staging"
             else "v0-test"
         )
         allowlist_path = ROOT / f"c8s/allowlists/{environment}.json"
@@ -640,6 +639,8 @@ print(json.dumps(result))
             )
         )
         self.assertTrue(output["gpuEvidenceVerified"])
+        self.assertEqual(output["gpuAttestationMode"], "receipt-evidence")
+        self.assertFalse(output["gpuBootGateEnforcedByMeasuredImage"])
         self.assertIn("publicTlsSpkiSha256", output)
         self.assertNotIn(self.nonce, result.stdout)
         self.assertNotIn("running", result.stdout.lower())
@@ -840,12 +841,12 @@ print(json.dumps(result))
         "fix is out of scope for this update."
     )
     def test_staging_end_to_end_passes(self):
-        self.configure("integration-staging")
+        self.configure("staging")
         self.operator_key.write_bytes(self.operator_key.read_bytes() + b"\n")
         result = self.run_cli()
         self.assertEqual(result.returncode, 0, result.stderr)
         output = json.loads(result.stdout)
-        self.assertEqual(output["environment"], "integration-staging")
+        self.assertEqual(output["environment"], "staging")
         self.assertEqual(output["receipts"][2]["workload"], "inference-worker-0")
 
     @unittest.skip(
@@ -860,7 +861,7 @@ print(json.dumps(result))
         "fix is out of scope for this update."
     )
     def test_staging_accepts_a_retained_allowlist_for_an_unchanged_worker(self):
-        self.configure("integration-staging")
+        self.configure("staging")
         historical_digest = "25e3d8f45db21a0c1bc1177b49300b7775edb138902f1bba1b83a29c3d489f7b"
         result = self.run_cli(env={
             "FAKE_C8S_HISTORICAL_WORKLOAD": "inference-worker-0",
@@ -877,7 +878,7 @@ print(json.dumps(result))
         self.server.response_document["nonce"] = b64(b"z" * 32)
         self.assert_rejected()
         self.server.echo_nonce = True
-        self.assert_rejected(extra=["--environment", "integration-staging"])
+        self.assert_rejected(extra=["--environment", "staging"])
 
     def test_missing_invalid_or_stale_release_signature_fails_closed(self):
         missing = self.directory / "missing.sigstore.json"
@@ -963,11 +964,520 @@ print(json.dumps(result))
     def test_old_c8s_capabilities_fail_closed(self):
         self.assert_rejected(env={"FAKE_C8S_OLD": "1"})
 
+    def test_canonicalize_allowlist_uses_native_cli_when_capability_true(self):
+        # capabilities omitted (None) must behave exactly as before this
+        # function grew capability branching: it always shells out.
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            canonicalize_allowlist = runpy.run_path(str(SCRIPT))["canonicalize_allowlist"]
+        finally:
+            sys.path.pop(0)
+        document = {"schema": "c8s.allowlist/v1", "workloads": {}}
+        path = self.directory / "allowlist-native.json"
+        path.write_text(json.dumps(document))
+        for capabilities in (None, {"allowlistCanonicalize": True}):
+            with self.subTest(capabilities=capabilities):
+                canonical = canonicalize_allowlist(
+                    str(self.fake_c8s), path, 5, "canonical allowlist", capabilities,
+                )
+                # The fake c8s's canonicalize branch echoes back compact JSON.
+                self.assertEqual(json.loads(canonical), document)
+
+    def test_canonicalize_allowlist_falls_back_to_python_when_capability_false(self):
+        # Model a c8s v0.20.4-like binary: `allowlist canonicalize` is not a
+        # subcommand, so cobra prints help to stdout and exits 0. With
+        # capabilities.allowlistCanonicalize false the verifier must not
+        # mistake that help text for canonical bytes; it must reproduce the
+        # canonical bytes in Python instead, byte-identical to
+        # c8s_allowlist_canonical.canonicalize_mainline.
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+            canonicalize_allowlist = module["canonicalize_allowlist"]
+        finally:
+            sys.path.pop(0)
+        import c8s_allowlist_canonical
+
+        no_canonicalize_c8s = self.directory / "c8s-no-canonicalize"
+        no_canonicalize_c8s.write_text(
+            "#!/bin/sh\n"
+            "echo 'Available Commands:'\n"
+            "echo '  export  Write the full allowlist as canonical JSON'\n"
+            "exit 0\n"
+        )
+        no_canonicalize_c8s.chmod(0o755)
+        document = {
+            "schema": "c8s.allowlist/v1",
+            "workloads": {
+                "gateway": {
+                    "containers": [
+                        {
+                            "digest": "sha256:" + "a" * 64,
+                            "command": {"policy": "any"},
+                            "args": {"policy": "any"},
+                        }
+                    ],
+                },
+            },
+        }
+        path = self.directory / "allowlist-mainline.json"
+        path.write_text(json.dumps(document))
+        canonical = canonicalize_allowlist(
+            str(no_canonicalize_c8s), path, 5, "canonical allowlist",
+            {"allowlistCanonicalize": False},
+        )
+        self.assertEqual(canonical, c8s_allowlist_canonical.canonicalize_mainline(document))
+        # The native path must not even be attempted: the fake binary would
+        # have printed help (not canonical bytes) had it been called with
+        # "allowlist canonicalize" and this must not have been treated as
+        # a success.
+        self.assertNotIn(b"Available Commands", canonical)
+
+    def test_canonicalize_allowlist_skips_unsupported_shape_instead_of_guessing(self):
+        # An "exact" env policy serializes differently across c8s tags (see
+        # c8s_allowlist_canonical's docstring); the Python reproduction must
+        # fail closed with an explicit "skipped" message, never emit bytes
+        # it cannot vouch for.
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+            canonicalize_allowlist = module["canonicalize_allowlist"]
+            VerificationError = module["VerificationError"]
+        finally:
+            sys.path.pop(0)
+        no_canonicalize_c8s = self.directory / "c8s-no-canonicalize-2"
+        no_canonicalize_c8s.write_text("#!/bin/sh\necho 'Available Commands:'\nexit 0\n")
+        no_canonicalize_c8s.chmod(0o755)
+        document = {
+            "schema": "c8s.allowlist/v1",
+            "workloads": {
+                "gateway": {
+                    "containers": [
+                        {
+                            "digest": "sha256:" + "a" * 64,
+                            "command": {"policy": "any"},
+                            "args": {"policy": "any"},
+                            "env": {"policy": "exact", "values": {"FOO": "bar"}},
+                        }
+                    ],
+                },
+            },
+        }
+        path = self.directory / "allowlist-unsupported.json"
+        path.write_text(json.dumps(document))
+        with self.assertRaisesRegex(VerificationError, "skipped:.*allowlistCanonicalize=false"):
+            canonicalize_allowlist(
+                str(no_canonicalize_c8s), path, 5, "canonical allowlist",
+                {"allowlistCanonicalize": False},
+            )
+
+    def test_each_pinned_c8s_commit_resolves_to_its_own_lock_entry(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            select_source_lock_entry = runpy.run_path(str(SCRIPT))["select_source_lock_entry"]
+        finally:
+            sys.path.pop(0)
+        top_entry = {"commit": "a" * 40, "files": {"top.go": "sha256:" + "1" * 64}}
+        other_entry = {"commit": "b" * 40, "files": {"other.go": "sha256:" + "2" * 64}}
+        source_lock = {**top_entry, "commits": [other_entry]}
+        self.assertEqual(select_source_lock_entry(source_lock, "a" * 40), source_lock)
+        self.assertEqual(select_source_lock_entry(source_lock, "b" * 40), other_entry)
+
+    def test_unlisted_c8s_commit_fails_closed(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+            select_source_lock_entry = module["select_source_lock_entry"]
+            VerificationError = module["VerificationError"]
+        finally:
+            sys.path.pop(0)
+        source_lock = {
+            "commit": "a" * 40,
+            "commits": [{"commit": "b" * 40}],
+        }
+        with self.assertRaisesRegex(VerificationError, "different c8s source commit"):
+            select_source_lock_entry(source_lock, "c" * 40)
+
+    def test_c8s_version_accepts_the_entry_tag_with_no_commit_hash(self):
+        # At an exact git tag, `git describe` prints only the tag string,
+        # so a tagged release build's `--version` output carries no commit
+        # hash at all. The entry's `tag` field must still be accepted.
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            verify_c8s_version = runpy.run_path(str(SCRIPT))["verify_c8s_version"]
+        finally:
+            sys.path.pop(0)
+        self.fake_c8s.write_text("#!/bin/sh\necho 'c8s version v0.20.4'\n")
+        self.fake_c8s.chmod(0o755)
+        version = verify_c8s_version(str(self.fake_c8s), "a" * 40, 5, tag="v0.20.4")
+        self.assertEqual(version, "c8s version v0.20.4")
+
+    def test_c8s_version_still_accepts_the_commit_hash_with_a_tag_pinned(self):
+        # Existing off-tag builds (no exact-tag `git describe` match) must
+        # keep working exactly as before, even when the entry also has a
+        # `tag` field.
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            verify_c8s_version = runpy.run_path(str(SCRIPT))["verify_c8s_version"]
+        finally:
+            sys.path.pop(0)
+        commit = "466ce79e77c2fb6c014620b770066f275e889df6"
+        self.fake_c8s.write_text(f"#!/bin/sh\necho 'c8s version v0.20.3-g{commit[:7]}'\n")
+        self.fake_c8s.chmod(0o755)
+        version = verify_c8s_version(str(self.fake_c8s), commit, 5, tag="v0.20.4")
+        self.assertEqual(version, f"c8s version v0.20.3-g{commit[:7]}")
+
+    def test_c8s_version_rejects_a_version_matching_neither_commit_nor_tag(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+            verify_c8s_version = module["verify_c8s_version"]
+            VerificationError = module["VerificationError"]
+        finally:
+            sys.path.pop(0)
+        self.fake_c8s.write_text("#!/bin/sh\necho 'c8s version v0.9.9'\n")
+        self.fake_c8s.chmod(0o755)
+        with self.assertRaisesRegex(VerificationError, "does not match the source lock"):
+            verify_c8s_version(str(self.fake_c8s), "a" * 40, 5, tag="v0.20.4")
+        # An entry with no tag field at all must still require the commit
+        # hash exactly as before.
+        with self.assertRaisesRegex(VerificationError, "does not match the source lock"):
+            verify_c8s_version(str(self.fake_c8s), "a" * 40, 5, tag=None)
+
     def test_untrusted_public_tls_fails_closed(self):
         wrong_ca = self.directory / "wrong-ca.pem"
         _, ca, _, _ = make_ca_and_leaf("wrong")
         wrong_ca.write_bytes(pem_certificate(ca))
         self.assert_rejected(extra=["--endpoint-ca", str(wrong_ca)])
+
+    def test_lock_entry_selects_the_expected_attestation_protocol(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+            expected_attestation_protocol = module["expected_attestation_protocol"]
+            OLD = module["OLD_ATTESTATION_PROTOCOL"]
+            XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        finally:
+            sys.path.pop(0)
+        # The production top-level entry has no attestationProtocol field and
+        # must still resolve to the old protocol.
+        self.assertEqual(expected_attestation_protocol({"commit": "a" * 40}), OLD)
+        self.assertEqual(
+            expected_attestation_protocol({"commit": "a" * 40, "attestationProtocol": OLD}), OLD
+        )
+        self.assertEqual(
+            expected_attestation_protocol({"commit": "a" * 40, "attestationProtocol": XWING}),
+            XWING,
+        )
+        for entry in SOURCE_LOCK.get("commits", []):
+            self.assertEqual(expected_attestation_protocol(entry), XWING)
+        v0265 = next(
+            entry for entry in SOURCE_LOCK["commits"] if entry.get("tag") == "v0.26.5"
+        )
+        self.assertEqual(module["gpu_attestation_mode"](v0265), "measured-boot-gate")
+
+    def _minimal_response_and_release(self, module, protocol, gpu_status="raw-receipt-evidence"):
+        """Build the small subset validate_response_evidence actually reads."""
+        active_pem = self.operator_key.read_text()
+        allowlist = {"schema": "c8s.allowlist/v1", "workloads": {}}
+        canonical_allowlist = json.dumps(allowlist, separators=(",", ":")).encode()
+        release = {
+            "release": {"name": "test-release"},
+            "c8s": {"operatorKeySetSha256": self.operator_key_set_digest},
+        }
+        release_digest = "sha256:" + "9" * 64
+        response = {
+            "release": {
+                "id": "test-release",
+                "bundleSha256": release_digest,
+                "source": "operator-selected-public-release",
+            },
+            "c8s": {
+                "activeAllowlist": {
+                    "sha256": module["sha256"](canonical_allowlist),
+                    "document": allowlist,
+                },
+                "operatorTrust": (
+                    {
+                        "expectedPublicKeySpkiSha256": self.operator_digest,
+                        "expectedKeySetSha256": self.operator_key_set_digest,
+                        "activeKeySetStatus": "requires-attested-cds-read",
+                        "cdsAttestedReadHint": "/operator-keys",
+                        "reason": "test",
+                    }
+                    if protocol == module["XWING_ATTESTATION_PROTOCOL"]
+                    else {
+                        "expectedPublicKeySpkiSha256": self.operator_digest,
+                        "expectedKeySetSha256": self.operator_key_set_digest,
+                        "activeKeySetStatus": "evidence-present-and-release-matched",
+                        "activeKeySetSha256": self.operator_key_set_digest,
+                        "activeKeySetPem": active_pem,
+                        "reason": "test",
+                    }
+                ),
+                "meshCaSha256": "sha256:" + "8" * 64,
+                "discovery": {"public_tls": {"mode": "webpki"}},
+            },
+            "tls": {"mode": "webpki"},
+            "gpuEvidence": {"status": gpu_status, "evidence": [], "reason": "test"},
+        }
+        if protocol is not None:
+            response["c8s"]["attestationProtocol"] = protocol
+        return response, release, release_digest, allowlist, canonical_allowlist
+
+    def test_new_protocol_rejects_a_release_matched_operator_claim(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
+            module, XWING
+        )
+        attested = (
+            self.operator_key_set_digest, {self.operator_digest}, "a" * 96,
+        )
+        # The honest status passes, given the verifier's own attested read.
+        module["validate_response_evidence"](
+            response, release, release_digest, allowlist, canonical,
+            self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+            XWING, False, attested,
+        )
+        # c8s proves no hardware binding for this key set at either protocol,
+        # so claiming the stronger release-matched status on the new
+        # protocol must fail closed even though the digest itself matches.
+        response["c8s"]["operatorTrust"]["activeKeySetStatus"] = "evidence-present-and-release-matched"
+        with self.assertRaisesRegex(module["VerificationError"], "active operator key set"):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                XWING, False, attested,
+            )
+
+    def test_new_protocol_fails_closed_without_the_attested_cds_read(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
+            module, XWING
+        )
+        # No attested read was made, so there is nothing to compare the pin
+        # against. The verifier must never treat that as a pass.
+        with self.assertRaisesRegex(module["VerificationError"], "--cds-url"):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                XWING, False, None,
+            )
+
+    def test_new_protocol_rejects_a_claimed_live_key_set(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        attested = (
+            self.operator_key_set_digest, {self.operator_digest}, "a" * 96,
+        )
+        for field, value in (
+            ("activeKeySetSha256", self.operator_key_set_digest),
+            ("activeKeySetPem", self.operator_key.read_text()),
+            ("activeKeySetC8sSha256", "b" * 64),
+        ):
+            response, release, release_digest, allowlist, canonical = (
+                self._minimal_response_and_release(module, XWING)
+            )
+            response["c8s"]["operatorTrust"][field] = value
+            with self.assertRaisesRegex(module["VerificationError"], "cannot read"):
+                module["validate_response_evidence"](
+                    response, release, release_digest, allowlist, canonical,
+                    self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                    XWING, False, attested,
+                )
+
+    def test_new_protocol_requires_the_cds_read_hint(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        attested = (
+            self.operator_key_set_digest, {self.operator_digest}, "a" * 96,
+        )
+        for hint in (None, "/allowlist", ""):
+            response, release, release_digest, allowlist, canonical = (
+                self._minimal_response_and_release(module, XWING)
+            )
+            if hint is None:
+                del response["c8s"]["operatorTrust"]["cdsAttestedReadHint"]
+            else:
+                response["c8s"]["operatorTrust"]["cdsAttestedReadHint"] = hint
+            with self.assertRaisesRegex(module["VerificationError"], "CDS operator-key route"):
+                module["validate_response_evidence"](
+                    response, release, release_digest, allowlist, canonical,
+                    self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                    XWING, False, attested,
+                )
+
+    def test_new_protocol_rejects_a_differing_attested_key_set(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
+            module, XWING
+        )
+        # CDS serves a key set that is not the pinned one.
+        other = ("sha256:" + "c" * 64, {"sha256:" + "d" * 64}, "a" * 96)
+        with self.assertRaisesRegex(
+            module["VerificationError"], "differs from the release key-set commitment"
+        ):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                XWING, False, other,
+            )
+        # CDS serves the pinned set, but not the key this verifier holds.
+        stranger = (self.operator_key_set_digest, {"sha256:" + "d" * 64}, "a" * 96)
+        with self.assertRaisesRegex(module["VerificationError"], "not a member"):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                XWING, False, stranger,
+            )
+
+    def test_the_key_set_formula_matches_the_gateway_test_vector(self):
+        """The Python formula must reproduce c8s pkg/operatorauth.KeySetDigest.
+
+        This vector is the gateway's own committed test vector
+        (`services/gateway/tests/attestation_producer.rs`,
+        TEST_OPERATOR_KEY_SHA256 / TEST_OPERATOR_KEY_SET_SHA256), so the two
+        implementations are checked against one another byte for byte.
+        """
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        pem = (
+            b"-----BEGIN PUBLIC KEY-----\n"
+            b"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEnJMsKPXWyf5ZDLsU9OV/wKCWhvRJ\n"
+            b"Hk/K2mRdVZoDNgtuvdFkNh9CDp2ekMIfY3wnJvQ7CbQkD+I/3XYobrFIWQ==\n"
+            b"-----END PUBLIC KEY-----\n"
+        )
+        fingerprint = "sha256:45363125cde63f66880a4ba62fb4e0b48ae2f21bf1658df1fe1d6f14ec9ebfb7"
+        key_set = "sha256:8e4a722def684a9495d9d024e84fdccbbae9cb7ad9f585e863f7e5df575d2355"
+        _, digest, members = module["canonical_operator_key_set"](pem, "test key set")
+        self.assertEqual(digest, key_set)
+        self.assertEqual(members, {fingerprint})
+        # The attested-read path starts from bare hex fingerprints, exactly as
+        # `c8s verify --kind cds -o json` reports them, and must land on the
+        # same commitment.
+        self.assertEqual(
+            module["key_set_digest"]([bytes.fromhex(fingerprint[7:])]), key_set
+        )
+        # Order and duplicates must not change the commitment.
+        other = bytes.fromhex("11" * 32)
+        one = module["key_set_digest"]([bytes.fromhex(fingerprint[7:]), other])
+        two = module["key_set_digest"]([other, bytes.fromhex(fingerprint[7:]), other])
+        self.assertEqual(one, two)
+        self.assertNotEqual(one, key_set)
+
+    def test_old_protocol_rejects_the_honest_new_protocol_status(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        OLD = module["OLD_ATTESTATION_PROTOCOL"]
+        response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
+            module, None
+        )
+        response["c8s"]["operatorTrust"]["activeKeySetStatus"] = "requires-attested-cds-read"
+        with self.assertRaisesRegex(module["VerificationError"], "active operator key set"):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                OLD, False,
+            )
+
+    def test_response_protocol_must_match_the_pinned_lock_entry(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        OLD = module["OLD_ATTESTATION_PROTOCOL"]
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
+            module, XWING
+        )
+        with self.assertRaisesRegex(module["VerificationError"], "attestation protocol"):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                OLD, False,
+            )
+
+    def test_gpu_not_exposed_by_c8s_follows_the_pinned_gpu_mode(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        XWING = module["XWING_ATTESTATION_PROTOCOL"]
+        response, release, release_digest, allowlist, canonical = self._minimal_response_and_release(
+            module, XWING, gpu_status="not-exposed-by-c8s"
+        )
+        attested = (
+            self.operator_key_set_digest, {self.operator_digest}, "a" * 96,
+        )
+        # A release with no GPU policy accepts the status in either mode.
+        module["validate_response_evidence"](
+            response, release, release_digest, allowlist, canonical,
+            self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+            XWING, False, attested,
+        )
+        # The older receipt-evidence mode requires external GPU evidence.
+        with self.assertRaisesRegex(module["VerificationError"], "GPU evidence"):
+            module["validate_response_evidence"](
+                response, release, release_digest, allowlist, canonical,
+                self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+                XWING, True, attested,
+            )
+        # The current measured image enforces the GPU gate before RKE2 starts.
+        # Its protocol intentionally does not expose raw NVIDIA evidence.
+        module["validate_response_evidence"](
+            response, release, release_digest, allowlist, canonical,
+            self.operator_digest, self.operator_key_set_digest, "sha256:" + "8" * 64,
+            XWING, True, attested, "measured-boot-gate",
+        )
+
+    def test_gpu_attestation_mode_defaults_to_receipt_evidence(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            module = runpy.run_path(str(SCRIPT))
+        finally:
+            sys.path.pop(0)
+        self.assertEqual(module["gpu_attestation_mode"]({}), "receipt-evidence")
+        self.assertEqual(
+            module["gpu_attestation_mode"](
+                {"capabilities": {"gpuAttestationMode": "measured-boot-gate"}}
+            ),
+            "measured-boot-gate",
+        )
+        with self.assertRaisesRegex(module["VerificationError"], "unknown GPU"):
+            module["gpu_attestation_mode"](
+                {"capabilities": {"gpuAttestationMode": "unverified"}}
+            )
 
 
 class WorkloadAttestationSchemaTests(unittest.TestCase):
@@ -1028,8 +1538,7 @@ class WorkloadAttestationSchemaTests(unittest.TestCase):
                     "expectedPublicKeySpkiSha256": "sha256:" + "4" * 64,
                     "expectedKeySetSha256": "sha256:" + "7" * 64,
                     "activeKeySetStatus": "requires-attested-cds-read",
-                    "activeKeySetSha256": "sha256:" + "7" * 64,
-                    "activeKeySetPem": "-----BEGIN PUBLIC KEY-----\nAQ==\n-----END PUBLIC KEY-----\n",
+                    "cdsAttestedReadHint": "/operator-keys",
                     "reason": "not exposed",
                 },
                 "meshCaSha256": "sha256:" + "5" * 64,
@@ -1068,6 +1577,23 @@ class WorkloadAttestationSchemaTests(unittest.TestCase):
             ],
         }
         jsonschema.Draft202012Validator(schema).validate(response)
+
+        # Staging runs one inference worker and both observability
+        # workloads, so its receipt set is five targets: the full set
+        # without inference-worker-1. Measured live on staging-v6.
+        five = [item for item in response["receipts"] if item["target"] != "inference-worker-1"]
+        five_target = dict(response, receipts=five)
+        jsonschema.Draft202012Validator(schema).validate(five_target)
+
+        # Every other subset of the same set must still fail closed. A
+        # missing router, a missing worker, or exactly one of the two
+        # observability workloads is a receipt set no environment runs.
+        for dropped in ("sglang-router", "inference-worker-0", "kube-state-metrics"):
+            broken = [item for item in five if item["target"] != dropped]
+            with self.assertRaises(jsonschema.ValidationError):
+                jsonschema.Draft202012Validator(schema).validate(
+                    dict(response, receipts=broken)
+                )
 
     def test_tee_webpki_requires_a_separate_front_door_receipt(self):
         schema = json.loads(

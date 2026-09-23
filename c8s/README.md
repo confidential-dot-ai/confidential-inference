@@ -53,19 +53,23 @@ The private deployment repository selects the public Git commit, allowlist
 path, and canonical digest. It supplies infrastructure values and secrets, but
 it does not keep another editable allowlist.
 
-Integration-staging uses c8s static policy mode too, from release
-`integration-staging-v11`. It seals `allowlists/integration-staging.json` into
-its own measured node image, which is a different image from production's. The
-two allowlists name different application images, so one image cannot serve
-both environments. `images/control-plane-node/README.md` holds the
-per-environment build table.
+Staging moved off static policy mode when it moved to c8s v0.20.4. It now
+uses `policyMode: operator`, the same mode as `conf-inference-prod`: the
+node image is a stock, pull-mode image with no allowlist baked in, and the
+allowlist is uploaded to CDS after `c8s install` instead. `staging-policy.json`
+still pins `c8s.cvmMode: bare-metal` (the v0.20.4 name for the mode
+`production` still calls `node`) and still generates a committed
+`allowlists/staging.json`: an operator-mode cluster starts from this file as
+its floor and extends it with signed operator uploads afterward, so the
+generator, the review step, and the digest discipline below are unchanged.
+`images/control-plane-node/README.md` explains which environments seal a
+node image and which do not.
 
-`regenerate-c8s-allowlist.py` also generates the integration-staging
-allowlist. Pass `--config c8s/integration-staging-policy.json` to select it;
-the script rejects any `--config` path outside this fixed pair. The staging
-policy renders the same public Helm chart with `c8s/integration-staging-values.yaml`,
-a values file that carries only the fields the chart needs for the staging
-shape (simulator-mode inference, replica counts, and image digests) and no
-secret material. It writes `allowlists/integration-staging.json`. Review this
-file's exact commands, arguments, and secret paths the same way as production
-before commit.
+`regenerate-c8s-allowlist.py` also generates the staging allowlist. Pass
+`--config c8s/staging-policy.json` to select it; the script rejects any
+`--config` path outside this fixed set. The staging policy renders the same
+public Helm chart with `c8s/staging-values.yaml`, a values file that carries
+only the fields the chart needs for the staging shape (one inference node,
+sglang simulator mode, no GPU, and image digests) and no secret material. It
+writes `allowlists/staging.json`. Review this file's exact commands,
+arguments, and secret paths the same way as production before commit.

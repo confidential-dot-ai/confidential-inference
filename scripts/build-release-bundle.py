@@ -43,14 +43,21 @@ class BundleError(ValueError):
     """A deterministic release input is absent or invalid."""
 
 
-def require_node_workload_claims(value: dict[str, Any]) -> None:
-    """Require the node-local socket used by the public CDS sidecar."""
+def require_attestation_transport(value: dict[str, Any]) -> None:
+    """Require one attestation transport and reject mixed transport inputs."""
     cluster = value.get("cluster", {})
     c8s = value.get("c8s", {})
     if c8s.get("sourceCommit") in LEGACY_C8S_SOURCE_COMMITS:
         return
     if cluster.get("cvmMode") != "node":
-        raise BundleError("the application socket requires node-CVM mode")
+        raise BundleError("the attestation service requires node-CVM mode")
+    capabilities = c8s.get("capabilities", [])
+    if "node-attestation-http" in capabilities:
+        if "baked-node-socket" in capabilities:
+            raise BundleError("the c8s install selects two attestation transports")
+        if "workloadClaimsHostDir" in c8s or "workloadClaimsSocket" in c8s:
+            raise BundleError("node HTTP attestation must not declare a workload-claims socket")
+        return
     if c8s.get("workloadClaimsHostDir") != "/var/run/nri-image-policy":
         raise BundleError("the c8s install must pin the workload-claims host directory")
     if c8s.get("workloadClaimsSocket") != "attestation-api.sock":
@@ -330,11 +337,18 @@ def rendered_mapping_records(
                     # Named proxies are application policy even when the
                     # candidate image is also present in the c8s floor.
                     is_proxy = record["command"].get("argv") == ["/workload-proxy"]
-                    is_receipt_server = (
-                        record["command"].get("argv") == ["/c8s"]
-                        and record["args"].get("argv", [None])[0] == "cds-attest"
-                    )
-                    if record["digest"] not in floor_digests or is_proxy or is_receipt_server:
+                    # cds-attest is not: it runs on the c8s-operator image
+                    # under InjectedEntrypoints ("/c8s"). When that image's
+                    # digest is a floor entry (admitted under any argv), c8s's
+                    # own WorkloadContainers drops it before workload matching
+                    # runs, so it must not be declared as a main container
+                    # here either -- declaring it made every one of these
+                    # entries permanently unmatchable in staging. See
+                    # "Allowlist: do not emit the cds-attest sidecar as a main
+                    # container" (confidential-inference PR #6) and the
+                    # 2026-09-17 staging mesh diagnosis / staging-v2 release
+                    # deployment receipts.
+                    if record["digest"] not in floor_digests or is_proxy:
                         records[field].append(record)
             controller_records.append(records)
         first = controller_records[0]
@@ -371,23 +385,38 @@ def validate_rendered_allowlist(
     if not isinstance(policies, dict) or not isinstance(digests, dict):
         raise BundleError("the active public allowlist is not a generated policy")
     if folded_floor:
-        policies = {
-            name: policy
-            for name, policy in policies.items()
-            if not (
-                isinstance(policy, dict)
-                and [
-                    container
-                    for field in ("initContainers", "containers")
-                    for container in (policy.get(field) or [])
-                ]
-                and all(
-                    (container.get("command") or {}).get("policy") == "any"
-                    and (container.get("args") or {}).get("policy") == "any"
-                    for field in ("initContainers", "containers")
-                    for container in (policy.get(field) or [])
-                )
+        def is_floor_policy(policy: Any) -> bool:
+            if not isinstance(policy, dict):
+                return False
+            containers = [
+                container
+                for field in ("initContainers", "containers")
+                for container in (policy.get(field) or [])
+            ]
+            return bool(containers) and all(
+                (container.get("command") or {}).get("policy") == "any"
+                and (container.get("args") or {}).get("policy") == "any"
+                for container in containers
             )
+
+        # A folded-floor document has no top-level "digests" map (see above),
+        # but every-argv-admitted floor entries are still present, one per
+        # digest, among the workloads themselves (pkg/allowlist.DigestEntry).
+        # floor_digests must come from THOSE, not from the empty `digests`
+        # dict, or a floor digest is never recognized here and an injected
+        # sidecar sharing that digest (cds-attest, on c8s-operator) never
+        # gets excluded from the rendered comparison below -- see the
+        # 2026-09-17 staging mesh diagnosis and staging-v2 release
+        # deployment receipts.
+        digests = {
+            container["digest"]: container.get("image", "")
+            for policy in policies.values()
+            if is_floor_policy(policy)
+            for field in ("initContainers", "containers")
+            for container in (policy.get(field) or [])
+        }
+        policies = {
+            name: policy for name, policy in policies.items() if not is_floor_policy(policy)
         }
     if not isinstance(mappings, list) or not isinstance(external_mappings, list):
         raise BundleError("the c8s workload mappings are invalid")
@@ -540,7 +569,7 @@ def c8s_release_input(
     except jsonschema.ValidationError as error:
         location = ".".join(str(item) for item in error.absolute_path) or "input"
         raise BundleError(f"the c8s install input fails at {location}: {error.message}") from error
-    require_node_workload_claims(value)
+    require_attestation_transport(value)
     if value["environment"] != environment:
         raise BundleError("the c8s install input environment differs from the release")
     if value["allowlist"]["digest"] != allowlist_digest:
@@ -627,6 +656,9 @@ def c8s_release_input(
         "systemFloor": sorted(floor, key=lambda item: item["name"]),
         "attestationTargets": attestation_targets,
     }
+    for field in ("release", "confosSourceCommit", "components"):
+        if field in value["c8s"]:
+            result[field] = value["c8s"][field]
     if mode == "operator":
         result["operatorPublicKeySha256"] = value["operatorPublicKey"]["fingerprint"]
         result["operatorKeySetSha256"] = operator_key_set_sha256
@@ -635,9 +667,34 @@ def c8s_release_input(
             "certificateSecretName": value["meshCa"]["certificateSecretName"],
             "fingerprintSecretName": value["meshCa"]["fingerprintSecretName"],
         }
-    # c8s creates this workload for the TLS-LB evidence front door. It is
-    # separate from the application gateway receipt.
-    result["frontDoorWorkload"] = "c8s-tls-lb"
+    # c8s creates one workload for the front-door evidence endpoint,
+    # separate from the application gateway receipt. Its allowlist name
+    # follows the c8s chart's own component name -- "c8s-tls-lb" on the
+    # older tlsLb chart key, "c8s-router" since c8s PR #606 renamed it to
+    # "router" -- so read it from the install input's own
+    # externalWorkloadMappings instead of hard-coding either string. The
+    # front-door entry is the one the c8s chart itself renders
+    # (source.type == "c8s-chart"); every other externalWorkloadMappings
+    # entry (for example a node-agent sidecar) comes from a plain manifest.
+    front_door_entries = [
+        item for item in value.get("externalWorkloadMappings", [])
+        if isinstance(item, dict) and item.get("source", {}).get("type") == "c8s-chart"
+    ]
+    if len(front_door_entries) > 1:
+        raise BundleError(
+            "the c8s install input must name at most one c8s-chart front-door "
+            f"workload in externalWorkloadMappings, found {len(front_door_entries)}"
+        )
+    if front_door_entries:
+        front_door_name = front_door_entries[0].get("allowlistName")
+        if not isinstance(front_door_name, str) or not front_door_name:
+            raise BundleError("the front-door externalWorkloadMappings entry has no allowlistName")
+    else:
+        # No install input declares its front door this way yet. Fall back to
+        # the legacy default so older/fixture inputs keep building; every
+        # install input this repository ships should declare one instead.
+        front_door_name = "c8s-tls-lb"
+    result["frontDoorWorkload"] = front_door_name
     return result
 
 
@@ -825,7 +882,7 @@ def collect_external_workloads(
 
 
 def validate_source_lock(
-    workloads: list[dict[str, Any]], source_lock: dict[str, Any]
+    workloads: list[dict[str, Any]], source_lock: dict[str, Any], environment: str
 ) -> None:
     by_name = {workload["name"]: workload for workload in workloads}
     expected_image = source_lock.get("deploymentImage")
@@ -835,6 +892,7 @@ def validate_source_lock(
     # runs while its pinned c8s image lacks /workload-proxy). Each entry names one
     # additional allowed argv for that role; it never replaces the primary pin.
     alternate_roles = source_lock.get("alternateArgvRoles", {})
+    environment_roles = source_lock.get("environmentRoles", {})
     if (
         not isinstance(expected_image, dict)
         or not isinstance(expected_image.get("reference"), str)
@@ -842,6 +900,7 @@ def validate_source_lock(
         or not isinstance(roles, dict)
         or not isinstance(simulator_roles, dict)
         or not isinstance(alternate_roles, dict)
+        or not isinstance(environment_roles, dict)
     ):
         raise BundleError("the SGLang source lock is incomplete")
     for name, role in roles.items():
@@ -875,6 +934,13 @@ def validate_source_lock(
                     f"the {name} alternate source-lock role has unexpected fields"
                 )
             valid_argv.append(alternate_role.get("argv"))
+        environment_role = environment_roles.get(environment, {}).get(name)
+        if environment_role is not None:
+            if set(environment_role) != {"argv"}:
+                raise BundleError(
+                    f"the {name} {environment} source-lock role has unexpected fields"
+                )
+            valid_argv.append(environment_role.get("argv"))
         if workload["argv"] not in valid_argv:
             raise BundleError(f"the {name} argv does not match the SGLang source lock")
 
@@ -974,6 +1040,25 @@ def source_lock_node_image(
     return node_image
 
 
+def source_lock_node_evidence_artifact(
+    source_lock: dict[str, Any], environment: str
+) -> dict[str, Any]:
+    """Return the node evidence artifact pinned for one environment."""
+    per_environment = source_lock.get("nodeEvidenceArtifacts")
+    if isinstance(per_environment, dict):
+        selected = per_environment.get(environment)
+        if isinstance(selected, dict):
+            return selected
+        if per_environment:
+            raise BundleError(
+                f"the source lock pins no node evidence artifact for {environment}"
+            )
+    artifact = source_lock.get("nodeEvidenceArtifact")
+    if not isinstance(artifact, dict):
+        raise BundleError("the source lock pins no node evidence artifact")
+    return artifact
+
+
 def build(args: argparse.Namespace) -> dict[str, Any]:
     source_lock = read_json(args.source_lock)
     install_input = read_json(args.c8s_install_input)
@@ -1023,6 +1108,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     if args.strict and source_commit != git_value(["rev-parse", "HEAD"]):
         raise BundleError("the source commit does not match the checked-out commit")
     node_image = source_lock_node_image(source_lock, args.environment)
+    node_evidence_artifact = source_lock_node_evidence_artifact(
+        source_lock, args.environment
+    )
     node_pin = image_pin(
         f"{node_image['reference']}@{node_image['digest']}", args.strict
     )
@@ -1032,7 +1120,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     names = [item["name"] for item in workloads]
     if len(names) != len(set(names)):
         raise BundleError("the release contains duplicate workload names")
-    validate_source_lock(workloads, source_lock)
+    validate_source_lock(workloads, source_lock, args.environment)
     active_allowlist = read_json(allowlist_path)
     if not isinstance(active_allowlist.get("workloads"), dict):
         raise BundleError("the active public allowlist has no workloads object")
@@ -1059,7 +1147,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "node": {
             "image": node_pin,
             "sourceCommit": node_image["sourceCommit"],
-            "evidenceArtifactDigest": source_lock["nodeEvidenceArtifact"]["digest"],
+            "evidenceArtifactDigest": node_evidence_artifact["digest"],
         },
         "c8s": c8s_release_input(
             args.c8s_install_input,

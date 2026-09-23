@@ -48,6 +48,18 @@ class TlsBindingTests(unittest.TestCase):
             self.response, self.live_digest, self.live_der, self.front_door_verdict
         ))
 
+    def test_external_verifier_mode_checks_leaf_without_claiming_attestation(self) -> None:
+        self.assertFalse(MODULE.validate_tls_binding(
+            self.response, self.live_digest, self.live_der, None, require_verdict=False
+        ))
+
+    def test_external_verifier_mode_still_rejects_a_wrong_leaf(self) -> None:
+        with self.assertRaises(MODULE.VerificationError):
+            MODULE.validate_tls_binding(
+                self.response, "sha256:" + "00" * 32, self.live_der, None,
+                require_verdict=False,
+            )
+
     def test_wrong_live_leaf_fails_closed(self) -> None:
         with self.assertRaises(MODULE.VerificationError):
             MODULE.validate_tls_binding(

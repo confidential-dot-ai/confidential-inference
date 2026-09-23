@@ -16,15 +16,32 @@ from typing import Any
 import jsonschema
 import yaml
 
+# Import the sibling module by absolute path rather than relying on the
+# caller (direct script execution, runpy.run_path, or a test harness) to
+# have already put this file's directory on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import c8s_allowlist_canonical
+
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = ROOT / "c8s/production-policy.json"
-STAGING_POLICY = ROOT / "c8s/integration-staging-policy.json"
+STAGING_POLICY = ROOT / "c8s/staging-policy.json"
+CANDIDATE_POLICY = ROOT / "c8s/candidate-policy.json"
 CONF_INFERENCE_PROD_POLICY = ROOT / "c8s/conf-inference-prod-policy.json"
-ALLOWED_POLICIES = (POLICY, STAGING_POLICY, CONF_INFERENCE_PROD_POLICY)
+ALLOWED_POLICIES = (POLICY, STAGING_POLICY, CANDIDATE_POLICY, CONF_INFERENCE_PROD_POLICY)
 SCHEMA = ROOT / "c8s/production-policy.schema.json"
 OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 C8S_MODULE = "github.com/confidential-dot-ai/c8s/cmd/c8s"
+
+# Mirrors c8s's secrets handler package InjectedEntrypoints (handler.go:53 in
+# that package). CDS drops a reported container from workload matching
+# (WorkloadContainers, that package's handler.go:471-478) when its image is a
+# floor entry (any argv admitted) AND its command is one of these. A tenant
+# workload entry must not declare such a container as a main container: it
+# will never be present in the running set MatchWorkload sees, so declaring
+# it there makes the entry unmatchable (see the 2026-09-17 staging mesh
+# diagnosis deployment receipt).
+INJECTED_ENTRYPOINTS = ("get-cert", "get-secret", "get-volume", "/c8s")
 
 
 class RegenerationError(ValueError):
@@ -192,11 +209,27 @@ def volume_reads(document: dict[str, Any]) -> list[str]:
     return sorted(reads)
 
 
+def is_injected_container(container: dict[str, Any], system_images: dict[str, Any]) -> bool:
+    """Mirror c8s's isInjected (its secrets handler package, handler.go:471-478).
+
+    A rendered container is one c8s injects when its image is a system-floor
+    entry (admitted under any argv) AND its command is one of
+    InjectedEntrypoints. Such a container never survives WorkloadContainers,
+    so a workload entry must not declare it as a main container.
+    """
+    image = container.get("image")
+    if image not in system_images:
+        return False
+    command = container.get("command") or []
+    return bool(command) and command[0] in INJECTED_ENTRYPOINTS
+
+
 def application_allowlist(policy: dict[str, Any], documents: list[dict[str, Any]]) -> dict[str, Any]:
     expected = {item["controller"] for item in policy["workloads"]}
     rendered = {f"{x.get('kind')}/{x.get('metadata', {}).get('name')}": x for x in documents if x.get("kind") in {"Deployment", "StatefulSet", "DaemonSet"}}
     if expected != set(rendered):
         raise RegenerationError(f"the public workload map differs from the rendered chart: missing={sorted(expected-set(rendered))}, extra={sorted(set(rendered)-expected)}")
+    system_images = policy.get("systemImages", {})
     workloads = {}
     for mapping in sorted(policy["workloads"], key=lambda item: item["name"]):
         document = selected_controller(documents, mapping["controller"])
@@ -206,6 +239,12 @@ def application_allowlist(policy: dict[str, Any], documents: list[dict[str, Any]
         init_containers, containers = [], []
         for field, target in (("initContainers", init_containers), ("containers", containers)):
             for container in pod.get(field, []):
+                if is_injected_container(container, system_images):
+                    # c8s injects and then drops this container before workload
+                    # matching runs (WorkloadContainers). It is already
+                    # admitted through the system-floor entry, so it must not
+                    # also be declared as a main/init container here.
+                    continue
                 target.append(command_record(container, policy["imageConfigs"]))
         if not init_containers and not containers:
             raise RegenerationError(f"{mapping['controller']} has no application container")
@@ -301,89 +340,18 @@ def digest_entry(digest: str, image: str) -> dict[str, Any]:
     }
 
 
-def _normalize_container(container: dict[str, Any]) -> dict[str, Any]:
-    """Mirror normalizeContainers: default absent argv/mount/env policies."""
-    normalized: dict[str, Any] = {"digest": container["digest"]}
-    if container.get("image"):
-        normalized["image"] = container["image"]
-    for key in ("command", "args"):
-        policy = (container.get(key) or {}).get("policy", "")
-        argv = (container.get(key) or {}).get("argv")
-        if policy in ("", "any"):
-            normalized[key] = {"policy": "any"}
-        elif policy == "deny":
-            normalized[key] = {"policy": "deny"}
-        elif policy == "exact":
-            if not argv:
-                raise RegenerationError("an exact argv policy needs its argv")
-            normalized[key] = {"policy": "exact", "argv": list(argv)}
-        else:
-            raise RegenerationError(f"unknown argv policy: {policy}")
-    mounts = container.get("mounts") or {}
-    if mounts.get("policy", "") in ("", "any"):
-        normalized["mounts"] = {"policy": "any"}
-    elif mounts.get("policy") == "exact":
-        destinations = mounts.get("destinations") or []
-        if not destinations:
-            raise RegenerationError("an exact mounts policy needs destinations")
-        normalized["mounts"] = {"policy": "exact", "destinations": sorted(set(destinations))}
-    else:
-        raise RegenerationError(f"unknown mounts policy: {mounts.get('policy')}")
-    env = container.get("env") or {}
-    if env.get("policy", "") in ("", "any"):
-        normalized["env"] = {"policy": "any"}
-    elif env.get("policy") == "exact":
-        names = env.get("names") or []
-        if not names:
-            raise RegenerationError("an exact env policy needs names")
-        normalized["env"] = {"policy": "exact", "names": sorted(set(names))}
-    else:
-        raise RegenerationError(f"unknown env policy: {env.get('policy')}")
-    return normalized
-
-
-def _policy_key(container: dict[str, Any]) -> str:
-    return json.dumps([container["command"], container["args"]], separators=(",", ":"))
-
-
 def canonicalize_mainline(document: dict[str, Any]) -> bytes:
     """Mirror Allowlist.Canonical() on main-line c8s (Go json.Marshal output).
 
-    Field order follows the Go struct declarations; the workloads map is
-    key-sorted by encoding/json; container lists sort by (digest, policyKey),
-    exactly like sortContainers. Verified byte-identical against
-    pkg/allowlist.Canonical() for this document shape.
+    Delegates to the shared c8s_allowlist_canonical module (also used by
+    verify-public-attestation.py, which needs the same reproduction because
+    `c8s allowlist canonicalize` no longer exists on these tags) and
+    translates its failures into RegenerationError, this script's error type.
     """
-    if document.get("schema") != "c8s.allowlist/v1":
-        raise RegenerationError("the composed allowlist has the wrong schema")
-    workloads = document.get("workloads")
-    if not isinstance(workloads, dict) or not workloads:
-        raise RegenerationError("the composed allowlist has no workloads")
-    out: dict[str, Any] = {}
-    for name in sorted(workloads):
-        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) is None or len(name) > 63:
-            raise RegenerationError(f"the workload name is invalid: {name}")
-        entry = workloads[name]
-        normalized_entry: dict[str, Any] = {}
-        if entry.get("label"):
-            normalized_entry["label"] = entry["label"]
-        for field in ("initContainers", "containers"):
-            containers = [_normalize_container(c) for c in (entry.get(field) or [])]
-            containers.sort(key=lambda c: (c["digest"], _policy_key(c)))
-            normalized_entry[field] = containers
-        secrets = entry.get("secrets")
-        if secrets and secrets.get("policy") == "allow":
-            grant: dict[str, Any] = {"policy": "allow"}
-            if secrets.get("read"):
-                grant["read"] = sorted(set(secrets["read"]))
-            if secrets.get("write"):
-                grant["write"] = sorted(set(secrets["write"]))
-            normalized_entry["secrets"] = grant
-        out[name] = normalized_entry
-    return json.dumps(
-        {"schema": "c8s.allowlist/v1", "workloads": out},
-        separators=(",", ":"), ensure_ascii=False,
-    ).encode()
+    try:
+        return c8s_allowlist_canonical.canonicalize_mainline(document)
+    except c8s_allowlist_canonical.UnsupportedAllowlistShape as error:
+        raise RegenerationError(str(error)) from error
 
 
 def compose_mainline(policy: dict[str, Any], bootstrap: dict[str, Any]) -> bytes:

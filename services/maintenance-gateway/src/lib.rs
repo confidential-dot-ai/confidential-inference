@@ -29,7 +29,6 @@ const BODY_TIMEOUT: Duration = Duration::from_secs(5);
 const ADDRESS_CAPACITY: usize = 4_096;
 const REQUESTS_PER_ADDRESS_PER_SECOND: u32 = 30;
 const DEEPSEEK_MODEL_ID: &str = "deepseek-ai/DeepSeek-V4-Flash-0731";
-const MINIMAX_M3_MODEL_ID: &str = "MiniMaxAI/MiniMax-M3-MXFP8";
 
 #[derive(Clone, Default)]
 pub struct ProtectionConfig {
@@ -62,8 +61,7 @@ async fn models() -> Response {
         json!({
             "object": "list",
             "data": [
-                {"id": DEEPSEEK_MODEL_ID, "object": "model", "owned_by": "confidential.ai"},
-                {"id": MINIMAX_M3_MODEL_ID, "object": "model", "owned_by": "confidential.ai"}
+                {"id": DEEPSEEK_MODEL_ID, "object": "model", "owned_by": "confidential.ai"}
             ]
         }),
     )
@@ -321,8 +319,7 @@ mod tests {
             json!({
                 "object":"list",
                 "data":[
-                    {"id":DEEPSEEK_MODEL_ID,"object":"model","owned_by":"confidential.ai"},
-                    {"id":MINIMAX_M3_MODEL_ID,"object":"model","owned_by":"confidential.ai"}
+                    {"id":DEEPSEEK_MODEL_ID,"object":"model","owned_by":"confidential.ai"}
                 ]
             })
         );

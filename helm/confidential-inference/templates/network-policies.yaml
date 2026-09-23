@@ -39,7 +39,7 @@ spec:
               kubernetes.io/metadata.name: c8s-system
           podSelector:
             matchLabels:
-              app.kubernetes.io/name: tls-lb
+              app.kubernetes.io/name: {{ .Values.c8s.frontDoorPodLabelName }}
       ports:
         - {protocol: TCP, port: {{ .Values.gateway.containerPorts.public }}}
     - from:
@@ -119,7 +119,7 @@ spec:
         - {protocol: TCP, port: 443}
     {{- end }}
     # The front-door evidence fetch (discovery/allowlist/attest-lb) targets the
-    # c8s tls-lb. Selectors, not ipBlock: Cilium evaluates egress ipBlock
+    # c8s front door. Selectors, not ipBlock: Cilium evaluates egress ipBlock
     # against post-DNAT pod IPs, so a ClusterIP rule would not match.
     - to:
         - namespaceSelector:
@@ -127,7 +127,7 @@ spec:
               kubernetes.io/metadata.name: c8s-system
           podSelector:
             matchLabels:
-              app.kubernetes.io/name: tls-lb
+              app.kubernetes.io/name: {{ .Values.c8s.frontDoorPodLabelName }}
       ports:
         - {protocol: TCP, port: 443}
     {{- end }}

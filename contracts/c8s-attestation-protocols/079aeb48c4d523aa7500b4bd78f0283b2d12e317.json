@@ -1,0 +1,36 @@
+{
+  "schema": "confidential-inference.c8s-attestation-protocol-manifest/v1",
+  "commit": "079aeb48c4d523aa7500b4bd78f0283b2d12e317",
+  "attestationProtocol": "c8s/attest-pq/v1",
+  "capturedFrom": {
+    "cdsattestRoutes": "internal/cmds/cdsattest/server.go",
+    "bundleTypes": "pkg/types/verify.go",
+    "cdsAllowlistRoutes": "internal/cmds/cds/routes.go"
+  },
+  "cdsattestRoutes": [
+    {"method": "GET", "path": "/.well-known/c8s/attest-pq"},
+    {"method": "GET", "path": "/.well-known/c8s/attest-lb"},
+    {"method": "GET", "path": "/.well-known/c8s/attestation", "note": "always 400 (gone)"},
+    {"method": "POST", "path": "/.well-known/c8s/handshake"},
+    {"method": "POST", "path": "/.well-known/c8s/tunnel"}
+  ],
+  "attestPqRequest": {"method": "GET", "queryFields": ["nonce"]},
+  "attestationBundleFields": [
+    "version", "platform", "generation", "nonce", "evidence",
+    "gpu_attested", "nvidia_gpu", "cds_cert_pem", "front_door_mode",
+    "session_pubkey", "identity_proof", "serving_leaf_sha256"
+  ],
+  "sessionPublicKeyFields": ["x25519", "mlkem768"],
+  "identityProofFields": ["algorithm", "leaf_sha256", "mesh_ca_sha256", "signature"],
+  "cdsRoutes": [
+    {"method": "GET", "path": "/allowlist"},
+    {"method": "PUT", "path": "/allowlist"},
+    {"method": "POST", "path": "/allowlist/digests"},
+    {"method": "DELETE", "path": "/allowlist/digests"},
+    {"method": "PUT", "path": "/allowlist/workloads/{name}"},
+    {"method": "DELETE", "path": "/allowlist/workloads/{name}"},
+    {"method": "GET", "path": "/ca"},
+    {"method": "GET", "path": "/operator-keys"}
+  ],
+  "allowlistDocumentTopLevelFields": ["schema", "digests", "workloads"]
+}

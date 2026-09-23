@@ -64,7 +64,7 @@
           "required": ["sha256", "document"],
           "properties": {
             "sha256": {"$ref": "#/$defs/sha256Digest"},
-            "document": {"type": "object", "required": ["schema", "digests", "workloads"]}
+            "document": {"type": "object", "required": ["schema", "workloads"]}
           }
         },
         "policyTrust": {
@@ -91,18 +91,36 @@
         "operatorTrust": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["expectedPublicKeySpkiSha256", "expectedKeySetSha256", "activeKeySetStatus", "activeKeySetSha256", "activeKeySetPem", "reason"],
+          "required": ["expectedPublicKeySpkiSha256", "expectedKeySetSha256", "activeKeySetStatus", "reason"],
           "properties": {
             "expectedPublicKeySpkiSha256": {"$ref": "#/$defs/sha256Digest"},
             "expectedKeySetSha256": {"$ref": "#/$defs/sha256Digest"},
             "activeKeySetStatus": {"enum": ["evidence-present-and-release-matched", "requires-attested-cds-read"]},
+            "cdsAttestedReadHint": {"enum": ["/operator-keys"]},
             "activeKeySetSha256": {"$ref": "#/$defs/sha256Digest"},
             "activeKeySetC8sSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "activeKeySetPem": {"type": "string", "minLength": 1, "maxLength": 262144},
             "reason": {"type": "string", "minLength": 1}
-          }
+          },
+          "allOf": [
+            {
+              "comment": "requires-attested-cds-read is the honest status for a gateway that cannot read the key set: CDS serves GET /operator-keys over RA-TLS behind a self-signed certificate. Such a response must name the route the verifier reads for itself, and must claim no active key set at all.",
+              "if": {"properties": {"activeKeySetStatus": {"const": "requires-attested-cds-read"}}, "required": ["activeKeySetStatus"]},
+              "then": {
+                "required": ["cdsAttestedReadHint"],
+                "not": {"anyOf": [
+                  {"required": ["activeKeySetSha256"]},
+                  {"required": ["activeKeySetPem"]},
+                  {"required": ["activeKeySetC8sSha256"]}
+                ]}
+              },
+              "else": {"required": ["activeKeySetSha256", "activeKeySetPem"]}
+            }
+          ]
         },
-        "meshCaSha256": {"$ref": "#/$defs/sha256Digest"}
+        "meshCaSha256": {"$ref": "#/$defs/sha256Digest"},
+        "attestationProtocol": {"enum": ["c8s/attest-pq/v1", "c8s/attest-pq/v1+xwing"]},
+        "attestationProtocolC8sCommit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"}
       },
       "oneOf": [
         {"required": ["policyTrust"]},
@@ -186,6 +204,16 @@
             {"contains": {"properties": {"target": {"const": "gateway"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1},
             {"contains": {"properties": {"target": {"const": "sglang-router"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1},
             {"contains": {"properties": {"target": {"const": "inference-worker-0"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"target": {"const": "inference-worker-1"}}, "required": ["target"]}, "minContains": 0, "maxContains": 0}
+            ,{"contains": {"properties": {"target": {"const": "metrics-collector"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1}
+            ,{"contains": {"properties": {"target": {"const": "kube-state-metrics"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1}
+          ]
+        },
+        {
+          "allOf": [
+            {"contains": {"properties": {"target": {"const": "gateway"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"target": {"const": "sglang-router"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"target": {"const": "inference-worker-0"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1},
             {"contains": {"properties": {"target": {"const": "inference-worker-1"}}, "required": ["target"]}, "minContains": 1, "maxContains": 1}
             ,{"contains": {"properties": {"target": {"const": "metrics-collector"}}, "required": ["target"]}, "minContains": 0, "maxContains": 0}
             ,{"contains": {"properties": {"target": {"const": "kube-state-metrics"}}, "required": ["target"]}, "minContains": 0, "maxContains": 0}
@@ -221,6 +249,9 @@
     "sha256Digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "base64url32": {"type": "string", "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"},
     "base64url": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_-]+$"},
+    "base64urlXwingEk": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1622}$"},
+    "base64urlXwingCt": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1494}$"},
+    "base64urlSessionId": {"type": "string", "pattern": "^[A-Za-z0-9_-]{22}$"},
     "admittedLaunch": {
       "type": "object",
       "additionalProperties": false,
@@ -257,6 +288,11 @@
           "properties": {"version": {"const": "c8s/attest-pq/v1"}}
         },
         {
+          "required": ["xwing_ek", "xwing_ct", "session_id"],
+          "properties": {"version": {"const": "c8s/attest-pq/v1"}},
+          "not": {"required": ["session_pubkey"]}
+        },
+        {
           "required": ["serving_leaf_sha256"],
           "properties": {"version": {"const": "c8s/attest-lb/v1"}},
           "not": {"required": ["session_pubkey"]}
@@ -269,6 +305,7 @@
         "nonce": {"$ref": "#/$defs/base64url32"},
         "evidence": {"type": "object", "minProperties": 1},
         "cds_cert_pem": {"type": "string", "minLength": 1, "maxLength": 262144},
+        "front_door_mode": {"type": "string", "minLength": 1},
         "serving_leaf_sha256": {"$ref": "#/$defs/base64url32"},
         "session_pubkey": {
           "type": "object",
@@ -279,6 +316,9 @@
             "mlkem768": {"$ref": "#/$defs/base64url"}
           }
         },
+        "xwing_ek": {"$ref": "#/$defs/base64urlXwingEk"},
+        "xwing_ct": {"$ref": "#/$defs/base64urlXwingCt"},
+        "session_id": {"$ref": "#/$defs/base64urlSessionId"},
         "identity_proof": {
           "type": "object",
           "additionalProperties": false,

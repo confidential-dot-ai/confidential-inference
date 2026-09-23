@@ -23,14 +23,34 @@ images:
 namedWorkloadProxy:
   enabled: true
 
+c8s:
+  # The `app.kubernetes.io/name` label on the c8s front-door pod in the
+  # `c8s-system` namespace. The network policies select the front door by this
+  # label. c8s renamed the component from `tls-lb` to `router` in c8s PR #606
+  # (2026-09-14). Keep `tls-lb` for a c8s pin from before that commit. Set
+  # `router` for a c8s pin from that commit or later. A wrong value makes the
+  # front door -> gateway hop time out, because the namespace default-deny
+  # policy drops it.
+  frontDoorPodLabelName: tls-lb
+
 attestationReceipts:
   enabled: true
+  # Older c8s releases accepted this cds-attest flag. Disable it when the
+  # pinned c8s binary does not list it in `c8s cds-attest --help`.
+  gpuEvidenceFlagEnabled: true
   # Use the node-local attestation API and the two-field gateway target format
   # on the production c8s 615 release.
   legacyC8s615: false
+  # cds-attest reads TEE evidence from the measured node service at
+  # http://$(HOST_IP):attestationApiPort. Current c8s node-mode clusters do
+  # not serve a workload-claims Unix socket.
   # This URL must be the c8s tls-lb front door. The gateway reads only c8s
   # discovery and allowlist evidence from it.
   evidenceBaseUrl: https://api.example.invalid
+  # c8s serves GET /operator-keys on CDS, not on the public front door. Leave
+  # this empty to read the operator key set from evidenceBaseUrl, which is the
+  # behaviour every environment had before this value existed. Set it to the
+  # CDS base URL to read the key set from CDS itself.
   # Permit only the public c8s front-door addresses that evidenceBaseUrl can
   # use. Keep this empty until an environment supplies its reviewed CIDRs.
   evidenceEgressCidrs: []

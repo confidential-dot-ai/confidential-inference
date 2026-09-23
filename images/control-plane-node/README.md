@@ -4,12 +4,16 @@ This directory owns the extra Confidential OS Builder profile for the
 Kubernetes CVMs. Operators can use the same measured image on each node of one
 cluster. This keeps one c8s node measurement across that cluster.
 
-Each environment gets its own node image. The build seals one allowlist into
-the measured image, and the nodes enforce that sealed allowlist. Production
-seals `c8s/allowlists/production.json`, and integration-staging seals
-`c8s/allowlists/integration-staging.json`. The two allowlists name different
-application images, so one image cannot serve both environments. See "Build
-inputs" below for the per-environment file table.
+Each environment that runs a sealed node image gets its own build. The build
+seals one allowlist into the measured image, and the nodes enforce that
+sealed allowlist. Production seals `c8s/allowlists/production.json`. See
+"Build inputs" below for the file table.
+
+Not every environment seals an allowlist. Under `policyMode: operator`
+(`conf-inference-prod`, and `staging` since its c8s v0.20.4 move), the node
+image is a stock, pull-mode image: no allowlist is baked in, and the
+allowlist is uploaded to CDS after `c8s install` instead. Those environments
+have no build receipt, node manifest, or measurements config here.
 
 The profile adds a dependency to `rke2-server.service`. It mounts RKE2 server
 state in tmpfs only when a CVM starts the RKE2 server. Gateway and inference
@@ -25,23 +29,23 @@ same profile script — see "Profile packaging" below.
 - The TDX platform.
 - The consumer profile path.
 
-`builder-lock.json` also records the signed stage each environment's last
-build produced, in one section per environment: `productionSignedStage` and
-`integrationStagingSignedStage`. The published tag ends in `-sa` and the first
-twelve characters of the sealed allowlist file's SHA-256, so the tag names the
-policy the image enforces.
+`builder-lock.json` also records the signed stage each sealed environment's
+last build produced, in one section per environment: `productionSignedStage`
+today. The published tag ends in `-sa` and the first twelve characters of the
+sealed allowlist file's SHA-256, so the tag names the policy the image
+enforces.
 
-The sealed allowlist is a build input, not a constant. Each environment
+The sealed allowlist is a build input, not a constant. A sealed environment
 selects every per-environment file from this table:
 
-| Item | `production` | `integration-staging` |
-| --- | --- | --- |
-| Sealed allowlist | `c8s/allowlists/production.json` | `c8s/allowlists/integration-staging.json` |
-| Policy | `c8s/production-policy.json` | `c8s/integration-staging-policy.json` |
-| Builder-lock signed stage | `productionSignedStage` | `integrationStagingSignedStage` |
-| Build receipt | `production-build-receipt.json` | `integration-staging-build-receipt.json` |
-| Node manifest | `manifest-production.json` | `manifest-integration-staging.json` |
-| Measurements config | `measurements-production.json` | `measurements-integration-staging.json` |
+| Item | `production` |
+| --- | --- |
+| Sealed allowlist | `c8s/allowlists/production.json` |
+| Policy | `c8s/production-policy.json` |
+| Builder-lock signed stage | `productionSignedStage` |
+| Build receipt | `production-build-receipt.json` |
+| Node manifest | `manifest-production.json` |
+| Measurements config | `measurements-production.json` |
 
 The internal deploy repository dispatches the build for each environment.
 Record the output image digest, manifest digest, and TDX measurements in that

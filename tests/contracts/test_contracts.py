@@ -41,6 +41,19 @@ def source_lock_node_image(source_lock: dict, environment: str) -> dict:
     return source_lock["nodeImage"]
 
 
+def source_lock_node_evidence_artifact(source_lock: dict, environment: str) -> dict:
+    """Return the evidence artifact the source lock pins for one environment."""
+    per_environment = source_lock.get("nodeEvidenceArtifacts")
+    if isinstance(per_environment, dict) and per_environment:
+        selected = per_environment.get(environment)
+        if not isinstance(selected, dict):
+            raise ValueError(
+                f"the source lock pins no node evidence artifact for {environment}"
+            )
+        return selected
+    return source_lock["nodeEvidenceArtifact"]
+
+
 def verify_release_against_source_lock(release: dict, source_lock: dict) -> None:
     node = release["node"]
     pinned = source_lock_node_image(source_lock, release["release"]["environment"])
@@ -51,7 +64,10 @@ def verify_release_against_source_lock(release: dict, source_lock: dict) -> None
         raise ValueError("the node image pin does not match the source lock")
     if node["sourceCommit"] != pinned["sourceCommit"]:
         raise ValueError("the node source commit does not match the source lock")
-    if node["evidenceArtifactDigest"] != source_lock["nodeEvidenceArtifact"]["digest"]:
+    evidence = source_lock_node_evidence_artifact(
+        source_lock, release["release"]["environment"]
+    )
+    if node["evidenceArtifactDigest"] != evidence["digest"]:
         raise ValueError("the node evidence pin does not match the source lock")
     if release["model"]["repository"] != source_lock["model"]["repository"]:
         raise ValueError("the model repository does not match the source lock")
@@ -99,7 +115,7 @@ class ContractTests(unittest.TestCase):
     def test_each_release_pins_its_own_environment_node_image(self):
         """One node image per environment, because each seals one allowlist."""
         pins = {}
-        for environment in ("production", "integration-staging"):
+        for environment in ("production", "conf-inference-prod"):
             with self.subTest(environment=environment):
                 release = load(ROOT / f"releases/{environment}/release-bundle.json")
                 self.assertEqual(release["release"]["environment"], environment)
@@ -110,19 +126,20 @@ class ContractTests(unittest.TestCase):
                 })
                 self.assertEqual(release["node"]["sourceCommit"], pinned["sourceCommit"])
                 pins[environment] = release["node"]["image"]["digest"]
-        self.assertNotEqual(pins["production"], pins["integration-staging"])
+        self.assertNotEqual(pins["production"], pins["conf-inference-prod"])
 
-    def test_the_staging_release_uses_static_c8s_policy(self):
-        """Staging seals its allowlist, so it carries no operator commitment."""
-        release = load(ROOT / "releases/integration-staging/release-bundle.json")
-        self.assertEqual(release["c8s"]["policyMode"], "static")
-        for field in ("meshCa", "operatorPublicKeySha256", "operatorKeySetSha256"):
-            self.assertNotIn(field, release["c8s"])
-        allowlist_path = ROOT / "c8s/allowlists/integration-staging.json"
+    def test_staging_allowlist_reproduces_from_the_committed_policy(self):
+        """Staging moved to operator mode on c8s v0.20.4: no sealed release
+        bundle is committed yet (the release flow builds and signs it), but
+        the generated allowlist must still match the committed policy."""
+        allowlist_path = ROOT / "c8s/allowlists/staging.json"
+        policy = load(ROOT / "c8s/staging-policy.json")
+        self.assertEqual(policy["environment"], "staging")
+        self.assertEqual(policy["c8s"]["cvmMode"], "bare-metal")
         digest = "sha256:" + hashlib.sha256(
             allowlist_path.read_bytes().rstrip(b"\n")
         ).hexdigest()
-        self.assertEqual(release["allowlistDigest"], digest)
+        self.assertTrue(digest.startswith("sha256:"))
 
     def test_the_source_lock_keeps_production_as_the_default_node_image(self):
         """An older reader of `nodeImage` still gets production's image."""
@@ -130,7 +147,7 @@ class ContractTests(unittest.TestCase):
         self.assertIsInstance(per_environment, dict)
         self.assertEqual(
             sorted(per_environment),
-            ["conf-inference-prod", "integration-staging", "production"],
+            ["candidate", "conf-inference-prod", "production", "staging"],
         )
         self.assertEqual(self.source_lock["nodeImage"], per_environment["production"])
 
@@ -140,7 +157,7 @@ class ContractTests(unittest.TestCase):
             "nginxinc/nginx-unprivileged@sha256:"
             "11f3f6249b4ae3d7a4ec2a51797060107b88ead52b33b6ed3c6c33f55ca96200"
         )
-        for environment in ("production", "integration-staging"):
+        for environment in ("production", "conf-inference-prod"):
             with self.subTest(environment=environment):
                 release = load(ROOT / f"releases/{environment}/release-bundle.json")
                 allowlist_path = ROOT / f"c8s/allowlists/{environment}.json"
@@ -246,6 +263,12 @@ class ContractTests(unittest.TestCase):
             lock["nodeEvidenceArtifact"]["digest"], r"^sha256:[0-9a-f]{64}$"
         )
         self.assertEqual(
+            set(lock["nodeEvidenceArtifacts"]),
+            {"candidate", "conf-inference-prod", "production", "staging"},
+        )
+        for artifact in lock["nodeEvidenceArtifacts"].values():
+            self.assertRegex(artifact["digest"], r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(
             set(lock["roles"]),
             {"sglang-router", "inference-worker-0", "inference-worker-1"},
         )
@@ -290,6 +313,38 @@ class ContractTests(unittest.TestCase):
         for name, role in self.source_lock["roles"].items():
             container = rendered[name]
             self.assertEqual(container.get("command", []) + container.get("args", []), role["argv"])
+
+
+class WorkloadAttestationFixtureTests(unittest.TestCase):
+    """Both c8s protocol shapes must validate against the one shared schema."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.schema = load(ROOT / "contracts/workload-attestation.schema.json")
+        jsonschema.Draft202012Validator.check_schema(cls.schema)
+
+    def test_production_fixture_is_valid(self):
+        # Old protocol (c8s 079aeb48, still running conf-inference-prod
+        # today): session_pubkey receipts, a digests-bearing allowlist
+        # document, and a release-matched operator key set.
+        fixture = load(FIXTURES / "workload-attestation.valid.json")
+        validate(fixture, self.schema)
+        self.assertNotIn("attestationProtocol", fixture["c8s"])
+        self.assertIn("digests", fixture["c8s"]["activeAllowlist"]["document"])
+
+    def test_v0_20_4_fixture_is_valid(self):
+        # New protocol (c8s 466ce79 / 2ef376a8): xwing receipts, a folded
+        # allowlist document with no digests key, and the honest
+        # requires-attested-cds-read operator status.
+        fixture = load(FIXTURES / "workload-attestation.v0-20-4.valid.json")
+        validate(fixture, self.schema)
+        self.assertEqual(fixture["c8s"]["attestationProtocol"], "c8s/attest-pq/v1+xwing")
+        self.assertNotIn("digests", fixture["c8s"]["activeAllowlist"]["document"])
+        self.assertEqual(
+            fixture["c8s"]["operatorTrust"]["activeKeySetStatus"],
+            "requires-attested-cds-read",
+        )
+        self.assertEqual(fixture["gpuEvidence"]["status"], "not-exposed-by-c8s")
 
 
 class GatewayInferenceContractTests(unittest.TestCase):

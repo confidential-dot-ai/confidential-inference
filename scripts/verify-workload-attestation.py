@@ -180,8 +180,13 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     operator = response["c8s"]["operatorTrust"]
     if not isinstance(expected_key_set, str) or operator.get("expectedKeySetSha256") != expected_key_set:
         raise VerificationError("the release does not pin the operator key set")
+    # c8s binds the allowlist-write operator key set to no hardware evidence
+    # at either attestation protocol, so requires-attested-cds-read (an
+    # attested CDS read, not a launch-time proof) is also acceptable here.
+    # Either way the digest itself must still match the release exactly.
     if (
-        operator.get("activeKeySetStatus") != "evidence-present-and-release-matched"
+        operator.get("activeKeySetStatus")
+        not in ("evidence-present-and-release-matched", "requires-attested-cds-read")
         or operator.get("activeKeySetSha256") != expected_key_set
         or operator_key_set_digest(operator.get("activeKeySetPem", "")) != expected_key_set
     ):

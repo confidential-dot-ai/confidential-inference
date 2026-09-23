@@ -260,6 +260,123 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertNotIn("operatorKeySetSha256", result)
         self.assertNotIn("meshCa", result)
 
+    def test_c8s_dependency_closure_is_carried_into_the_bundle(self) -> None:
+        module = runpy.run_path(str(SCRIPT))
+        install = json.loads(INSTALL.read_text())
+        install["c8s"]["release"] = "v0.26.5"
+        install["c8s"]["confosSourceCommit"] = "b" * 40
+        install["c8s"]["components"] = {
+            "c8s-operator": f"ghcr.io/confidential-dot-ai/c8s-operator@sha256:{'c' * 64}",
+        }
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        install_path = Path(temporary.name) / "install.json"
+        install_path.write_text(json.dumps(install))
+        result = module["c8s_release_input"](
+            install_path,
+            ROOT / "tests/release-v0/allowlist.fixture.json",
+            install["allowlist"]["digest"],
+            "sha256:" + "6" * 64,
+            False,
+            "production",
+        )
+        self.assertEqual(result["release"], "v0.26.5")
+        self.assertEqual(result["confosSourceCommit"], "b" * 40)
+        self.assertEqual(result["components"], install["c8s"]["components"])
+
+    def test_front_door_workload_follows_the_c8s_chart_mapping(self) -> None:
+        # c8s PR #606 renamed the front-door component from tls-lb to
+        # router; an install input whose externalWorkloadMappings names the
+        # new "c8s-router" allowlist entry (as staging's real install input
+        # does since the ACME switch) must produce that name, not the older
+        # "c8s-tls-lb" default -- otherwise the front-door gate names a
+        # workload the allowlist does not hold.
+        module = runpy.run_path(str(SCRIPT))
+        install = json.loads(INSTALL.read_text())
+        install["externalWorkloadMappings"] = [
+            {
+                "allowlistName": "c8s-router",
+                "confidentialWorkloadId": "c8s-router",
+                "controller": "Deployment/c8s-router",
+                "source": {"type": "c8s-chart"},
+            },
+            {
+                "allowlistName": "node-agent-staging-control-plane",
+                "confidentialWorkloadId": "node-agent-staging-control-plane",
+                "controller": "Deployment/node-agent-staging-control-plane",
+                "source": {"type": "manifest", "file": "workload.yaml"},
+            },
+        ]
+        allowlist_digest = "sha256:" + hashlib.sha256(
+            (ROOT / "tests/release-v0/allowlist.fixture.json").read_bytes().rstrip(b"\n")
+        ).hexdigest()
+        install["allowlist"]["digest"] = allowlist_digest
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        install_path = Path(temporary.name) / "install.json"
+        install_path.write_text(json.dumps(install))
+        result = module["c8s_release_input"](
+            install_path,
+            ROOT / "tests/release-v0/allowlist.fixture.json",
+            allowlist_digest,
+            "sha256:" + "6" * 64,
+            False,
+            "production",
+        )
+        self.assertEqual(result["frontDoorWorkload"], "c8s-router")
+
+    def test_front_door_workload_defaults_when_undeclared(self) -> None:
+        # No install input in this fixture set declares its front door
+        # through externalWorkloadMappings yet, so the legacy default keeps
+        # those inputs building.
+        module = runpy.run_path(str(SCRIPT))
+        result = module["c8s_release_input"](
+            INSTALL,
+            ROOT / "tests/release-v0/allowlist.fixture.json",
+            "sha256:" + hashlib.sha256(
+                (ROOT / "tests/release-v0/allowlist.fixture.json").read_bytes().rstrip(b"\n")
+            ).hexdigest(),
+            "sha256:" + "6" * 64,
+            False,
+            "production",
+        )
+        self.assertEqual(result["frontDoorWorkload"], "c8s-tls-lb")
+
+    def test_front_door_workload_rejects_ambiguous_mapping(self) -> None:
+        module = runpy.run_path(str(SCRIPT))
+        install = json.loads(INSTALL.read_text())
+        install["externalWorkloadMappings"] = [
+            {
+                "allowlistName": "c8s-tls-lb",
+                "confidentialWorkloadId": "c8s-tls-lb",
+                "controller": "Deployment/c8s-tls-lb",
+                "source": {"type": "c8s-chart"},
+            },
+            {
+                "allowlistName": "c8s-router",
+                "confidentialWorkloadId": "c8s-router",
+                "controller": "Deployment/c8s-router",
+                "source": {"type": "c8s-chart"},
+            },
+        ]
+        allowlist_digest = "sha256:" + hashlib.sha256(
+            (ROOT / "tests/release-v0/allowlist.fixture.json").read_bytes().rstrip(b"\n")
+        ).hexdigest()
+        install["allowlist"]["digest"] = allowlist_digest
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        install_path = Path(temporary.name) / "install.json"
+        install_path.write_text(json.dumps(install))
+        with self.assertRaisesRegex(module["BundleError"], "at most one c8s-chart front-door"):
+            module["c8s_release_input"](
+                install_path,
+                ROOT / "tests/release-v0/allowlist.fixture.json",
+                allowlist_digest,
+                "sha256:" + "6" * 64,
+                False,
+                "production",
+            )
+
     def test_release_schema_static_mode_forbids_operator_commitments(self) -> None:
         bundle = json.loads(
             (ROOT / "tests/contracts/fixtures/release-bundle.valid.json").read_text()
@@ -299,7 +416,7 @@ class ReleaseBundleTests(unittest.TestCase):
         )
 
     def test_real_release_bundles_hash_the_committed_canonical_bytes(self) -> None:
-        for environment in ("production", "integration-staging"):
+        for environment in ("production", "conf-inference-prod"):
             with self.subTest(environment=environment):
                 allowlist = (
                     ROOT / "c8s/allowlists" / f"{environment}.json"
@@ -479,14 +596,45 @@ class ReleaseBundleTests(unittest.TestCase):
         )
 
     def test_workload_label_can_select_any_rendered_container(self) -> None:
-        rendered, install, allowlist, module = self.generated_allowlist_fixture()
-        gateway_records = allowlist["workloads"]["gateway"]["containers"]
-        self.assertGreaterEqual(len(gateway_records), 2)
-        allowlist["workloads"]["gateway"]["label"] = gateway_records[-1]["image"]
-        module["validate_rendered_allowlist"](
-            rendered, install, allowlist,
-            json.loads(CONFIGS.read_text())["images"], False,
+        # A synthetic two-real-container pod, deliberately not sharing any
+        # digest with the c8s floor: neither container is one c8s injects
+        # (see validate_rendered_allowlist's floor-digest exclusion), so both
+        # are expected main containers and the label may name either.
+        module = runpy.run_path(str(SCRIPT))
+        app_image = "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64
+        sidecar_image = "example.invalid/sidecar@sha256:" + "2" * 64
+        rendered = json.dumps({
+            "kind": "Deployment",
+            "metadata": {"name": "gateway"},
+            "spec": {"template": {"metadata": {"annotations": {"confidential.ai/cw": "gateway"}}, "spec": {
+                "containers": [
+                    {"image": app_image, "command": ["/usr/local/bin/confidential-gateway"], "args": []},
+                    {"image": sidecar_image, "command": ["/sidecar"], "args": ["--role=aux"]},
+                ],
+            }}},
+        })
+        install = json.loads(INSTALL.read_text())
+        install["workloadMappings"] = [{
+            "allowlistName": "gateway",
+            "confidentialWorkloadId": "gateway",
+            "controllers": ["Deployment/gateway"],
+        }]
+        configs = json.loads(CONFIGS.read_text())["images"]
+        floor = set(item["image"].rpartition("@")[2] for item in install["systemFloor"])
+        records = module["rendered_mapping_records"](
+            rendered, install["workloadMappings"], configs, floor, False,
         )
+        gateway_records = records["gateway"]["containers"]
+        self.assertEqual(len(gateway_records), 2)
+        allowlist = {
+            "digests": {item["image"].rpartition("@")[2]: item["image"] for item in install["systemFloor"]},
+            "workloads": {"gateway": {
+                "label": gateway_records[-1]["image"],
+                "initContainers": [],
+                "containers": gateway_records,
+            }},
+        }
+        module["validate_rendered_allowlist"](rendered, install, allowlist, configs, False)
 
     def test_extra_rendered_attestation_target_fails_closed(self) -> None:
         validate = runpy.run_path(str(SCRIPT))["validate_proxy_identity_bindings"]
@@ -496,7 +644,7 @@ class ReleaseBundleTests(unittest.TestCase):
             validate(policies, targets, rendered)
 
     def test_node_socket_capability_is_required(self) -> None:
-        require = runpy.run_path(str(SCRIPT))["require_node_workload_claims"]
+        require = runpy.run_path(str(SCRIPT))["require_attestation_transport"]
         install = json.loads(INSTALL.read_text())
         install["c8s"]["sourceCommit"] = "d" * 40
         for field, value in (
@@ -513,6 +661,18 @@ class ReleaseBundleTests(unittest.TestCase):
             with self.subTest(field=field):
                 with self.assertRaisesRegex(ValueError, "node-CVM|workload-claims|baked-node-socket"):
                     require(candidate)
+
+    def test_node_http_attestation_has_no_socket_contract(self) -> None:
+        require = runpy.run_path(str(SCRIPT))["require_attestation_transport"]
+        install = json.loads(INSTALL.read_text())
+        install["c8s"]["sourceCommit"] = "d" * 40
+        install["c8s"]["capabilities"] = ["node-attestation-http"]
+        install["c8s"].pop("workloadClaimsHostDir")
+        install["c8s"].pop("workloadClaimsSocket")
+        require(install)
+        install["c8s"]["workloadClaimsSocket"] = "attestation-api.sock"
+        with self.assertRaisesRegex(ValueError, "must not declare"):
+            require(install)
 
     def test_strict_mode_rejects_an_unready_source(self) -> None:
         result, _ = self.run_tool(
@@ -622,16 +782,16 @@ class SourceLockNodeImageTests(unittest.TestCase):
             "nodeImage": self.entry("1"),
             "nodeImages": {
                 "production": self.entry("1"),
-                "integration-staging": self.entry("2"),
+                "staging": self.entry("2"),
             },
         }
         self.assertEqual(self.select(lock, "production"), self.entry("1"))
-        self.assertEqual(self.select(lock, "integration-staging"), self.entry("2"))
+        self.assertEqual(self.select(lock, "staging"), self.entry("2"))
 
     def test_an_old_lock_without_per_environment_entries_still_reads(self):
         lock = {"nodeImage": self.entry("3")}
         self.assertEqual(self.select(lock, "production"), self.entry("3"))
-        self.assertEqual(self.select(lock, "integration-staging"), self.entry("3"))
+        self.assertEqual(self.select(lock, "staging"), self.entry("3"))
 
     def test_an_unpinned_environment_fails_closed(self):
         lock = {
@@ -639,7 +799,7 @@ class SourceLockNodeImageTests(unittest.TestCase):
             "nodeImages": {"production": self.entry("1")},
         }
         with self.assertRaises(Exception):
-            self.select(lock, "integration-staging")
+            self.select(lock, "staging")
 
     def test_a_lock_with_no_node_image_fails_closed(self):
         with self.assertRaises(Exception):
@@ -648,6 +808,46 @@ class SourceLockNodeImageTests(unittest.TestCase):
     def test_the_committed_lock_pins_both_environments(self):
         lock = json.loads((ROOT / "images/sglang/source.lock").read_text())
         production = self.select(lock, "production")
-        staging = self.select(lock, "integration-staging")
+        staging = self.select(lock, "staging")
         self.assertNotEqual(production["digest"], staging["digest"])
         self.assertEqual(production, lock["nodeImage"])
+
+
+class SourceLockNodeEvidenceArtifactTests(unittest.TestCase):
+    """The source lock pins one node evidence artifact per environment."""
+
+    @staticmethod
+    def select(lock: dict, environment: str):
+        module = runpy.run_path(str(SCRIPT))
+        return module["source_lock_node_evidence_artifact"](lock, environment)
+
+    @staticmethod
+    def entry(digest_character: str) -> dict:
+        return {"digest": "sha256:" + digest_character * 64}
+
+    def test_a_per_environment_entry_wins(self):
+        lock = {
+            "nodeEvidenceArtifact": self.entry("1"),
+            "nodeEvidenceArtifacts": {
+                "production": self.entry("1"),
+                "staging": self.entry("2"),
+            },
+        }
+        self.assertEqual(self.select(lock, "production"), self.entry("1"))
+        self.assertEqual(self.select(lock, "staging"), self.entry("2"))
+
+    def test_an_old_lock_without_per_environment_entries_still_reads(self):
+        lock = {"nodeEvidenceArtifact": self.entry("3")}
+        self.assertEqual(self.select(lock, "staging"), self.entry("3"))
+
+    def test_an_unpinned_environment_fails_closed(self):
+        lock = {
+            "nodeEvidenceArtifact": self.entry("1"),
+            "nodeEvidenceArtifacts": {"production": self.entry("1")},
+        }
+        with self.assertRaises(Exception):
+            self.select(lock, "staging")
+
+    def test_a_lock_with_no_node_evidence_artifact_fails_closed(self):
+        with self.assertRaises(Exception):
+            self.select({}, "production")
