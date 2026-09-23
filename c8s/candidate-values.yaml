@@ -122,6 +122,14 @@ router:
 metricsCollector:
   enabled: true
   attestedWorkload: metrics-collector
+  remoteWrite:
+    enabled: true
+    url: https://admin.api.confidential.ai:9443/api/v1/write
+    address: 20.163.209.126
+    serverName: admin.api.confidential.ai
+    secretName: metrics-remote-write-mtls
+    destinationCidrs:
+      - 20.163.209.126/32
 
 kubeStateMetrics:
   attestedWorkload: kube-state-metrics
