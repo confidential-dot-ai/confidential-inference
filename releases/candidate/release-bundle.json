@@ -114,7 +114,7 @@
   },
   "release": {
     "environment": "candidate",
-    "name": "candidate-v5"
+    "name": "candidate-v6"
   },
   "releaseTrust": {
     "policyPath": "releases/trust/release-signing-policy.json",
@@ -123,7 +123,7 @@
   },
   "schemaVersion": 2,
   "source": {
-    "commit": "8d1fd35e1c0ca39e7bdd54ab3a35950739e73d8d",
+    "commit": "c1dcaaddc4bace88c406ec9ddc97c2fa9e6ad197",
     "repository": "https://github.com/confidential-dot-ai/confidential-inference"
   },
   "workloads": [
