@@ -194,8 +194,13 @@ async fn main() -> Result<()> {
                 4_096,
                 Duration::from_secs(args.state_startup_timeout_seconds),
             )?;
-            GatewayState::open_persistent(&args.state_database, pepper, &args.environment, &args.state_disk_serial)
-                .map_err(anyhow::Error::from)
+            GatewayState::open_persistent(
+                &args.state_database,
+                pepper,
+                &args.environment,
+                &args.state_disk_serial,
+            )
+            .map_err(anyhow::Error::from)
         })();
         match state_result {
             Ok(state) => state,
