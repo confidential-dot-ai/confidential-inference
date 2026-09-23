@@ -880,6 +880,26 @@ print(json.dumps(result))
         self.server.echo_nonce = True
         self.assert_rejected(extra=["--environment", "staging"])
 
+    def test_release_environment_can_differ_from_deployment_target(self):
+        source_lock = json.loads(self.node_source_lock_path.read_text())
+        source_lock["nodeImages"]["candidate"] = copy.deepcopy(
+            source_lock["nodeImages"]["production"]
+        )
+        target_lock = self.directory / "target-source.lock"
+        target_lock.write_text(json.dumps(source_lock))
+        self.node_source_lock_path = target_lock
+
+        result = self.run_cli(extra=[
+            "--deployment-target", "candidate",
+            "--release-environment", "production",
+        ])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output["releaseEnvironment"], "production")
+        self.assertEqual(output["deploymentTarget"], "candidate")
+        self.assertEqual(output["environment"], "candidate")
+
     def test_missing_invalid_or_stale_release_signature_fails_closed(self):
         missing = self.directory / "missing.sigstore.json"
         self.assert_rejected(extra=["--release-signature-bundle", str(missing)])
