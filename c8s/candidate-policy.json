@@ -108,7 +108,7 @@
           ],
           "args": [
             "acme",
-            "--domains=candidate.api.confidential.ai",
+            "--domains=candidate.api.confidential.ai,api.confidential.ai",
             "--challenge-port=8402",
             "--http-port=8080",
             "--cert-dir=/etc/c8s-acme-tls"
