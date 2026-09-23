@@ -46,10 +46,14 @@ authentication, attestation evidence, release schemas, and operator interfaces.
 Internal implementation changes do not require a major version when these
 interfaces remain compatible.
 
-Use a version such as `v0.14.3-rc.1` when a release needs deployment validation
-before final publication. If validation succeeds, `v0.14.3` must reference the
-same artifact digests. If any artifact changes, create another release
-candidate.
+Only `vX.Y.Z` and `vX.Y.Z-rc.N` are valid production release tags. Use a tag
+such as `v0.14.3-rc.1` when a release needs deployment validation before final
+publication. The tag must point to a commit on `main`. After publication, the
+tag must never move or be deleted.
+
+If validation succeeds, `v0.14.3` must contain the same release content as the
+latest published release candidate. Only the release name can change. If any
+artifact or other release input changes, create another release candidate.
 
 C8s, TEEriminator, and other release dependencies are exact release inputs. A
 dependency update enters a cluster only through a new Confidential Inference

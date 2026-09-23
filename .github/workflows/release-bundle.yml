@@ -41,6 +41,64 @@ jobs:
           python3 -m pip install --require-hashes \
             --requirement scripts/requirements-release-signing.txt
 
+      - name: Validate the production release tag
+        if: startsWith(github.ref_name, 'v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          release_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'
+          if [[ ! "$RELEASE_TAG" =~ $release_pattern ]]; then
+            echo "The production release tag must use vX.Y.Z or vX.Y.Z-rc.N." >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin \
+            '+refs/heads/main:refs/remotes/origin/main'
+
+          if gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "The release version is already published." >&2
+            exit 1
+          fi
+
+          arguments=(
+            --tag "$RELEASE_TAG"
+            --bundle releases/production/release-bundle.json
+            --main-ref refs/remotes/origin/main
+          )
+          if [[ ! "$RELEASE_TAG" =~ -rc\.[1-9][0-9]*$ ]]; then
+            escaped_tag="${RELEASE_TAG//./\\.}"
+            candidate_pattern="^${escaped_tag}-rc\.[1-9][0-9]*$"
+            candidate_tag=""
+            while IFS= read -r possible_tag; do
+              if [[ "$possible_tag" =~ $candidate_pattern ]] && \
+                gh release view "$possible_tag" \
+                  --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+                candidate_tag="$possible_tag"
+                break
+              fi
+            done < <(
+              git tag --list "$RELEASE_TAG-rc.*" --sort=-version:refname
+            )
+            if [[ -z "$candidate_tag" ]]; then
+              echo "The final release has no release candidate." >&2
+              exit 1
+            fi
+            mkdir -p /tmp/confidential-inference-candidate
+            gh release download "$candidate_tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern release-bundle.json \
+              --pattern release-bundle.sigstore.json \
+              --dir /tmp/confidential-inference-candidate
+            arguments+=(
+              --candidate-tag "$candidate_tag"
+              --candidate-bundle \
+                /tmp/confidential-inference-candidate/release-bundle.json
+            )
+          fi
+          python3 scripts/validate-release-tag.py "${arguments[@]}"
+
       - name: Prepare the exact release bytes
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -61,6 +119,17 @@ jobs:
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.2
+
+      - name: Verify the selected release candidate
+        run: |
+          candidate=/tmp/confidential-inference-candidate/release-bundle.json
+          if [[ -f "$candidate" ]]; then
+            python3 scripts/verify-release-bundle-signature.py \
+              --bundle "$candidate" \
+              --signature-bundle \
+                /tmp/confidential-inference-candidate/release-bundle.sigstore.json \
+              --cosign "$(command -v cosign)"
+          fi
 
       - name: Create the keyless Sigstore bundle
         run: |

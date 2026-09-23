@@ -21,7 +21,8 @@ deploy either environment.
 
 1. Build the selected environment release bundle with strict inputs.
 2. Set `release.name` to the intended protected tag:
-   - Production: `v0.13.0`.
+   - Production candidate: `v0.14.3-rc.1`.
+   - Final production release: `v0.14.3`.
    - Integration staging: `integration-staging-v1`.
 3. Commit the bundle and all public release inputs to `main`.
 4. Make sure that the recorded source commit is an ancestor of the tag.
@@ -42,6 +43,11 @@ deploy either environment.
 7. A second job, which has no OIDC permission, confirms that the remote tag
    still names the signed commit. It then creates a new GitHub Release and
    uploads all three files.
+
+For a production tag, the workflow also requires the tag commit to be on
+`main`. A final release requires a published release candidate with the same
+version. The complete final bundle must equal the selected candidate bundle
+except for `release.name`.
 
 The signing job can read repository contents and request an OIDC token. It
 cannot write repository contents. The publishing job can create the GitHub
