@@ -1,5 +1,8 @@
 # Contributing
 
+Read the [developer workflow](docs/runbooks/developer-workflow.md) before you
+make a change or create a release.
+
 Open an issue before you make a large change. Keep each pull request small and
 focused.
 
