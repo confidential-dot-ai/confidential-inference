@@ -39,7 +39,7 @@ spec:
               kubernetes.io/metadata.name: c8s-system
           podSelector:
             matchLabels:
-              app.kubernetes.io/name: tls-lb
+              app.kubernetes.io/name: {{ .Values.c8s.frontDoorPodLabelName }}
       ports:
         - {protocol: TCP, port: {{ .Values.gateway.containerPorts.public }}}
     - from:
@@ -127,7 +127,7 @@ spec:
               kubernetes.io/metadata.name: c8s-system
           podSelector:
             matchLabels:
-              app.kubernetes.io/name: tls-lb
+              app.kubernetes.io/name: {{ .Values.c8s.frontDoorPodLabelName }}
       ports:
         - {protocol: TCP, port: 443}
     {{- end }}

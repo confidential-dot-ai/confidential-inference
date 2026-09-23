@@ -243,7 +243,7 @@ spec:
         {{- include "confidential-inference.cdsAttestSidecar" (dict "root" . "workload" .Values.gateway.attestedWorkload "host" "0.0.0.0" "port" .Values.attestationReceipts.gatewayPort) | nindent 8 }}
         {{- end }}
       volumes:
-        {{- if and .Values.attestationReceipts.enabled (not .Values.attestationReceipts.legacyC8s615) }}
+        {{- if and .Values.attestationReceipts.enabled (eq .Values.attestationReceipts.attestationApiMode "workload-claims-unix") }}
         {{- include "confidential-inference.workloadClaimsVolume" . | nindent 8 }}
         {{- end }}
         - name: admin-auth

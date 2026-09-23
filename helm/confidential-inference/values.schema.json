@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["environment", "imagePullSecret", "images", "scheduling", "gateway", "inference", "router", "metricsCollector", "kubeStateMetrics", "attestationReceipts", "namedWorkloadProxy"],
+  "required": ["environment", "imagePullSecret", "images", "scheduling", "gateway", "inference", "router", "metricsCollector", "kubeStateMetrics", "attestationReceipts", "namedWorkloadProxy", "c8s"],
   "properties": {
     "environment": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"},
     "imagePullSecret": {
@@ -46,12 +46,22 @@
         "enabled": {"type": "boolean"}
       }
     },
+    "c8s": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frontDoorPodLabelName"],
+      "properties": {
+        "frontDoorPodLabelName": {"enum": ["router", "tls-lb"]}
+      }
+    },
     "attestationReceipts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "legacyC8s615", "evidenceBaseUrl", "releaseId", "releaseBundleSha256", "policyMode", "targets", "certificateRenewInterval", "gatewayPort", "routerPort", "firstWorkerPort", "metricsCollectorPort", "kubeStateMetricsPort", "platform", "attestationApiPort", "resources"],
+      "required": ["enabled", "gpuEvidenceFlagEnabled", "attestationApiMode", "legacyC8s615", "evidenceBaseUrl", "releaseId", "releaseBundleSha256", "policyMode", "targets", "certificateRenewInterval", "gatewayPort", "routerPort", "firstWorkerPort", "metricsCollectorPort", "kubeStateMetricsPort", "platform", "attestationApiPort", "resources"],
       "properties": {
         "enabled": {"type": "boolean"},
+        "gpuEvidenceFlagEnabled": {"type": "boolean"},
+        "attestationApiMode": {"enum": ["node-http", "workload-claims-unix"]},
         "legacyC8s615": {"type": "boolean"},
         "evidenceBaseUrl": {"type": "string", "pattern": "^https://[^/?#]+(?::[0-9]{1,5})?$"},
         "evidenceEgressCidrs": {

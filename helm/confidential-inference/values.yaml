@@ -23,8 +23,13 @@ images:
 namedWorkloadProxy:
   enabled: true
 
+c8s:
+  frontDoorPodLabelName: tls-lb
+
 attestationReceipts:
   enabled: true
+  gpuEvidenceFlagEnabled: true
+  attestationApiMode: workload-claims-unix
   # Use the node-local attestation API and the two-field gateway target format
   # on the production c8s 615 release.
   legacyC8s615: false

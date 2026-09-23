@@ -101,6 +101,34 @@ def main() -> None:
                 assert "ALL" in security["capabilities"]["drop"]
     rendered = yaml.safe_dump_all(documents)
     assert "nvidia.com/gpu" not in rendered
+
+    node_http_documents = [
+        item for item in yaml.safe_load_all(
+            helm(
+                "template", "example", str(CHART), "--namespace", "inference",
+                *NEUTRAL_MODE,
+                "--set", "attestationReceipts.attestationApiMode=node-http",
+                "--set", "attestationReceipts.gpuEvidenceFlagEnabled=false",
+                "--set", "c8s.frontDoorPodLabelName=router",
+            )
+        ) if item
+    ]
+    for workload in (
+        item for item in node_http_documents
+        if item["kind"] in {"Deployment", "StatefulSet"}
+    ):
+        attest = next(
+            item for item in workload["spec"]["template"]["spec"]["containers"]
+            if item["name"] == "cds-attest"
+        )
+        assert "--attestation-api-url=http://$(HOST_IP):8400" in attest["args"]
+        assert "--nvidia-gpu-evidence" not in attest["args"]
+        assert any(item["name"] == "HOST_IP" for item in attest["env"])
+        assert "volumeMounts" not in attest
+    node_http_rendered = yaml.safe_dump_all(node_http_documents)
+    assert "app.kubernetes.io/name: router" in node_http_rendered
+    assert "c8s-workload-claims" not in node_http_rendered
+
     helm(
         "lint", str(CHART), *NEUTRAL_MODE, "--set-string",
         "images.gateway=example.invalid/gateway:latest", success=False,

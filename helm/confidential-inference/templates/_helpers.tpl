@@ -10,7 +10,7 @@ confidential-inference
 {{- end }}
 
 {{- define "confidential-inference.workloadClaimsSupplementalGroup" -}}
-{{- if and .Values.attestationReceipts.enabled (not .Values.attestationReceipts.legacyC8s615) }}
+{{- if and .Values.attestationReceipts.enabled (eq .Values.attestationReceipts.attestationApiMode "workload-claims-unix") }}
 supplementalGroups: [65532]
 {{- end }}
 {{- end }}
@@ -37,11 +37,11 @@ app.kubernetes.io/component: {{ .component }}
     - --port={{ .port }}
     - --platform={{ .root.Values.attestationReceipts.platform }}
     - --front-door-mode=webpki
-    {{- if .gpuEvidence }}
+    {{- if and .gpuEvidence .root.Values.attestationReceipts.gpuEvidenceFlagEnabled }}
     - --nvidia-gpu-evidence
     {{- end }}
     - --expected-workload={{ .workload }}
-    {{- if .root.Values.attestationReceipts.legacyC8s615 }}
+    {{- if eq .root.Values.attestationReceipts.attestationApiMode "node-http" }}
     - --attestation-api-url=http://$(HOST_IP):{{ .root.Values.attestationReceipts.attestationApiPort }}
     {{- else }}
     - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
@@ -50,7 +50,7 @@ app.kubernetes.io/component: {{ .component }}
     - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
     - --mesh-identity-key-file=/etc/c8s/certs/tls.key
     - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-  {{- if .root.Values.attestationReceipts.legacyC8s615 }}
+  {{- if eq .root.Values.attestationReceipts.attestationApiMode "node-http" }}
   env:
     - name: HOST_IP
       valueFrom:

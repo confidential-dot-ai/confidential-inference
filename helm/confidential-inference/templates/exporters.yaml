@@ -148,7 +148,7 @@ spec:
         {{- if .Values.attestationReceipts.enabled }}
         {{- include "confidential-inference.cdsAttestSidecar" (dict "root" . "host" "0.0.0.0" "port" .Values.attestationReceipts.kubeStateMetricsPort "workload" .Values.kubeStateMetrics.attestedWorkload) | nindent 8 }}
         {{- end }}
-      {{- if and .Values.attestationReceipts.enabled (not .Values.attestationReceipts.legacyC8s615) }}
+      {{- if and .Values.attestationReceipts.enabled (eq .Values.attestationReceipts.attestationApiMode "workload-claims-unix") }}
       volumes:
         {{- include "confidential-inference.workloadClaimsVolume" . | nindent 8 }}
       {{- end }}
