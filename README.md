@@ -241,35 +241,15 @@ model and application-secret flow.
 
 ## Continuous integration
 
-`.github/workflows/v0-validation.yml` runs on each pull request and on each
-push to `main`. Its first job, `changes`, puts the changed paths into five
-categories. Each other job checks one or more categories. A job skips its
-real work when the change does not touch its categories. A skipped job
-still reports success. A required check does not block on a category the
-change does not touch.
+`.github/workflows/pr.yml` runs one required check on each pull request. It
+tests and lints only changed Rust components, checks Python syntax only after a
+Python change, tests release rules only after a release-tooling change, lints
+only changed Helm charts, and parses only changed configuration. Documentation
+changes do not start documentation checks.
 
-This table shows each category:
-
-| Category | Paths | Job that runs |
-| --- | --- | --- |
-| `rust` | `services/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, the gateway and maintenance-gateway Dockerfiles and build script | `rust`. Runs `cargo test` and `cargo clippy` for both packages. Also checks dependency licenses. |
-| `helm-and-contracts` | `helm/**`, `contracts/**`, `scripts/**`, `tests/**` (except `tests/images/control-plane-node/**`) | `helm-and-contracts`. Runs the contract, deployment, attestation, image-workflow, and other Python test suites. Also runs `helm lint`, `helm template`, and the Kubernetes and router validation scripts. |
-| `node-image-profile` | `images/control-plane-node/**`, `tests/images/control-plane-node/**` | `control-plane-node-boot-sim`. Runs the systemd unit verification test and the boot simulation. |
-| `release-bundle` | `releases/**`, `c8s/**`, `images/*/source.lock` | `helm-and-contracts`. This category also runs that job, because its suites check release bundles and image pins. |
-| `docs-only` | `**/*.md` | `docs-only`. Runs a Markdown link check. |
-
-A change to `.github/workflows/v0-validation.yml` matches every category
-except `docs-only`. So an edit to the workflow file always runs every job
-it can affect.
-
-`tests/ci-workflow/test_path_filter_mapping.py` checks this table against
-the live `filters:` block in the workflow file. This keeps the table and
-the workflow in sync.
-
-`.github/workflows/v0-images.yml` (the image build and publish workflow)
-and `.github/workflows/release-bundle.yml` (the signed release-tag
-workflow) use their own separate triggers. This category table does not
-cover them.
+`.github/workflows/release-images.yml` is manual. It does not run on pull requests
+or pushes to `main`. `.github/workflows/release-bundle.yml` runs only for
+protected release tags.
 
 ## Project policy
 

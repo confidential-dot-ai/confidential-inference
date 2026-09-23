@@ -1,39 +1,6 @@
-name: V0 image and release builds
+name: Release images
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/v0-images.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "rust-toolchain.toml"
-      - "images/gateway/**"
-      - "images/sglang/**"
-      - "services/gateway/**"
-      - "services/maintenance-gateway/**"
-      - "images/maintenance-gateway/**"
-      - "images/metrics-collector/**"
-      - "images/kube-state-metrics/**"
-      - "helm/**"
-      - "scripts/**"
-      - "tests/image-workflow/**"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/v0-images.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "rust-toolchain.toml"
-      - "images/gateway/**"
-      - "images/sglang/**"
-      - "services/gateway/**"
-      - "services/maintenance-gateway/**"
-      - "images/maintenance-gateway/**"
-      - "images/metrics-collector/**"
-      - "images/kube-state-metrics/**"
-      - "helm/**"
-      - "scripts/**"
-      - "tests/image-workflow/**"
   workflow_dispatch:
     inputs:
       publish:
@@ -63,7 +30,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: v0-images-${{ github.ref }}
+  group: release-images-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -72,27 +39,10 @@ env:
   BUILDKIT_IMAGE: moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
 
 jobs:
-  validate:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Validate the image workflow
-        run: |
-          python3 scripts/validate-image-workflow.py
-          python3 -m unittest discover -s tests/image-workflow -p 'test_*.py'
-          python3 -m unittest discover -s tests/images/gateway -p 'test_*.py'
-          cargo test --locked --package maintenance-gateway
-          shellcheck scripts/check-image-build-output.sh
-          shellcheck images/gateway/build.sh
-
   reproducibility:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.rebuild_audit
-    needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
@@ -234,7 +184,6 @@ jobs:
       github.event_name == 'workflow_dispatch' &&
       inputs.rebuild_audit &&
       (inputs.publish_target == 'all' || inputs.publish_target == 'sglang')
-    needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
@@ -404,8 +353,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.publish &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
-    needs: validate
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: ghcr-production

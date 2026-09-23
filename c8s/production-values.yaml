@@ -85,6 +85,7 @@ inference:
   replicas: 2
   gpusPerReplica: 4
   gpuArchitectures: [BLACKWELL]
+  reasoningParser: deepseek-v4
   # Both workers share one 8-GPU node: each pod is allocated 4 devices, but
   # CVM driver-level evidence attests all 8 visible devices.
   attestedGpuCount: 8

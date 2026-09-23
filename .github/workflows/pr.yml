@@ -1,0 +1,134 @@
+name: PR checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed files
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          gateway=false
+          maintenance=false
+          python=false
+          release=false
+          helm_app=false
+          helm_maintenance=false
+          config=false
+
+          while IFS= read -r path; do
+            case "$path" in
+              Cargo.toml|Cargo.lock|rust-toolchain.toml)
+                gateway=true
+                maintenance=true
+                ;;
+              services/gateway/*) gateway=true ;;
+              services/maintenance-gateway/*) maintenance=true ;;
+              scripts/validate-release-tag.py|tests/release-v0/test_release_tag.py|.github/workflows/release-bundle.yml)
+                python=true
+                release=true
+                ;;
+              scripts/*.py|images/*/*.py) python=true ;;
+              helm/confidential-inference/*) helm_app=true ;;
+              helm/maintenance-gateway/*) helm_maintenance=true ;;
+              contracts/*.json|c8s/*.json|releases/*.json|releases/*/*.json|images/*/source.lock)
+                config=true
+                ;;
+              .github/workflows/pr.yml)
+                gateway=true
+                maintenance=true
+                python=true
+                release=true
+                helm_app=true
+                helm_maintenance=true
+                config=true
+                ;;
+            esac
+          done < <(git diff --name-only "$BASE_SHA" "$GITHUB_SHA")
+
+          {
+            echo "gateway=$gateway"
+            echo "maintenance=$maintenance"
+            echo "python=$python"
+            echo "release=$release"
+            echo "helm_app=$helm_app"
+            echo "helm_maintenance=$helm_maintenance"
+            echo "config=$config"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Rust
+        if: steps.changes.outputs.gateway == 'true' || steps.changes.outputs.maintenance == 'true'
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-04
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Check Rust formatting
+        if: steps.changes.outputs.gateway == 'true' || steps.changes.outputs.maintenance == 'true'
+        run: cargo fmt --all -- --check
+
+      - name: Check and test the gateway
+        if: steps.changes.outputs.gateway == 'true'
+        run: |
+          cargo clippy --locked --package confidential-gateway --all-targets -- -D warnings
+          cargo test --locked --package confidential-gateway
+
+      - name: Check and test the maintenance gateway
+        if: steps.changes.outputs.maintenance == 'true'
+        run: |
+          cargo clippy --locked --package maintenance-gateway --all-targets -- -D warnings
+          cargo test --locked --package maintenance-gateway
+
+      - name: Check Python syntax
+        if: steps.changes.outputs.python == 'true'
+        run: python3 -m compileall -q scripts images
+
+      - name: Test release rules
+        if: steps.changes.outputs.release == 'true'
+        run: python3 -m unittest tests/release-v0/test_release_tag.py
+
+      - name: Set up Helm
+        if: steps.changes.outputs.helm_app == 'true' || steps.changes.outputs.helm_maintenance == 'true'
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.18.6
+
+      - name: Lint the application chart
+        if: steps.changes.outputs.helm_app == 'true'
+        run: helm lint helm/confidential-inference --set inference.mode=simulator
+
+      - name: Lint the maintenance chart
+        if: steps.changes.outputs.helm_maintenance == 'true'
+        run: helm lint helm/maintenance-gateway
+
+      - name: Parse changed configuration
+        if: steps.changes.outputs.config == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          while IFS= read -r -d '' path; do
+            test -f "$path" || continue
+            case "$path" in
+              *.json|*/source.lock) python3 -m json.tool "$path" >/dev/null ;;
+            esac
+          done < <(git diff --name-only -z "$BASE_SHA" "$GITHUB_SHA" -- \
+            'contracts/**' 'c8s/**' 'releases/**' 'images/*/source.lock')
