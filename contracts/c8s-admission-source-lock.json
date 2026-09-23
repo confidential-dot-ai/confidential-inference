@@ -167,7 +167,8 @@
       },
       "capabilities": {
         "allowlistCanonicalize": false,
-        "gpuAttestationMode": "measured-boot-gate"
+        "gpuAttestationMode": "measured-boot-gate",
+        "frontDoorVerification": "external-teerminator"
       },
       "attestationProtocol": "c8s/attest-pq/v1+xwing"
     },

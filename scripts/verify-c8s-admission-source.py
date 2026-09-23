@@ -98,10 +98,14 @@ def validate_entry(value: dict[str, Any], seen_commits: set[str]) -> None:
         if (
             not isinstance(capabilities, dict)
             or "allowlistCanonicalize" not in capabilities
-            or set(capabilities) - {"allowlistCanonicalize", "gpuAttestationMode"}
+            or set(capabilities) - {
+                "allowlistCanonicalize", "gpuAttestationMode", "frontDoorVerification"
+            }
             or not isinstance(capabilities["allowlistCanonicalize"], bool)
             or capabilities.get("gpuAttestationMode", "receipt-evidence")
             not in {"receipt-evidence", "measured-boot-gate"}
+            or capabilities.get("frontDoorVerification", "c8s-cli")
+            not in {"c8s-cli", "external-teerminator"}
         ):
             raise SourceError("the source lock capabilities are invalid")
     if "attestationProtocol" in value and value["attestationProtocol"] not in {
