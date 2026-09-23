@@ -13,9 +13,9 @@ scheduling:
   inferenceNodeName: inference-node-1
 
 images:
-  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:075386639f458aa29f0e53171ceded3a963198b7bf53576b32acba53d72337a3
-  sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895
-  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895
+  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:3532143fd358d46acc2b3eb4902e5c5baae3691e53825aec1d51e1e9ab6c62a4
+  sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:07bb13c3be6f8f2c3cbfaac4757b04904bb864e546fdc10de57aae2a28f8d88d
+  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:07bb13c3be6f8f2c3cbfaac4757b04904bb864e546fdc10de57aae2a28f8d88d
   metricsCollector: docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a

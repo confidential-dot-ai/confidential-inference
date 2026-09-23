@@ -333,7 +333,7 @@
         ]
       }
     ],
-    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:075386639f458aa29f0e53171ceded3a963198b7bf53576b32acba53d72337a3": [
+    "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:3532143fd358d46acc2b3eb4902e5c5baae3691e53825aec1d51e1e9ab6c62a4": [
       {
         "command": [
           "/usr/local/bin/confidential-gateway"
@@ -341,7 +341,7 @@
         "args": []
       }
     ],
-    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:9d98c3c4507035f50515003a74b94f8b8d5a1eea67c4520700e4cbbee7fd3895": [
+    "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:07bb13c3be6f8f2c3cbfaac4757b04904bb864e546fdc10de57aae2a28f8d88d": [
       {
         "command": [
           "/usr/local/bin/wait-for-model"
