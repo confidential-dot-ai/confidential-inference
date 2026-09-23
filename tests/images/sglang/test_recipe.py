@@ -126,6 +126,10 @@ class SGLangImageRecipeTests(unittest.TestCase):
                 "--reasoning-parser=deepseek-v4",
                 LOCK["simulatorRoles"][role_name]["argv"],
             )
+            self.assertIn(
+                "--reasoning-parser=deepseek-v4",
+                LOCK["environmentRoles"]["candidate"][role_name]["argv"],
+            )
         self.assertIn(
             'LABEL ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256='
             f'"{LOCK["optimizations"]["sglang"]["simulator"]["parserFlagsNoopPatch"]["sha256"]}"',
