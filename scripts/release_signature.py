@@ -195,8 +195,8 @@ def validate_policy(
     return policy_bytes, policy, trusted_root_path, trusted_root_bytes, identity
 
 
-def validate_release_schema(release: dict[str, Any]) -> None:
-    _, schema = read_object(RELEASE_SCHEMA_PATH, "release-bundle schema", 512 * 1024)
+def validate_release_schema(release: dict[str, Any], schema_path: Path | None = None) -> None:
+    _, schema = read_object(schema_path or RELEASE_SCHEMA_PATH, "release schema", 512 * 1024)
     try:
         jsonschema.Draft202012Validator(
             schema,
@@ -241,8 +241,14 @@ def verify_release_signature(
     signature_bundle_path: Path,
     cosign: Path,
     timeout_seconds: int = 60,
+    schema_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Verify one release with no network and return its trusted signer facts."""
+    """Verify one release with no network and return its trusted signer facts.
+
+    `schema_path` selects the release document schema. It defaults to the
+    release-bundle schema; a v0.14.0 or later release passes the
+    release-manifest schema. Both carry the same signing fields.
+    """
     if timeout_seconds < 1:
         raise ReleaseSignatureError("the Cosign timeout must be positive")
     if not cosign.is_file() or cosign.is_symlink():
@@ -252,7 +258,7 @@ def verify_release_signature(
         "release bundle",
         MAX_RELEASE_BUNDLE_BYTES,
     )
-    validate_release_schema(release)
+    validate_release_schema(release, schema_path)
     signature_bytes, signature_document = read_object(
         signature_bundle_path,
         "Sigstore signature bundle",
