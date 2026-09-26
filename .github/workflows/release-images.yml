@@ -21,6 +21,10 @@ on:
         description: Prior release tag or commit used to find affected images
         required: true
         type: string
+      base_ref_commit:
+        description: Immutable commit resolved from base_ref during review
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -45,6 +49,8 @@ jobs:
       sglang: ${{ steps.select.outputs.sglang }}
       names: ${{ steps.select.outputs.names }}
       standard_names: ${{ steps.select.outputs.standard_names }}
+      base_ref: ${{ steps.base.outputs.base_ref }}
+      base_ref_commit: ${{ steps.base.outputs.base_ref_commit }}
       production_version: ${{ steps.profile.outputs.production_version }}
       staging_version: ${{ steps.profile.outputs.staging_version }}
     steps:
@@ -78,6 +84,18 @@ jobs:
           --base-ref "$BASE_REF"
           --head "$GITHUB_SHA"
           >> "$GITHUB_OUTPUT"
+
+      - name: Verify the immutable base reference
+        id: base
+        env:
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_REF_COMMIT: ${{ inputs.base_ref_commit }}
+        run: |
+          [[ "$BASE_REF_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          resolved="$(git rev-parse --verify "${BASE_REF}^{commit}")"
+          test "$resolved" = "$BASE_REF_COMMIT"
+          printf 'base_ref=%s\n' "$BASE_REF" >> "$GITHUB_OUTPUT"
+          printf 'base_ref_commit=%s\n' "$BASE_REF_COMMIT" >> "$GITHUB_OUTPUT"
 
       - name: Require an image for publication
         if: inputs.publish
@@ -477,6 +495,8 @@ jobs:
           IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}
           PRODUCTION_VERSION: ${{ needs.select-images.outputs.production_version }}
           STAGING_VERSION: ${{ needs.select-images.outputs.staging_version }}
+          BASE_REF: ${{ needs.select-images.outputs.base_ref }}
+          BASE_REF_COMMIT: ${{ needs.select-images.outputs.base_ref_commit }}
         run: |
           scripts/check-image-build-output.sh "$IMAGE_DIGEST"
           reproducibility_digest="$(tr -d '\n' < /tmp/verified-digest/${{ matrix.image }}.platform-digest)"
@@ -485,6 +505,8 @@ jobs:
             --pushed-digest "$IMAGE_DIGEST" \
             --reproducibility-digest "$reproducibility_digest" \
             --source-commit "$GITHUB_SHA" \
+            --base-ref "$BASE_REF" \
+            --base-ref-commit "$BASE_REF_COMMIT" \
             --release-version "$PRODUCTION_VERSION" \
             --output /tmp/${{ matrix.image }}.production.publication.json
           python3 scripts/image-publication-manifest.py record \
@@ -492,6 +514,8 @@ jobs:
             --pushed-digest "$IMAGE_DIGEST" \
             --reproducibility-digest "$reproducibility_digest" \
             --source-commit "$GITHUB_SHA" \
+            --base-ref "$BASE_REF" \
+            --base-ref-commit "$BASE_REF_COMMIT" \
             --release-version "$STAGING_VERSION" \
             --output /tmp/${{ matrix.image }}.staging.publication.json
           printf "### %s\n\n\`%s@%s\`\n" "$IMAGE_NAME" "$IMAGE_NAME" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"

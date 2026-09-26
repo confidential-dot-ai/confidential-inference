@@ -28,6 +28,8 @@ class ImagePublicationTests(unittest.TestCase):
             reproducibility_digest=digest,
             source_commit="b" * 40,
             release_version="v0.14.0-staging",
+            base_ref="v0.13.28-rc.2",
+            base_ref_commit="c" * 40,
         )
 
     def test_record_proves_the_pushed_digest(self):
@@ -43,6 +45,8 @@ class ImagePublicationTests(unittest.TestCase):
                 reproducibility_digest="sha256:" + "c" * 64,
                 source_commit="b" * 40,
                 release_version="v0.14.0",
+                base_ref="v0.13.28-rc.2",
+                base_ref_commit="c" * 40,
             )
 
     def test_merge_requires_the_exact_selected_image_set(self):

@@ -63,7 +63,7 @@ def validate(manifest: Any) -> dict[str, Any]:
 
 def record(
     *, image: str, pushed_digest: str, reproducibility_digest: str,
-    source_commit: str, release_version: str,
+    source_commit: str, release_version: str, base_ref: str, base_ref_commit: str,
 ) -> dict[str, Any]:
     require(IMAGE.fullmatch(image) is not None, "image name is invalid")
     require(DIGEST.fullmatch(pushed_digest) is not None, "pushed digest is invalid")
@@ -72,11 +72,19 @@ def record(
     require(pushed_digest == reproducibility_digest,
             "pushed digest differs from the deterministic reproducibility digest")
     require(COMMIT.fullmatch(source_commit) is not None, "source commit is invalid")
+    require(bool(base_ref) and not any(character.isspace() for character in base_ref),
+            "base reference is invalid")
+    require(COMMIT.fullmatch(base_ref_commit) is not None, "base reference commit is invalid")
     require(VERSION.fullmatch(release_version) is not None, "release version is invalid")
     return {
         "schema": SCHEMA,
         "releaseVersion": release_version,
-        "source": {"repository": REPOSITORY, "commit": source_commit},
+        "source": {
+            "repository": REPOSITORY,
+            "commit": source_commit,
+            "baseRef": base_ref,
+            "baseRefCommit": base_ref_commit,
+        },
         "images": [{
             "name": image,
             "pushedDigest": pushed_digest,
@@ -118,6 +126,8 @@ def main() -> int:
     record_parser.add_argument("--pushed-digest", required=True)
     record_parser.add_argument("--reproducibility-digest", required=True)
     record_parser.add_argument("--source-commit", required=True)
+    record_parser.add_argument("--base-ref", required=True)
+    record_parser.add_argument("--base-ref-commit", required=True)
     record_parser.add_argument("--release-version", required=True)
     record_parser.add_argument("--output", type=Path, required=True)
     merge_parser = subparsers.add_parser("merge")
@@ -135,6 +145,8 @@ def main() -> int:
                 reproducibility_digest=args.reproducibility_digest,
                 source_commit=args.source_commit,
                 release_version=args.release_version,
+                base_ref=args.base_ref,
+                base_ref_commit=args.base_ref_commit,
             )
             validate(value)
             args.output.write_bytes(encode(value))

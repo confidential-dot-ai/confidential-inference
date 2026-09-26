@@ -62,7 +62,7 @@
     "imagePublication": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["artifact", "manifestSha256", "releaseVersion", "sourceCommit", "images"],
+      "required": ["artifact", "manifestSha256", "releaseVersion", "sourceCommit", "baseRef", "baseRefCommit", "images"],
       "properties": {
         "artifact": {
           "const": "image-publication-manifest.json"
@@ -78,6 +78,8 @@
           "description": "The earlier image source commit used by the deterministic image publication run.",
           "$ref": "#/$defs/gitCommit"
         },
+        "baseRef": {"type": "string", "minLength": 1},
+        "baseRefCommit": {"$ref": "#/$defs/gitCommit"},
         "images": {
           "type": "object",
           "minProperties": 1,

@@ -372,6 +372,8 @@ def image_publication(
         "manifestSha256": sha256(data),
         "releaseVersion": publication["releaseVersion"],
         "sourceCommit": publication["source"]["commit"],
+        "baseRef": publication["source"]["baseRef"],
+        "baseRefCommit": publication["source"]["baseRefCommit"],
         "images": dict(sorted(bound.items())),
     }
 
@@ -394,6 +396,13 @@ def verify_image_source_boundary(
         cwd=repo, capture_output=True, text=True,
     )
     require(changed.returncode == 0, "cannot compare image and release source commits")
+    selector_path = "scripts/affected-release-images.py"
+    selector_changed = subprocess.run(
+        ["git", "diff", "--quiet", image_source_commit, release_source_commit, "--", selector_path],
+        cwd=repo,
+    )
+    require(selector_changed.returncode == 0,
+            "the image selector changed after imageSourceCommit")
     affected = IMAGE_SELECTOR["affected_images"](changed.stdout.splitlines())
     require(not affected,
             "image build inputs changed after imageSourceCommit: "

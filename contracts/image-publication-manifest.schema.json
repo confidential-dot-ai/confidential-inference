@@ -16,7 +16,7 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "commit"],
+      "required": ["repository", "commit", "baseRef", "baseRefCommit"],
       "properties": {
         "repository": {
           "const": "https://github.com/confidential-dot-ai/confidential-inference"
@@ -24,7 +24,9 @@
         "commit": {
           "type": "string",
           "pattern": "^[0-9a-f]{40}$"
-        }
+        },
+        "baseRef": {"type": "string", "minLength": 1, "pattern": "^\\S+$"},
+        "baseRefCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
       }
     },
     "images": {

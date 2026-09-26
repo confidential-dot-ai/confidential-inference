@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import jsonschema
@@ -250,6 +251,24 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(MAN.ManifestError, "gateway"):
                 MAN.verify_image_source_boundary(image_source, changed_source, repo)
 
+    def test_image_source_boundary_rejects_a_changed_selector(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            selector = repo / "scripts/affected-release-images.py"
+            selector.parent.mkdir(parents=True)
+            selector.write_text("selector = 1\n")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "image source"], cwd=repo, check=True)
+            image_source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+            selector.write_text("selector = 2\n")
+            subprocess.run(["git", "commit", "-qam", "change selector"], cwd=repo, check=True)
+            release_source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+            with self.assertRaisesRegex(MAN.ManifestError, "selector changed"):
+                MAN.verify_image_source_boundary(image_source, release_source, repo)
+
     def test_staging_manifest_uses_the_staging_profile(self):
         values = yaml.safe_load((ROOT / "release/staging/values.yaml").read_text())
         image_source_commit = MAN.read_spec(
@@ -269,6 +288,8 @@ class ManifestTests(unittest.TestCase):
             "source": {
                 "repository": "https://github.com/confidential-dot-ai/confidential-inference",
                 "commit": image_source_commit,
+                "baseRef": "v0.13.28-rc.2",
+                "baseRefCommit": "a54319a2ebb2ae51f161d7c2085bffcca02e082c",
             },
             "images": [
                 {"name": name, "pushedDigest": digest, "reproducibilityDigest": digest}
@@ -278,13 +299,14 @@ class ManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             publication_path = Path(temporary) / "publication.json"
             publication_path.write_text(json.dumps(publication))
-            manifest = MAN.build(
-                ROOT / "release/staging",
-                ROOT / "helm/confidential-inference",
-                ROOT / "contracts/c8s-admission-source-lock.json",
-                release_source_commit,
-                publication_path,
-            )
+            with mock.patch.object(MAN, "verify_image_source_boundary"):
+                manifest = MAN.build(
+                    ROOT / "release/staging",
+                    ROOT / "helm/confidential-inference",
+                    ROOT / "contracts/c8s-admission-source-lock.json",
+                    release_source_commit,
+                    publication_path,
+                )
         self.assertEqual(manifest["release"], {"name": "v0.14.0-staging", "environment": "staging"})
         self.assertEqual(manifest["allowlist"]["path"], "release/staging/allowlist.json")
         self.assertEqual(manifest["source"]["commit"], release_source_commit)
@@ -344,6 +366,8 @@ class ManifestTests(unittest.TestCase):
             "source": {
                 "repository": "https://github.com/confidential-dot-ai/confidential-inference",
                 "commit": "b" * 40,
+                "baseRef": "v0.13.28-rc.2",
+                "baseRefCommit": "c" * 40,
             },
             "images": [{
                 "name": "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
@@ -371,6 +395,8 @@ class ManifestTests(unittest.TestCase):
             "source": {
                 "repository": "https://github.com/confidential-dot-ai/confidential-inference",
                 "commit": "b" * 40,
+                "baseRef": "v0.13.28-rc.2",
+                "baseRefCommit": "c" * 40,
             },
             "images": [{
                 "name": "ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway",
@@ -401,6 +427,8 @@ class ManifestTests(unittest.TestCase):
             "source": {
                 "repository": "https://github.com/confidential-dot-ai/confidential-inference",
                 "commit": "a" * 40,
+                "baseRef": "v0.13.28-rc.2",
+                "baseRefCommit": "c" * 40,
             },
             "images": [{
                 "name": "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
