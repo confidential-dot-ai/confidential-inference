@@ -21,7 +21,6 @@ images:
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: ghcr.io/confidential-dot-ai/confidential-inference/kube-state-metrics@sha256:89c1fe0bbd01800eb7475825467b29d0268273e7c5be7b574c72b3370b5fc3f0
   c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:1468ac37566b0f198c41c56c098c32133c09279c08d549f7a57263d8b09d2b89
-  stateMounter: docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
 
 # The gateway sends prompts through the c8s named-workload proxy. The proxy
 # verifies the router identity before it releases plaintext to the router.
@@ -152,26 +151,19 @@ gateway:
       secretName: gateway-admin-mtls
       certificateKey: client.crt
   state:
-    # The host can read, replace, delete, or roll back this unencrypted v0 disk.
+    # The gateway keeps its API-key state on a c8s mutable encrypted volume.
+    # Build the volume with `c8s volume create --mutable --name <volumeName>`,
+    # seeded from an empty directory owned by 65532:65532 with mode 2770, so
+    # the non-root gateway can write at the volume root. The host cannot read
+    # the volume, but it can roll it back; the admin VM holds the real records.
     enabled: false
-    storageResources:
-      # An external state workflow can own these resources.
-      create: true
     absencePolicy: fail-closed
-    startupTimeoutSeconds: 60
-    databasePath: /var/lib/confidential-gateway/gateway.sqlite3
-    mountPath: /var/lib/confidential-gateway
-    claimName: gateway-state
-    persistentVolumeName: gateway-state
-    storageClassName: confidential-inference-gateway-state
-    storageNamespace: kube-system
-    size: 16Gi
-    nodeName: gateway-node
-    hostStateRootPath: /var/lib/confidential-inference/gateway-state-root
-    hostMountPath: /var/lib/confidential-inference/gateway-state-root/data
-    devicePath: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_confai-gateway-state
-    diskSerial: confai-gateway-state
-    allowFormat: true
+    # The volume mounts after the pod starts. The gateway waits this long.
+    startupTimeoutSeconds: 300
+    volumeName: gwstate
+    c8sVolumeSource: /confidential-inference/volumes/gwstate
+    volumeDirectory: /mnt/c8s-data
+    databasePath: /mnt/c8s-data/gwstate/gateway.sqlite3
   keyRegistry:
     # How the gateway answers an API key check.
     #

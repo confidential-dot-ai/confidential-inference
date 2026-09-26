@@ -36,7 +36,6 @@ images:
   # is usable again. No branch code baked in, so no /workload-proxy binary
   # (see namedWorkloadProxy below).
   c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:20c1b7c2f9288d9ef5fd26025957667824081fe978eaf48bc641992872eea7c9
-  stateMounter: docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
 
 namedWorkloadProxy:
   # OFF on c8s v0.26.1: workload-proxy is branch-only c8s code, absent from
@@ -130,22 +129,12 @@ gateway:
 
   state:
     enabled: true
-    storageResources: {create: true}
     absencePolicy: fail-closed
-    startupTimeoutSeconds: 60
-    databasePath: /var/lib/confidential-gateway/gateway.sqlite3
-    mountPath: /var/lib/confidential-gateway
-    claimName: gateway-state
-    persistentVolumeName: gateway-state
-    storageClassName: confidential-inference-gateway-state
-    storageNamespace: kube-system
-    hostStateRootPath: /var/lib/confidential-inference/gateway-state-root
-    hostMountPath: /var/lib/confidential-inference/gateway-state-root/data
-    devicePath: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_confai-gateway-state
-    diskSerial: confai-gateway-state
-    allowFormat: true
-    nodeName: gateway-node-1
-    size: 4Gi
+    startupTimeoutSeconds: 300
+    volumeName: gwstate
+    c8sVolumeSource: /confidential-inference/volumes/gwstate
+    volumeDirectory: /mnt/c8s-data
+    databasePath: /mnt/c8s-data/gwstate/gateway.sqlite3
 
 # One inference node, sglang simulator mode, no GPU.
 inference:

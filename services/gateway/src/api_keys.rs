@@ -214,6 +214,76 @@ fn verify_mountinfo(directory: &Path, mountinfo_path: &Path) -> Result<(), State
     Err(StateError::Mount)
 }
 
+/// The prefix of the device-mapper node that c8s volumed opens for a volume.
+/// volumed names the mapping `c8s-crypt-<pod UID>-<volume name>`.
+const C8S_CRYPT_SOURCE_PREFIX: &str = "/dev/mapper/c8s-crypt-";
+
+fn is_c8s_volume_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 12
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+}
+
+/// Verify that the state directory is a writable c8s encrypted volume.
+///
+/// volumed mounts the opened volume on top of the pod's `emptyDir`, so the
+/// directory has more than one mountinfo entry. Only the last entry is the
+/// mount the gateway writes through. It must be the ext4 file system on the
+/// dm-crypt mapping that volumed opened for this volume name.
+fn verify_c8s_volume(
+    directory: &Path,
+    volume_name: &str,
+    mountinfo_path: &Path,
+) -> Result<(), StateError> {
+    if !is_c8s_volume_name(volume_name) {
+        return Err(StateError::Invalid);
+    }
+    let expected = directory.to_str().ok_or(StateError::Mount)?;
+    let contents = fs::read_to_string(mountinfo_path).map_err(|_| StateError::Mount)?;
+    let Some(fields) = contents
+        .lines()
+        .map(|line| line.split_ascii_whitespace().collect::<Vec<&str>>())
+        .rfind(|fields| fields.get(4) == Some(&expected))
+    else {
+        tracing::warn!(
+            path = expected,
+            "the gateway state volume is not mounted yet"
+        );
+        return Err(StateError::Mount);
+    };
+    let separator = fields
+        .iter()
+        .position(|value| *value == "-")
+        .ok_or(StateError::Mount)?;
+    let filesystem = fields.get(separator + 1).copied().unwrap_or("absent");
+    let source = fields.get(separator + 2).copied().unwrap_or("absent");
+    let mount_options = fields.get(5).copied().unwrap_or("");
+    let super_options = fields.get(separator + 3).copied().unwrap_or("");
+    let options = mount_options.split(',').chain(super_options.split(','));
+    let writable = options.clone().any(|option| option == "rw")
+        && !options.clone().any(|option| option == "ro");
+    let c8s_source = source
+        .strip_prefix(C8S_CRYPT_SOURCE_PREFIX)
+        .and_then(|rest| rest.strip_suffix(volume_name))
+        .is_some_and(|pod| pod.len() > 1 && pod.ends_with('-'));
+    if filesystem != "ext4" || !c8s_source || !writable {
+        tracing::warn!(
+            path = expected,
+            filesystem,
+            source,
+            mount_options,
+            super_options,
+            "the top mount of the gateway state directory is not the writable c8s volume"
+        );
+        return Err(StateError::Mount);
+    }
+    Ok(())
+}
+
 fn verify_database_integrity(database: &Connection) -> Result<(), StateError> {
     let integrity: String = database.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     if integrity != "ok" {
@@ -497,6 +567,46 @@ impl GatewayState {
         }
         let directory = path.parent().ok_or(StateError::Mount)?;
         verify_state_volume(directory, environment, disk_serial, mountinfo_path)?;
+        Self::open_verified(path, pepper, directory)
+    }
+
+    /// Open the gateway state on a c8s mutable encrypted volume.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError::Mount` while the volume is not mounted, and an
+    /// error when the pepper or the database is invalid.
+    pub fn open_c8s_volume(
+        path: &Path,
+        pepper: Vec<u8>,
+        volume_name: &str,
+    ) -> Result<Self, StateError> {
+        Self::open_c8s_volume_with_mountinfo(
+            path,
+            pepper,
+            volume_name,
+            Path::new("/proc/self/mountinfo"),
+        )
+    }
+
+    fn open_c8s_volume_with_mountinfo(
+        path: &Path,
+        pepper: Vec<u8>,
+        volume_name: &str,
+        mountinfo_path: &Path,
+    ) -> Result<Self, StateError> {
+        if pepper.len() < KEY_BYTES {
+            return Err(StateError::Invalid);
+        }
+        let directory = path.parent().ok_or(StateError::Mount)?;
+        if !fs::symlink_metadata(directory).is_ok_and(|metadata| metadata.file_type().is_dir()) {
+            return Err(StateError::Mount);
+        }
+        verify_c8s_volume(directory, volume_name, mountinfo_path)?;
+        Self::open_verified(path, pepper, directory)
+    }
+
+    fn open_verified(path: &Path, pepper: Vec<u8>, directory: &Path) -> Result<Self, StateError> {
         if path.exists() && !path.is_file() {
             return Err(StateError::Invalid);
         }
@@ -2175,6 +2285,127 @@ mod tests {
         assert!(matches!(
             state.create(&changed, "create-request-0003"),
             Err(StateError::IdempotencyConflict)
+        ));
+    }
+
+    fn c8s_fixture(lines: &[&str]) -> (TempDir, PathBuf, PathBuf) {
+        let directory = TempDir::new().unwrap_or_else(|_| unreachable!());
+        let state_directory = directory.path().join("gwstate");
+        fs::create_dir(&state_directory).unwrap_or_else(|_| unreachable!());
+        let database_path = state_directory.join("gateway.sqlite3");
+        let mountinfo_path = directory.path().join("mountinfo");
+        let contents: String = lines
+            .iter()
+            .map(|line| line.replace("{dir}", &state_directory.display().to_string()) + "\n")
+            .collect();
+        fs::write(&mountinfo_path, contents).unwrap_or_else(|_| unreachable!());
+        (directory, database_path, mountinfo_path)
+    }
+
+    const EMPTY_DIR_LINE: &str = "40 30 253:0 /var/lib/kubelet/pods/p/volumes/kubernetes.io~empty-dir/c8s-vol-gwstate {dir} rw,relatime - ext4 /dev/vda2 rw";
+    const C8S_LINE: &str = "41 40 253:3 / {dir} rw,nosuid,nodev,noexec,relatime - ext4 /dev/mapper/c8s-crypt-0b7e1d3c-5a4f-4c1e-9d2a-1f0e8c7b6a59-gwstate rw";
+
+    #[test]
+    fn c8s_volume_opens_when_the_top_mount_is_the_volume() {
+        let (_directory, database_path, mountinfo_path) = c8s_fixture(&[EMPTY_DIR_LINE, C8S_LINE]);
+        let state = GatewayState::open_c8s_volume_with_mountinfo(
+            &database_path,
+            vec![7; 32],
+            "gwstate",
+            &mountinfo_path,
+        )
+        .unwrap_or_else(|_| unreachable!());
+        let (_, plaintext, _, _) = state
+            .create(&request(), "c8s-volume-create-0001")
+            .unwrap_or_else(|_| unreachable!());
+        drop(state);
+        let reopened = GatewayState::open_c8s_volume_with_mountinfo(
+            &database_path,
+            vec![7; 32],
+            "gwstate",
+            &mountinfo_path,
+        )
+        .unwrap_or_else(|_| unreachable!());
+        assert!(reopened.verify(&plaintext).is_some());
+    }
+
+    #[test]
+    fn c8s_volume_refuses_the_bare_empty_dir() {
+        let (_directory, database_path, mountinfo_path) = c8s_fixture(&[EMPTY_DIR_LINE]);
+        assert!(matches!(
+            GatewayState::open_c8s_volume_with_mountinfo(
+                &database_path,
+                vec![7; 32],
+                "gwstate",
+                &mountinfo_path
+            ),
+            Err(StateError::Mount)
+        ));
+    }
+
+    #[test]
+    fn c8s_volume_refuses_a_mount_below_the_empty_dir() {
+        let (_directory, database_path, mountinfo_path) = c8s_fixture(&[C8S_LINE, EMPTY_DIR_LINE]);
+        assert!(matches!(
+            GatewayState::open_c8s_volume_with_mountinfo(
+                &database_path,
+                vec![7; 32],
+                "gwstate",
+                &mountinfo_path
+            ),
+            Err(StateError::Mount)
+        ));
+    }
+
+    #[test]
+    fn c8s_volume_refuses_another_volume_or_a_read_only_mount() {
+        let other = C8S_LINE.replace("-gwstate rw", "-gwstate2 rw");
+        let (_d1, database_path, mountinfo_path) = c8s_fixture(&[EMPTY_DIR_LINE, &other]);
+        assert!(matches!(
+            GatewayState::open_c8s_volume_with_mountinfo(
+                &database_path,
+                vec![7; 32],
+                "gwstate",
+                &mountinfo_path
+            ),
+            Err(StateError::Mount)
+        ));
+        let read_only = C8S_LINE
+            .replace(" rw,nosuid", " ro,nosuid")
+            .replace("-gwstate rw", "-gwstate ro");
+        let (_d2, database_path, mountinfo_path) = c8s_fixture(&[EMPTY_DIR_LINE, &read_only]);
+        assert!(matches!(
+            GatewayState::open_c8s_volume_with_mountinfo(
+                &database_path,
+                vec![7; 32],
+                "gwstate",
+                &mountinfo_path
+            ),
+            Err(StateError::Mount)
+        ));
+        let plain_device = C8S_LINE.replace(
+            "/dev/mapper/c8s-crypt-0b7e1d3c-5a4f-4c1e-9d2a-1f0e8c7b6a59-gwstate",
+            "/dev/vdb",
+        );
+        let (_d3, database_path, mountinfo_path) = c8s_fixture(&[EMPTY_DIR_LINE, &plain_device]);
+        assert!(matches!(
+            GatewayState::open_c8s_volume_with_mountinfo(
+                &database_path,
+                vec![7; 32],
+                "gwstate",
+                &mountinfo_path
+            ),
+            Err(StateError::Mount)
+        ));
+        let (_d4, database_path, mountinfo_path) = c8s_fixture(&[EMPTY_DIR_LINE, C8S_LINE]);
+        assert!(matches!(
+            GatewayState::open_c8s_volume_with_mountinfo(
+                &database_path,
+                vec![7; 32],
+                "GW_STATE",
+                &mountinfo_path
+            ),
+            Err(StateError::Invalid)
         ));
     }
 

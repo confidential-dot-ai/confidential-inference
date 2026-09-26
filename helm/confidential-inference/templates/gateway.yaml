@@ -26,14 +26,19 @@ metadata:
     app.kubernetes.io/component: gateway
 spec:
   replicas: {{ .Values.gateway.replicas }}
+  {{- if .Values.gateway.state.enabled }}
+  # The state is a c8s mutable volume. c8s opens a mutable device for one
+  # pod only, so the old pod must stop before the new pod starts.
+  strategy:
+    type: Recreate
+  {{- else }}
   # Keep the ready gateway in service until its replacement passes readiness.
-  # Both pods stay on the gateway node, so the RWO state volume remains a
-  # single-node mount. SQLite WAL coordinates the short rollout overlap.
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 0
       maxSurge: 1
+  {{- end }}
   selector:
     matchLabels:
       {{- include "confidential-inference.selector" (dict "root" . "component" "gateway") | nindent 6 }}
@@ -53,6 +58,16 @@ spec:
         # volume.
         confidential.ai/c8s-secrets: {{ printf "%s=%s" .Values.gateway.c8sSecrets.apiKeyPepper.name .Values.gateway.c8sSecrets.apiKeyPepper.sourcePath | quote }}
         confidential.ai/c8s-secret-dir: /run/c8s/secrets
+        {{- if .Values.gateway.state.enabled }}
+        {{- $state := .Values.gateway.state }}
+        {{- if ne $state.databasePath (printf "%s/%s/gateway.sqlite3" $state.volumeDirectory $state.volumeName) }}
+        {{- fail "gateway.state.databasePath must be <volumeDirectory>/<volumeName>/gateway.sqlite3" }}
+        {{- end }}
+        # c8s volumed mounts the encrypted state volume at
+        # <volumeDirectory>/<volumeName> after the pod starts.
+        confidential.ai/c8s-volumes: {{ printf "%s=%s" $state.volumeName $state.c8sVolumeSource | quote }}
+        confidential.ai/c8s-volume-dir: {{ $state.volumeDirectory | quote }}
+        {{- end }}
     spec:
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.scheduling.gatewayNodeName | quote }}
@@ -162,8 +177,10 @@ spec:
               value: {{ .Values.gateway.state.databasePath | quote }}
             - name: GATEWAY_STATE_ABSENCE_POLICY
               value: {{ .Values.gateway.state.absencePolicy | quote }}
-            - name: GATEWAY_STATE_DISK_SERIAL
-              value: {{ .Values.gateway.state.diskSerial | quote }}
+            - name: GATEWAY_STATE_VOLUME
+              value: c8s
+            - name: GATEWAY_STATE_VOLUME_NAME
+              value: {{ .Values.gateway.state.volumeName | quote }}
             - name: GATEWAY_STATE_STARTUP_TIMEOUT_SECONDS
               value: {{ .Values.gateway.state.startupTimeoutSeconds | quote }}
             - name: GATEWAY_STATE_ENABLED
@@ -210,10 +227,6 @@ spec:
               mountPath: /run/confidential-gateway
             - name: tmp
               mountPath: /tmp
-            {{- if .Values.gateway.state.enabled }}
-            - name: gateway-state
-              mountPath: {{ .Values.gateway.state.mountPath }}
-            {{- end }}
         {{- if .Values.namedWorkloadProxy.enabled }}
         # The c8s candidate image exposes this alias for the named-workload
         # proxy. The final candidate image digest must replace the current
@@ -254,8 +267,3 @@ spec:
           emptyDir: {}
         - name: tmp
           emptyDir: {}
-        {{- if .Values.gateway.state.enabled }}
-        - name: gateway-state
-          persistentVolumeClaim:
-            claimName: {{ .Values.gateway.state.claimName }}
-        {{- end }}

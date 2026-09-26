@@ -25,7 +25,7 @@
     },
     "images": {
       "type": "object",
-      "required": ["gateway", "sglang", "sglangWorker", "metricsCollector", "dcgmExporter", "nodeExporter", "kubeStateMetrics", "c8sOperator", "stateMounter"],
+      "required": ["gateway", "sglang", "sglangWorker", "metricsCollector", "dcgmExporter", "nodeExporter", "kubeStateMetrics", "c8sOperator"],
       "additionalProperties": false,
       "properties": {
         "gateway": {"$ref": "#/definitions/image"},
@@ -36,8 +36,7 @@
         "dcgmExporter": {"$ref": "#/definitions/image"},
         "nodeExporter": {"$ref": "#/definitions/image"},
         "kubeStateMetrics": {"$ref": "#/definitions/image"},
-        "c8sOperator": {"type": "string", "pattern": "^ghcr\\.io/confidential-dot-ai/c8s-operator@sha256:[a-f0-9]{64}$"},
-        "stateMounter": {"const": "docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316"}
+        "c8sOperator": {"type": "string", "pattern": "^ghcr\\.io/confidential-dot-ai/c8s-operator@sha256:[a-f0-9]{64}$"}
       }
     },
     "namedWorkloadProxy": {
@@ -272,30 +271,15 @@
         "state": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "storageResources", "absencePolicy", "startupTimeoutSeconds", "databasePath", "mountPath", "claimName", "persistentVolumeName", "storageClassName", "storageNamespace", "size", "nodeName", "hostStateRootPath", "hostMountPath", "devicePath", "diskSerial", "allowFormat"],
+          "required": ["enabled", "absencePolicy", "startupTimeoutSeconds", "volumeName", "c8sVolumeSource", "volumeDirectory", "databasePath"],
           "properties": {
             "enabled": {"type": "boolean"},
-            "storageResources": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["create"],
-              "properties": {"create": {"type": "boolean"}}
-            },
             "absencePolicy": {"const": "fail-closed"},
-            "startupTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 300},
-            "databasePath": {"const": "/var/lib/confidential-gateway/gateway.sqlite3"},
-            "mountPath": {"const": "/var/lib/confidential-gateway"},
-            "claimName": {"const": "gateway-state"},
-            "persistentVolumeName": {"const": "gateway-state"},
-            "storageClassName": {"const": "confidential-inference-gateway-state"},
-            "storageNamespace": {"const": "kube-system"},
-            "size": {"pattern": "^[1-9][0-9]*Gi$"},
-            "nodeName": {"$ref": "#/definitions/kubernetesName"},
-            "hostStateRootPath": {"const": "/var/lib/confidential-inference/gateway-state-root"},
-            "hostMountPath": {"const": "/var/lib/confidential-inference/gateway-state-root/data"},
-            "devicePath": {"enum": ["/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_confai-gateway-state", "/dev/disk/by-id/virtio-c8s-vol-gw-state"]},
-            "diskSerial": {"enum": ["confai-gateway-state", "c8s-vol-gw-state"]},
-            "allowFormat": {"const": true}
+            "startupTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 600},
+            "volumeName": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]{0,10}[a-z0-9])?$"},
+            "c8sVolumeSource": {"type": "string", "pattern": "^/confidential-inference/volumes/[a-z0-9]([-a-z0-9]{0,10}[a-z0-9])?$"},
+            "volumeDirectory": {"const": "/mnt/c8s-data"},
+            "databasePath": {"type": "string", "pattern": "^/mnt/c8s-data/[a-z0-9-]{1,12}/gateway\\.sqlite3$"}
           }
         },
         "keyRegistry": {

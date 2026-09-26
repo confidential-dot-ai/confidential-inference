@@ -38,7 +38,6 @@ images:
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
   c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:a1ff03a8140fb88bda0ca33ea5ffb086152f781b170fefdec849206160200ea2
-  stateMounter: docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
 
 namedWorkloadProxy:
   # OFF on this cluster: workload-proxy is branch-only c8s code (absent from
@@ -110,24 +109,12 @@ gateway:
     perKeyConcurrency: 128
   state:
     enabled: true
-    storageResources: {create: true}
     absencePolicy: fail-closed
-    startupTimeoutSeconds: 60
-    databasePath: /var/lib/confidential-gateway/gateway.sqlite3
-    mountPath: /var/lib/confidential-gateway
-    claimName: gateway-state
-    persistentVolumeName: gateway-state
-    storageClassName: confidential-inference-gateway-state
-    storageNamespace: kube-system
-    hostStateRootPath: /var/lib/confidential-inference/gateway-state-root
-    hostMountPath: /var/lib/confidential-inference/gateway-state-root/data
-    devicePath: /dev/disk/by-id/virtio-c8s-vol-gw-state
-    diskSerial: c8s-vol-gw-state
-    allowFormat: true
-    # PREREQUISITE: the confai-gateway-state disk must be attached to the
-    # control-plane CVM before helm-apply (it is not attached today).
-    nodeName: gateway-node-1
-    size: 4Gi
+    startupTimeoutSeconds: 300
+    volumeName: gwstate
+    c8sVolumeSource: /confidential-inference/volumes/gwstate
+    volumeDirectory: /mnt/c8s-data
+    databasePath: /mnt/c8s-data/gwstate/gateway.sqlite3
 
 inference:
   enabled: true
