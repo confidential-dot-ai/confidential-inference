@@ -27,6 +27,10 @@ MAX_RELEASE_BUNDLE_BYTES = 2 * 1024 * 1024
 MAX_SIGNATURE_BUNDLE_BYTES = 2 * 1024 * 1024
 RELEASE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
 TAG_ENVIRONMENTS = (
+    (re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-staging"), "staging"),
+    (re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"), "production"),
+    # Keep these mappings for verification of signed historical releases.
+    # The publication workflow no longer accepts either legacy prefix.
     (re.compile(r"v[0-9][a-z0-9._-]{0,126}"), "production"),
     (re.compile(r"integration-staging-v[0-9][a-z0-9._-]{0,106}"), "integration-staging"),
     (re.compile(r"conf-inference-prod-v[0-9][a-z0-9._-]{0,107}"), "conf-inference-prod"),

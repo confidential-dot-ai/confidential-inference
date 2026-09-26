@@ -177,8 +177,9 @@
         "simulator": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["outputMode", "maxTotalTokens", "maxRunningRequests", "chatTemplate"],
+          "required": ["validateModelMount", "outputMode", "maxTotalTokens", "maxRunningRequests", "chatTemplate"],
           "properties": {
+            "validateModelMount": {"type": "boolean"},
             "outputMode": {"const": "BLOCKING"},
             "maxTotalTokens": {"type": "integer", "minimum": 1024},
             "maxRunningRequests": {"type": "integer", "minimum": 1, "maximum": 48},

@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import jsonschema
@@ -209,10 +211,277 @@ class ManifestTests(unittest.TestCase):
 
     def test_the_committed_spec_is_valid(self):
         MAN.read_spec(ROOT / "release/spec.yaml")
+        staging = MAN.read_spec(ROOT / "release/staging/spec.yaml")
+        self.assertEqual(staging["version"], "v0.14.0-staging")
 
     def test_release_candidate_versions_are_refused(self):
-        with self.assertRaisesRegex(MAN.ManifestError, "no release-candidate"):
+        with self.assertRaisesRegex(MAN.ManifestError, "vX.Y.Z or vX.Y.Z-staging"):
             MAN.read_spec(self.spec(version="v0.14.0-rc.1"))
+
+    def test_image_source_boundary_allows_only_later_non_image_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            gateway = repo / "images/gateway/Dockerfile"
+            gateway.parent.mkdir(parents=True)
+            gateway.write_text("FROM scratch\n")
+            release_values = repo / "release/values.yaml"
+            release_values.parent.mkdir(parents=True)
+            release_values.write_text("version: first\n")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "image source"], cwd=repo, check=True)
+            image_source = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+            ).strip()
+
+            release_values.write_text("version: pinned\n")
+            subprocess.run(["git", "commit", "-qam", "pin release"], cwd=repo, check=True)
+            release_source = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+            ).strip()
+            MAN.verify_image_source_boundary(image_source, release_source, repo)
+
+            gateway.write_text("FROM scratch\nLABEL changed=yes\n")
+            subprocess.run(["git", "commit", "-qam", "change image"], cwd=repo, check=True)
+            changed_source = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+            ).strip()
+            with self.assertRaisesRegex(MAN.ManifestError, "gateway"):
+                MAN.verify_image_source_boundary(image_source, changed_source, repo)
+
+    def test_image_source_boundary_rejects_a_changed_selector(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            selector = repo / "scripts/affected-release-images.py"
+            selector.parent.mkdir(parents=True)
+            selector.write_text("selector = 1\n")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "image source"], cwd=repo, check=True)
+            image_source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+            selector.write_text("selector = 2\n")
+            subprocess.run(["git", "commit", "-qam", "change selector"], cwd=repo, check=True)
+            release_source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+            with self.assertRaisesRegex(MAN.ManifestError, "selector changed"):
+                MAN.verify_image_source_boundary(image_source, release_source, repo)
+
+    def test_staging_manifest_uses_the_staging_profile(self):
+        values = yaml.safe_load((ROOT / "release/staging/values.yaml").read_text())
+        image_source_commit = MAN.read_spec(
+            ROOT / "release/staging/spec.yaml"
+        )["imageSourceCommit"]
+        release_source_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip()
+        records = {}
+        for value in values["images"].values():
+            if value.startswith("ghcr.io/confidential-dot-ai/confidential-inference/"):
+                name, digest = value.split("@", 1)
+                records[name] = digest
+        publication = {
+            "schema": "confidential.ai/image-publication-manifest/v1",
+            "releaseVersion": "v0.14.0-staging",
+            "source": {
+                "repository": "https://github.com/confidential-dot-ai/confidential-inference",
+                "commit": image_source_commit,
+                "baseRef": "v0.13.28-rc.2",
+                "baseRefCommit": "a54319a2ebb2ae51f161d7c2085bffcca02e082c",
+            },
+            "images": [
+                {"name": name, "pushedDigest": digest, "reproducibilityDigest": digest}
+                for name, digest in sorted(records.items())
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            publication_path = Path(temporary) / "publication.json"
+            publication_path.write_text(json.dumps(publication))
+            with mock.patch.object(MAN, "verify_image_source_boundary"):
+                manifest = MAN.build(
+                    ROOT / "release/staging",
+                    ROOT / "helm/confidential-inference",
+                    ROOT / "contracts/c8s-admission-source-lock.json",
+                    release_source_commit,
+                    publication_path,
+                )
+        self.assertEqual(manifest["release"], {"name": "v0.14.0-staging", "environment": "staging"})
+        self.assertEqual(manifest["allowlist"]["path"], "release/staging/allowlist.json")
+        self.assertEqual(manifest["source"]["commit"], release_source_commit)
+        self.assertEqual(manifest["imagePublication"]["sourceCommit"], image_source_commit)
+
+    def test_staging_workers_verify_the_model_before_the_simulator(self):
+        documents = MAN.render_chart(
+            ROOT / "helm/confidential-inference",
+            ROOT / "release/staging/values.yaml",
+            release_name="confidential-inference",
+            namespace="confidential-inference-staging",
+            kube_version="1.32.0",
+        )
+        workers = [item for item in documents if item.get("kind") == "StatefulSet"
+                   and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
+        self.assertEqual(len(workers), 2)
+        for worker in workers:
+            pod = worker["spec"]["template"]
+            container = pod["spec"]["containers"][0]
+            self.assertEqual(container["command"], ["/usr/local/bin/wait-for-model"])
+            self.assertIn("python3", container["args"])
+            self.assertIn("sglang_simulator.simulation.sglang.launch_server", container["args"])
+            self.assertIn("confidential.ai/c8s-volumes", pod["metadata"]["annotations"])
+            self.assertEqual(container["resources"]["requests"]["memory"], "16Gi")
+
+        allowlist = json.loads((ROOT / "release/staging/allowlist.json").read_text())
+        zero_digest = "sha256:" + "0" * 64
+        for name in ("inference-worker-0", "inference-worker-1"):
+            policy = allowlist["workloads"][name]["containers"][0]
+            self.assertEqual(policy["command"]["argv"], ["/usr/local/bin/wait-for-model"])
+            self.assertIn("sglang_simulator.simulation.sglang.launch_server", policy["args"]["argv"])
+        self.assertNotIn(zero_digest, (ROOT / "release/staging/allowlist.json").read_text())
+
+    def test_manifest_refuses_model_values_that_differ_from_the_spec(self):
+        spec = MAN.read_spec(ROOT / "release/staging/spec.yaml")
+        values = yaml.safe_load((ROOT / "release/staging/values.yaml").read_text())
+        MAN.require_model_agreement(spec, values)
+        cases = [
+            ("name", "different/model", "repository"),
+            ("revision", "a" * 40, "revision"),
+        ]
+        for field, value, message in cases:
+            changed = json.loads(json.dumps(values))
+            changed["inference"]["model"][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(MAN.ManifestError, message):
+                MAN.require_model_agreement(spec, changed)
+        changed = json.loads(json.dumps(values))
+        metadata = changed["inference"]["model"]["mountVerification"]["revisionMetadata"]
+        changed["inference"]["model"]["mountVerification"]["expectedFiles"][metadata] = "0" * 64
+        with self.assertRaisesRegex(MAN.ManifestError, "byte manifest"):
+            MAN.require_model_agreement(spec, changed)
+
+    def test_manifest_refuses_publication_evidence_for_an_unrendered_digest(self):
+        publication = {
+            "schema": "confidential.ai/image-publication-manifest/v1",
+            "releaseVersion": "v0.14.0-staging",
+            "source": {
+                "repository": "https://github.com/confidential-dot-ai/confidential-inference",
+                "commit": "b" * 40,
+                "baseRef": "v0.13.28-rc.2",
+                "baseRefCommit": "c" * 40,
+            },
+            "images": [{
+                "name": "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
+                "pushedDigest": "sha256:" + "0" * 64,
+                "reproducibilityDigest": "sha256:" + "0" * 64,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "publication.json"
+            path.write_text(json.dumps(publication))
+            with self.assertRaisesRegex(MAN.ManifestError, "differs from the rendered release"):
+                MAN.image_publication(
+                    path,
+                    release_version="v0.14.0-staging",
+                    source_commit="b" * 40,
+                    release_images={
+                        "gateway": "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64,
+                    },
+                )
+
+    def test_manifest_records_a_published_image_outside_the_application_chart(self):
+        publication = {
+            "schema": "confidential.ai/image-publication-manifest/v1",
+            "releaseVersion": "v0.14.0",
+            "source": {
+                "repository": "https://github.com/confidential-dot-ai/confidential-inference",
+                "commit": "b" * 40,
+                "baseRef": "v0.13.28-rc.2",
+                "baseRefCommit": "c" * 40,
+            },
+            "images": [{
+                "name": "ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway",
+                "pushedDigest": "sha256:" + "2" * 64,
+                "reproducibilityDigest": "sha256:" + "2" * 64,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "publication.json"
+            path.write_text(json.dumps(publication))
+            result = MAN.image_publication(
+                path,
+                release_version="v0.14.0",
+                source_commit="b" * 40,
+                release_images={
+                    "gateway": "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64,
+                },
+            )
+        self.assertEqual(
+            result["images"]["ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway"],
+            "sha256:" + "2" * 64,
+        )
+
+    def test_manifest_refuses_publication_from_another_source_commit(self):
+        publication = {
+            "schema": "confidential.ai/image-publication-manifest/v1",
+            "releaseVersion": "v0.14.0-staging",
+            "source": {
+                "repository": "https://github.com/confidential-dot-ai/confidential-inference",
+                "commit": "a" * 40,
+                "baseRef": "v0.13.28-rc.2",
+                "baseRefCommit": "c" * 40,
+            },
+            "images": [{
+                "name": "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
+                "pushedDigest": "sha256:" + "1" * 64,
+                "reproducibilityDigest": "sha256:" + "1" * 64,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "publication.json"
+            path.write_text(json.dumps(publication))
+            with self.assertRaisesRegex(MAN.ManifestError, "source commit differs"):
+                MAN.image_publication(
+                    path,
+                    release_version="v0.14.0-staging",
+                    source_commit="b" * 40,
+                    release_images={
+                        "gateway": "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64,
+                    },
+                )
+
+    def test_staging_policy_uses_its_exact_render_and_allowlist_namespace(self):
+        release = ROOT / "release/staging"
+        spec = MAN.read_spec(release / "spec.yaml")
+        policy = MAN.read_allowlist_policy(release / "allowlist-policy.json", spec)
+        settings = policy["chart"]
+        documents = MAN.render_chart(
+            ROOT / "helm/confidential-inference",
+            release / "values.yaml",
+            release_name=settings["release"],
+            namespace=settings["namespace"],
+            kube_version=settings["kubeVersion"],
+        )
+        allowlist = json.loads((release / "allowlist.json").read_text())
+        configs = json.loads((release / "inputs/image-config.json").read_text())
+        MAN.require_allowlist_contract(allowlist, policy, documents, configs)
+        router = next(item for item in documents if item.get("kind") == "Deployment"
+                      and item.get("metadata", {}).get("name") == "sglang-router")
+        args = router["spec"]["template"]["spec"]["containers"][0]["args"]
+        self.assertIn("--service-discovery-namespace=confidential-inference-staging", args)
+        changed = json.loads(json.dumps(allowlist))
+        changed["workloads"].pop("inference-worker-1")
+        with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
+            MAN.require_allowlist_contract(changed, policy, documents, configs)
+        changed = json.loads(json.dumps(allowlist))
+        changed["workloads"]["sglang-router"]["containers"][0]["args"]["argv"][1] = \
+            "--service-discovery-namespace=wrong"
+        with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
+            MAN.require_allowlist_contract(changed, policy, documents, configs)
+
+    def test_staging_readme_fetches_the_node_manifest_into_the_profile(self):
+        readme = (ROOT / "release/staging/README.md").read_text()
+        self.assertIn("--spec release/staging/spec.yaml", readme)
+        self.assertIn("--output release/staging/node-manifest.json", readme)
 
     def test_the_source_lock_pins_the_spec_commit(self):
         spec = MAN.read_spec(ROOT / "release/spec.yaml")

@@ -20,6 +20,8 @@ WORKFLOW = ROOT / ".github/workflows/release-bundle.yml"
 RELEASE_SIGNATURE = ROOT / "scripts/release_signature.py"
 LOCK = ROOT / "scripts/requirements-release-signing.txt"
 PRE_HISTORY_RELEASES = ROOT / "releases/pre-history-releases.json"
+SIGNATURE_MODULE = runpy.run_path(str(RELEASE_SIGNATURE))
+environment_for_tag = SIGNATURE_MODULE["environment_for_tag"]
 
 
 def pre_history_bundle_paths() -> set[Path]:
@@ -29,12 +31,18 @@ def pre_history_bundle_paths() -> set[Path]:
 
 
 class ReleaseSignatureTests(unittest.TestCase):
+    def test_current_and_historical_tags_map_to_their_signed_environment(self) -> None:
+        self.assertEqual(environment_for_tag("v0.14.0"), "production")
+        self.assertEqual(environment_for_tag("v0.14.0-staging"), "staging")
+        self.assertEqual(environment_for_tag("v0.13.28-rc.2"), "production")
+        self.assertEqual(environment_for_tag("integration-staging-v20"), "integration-staging")
+
     def test_production_releases_have_no_release_candidate_path(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertNotIn("--prerelease", workflow)
         self.assertNotIn("-rc.", workflow)
         self.assertNotIn("--candidate-bundle", workflow)
-        self.assertIn("--spec release/spec.yaml", workflow)
+        self.assertIn('--spec "${{ steps.profile.outputs.path }}/spec.yaml"', workflow)
         self.assertIn("scripts/build-release-manifest.py", workflow)
         self.assertIn('--source-commit "$(git rev-parse HEAD)"', workflow)
 
@@ -215,15 +223,15 @@ class ReleaseSignatureTests(unittest.TestCase):
         workflow = WORKFLOW.read_text()
         self.assertIn("id-token: write", workflow)
         self.assertIn("signed-release-production", workflow)
-        self.assertIn("signed-release-integration-staging", workflow)
+        self.assertIn("signed-release-staging", workflow)
         self.assertNotIn("environment: signed-release\n", workflow)
         self.assertIn("group: signed-release-${{ github.ref_name }}", workflow)
         self.assertIn("cosign-release: v3.1.2", workflow)
-        self.assertIn('"integration-staging-v[0-9]*"', workflow)
-        self.assertIn("releases/integration-staging/release-bundle.json", workflow)
+        self.assertNotIn('"integration-staging-v[0-9]*"', workflow)
+        self.assertNotIn("releases/integration-staging/release-bundle.json", workflow)
         self.assertIn("cosign sign-blob --yes", workflow)
         self.assertIn("--bundle dist/release-bundle.sigstore.json", workflow)
-        self.assertIn("--tag-commit-output dist/release-tag-commit.txt", workflow)
+        self.assertIn("git rev-parse HEAD > dist/release-tag-commit.txt", workflow)
         self.assertIn("--require-hashes", workflow)
         self.assertIn("scripts/validate-release-tag.py", workflow)
         self.assertIn("refs/remotes/origin/main", workflow)

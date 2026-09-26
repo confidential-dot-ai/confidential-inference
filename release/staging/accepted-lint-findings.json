@@ -1,0 +1,8 @@
+{
+  "schema": "confidential.ai/release-accepted-lint-findings/v1",
+  "c8sRelease": "v0.33.2",
+  "reviewedBy": "the release coordinator, 2026-09-26",
+  "findings": [],
+  "reason": "The staging simulator requests no GPU and has no NVIDIA CDI host mounts.",
+  "issue": "https://github.com/confidential-dot-ai/C8s/issues/713"
+}

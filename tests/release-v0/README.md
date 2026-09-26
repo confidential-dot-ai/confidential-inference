@@ -1,5 +1,10 @@
 # Release bundle tests
 
+These tests cover the historical v0 verification format. Keep them to verify
+old receipts. Do not use the v0 scripts to create a current release. Current
+releases use `scripts/build-release-manifest.py` and
+`.github/workflows/release-bundle.yml`.
+
 The tool renders the production Helm chart. It records every controller container as one workload.
 
 The tool combines each Helm command with the image configuration. Supply image configuration from the inspected image manifest.
