@@ -42,6 +42,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = ROOT / "release"
 POLICY = RELEASE / "allowlist-policy.json"
+ACCEPTED_FINDINGS = RELEASE / "accepted-lint-findings.json"
+SEARCH_PATH_FINDING = re.compile(
+    r'^error: workload "(?P<entry>[^"]+)" container sha256:[0-9a-f]{64} pins (?P<variable>[A-Z_]+) '
+    r'to a search path overlapping (?P<kind>[a-zA-Z]+) mount "(?P<path>[^"]+)"; '
+    r'operator-supplied content could be loaded as code$'
+)
+LINT_SUMMARY = re.compile(r"^(?P<count>[0-9]+) lint (error|warning)\(s\)( with --strict)?$")
 CHART = ROOT / "helm/confidential-inference"
 CANONICAL_TOOL = ROOT / "tools/c8s-allowlist-canonical"
 OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
@@ -459,8 +466,67 @@ def generate(policy_path: Path, executable: Path, tool: Path | None) -> bytes:
     with tempfile.TemporaryDirectory(prefix="release-allowlist-lint-") as directory:
         candidate = Path(directory) / "allowlist.json"
         candidate.write_bytes(canonical)
-        run([str(executable), "allowlist", "lint", "--strict", str(candidate)])
+        lint(executable, candidate, read_accepted_findings(ACCEPTED_FINDINGS))
     return canonical
+
+
+def read_accepted_findings(path: Path) -> set[tuple[str, str, str, str, str]]:
+    """Read the reviewed lint findings that the release accepts."""
+    if not path.is_file():
+        return set()
+    value = read_json(path)
+    if value.get("schema") != "confidential.ai/release-accepted-lint-findings/v1":
+        raise GenerationError(f"{path.name} has the wrong schema")
+    for field in ("reason", "issue", "reviewedBy"):
+        if not isinstance(value.get(field), str) or not value[field]:
+            raise GenerationError(f"{path.name} needs a {field}")
+    accepted = set()
+    for item in value.get("findings", []):
+        key = (item.get("entry"), item.get("rule"), item.get("variable"), item.get("mountKind"), item.get("mountPath"))
+        if item.get("rule") != "search-path-overlaps-mount" or not all(isinstance(part, str) and part for part in key):
+            raise GenerationError(f"{path.name} has an incomplete finding: {item}")
+        if key in accepted:
+            raise GenerationError(f"{path.name} lists a finding twice: {item}")
+        accepted.add(key)
+    return accepted
+
+
+def lint(executable: Path, candidate: Path, accepted: set[tuple[str, str, str, str, str]]) -> None:
+    """Run `c8s allowlist lint --strict`, allowing only the accepted findings.
+
+    Every finding must be one that release/accepted-lint-findings.json lists,
+    and every listed finding must still appear. A line the parser does not
+    know is a failure.
+    """
+    result = subprocess.run(
+        [str(executable), "allowlist", "lint", "--strict", str(candidate)],
+        capture_output=True, check=False,
+    )
+    lines = [line.strip() for line in (result.stdout + result.stderr).decode("utf-8", "replace").splitlines() if line.strip()]
+    if result.returncode == 0 and not accepted:
+        return
+    seen: set[tuple[str, str, str, str, str]] = set()
+    unknown: list[str] = []
+    summary = None
+    for line in lines:
+        match = SEARCH_PATH_FINDING.fullmatch(line)
+        if match:
+            seen.add((match["entry"], "search-path-overlaps-mount", match["variable"], match["kind"], match["path"]))
+            continue
+        count = LINT_SUMMARY.fullmatch(line)
+        if count and summary is None:
+            summary = int(count["count"])
+            continue
+        unknown.append(line)
+    problems = [f"a lint line is not an accepted finding: {line}" for line in unknown]
+    problems += [f"a lint finding is not accepted: {key}" for key in sorted(seen - accepted)]
+    problems += [f"an accepted finding no longer appears; remove it: {key}" for key in sorted(accepted - seen)]
+    if result.returncode != 0 and summary != len(seen):
+        problems.append(f"lint reported {summary} findings, and {len(seen)} were parsed")
+    if result.returncode == 0 and seen:
+        problems.append("lint passed but printed findings")
+    if problems:
+        raise GenerationError("c8s allowlist lint --strict failed:\n  - " + "\n  - ".join(problems))
 
 
 def volume_reads(controller: dict[str, Any]) -> list[str]:
@@ -515,7 +581,8 @@ def main() -> int:
     except (GenerationError, OSError, KeyError) as error:
         print(f"generate-release-allowlist: {error}", file=sys.stderr)
         return 1
-    print(json.dumps({"allowlist": "release/allowlist.json", "sha256": "sha256:" + hashlib.sha256(canonical).hexdigest()}))
+    # The SHA-256 of the file bytes, which the release manifest records.
+    print(json.dumps({"allowlist": "release/allowlist.json", "sha256": "sha256:" + hashlib.sha256(canonical + b"\n").hexdigest()}))
     return 0
 
 

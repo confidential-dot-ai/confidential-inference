@@ -158,6 +158,47 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(entry["containers"][0]["env"], {"policy": "any"})
 
 
+class AcceptedFindingTests(unittest.TestCase):
+    LINE = ('error: workload "{entry}" container sha256:' + "c" * 64 + ' pins PATH to a search path '
+            'overlapping host mount "{path}"; operator-supplied content could be loaded as code')
+
+    def lint_with(self, lines, accepted, code=1):
+        class Result:
+            returncode = code
+            stdout = ("\n".join(lines) + "\n").encode()
+            stderr = b""
+        original = GEN.subprocess.run
+        GEN.subprocess.run = lambda *a, **k: Result()
+        try:
+            GEN.lint(Path("c8s"), Path("allowlist.json"), accepted)
+        finally:
+            GEN.subprocess.run = original
+
+    def key(self, entry, path):
+        return (entry, "search-path-overlaps-mount", "PATH", "host", path)
+
+    def test_the_committed_file_accepts_exactly_four_findings(self):
+        accepted = GEN.read_accepted_findings(ROOT / "release/accepted-lint-findings.json")
+        self.assertEqual(len(accepted), 4)
+        self.assertEqual({key[4] for key in accepted}, {"/usr/bin/nvidia-smi", "/usr/bin/nvidia-persistenced"})
+
+    def test_accepted_findings_pass(self):
+        self.lint_with([self.LINE.format(entry="w", path="/usr/bin/a"), "1 lint error(s)"], {self.key("w", "/usr/bin/a")})
+
+    def test_a_new_finding_fails(self):
+        with self.assertRaisesRegex(GEN.GenerationError, "not accepted"):
+            self.lint_with([self.LINE.format(entry="w", path="/usr/bin/b"), "1 lint error(s)"], {self.key("w", "/usr/bin/a")})
+
+    def test_a_vanished_finding_fails(self):
+        with self.assertRaisesRegex(GEN.GenerationError, "no longer appears"):
+            self.lint_with([], {self.key("w", "/usr/bin/a")}, code=0)
+
+    def test_an_unknown_line_fails(self):
+        with self.assertRaisesRegex(GEN.GenerationError, "not an accepted finding"):
+            self.lint_with(["warning: something else", self.LINE.format(entry="w", path="/usr/bin/a"), "2 lint warning(s) with --strict"],
+                           {self.key("w", "/usr/bin/a")})
+
+
 class ManifestTests(unittest.TestCase):
     def spec(self, **changes):
         value = yaml.safe_load((ROOT / "release/spec.yaml").read_text())

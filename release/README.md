@@ -18,6 +18,7 @@ private deployment repository holds the targets.
 | `inputs/cdi/nvidia-<driver>.json` | A person, from a reviewed record | The NVIDIA CDI environment variables and driver mounts of one driver version |
 | `node-manifest.json` | `fetch-node-manifest.py` | The c8s `manifest.json` of the node image. It holds MRTD, RTMR1, and RTMR2 |
 | `allowlist.json` | `generate-release-allowlist.py` | The exact c8s allowlist of the release, in canonical bytes |
+| `accepted-lint-findings.json` | A reviewer | The `c8s allowlist lint --strict` findings that the release accepts, each with its reason and issue |
 
 The release workflow builds the release manifest with
 `build-release-manifest.py` at the tag commit. The manifest names that commit,
@@ -63,7 +64,12 @@ mounts that the c8s webhook adds, and the NVIDIA CDI record for GPU
 containers. `c8s allowlist derive` of the pinned c8s release writes each
 entry. The c8s core images get unrestricted entries, as the c8s bootstrap seed
 names them. `tools/c8s-allowlist-canonical`, built against the pinned c8s
-module, writes the canonical bytes. `c8s allowlist lint --strict` must pass.
+module, writes the canonical bytes. `c8s allowlist lint --strict` must pass,
+except for the findings in `accepted-lint-findings.json`. The generator fails
+on any other finding, and on a listed finding that no longer appears. Today
+the file accepts 4 findings: the node image CDI mounts `/usr/bin/nvidia-smi`
+and `/usr/bin/nvidia-persistenced` overlap the worker `PATH`
+(c8s issue #713).
 
 The `kubernetes` Service address is `10.53.0.1`. The node image measures the
 service network `10.53.0.0/16`, so the address is the same on every cluster.
