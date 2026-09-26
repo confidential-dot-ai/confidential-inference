@@ -217,7 +217,7 @@ inference:
     c8sVolumeSource: /example/volumes/model
     volumeNames:
       - model
-    volumeDirectory: /models
+    volumeDirectory: /mnt/c8s-data/models
     mountVerification:
       timeoutSeconds: 900
       pollSeconds: 1

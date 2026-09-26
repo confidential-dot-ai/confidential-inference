@@ -51,7 +51,7 @@
     "repository": "deepseek-ai/DeepSeek-V4-Flash-0731",
     "revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
     "mountVerification": {
-      "path": "/models/dsv4",
+      "path": "/mnt/c8s-data/models/dsv4",
       "timeoutSeconds": 900,
       "pollSeconds": 1,
       "revisionMetadata": ".model-lock-local-manifest.json",
@@ -90,7 +90,7 @@
     "inference-worker-0": {
       "argv": [
         "/usr/local/bin/wait-for-model",
-        "--path=/models/dsv4",
+        "--path=/mnt/c8s-data/models/dsv4",
         "--timeout-seconds=900",
         "--poll-seconds=1",
         "--expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731",
@@ -106,7 +106,7 @@
         "python3",
         "-m",
         "sglang.launch_server",
-        "--model-path=/models/dsv4",
+        "--model-path=/mnt/c8s-data/models/dsv4",
         "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
         "--revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
         "--tool-call-parser=deepseekv4",
@@ -126,7 +126,7 @@
     "inference-worker-1": {
       "argv": [
         "/usr/local/bin/wait-for-model",
-        "--path=/models/dsv4-1",
+        "--path=/mnt/c8s-data/models/dsv4-1",
         "--timeout-seconds=900",
         "--poll-seconds=1",
         "--expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731",
@@ -142,7 +142,7 @@
         "python3",
         "-m",
         "sglang.launch_server",
-        "--model-path=/models/dsv4-1",
+        "--model-path=/mnt/c8s-data/models/dsv4-1",
         "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
         "--revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
         "--tool-call-parser=deepseekv4",
@@ -188,7 +188,7 @@
       "inference-worker-0": {
         "argv": [
           "/usr/local/bin/wait-for-model",
-          "--path=/models/dsv4",
+          "--path=/mnt/c8s-data/models/dsv4",
           "--timeout-seconds=900",
           "--poll-seconds=1",
           "--expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731",
@@ -204,7 +204,7 @@
           "python3",
           "-m",
           "sglang.launch_server",
-          "--model-path=/models/dsv4",
+          "--model-path=/mnt/c8s-data/models/dsv4",
           "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
           "--revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
           "--tool-call-parser=deepseekv4",
@@ -225,7 +225,7 @@
       "inference-worker-1": {
         "argv": [
           "/usr/local/bin/wait-for-model",
-          "--path=/models/dsv4-1",
+          "--path=/mnt/c8s-data/models/dsv4-1",
           "--timeout-seconds=900",
           "--poll-seconds=1",
           "--expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731",
@@ -241,7 +241,7 @@
           "python3",
           "-m",
           "sglang.launch_server",
-          "--model-path=/models/dsv4-1",
+          "--model-path=/mnt/c8s-data/models/dsv4-1",
           "--served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731",
           "--revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
           "--tool-call-parser=deepseekv4",

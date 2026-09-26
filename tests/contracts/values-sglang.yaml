@@ -14,7 +14,7 @@ inference:
     revision: 9e165c30e2704aec5d9d593cce3eebd58bbef1cb
     c8sVolumeSource: /confidential-inference/volumes/dsv4
     volumeNames: [dsv4, dsv4-1]
-    volumeDirectory: /models
+    volumeDirectory: /mnt/c8s-data/models
     mountVerification:
       timeoutSeconds: 900
       pollSeconds: 1

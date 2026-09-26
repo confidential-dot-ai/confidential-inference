@@ -29,6 +29,8 @@ spec:
           hostnames: [{{ .Values.metricsCollector.remoteWrite.serverName | quote }}]
       {{- end }}
       enableServiceLinks: false
+      # A fixed hostname keeps HOSTNAME exact in the c8s allowlist.
+      hostname: metrics-collector
       serviceAccountName: metrics-collector
       securityContext:
         seccompProfile:
@@ -46,10 +48,10 @@ spec:
             runAsUser: 65534
             runAsGroup: 65534
           args:
-            - --config.file=/etc/prometheus/prometheus.yml
+            - --config.file=/mnt/c8s-data/prometheus/prometheus.yml
             - --storage.tsdb.path=/prometheus
             {{- if .Values.metricsCollector.tls.enabled }}
-            - --web.config.file=/etc/prometheus/web/web.yml
+            - --web.config.file=/mnt/c8s-data/prometheus/web/web.yml
             {{- end }}
           ports:
             - name: health
@@ -68,19 +70,19 @@ spec:
               port: health
           volumeMounts:
             - name: config
-              mountPath: /etc/prometheus
+              mountPath: /mnt/c8s-data/prometheus
               readOnly: true
             {{- if .Values.metricsCollector.tls.enabled }}
             - name: server-tls
-              mountPath: /run/prometheus/tls
+              mountPath: /mnt/c8s-data/prometheus-tls
               readOnly: true
             - name: client-ca
-              mountPath: /run/prometheus/client-ca
+              mountPath: /mnt/c8s-data/prometheus-client-ca
               readOnly: true
             {{- end }}
             {{- if .Values.metricsCollector.remoteWrite.enabled }}
             - name: remote-write
-              mountPath: /run/prometheus/remote-write
+              mountPath: /mnt/c8s-data/prometheus-remote-write
               readOnly: true
             {{- end }}
             - name: data

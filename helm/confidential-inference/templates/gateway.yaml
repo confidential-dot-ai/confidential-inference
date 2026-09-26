@@ -2,6 +2,21 @@
 {{- fail "gateway.terminationGracePeriodSeconds must exceed gateway.shutdownGraceSeconds plus gateway.endpointDrainSeconds" }}
 {{- end }}
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-release-identity
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+data:
+  {{- $identity := dict "releaseBundleSha256" .Values.attestationReceipts.releaseBundleSha256 }}
+  {{- if eq .Values.attestationReceipts.policyMode "operator" }}
+  {{- $_ := set $identity "expectedOperatorPublicKeySha256" .Values.attestationReceipts.expectedOperatorPublicKeySha256 }}
+  {{- $_ := set $identity "expectedOperatorKeySetSha256" .Values.attestationReceipts.expectedOperatorKeySetSha256 }}
+  {{- end }}
+  release-identity.json: {{ toJson $identity | quote }}
+---
+apiVersion: v1
 kind: Service
 metadata:
   name: gateway
@@ -72,6 +87,8 @@ spec:
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.scheduling.gatewayNodeName | quote }}
       enableServiceLinks: false
+      # A fixed hostname keeps HOSTNAME exact in the c8s allowlist.
+      hostname: gateway
       serviceAccountName: confidential-inference
       terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
       securityContext:
@@ -161,14 +178,12 @@ spec:
               value: {{ .Values.attestationReceipts.evidenceBaseUrl | quote }}
             - name: GATEWAY_RELEASE_ID
               value: {{ .Values.attestationReceipts.releaseId | quote }}
-            - name: GATEWAY_RELEASE_BUNDLE_SHA256
-              value: {{ .Values.attestationReceipts.releaseBundleSha256 | quote }}
+            # The release manifest hash and the operator key hashes are in a
+            # mounted file, so the exact allowlist does not pin them.
+            - name: GATEWAY_RELEASE_IDENTITY_FILE
+              value: /mnt/c8s-data/release-identity/release-identity.json
             - name: GATEWAY_C8S_POLICY_MODE
               value: {{ .Values.attestationReceipts.policyMode | quote }}
-            - name: GATEWAY_EXPECTED_OPERATOR_PUBLIC_KEY_SHA256
-              value: {{ .Values.attestationReceipts.expectedOperatorPublicKeySha256 | quote }}
-            - name: GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256
-              value: {{ .Values.attestationReceipts.expectedOperatorKeySetSha256 | quote }}
             {{- if eq .Values.attestationReceipts.policyMode "static" }}
             - name: GATEWAY_EXPECTED_STATIC_ALLOWLIST_SHA256
               value: {{ .Values.attestationReceipts.expectedStaticAllowlistSha256 | quote }}
@@ -188,7 +203,7 @@ spec:
             - name: GATEWAY_API_KEY_PEPPER_FILE
               value: {{ printf "/run/c8s/secrets/%s" .Values.gateway.c8sSecrets.apiKeyPepper.name | quote }}
             - name: GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE
-              value: /run/confidential-inference/admin-auth/client.crt
+              value: /mnt/c8s-data/admin-auth/client.crt
             - name: DEPLOYMENT_ENVIRONMENT
               value: {{ .Values.environment | quote }}
             - name: GATEWAY_METRICS_API_KEY_LABEL_ALLOWLIST
@@ -220,8 +235,12 @@ spec:
             timeoutSeconds: 5
           volumeMounts:
             - name: admin-auth
-              mountPath: /run/confidential-inference/admin-auth/client.crt
+              mountPath: /mnt/c8s-data/admin-auth/client.crt
               subPath: client.crt
+              readOnly: true
+            - name: release-identity
+              mountPath: /mnt/c8s-data/release-identity/release-identity.json
+              subPath: release-identity.json
               readOnly: true
             - name: run
               mountPath: /run/confidential-gateway
@@ -263,6 +282,9 @@ spec:
             items:
               - key: {{ .Values.gateway.secrets.adminSigner.certificateKey }}
                 path: client.crt
+        - name: release-identity
+          configMap:
+            name: gateway-release-identity
         - name: run
           emptyDir: {}
         - name: tmp

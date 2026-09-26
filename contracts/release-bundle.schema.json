@@ -151,7 +151,7 @@
           "additionalProperties": false,
           "required": ["path", "timeoutSeconds", "pollSeconds", "revisionMetadata", "expectedFiles"],
           "properties": {
-            "path": {"type": "string", "pattern": "^/models(?:/[A-Za-z0-9._-]+)+$"},
+            "path": {"type": "string", "pattern": "^(?:/mnt/c8s-data)?/models(?:/[A-Za-z0-9._-]+)+$"},
             "timeoutSeconds": {"type": "integer", "minimum": 30, "maximum": 3600},
             "pollSeconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 10},
             "revisionMetadata": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},

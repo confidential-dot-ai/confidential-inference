@@ -218,7 +218,7 @@ class ReleaseBundleTests(unittest.TestCase):
             {"required": True, "deviceCount": 4, "architectures": ["BLACKWELL"]},
         )
         verification = bundle["model"]["mountVerification"]
-        self.assertEqual("/models/dsv4", verification["path"])
+        self.assertEqual("/mnt/c8s-data/models/dsv4", verification["path"])
         self.assertEqual(900, verification["timeoutSeconds"])
         self.assertEqual(
             "6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023",
