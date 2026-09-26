@@ -1,0 +1,32 @@
+# Release specification
+#
+# The one source of truth for what the next software release is. A person
+# writes this file. The release tools read it, and generate the other files
+# in this directory. See release/README.md.
+
+version: v0.14.0
+
+c8s:
+  # The c8s release. It fixes the node image and its measurements.
+  release: v0.33.2
+  sourceCommit: c9d49a67d36b16b7adc306489b6f591611c34968
+  nodeImage:
+    reference: ghcr.io/confidential-dot-ai/node-guest-base
+    tag: rke2-tdx-cdi-v0.33.2
+    digest: sha256:2de452d8d7b44db93ffecb55050fb38681135962fa88709a69321190017cab42
+  # The artifact that c8s publishes with the node image. It holds the TDX
+  # measurements MRTD, RTMR1, and RTMR2.
+  nodeManifestArtifact:
+    tag: rke2-tdx-v0.33.2
+    digest: sha256:05674903ad9d60d5dd9eb811977847ac9963ad4700df8c390b7888458e7c525c
+
+model:
+  repository: deepseek-ai/DeepSeek-V4-Flash-0731
+  revision: 9e165c30e2704aec5d9d593cce3eebd58bbef1cb
+  # The SHA-256 of the byte manifest. The manifest lists the SHA-256 of every
+  # model file.
+  byteManifestSha256: cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c
+
+publicHostnames:
+  - api.confidential.ai
+  - candidate.api.confidential.ai

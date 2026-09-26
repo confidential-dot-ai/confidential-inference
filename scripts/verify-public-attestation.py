@@ -42,6 +42,8 @@ import c8s_allowlist_canonical
 ROOT = Path(__file__).resolve().parents[1]
 RESPONSE_SCHEMA = ROOT / "contracts/workload-attestation.schema.json"
 RELEASE_SCHEMA = ROOT / "contracts/release-bundle.schema.json"
+MANIFEST_SCHEMA = ROOT / "contracts/release-manifest.schema.json"
+MANIFEST_SCHEMA_ID = "confidential.ai/release-manifest/v1"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_ALLOWLIST_BYTES = 8 * 1024 * 1024
 SOURCE_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
@@ -1429,6 +1431,309 @@ def validate_tls_binding(
     return True
 
 
+# ---------------------------------------------------------------------------
+# Release manifest v1 (v0.14.0 and later).
+#
+# The signed release names software only. It carries no operator key and no
+# mesh CA: the mesh CA is a property of one running cluster, and each workload
+# receipt commits its SHA-256 into the TDX REPORTDATA transcript. The operator
+# key is a deployment property, so a client may pin it but does not need to.
+# ---------------------------------------------------------------------------
+
+
+def is_manifest_release(release: dict[str, Any]) -> bool:
+    return release.get("schema") == MANIFEST_SCHEMA_ID
+
+
+def digest_bytes(value: Any, label: str) -> bytes:
+    """Return 32 raw bytes from a `sha256:<hex>`, bare hex, or base64url digest."""
+    if not isinstance(value, str) or not value:
+        raise VerificationError(f"the {label} digest is absent")
+    text = value[7:] if value.startswith("sha256:") else value
+    if re.fullmatch(r"[0-9a-f]{64}", text):
+        return bytes.fromhex(text)
+    decoded = b64url_decode(text, f"{label} digest")
+    if len(decoded) != 32:
+        raise VerificationError(f"the {label} digest is not 32 bytes")
+    return decoded
+
+
+def require_receipt_nonce(item: dict[str, Any], nonce: str) -> None:
+    """Fail unless this receipt echoes the client nonce.
+
+    `c8s verify --from-file` rebuilds the identity transcript from the
+    receipt's own nonce and checks that REPORTDATA commits it. So a receipt
+    whose nonce equals the client's fresh nonce proves that the TEE produced
+    this evidence for this request. c8s cannot say so itself, because a file
+    has no live challenge, and it reports `fresh: false`.
+    """
+    receipt = item.get("receipt")
+    value = receipt.get("nonce") if isinstance(receipt, dict) else None
+    if not isinstance(value, str) or b64url_decode(value, f"{item.get('target')} receipt nonce") != b64url_decode(nonce, "nonce"):
+        raise VerificationError(
+            f"the {item.get('target')} receipt is not bound to this request nonce"
+        )
+
+
+def receipt_mesh_ca(item: dict[str, Any]) -> tuple[bytes, bytes]:
+    """Return the committed mesh CA (PEM, raw SHA-256 of DER) of one receipt.
+
+    The receipt serves the mesh leaf and its issuing CA in `cds_cert_pem`.
+    The CA is selected by the SHA-256 that `identity_proof.mesh_ca_sha256`
+    commits, the same rule `c8s verify` applies, never by position.
+    """
+    receipt = item.get("receipt")
+    if not isinstance(receipt, dict):
+        raise VerificationError(f"the {item.get('target')} receipt is invalid")
+    proof = receipt.get("identity_proof")
+    if not isinstance(proof, dict):
+        raise VerificationError(f"the {item.get('target')} receipt has no identity proof")
+    committed = digest_bytes(proof.get("mesh_ca_sha256"), f"{item.get('target')} mesh CA")
+    chain = receipt.get("cds_cert_pem")
+    if not isinstance(chain, str):
+        raise VerificationError(f"the {item.get('target')} receipt has no certificate chain")
+    try:
+        certificates = x509.load_pem_x509_certificates(chain.encode("ascii"))
+    except (ValueError, UnicodeEncodeError) as error:
+        raise VerificationError(f"the {item.get('target')} certificate chain is invalid") from error
+    for certificate in certificates[1:]:
+        der = certificate.public_bytes(serialization.Encoding.DER)
+        if hashlib.sha256(der).digest() == committed:
+            return certificate.public_bytes(serialization.Encoding.PEM), committed
+    raise VerificationError(
+        f"the {item.get('target')} receipt does not serve the mesh CA it commits"
+    )
+
+
+def manifest_tdx(node_manifest: dict[str, Any]) -> dict[str, Any]:
+    """Return the TDX registers of a node image manifest.json."""
+    registers = node_manifest.get("tdx", node_manifest)
+    return registers if isinstance(registers, dict) else {}
+
+
+def validate_manifest_inputs(
+    manifest: dict[str, Any], node_manifest_bytes: bytes, node_manifest: dict[str, Any],
+    source_lock_bytes: bytes, allowlist_bytes: bytes,
+) -> None:
+    """Bind every held input file to the SHA-256 the signed manifest names."""
+    if sha256(node_manifest_bytes) != manifest["nodeImage"]["manifestSha256"]:
+        raise VerificationError("the node image manifest differs from the signed release")
+    registers = manifest_tdx(node_manifest)
+    for name in ("mrtd", "rtmr1", "rtmr2"):
+        if registers.get(name) != manifest[name]:
+            raise VerificationError(f"the node image {name} differs from the signed release")
+    if sha256(source_lock_bytes) != manifest["sourceLock"]["sha256"]:
+        raise VerificationError("the c8s source lock differs from the signed release")
+    if sha256(allowlist_bytes) != manifest["allowlist"]["sha256"]:
+        raise VerificationError("the allowlist differs from the one the signed release names")
+
+
+def verify_manifest_receipt(
+    item: dict[str, Any], args: argparse.Namespace, allowlist_path: Path, mesh_ca_path: Path,
+) -> dict[str, Any]:
+    """Run the pinned c8s verifier on one workload receipt.
+
+    `--allowlist` makes c8s require that the leaf's CDS-stamped policy digest
+    equals SHA-256 of the held allowlist bytes. The signed manifest names that
+    SHA-256, so this is the byte-for-byte allowlist check.
+    """
+    receipt_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix="c8s-public-receipt-", suffix=".json", mode="w", delete=False
+        ) as output:
+            os.chmod(output.name, 0o600)
+            json.dump(item["receipt"], output, separators=(",", ":"))
+            receipt_path = Path(output.name)
+        command = [
+            args.c8s, "verify",
+            "--from-file", str(receipt_path),
+            "--kind", "workload",
+            "--image-manifest", str(args.node_manifest),
+            "--mesh-ca", str(mesh_ca_path),
+            "--allowlist", str(allowlist_path),
+            "--workload", item["workload"],
+        ]
+        if args.operator_public_key is not None:
+            command += ["--operator-pkey", str(args.operator_public_key)]
+        command += ["-o", "json"]
+        try:
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=args.verifier_timeout_seconds,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise VerificationError(f"the c8s verifier did not run for {item['target']}") from error
+    finally:
+        if receipt_path is not None:
+            receipt_path.unlink(missing_ok=True)
+    if result.returncode != 0:
+        raise C8sPolicyRejection(f"c8s rejected the {item['target']} receipt")
+    try:
+        verdict = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise VerificationError(f"c8s returned invalid JSON for {item['target']}") from error
+    required = {
+        "verified": True, "platform": "tdx", "measurement_pinned": True,
+        "debug": False, "workload": item["workload"],
+    }
+    for name, expected in required.items():
+        if verdict.get(name) != expected:
+            raise VerificationError(f"the {item['target']} c8s {name} verdict is invalid")
+    if verdict.get("partial") is True or verdict.get("not_proven") or verdict.get("warnings"):
+        raise VerificationError(f"the {item['target']} c8s verdict is partial or has warnings")
+    if verdict.get("chain_anchor") != "verified against the pinned --mesh-ca bundle":
+        raise VerificationError(f"the {item['target']} mesh CA is not pinned")
+    if not str(verdict.get("binding", "")).startswith("REPORTDATA binds the identity transcript"):
+        raise VerificationError(f"the {item['target']} report_data binding is invalid")
+    if not str(verdict.get("workload_note", "")).startswith("workload_verified:"):
+        raise VerificationError(f"the {item['target']} allowlist identity is not verified")
+    pinned = verdict.get("rtmrs_pinned")
+    registers = {str(value).partition(":")[0] for value in pinned} if isinstance(pinned, list) else set()
+    required_registers = {"1", "2"} | ({"3"} if args.operator_public_key is not None else set())
+    if not required_registers <= registers:
+        raise VerificationError(f"the {item['target']} TDX image registers are not pinned")
+    return {
+        "target": item["target"],
+        "workload": item["workload"],
+        "identity": item["identity"],
+        "fresh": "nonce-bound",
+        "reportData": verdict.get("report_data"),
+        "rtmrsPinned": sorted(registers),
+        "allowlistDigest": verdict.get("workload_allowlist_digest"),
+    }
+
+
+def verify_manifest_release(
+    args: argparse.Namespace, release_bytes: bytes, manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Verify a public endpoint against a signed release manifest (v1)."""
+    validate_schema(manifest, MANIFEST_SCHEMA, "release manifest")
+    try:
+        signature = verify_release_signature(
+            args.trusted_bundle, args.release_signature_bundle, args.cosign,
+            args.sigstore_timeout_seconds, schema_path=MANIFEST_SCHEMA,
+        )
+    except ReleaseSignatureError as error:
+        raise VerificationError(str(error)) from error
+    release_digest = sha256(release_bytes)
+    if signature["releaseBundleBytesSha256"] != release_digest:
+        raise VerificationError("the verified signature covers different release bytes")
+    node_manifest_bytes = read_bytes(args.node_manifest, "node manifest")
+    node_manifest = read_json(args.node_manifest, "node manifest")
+    source_lock_bytes = read_bytes(args.c8s_source_lock, "c8s source lock")
+    allowlist_bytes = read_bytes(args.allowlist, "allowlist", MAX_ALLOWLIST_BYTES)
+    allowlist = read_json(args.allowlist, "allowlist", MAX_ALLOWLIST_BYTES)
+    validate_manifest_inputs(
+        manifest, node_manifest_bytes, node_manifest, source_lock_bytes, allowlist_bytes,
+    )
+    version = verify_c8s_version(
+        args.c8s, manifest["c8s"]["sourceCommit"], args.verifier_timeout_seconds,
+        tag=manifest["c8s"]["release"],
+    )
+    operator_digest: str | None = None
+    if args.operator_public_key is not None:
+        operator_digest = public_key_digest(args.operator_public_key)
+    if args.expected_operator_key_sha256 is not None:
+        expected_operator = "sha256:" + digest_bytes(
+            args.expected_operator_key_sha256, "expected operator key"
+        ).hex()
+        if operator_digest is not None and operator_digest != expected_operator:
+            raise VerificationError("the held operator public key differs from the pinned digest")
+        operator_digest = operator_digest or expected_operator
+    response, _public_spki, public_leaf_der_sha256, public_leaf_der = fetch_response(args)
+    validate_schema(response, RESPONSE_SCHEMA, "public attestation response")
+    if response["nonce"] != args.nonce:
+        raise VerificationError("the public response nonce differs from the request")
+    if response["release"] != {
+        "id": manifest["release"]["name"],
+        "bundleSha256": release_digest,
+        "source": "operator-selected-public-release",
+    }:
+        raise VerificationError("the response release identity differs from the signed release")
+    active = response["c8s"]["activeAllowlist"]
+    if active["sha256"] != manifest["allowlist"]["sha256"] or active["document"] != allowlist:
+        raise VerificationError("the served allowlist differs from the signed release")
+    if operator_digest is not None:
+        trust = response["c8s"].get("policyTrust") or response["c8s"].get("operatorTrust") or {}
+        reported = trust.get("expectedPublicKeySpkiSha256")
+        if reported is not None and reported != operator_digest:
+            raise VerificationError("the response operator key differs from the pinned key")
+    receipts = response["receipts"]
+    if not receipts:
+        raise VerificationError("the response carries no workload receipts")
+    workloads = allowlist.get("workloads")
+    names = set(workloads) if isinstance(workloads, dict) else {
+        entry.get("name") for entry in workloads or [] if isinstance(entry, dict)
+    }
+    for item in receipts:
+        if item["workload"] not in names:
+            raise VerificationError(f"the {item['target']} workload is not in the signed allowlist")
+    if args.expected_target:
+        expected = sorted(tuple(value.split("=", 1)) for value in args.expected_target)
+        if sorted((item["target"], item["workload"]) for item in receipts) != expected:
+            raise VerificationError("the public receipt set differs from the expected targets")
+    mesh_ca_pem: bytes | None = None
+    mesh_ca_digest: bytes | None = None
+    for item in receipts:
+        require_receipt_nonce(item, args.nonce)
+        pem, committed = receipt_mesh_ca(item)
+        if mesh_ca_digest is None:
+            mesh_ca_pem, mesh_ca_digest = pem, committed
+        elif committed != mesh_ca_digest:
+            raise VerificationError("the receipts commit different mesh CAs")
+    assert mesh_ca_pem is not None and mesh_ca_digest is not None
+    if digest_bytes(response["c8s"]["meshCaSha256"], "response mesh CA") != mesh_ca_digest:
+        raise VerificationError("the response mesh CA differs from the receipt commitments")
+    if args.expected_mesh_ca_sha256 is not None and digest_bytes(
+        args.expected_mesh_ca_sha256, "expected mesh CA"
+    ) != mesh_ca_digest:
+        raise VerificationError("the cluster mesh CA differs from the pinned mesh CA")
+    if args.mesh_ca is not None:
+        held = read_bytes(args.mesh_ca, "held mesh CA")
+        held_digest = digest_bytes(certificate_digest(held, "held mesh CA"), "held mesh CA")
+        if held_digest != mesh_ca_digest:
+            raise VerificationError("the held mesh CA differs from the receipt commitments")
+    if response["tls"]["mode"] != "webpki":
+        raise VerificationError(
+            "this verifier checks a TEE-held front door only with the c8s attest-lb flags, "
+            "which c8s " + manifest["c8s"]["release"] + " does not provide"
+        )
+    with tempfile.TemporaryDirectory(prefix="c8s-public-trust-") as temporary:
+        mesh_ca_path = Path(temporary) / "mesh-ca.pem"
+        mesh_ca_path.write_bytes(mesh_ca_pem)
+        mesh_ca_path.chmod(0o600)
+        verified = [
+            verify_manifest_receipt(item, args, args.allowlist, mesh_ca_path)
+            for item in receipts
+        ]
+    return {
+        "schema": "confidential-inference.public-attestation-verification/v2",
+        "verified": True,
+        "verifiedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "scope": "launch-or-admission-only",
+        "endpoint": urlsplit(args.endpoint)._replace(query="", fragment="").geturl(),
+        "nonceSha256": sha256(b64url_decode(args.nonce, "nonce")),
+        "release": manifest["release"]["name"],
+        "releaseManifestSha256": release_digest,
+        "releaseSignatureVerified": True,
+        "c8sVersion": version,
+        "allowlistSha256": manifest["allowlist"]["sha256"],
+        "meshCaSha256": "sha256:" + mesh_ca_digest.hex(),
+        "meshCaSource": (
+            "pinned" if args.expected_mesh_ca_sha256 is not None or args.mesh_ca is not None
+            else "receipt-commitment"
+        ),
+        "operatorKey": (
+            {"pinned": True, "sha256": operator_digest,
+             "rtmr3Pinned": args.operator_public_key is not None}
+            if operator_digest is not None else {"pinned": False}
+        ),
+        "model": manifest["model"],
+        "publicTls": {"mode": "webpki", "leafSha256": public_leaf_der_sha256},
+        "receipts": verified,
+    }
+
+
 def verify(args: argparse.Namespace) -> dict[str, Any]:
     if args.timeout_seconds < 1 or args.verifier_timeout_seconds < 1:
         raise VerificationError("the timeout must be positive")
@@ -1443,6 +1748,12 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "trusted release bundle",
         MAX_RELEASE_BUNDLE_BYTES,
     )
+    if is_manifest_release(release):
+        return verify_manifest_release(args, release_bytes, release)
+    if args.node_source_lock is None or args.mesh_ca is None:
+        raise VerificationError(
+            "a release bundle older than v0.14.0 requires --node-source-lock and --mesh-ca"
+        )
     args.policy_mode = release_policy_mode(release)
     manifest = read_json(args.node_manifest, "node manifest")
     source_lock_bytes = read_bytes(args.c8s_source_lock, "c8s source lock")
@@ -1737,7 +2048,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--release-signature-bundle", required=True, type=Path)
     result.add_argument("--cosign", required=True, type=Path)
     result.add_argument("--node-manifest", required=True, type=Path)
-    result.add_argument("--node-source-lock", required=True, type=Path)
+    result.add_argument("--node-source-lock", type=Path, help="required for release bundles older than v0.14.0")
     result.add_argument(
         "--c8s-source-lock", type=Path,
         default=ROOT / "contracts/c8s-admission-source-lock.json",
@@ -1748,10 +2059,30 @@ def parser() -> argparse.ArgumentParser:
         "--operator-public-key", type=Path,
         help=(
             "the operator public key whose hash the node measured into RTMR3 "
-            "at launch; required in both policy modes"
+            "at launch. Required for release bundles older than v0.14.0. "
+            "Optional for a v0.14.0 or later release manifest: when given, "
+            "c8s also pins RTMR3"
         ),
     )
-    result.add_argument("--mesh-ca", required=True, type=Path)
+    result.add_argument(
+        "--expected-operator-key-sha256",
+        help=(
+            "optional pin of one deployment's operator key (SHA-256 of the SPKI DER). "
+            "The v0.14.0 release does not name an operator key"
+        ),
+    )
+    result.add_argument(
+        "--mesh-ca", type=Path,
+        help=(
+            "held mesh CA PEM. Required for release bundles older than v0.14.0. "
+            "For a release manifest the mesh CA comes from the receipts' attested "
+            "commitments; when given, it must equal that CA"
+        ),
+    )
+    result.add_argument(
+        "--expected-mesh-ca-sha256",
+        help="optional pin of one cluster's mesh CA (SHA-256 of the CA DER)",
+    )
     result.add_argument(
         "--deployment-target", "--environment",
         dest="deployment_target",

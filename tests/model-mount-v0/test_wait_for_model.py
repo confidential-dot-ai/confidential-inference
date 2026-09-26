@@ -26,8 +26,16 @@ class ModelMountGateTests(unittest.TestCase):
         self.mountinfo = self.base / "mountinfo"
         self.mountinfo.write_text("")
 
-    def create_model(self, *, writable: bool = False, revision: str = REVISION) -> dict[str, str]:
-        self.model.mkdir()
+    def create_model(
+        self,
+        *,
+        writable: bool = False,
+        revision: str = REVISION,
+        target: Path | None = None,
+        extra_files: dict[str, bytes] | None = None,
+    ) -> dict[str, str]:
+        model = self.model if target is None else target
+        model.mkdir()
         files = {
             "config.json": b'{"model_type":"deepseek_v4"}\n',
             "tokenizer_config.json": b'{"tokenizer_class":"DeepseekTokenizer"}\n',
@@ -36,16 +44,18 @@ class ModelMountGateTests(unittest.TestCase):
                 sort_keys=True,
             ).encode() + b"\n",
         }
+        files.update(extra_files or {})
         for name, content in files.items():
-            (self.model / name).write_bytes(content)
-        (self.model / "model-00001-of-00001.safetensors").write_bytes(b"weights")
+            (model / name).parent.mkdir(parents=True, exist_ok=True)
+            (model / name).write_bytes(content)
+        (model / "model-00001-of-00001.safetensors").write_bytes(b"weights")
         inventory = [
             {
-                "content_sha256": hashlib.sha256((self.model / name).read_bytes()).hexdigest(),
+                "content_sha256": hashlib.sha256((model / name).read_bytes()).hexdigest(),
                 "path": name,
-                "size": (self.model / name).stat().st_size,
+                "size": (model / name).stat().st_size,
             }
-            for name in sorted(files)
+            for name in sorted([*files, "model-00001-of-00001.safetensors"])
         ]
         manifest = {
             "canonical_local_manifest_sha256": "1" * 64,
@@ -58,11 +68,11 @@ class ModelMountGateTests(unittest.TestCase):
             "source_remote_inventory_sha256": "2" * 64,
         }
         manifest_bytes = json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode()
-        (self.model / ".model-lock-local-manifest.json").write_bytes(manifest_bytes)
+        (model / ".model-lock-local-manifest.json").write_bytes(manifest_bytes)
         files[".model-lock-local-manifest.json"] = manifest_bytes
-        for path in self.model.rglob("*"):
+        for path in model.rglob("*"):
             path.chmod(0o555 if path.is_dir() else 0o444)
-        self.model.chmod(0o755 if writable else 0o555)
+        model.chmod(0o755 if writable else 0o555)
         return {name: hashlib.sha256(content).hexdigest() for name, content in files.items()}
 
     def set_mount(
@@ -128,25 +138,16 @@ class ModelMountGateTests(unittest.TestCase):
         self.assertNotIn("server-started", result.stdout)
 
     def test_late_mount_starts_before_the_timeout(self) -> None:
-        digests: dict[str, str] = {}
+        staged = self.base / "staged"
+        expected = self.create_model(target=staged)
 
         def make_available() -> None:
             time.sleep(0.2)
-            digests.update(self.create_model())
+            staged.rename(self.model)
             self.set_mount()
 
         thread = threading.Thread(target=make_available)
         thread.start()
-        expected = {
-            "config.json": hashlib.sha256(b'{"model_type":"deepseek_v4"}\n').hexdigest(),
-            "tokenizer_config.json": hashlib.sha256(b'{"tokenizer_class":"DeepseekTokenizer"}\n').hexdigest(),
-            "model.safetensors.index.json": hashlib.sha256(
-                json.dumps(
-                    {"weight_map": {"layer.weight": "model-00001-of-00001.safetensors"}},
-                    sort_keys=True,
-                ).encode() + b"\n"
-            ).hexdigest(),
-        }
         result = self.run_gate(expected, timeout=2)
         thread.join()
         self.assertEqual(0, result.returncode, result.stderr)
@@ -217,6 +218,81 @@ class ModelMountGateTests(unittest.TestCase):
         result = self.run_gate(digests)
         self.assertNotEqual(0, result.returncode)
         self.assertIn("missing shard", result.stderr)
+
+
+    def replace_file(self, name: str, content: bytes) -> None:
+        target = self.model / name
+        target.parent.chmod(0o755)
+        if target.exists():
+            target.chmod(0o644)
+        target.write_bytes(content)
+        target.chmod(0o444)
+        target.parent.chmod(0o555)
+
+    def test_every_file_is_hashed_and_nested_files_pass(self) -> None:
+        digests = self.create_model(extra_files={
+            "encoding/README.md": b"nested\n",
+            "model-00002-of-00002.bin": os.urandom(3 * 1024 * 1024),
+        })
+        self.set_mount()
+        result = self.run_gate(digests)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("every model file matches the manifest", result.stderr)
+
+    def test_corrupt_weight_of_the_same_size_fails_closed(self) -> None:
+        digests = self.create_model()
+        self.set_mount()
+        self.replace_file("model-00001-of-00001.safetensors", b"WEIGHTS")
+        result = self.run_gate(digests)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("wrong digest: model-00001-of-00001.safetensors", result.stderr)
+        self.assertNotIn("server-started", result.stdout)
+
+    def test_weight_of_the_wrong_size_fails_closed(self) -> None:
+        digests = self.create_model()
+        self.set_mount()
+        self.replace_file("model-00001-of-00001.safetensors", b"weights-and-more")
+        result = self.run_gate(digests)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("wrong size: model-00001-of-00001.safetensors", result.stderr)
+
+    def test_extra_file_fails_closed(self) -> None:
+        digests = self.create_model()
+        self.set_mount()
+        self.replace_file("unexpected.py", b"print('x')\n")
+        result = self.run_gate(digests)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("does not list: unexpected.py", result.stderr)
+
+    def test_missing_listed_file_fails_closed(self) -> None:
+        digests = self.create_model(extra_files={"generation_config.json": b"{}\n"})
+        digests.pop("generation_config.json")
+        self.set_mount()
+        self.model.chmod(0o755)
+        (self.model / "generation_config.json").unlink()
+        self.model.chmod(0o555)
+        result = self.run_gate(digests)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("missing a manifest file: generation_config.json", result.stderr)
+
+    def test_symbolic_link_fails_closed(self) -> None:
+        digests = self.create_model()
+        self.set_mount()
+        self.model.chmod(0o755)
+        (self.model / "link.json").symlink_to("config.json")
+        self.model.chmod(0o555)
+        result = self.run_gate(digests)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("non-regular file: link.json", result.stderr)
+
+    def test_unpinned_manifest_fails_closed(self) -> None:
+        digests = self.create_model()
+        self.set_mount()
+        digests.pop(".model-lock-local-manifest.json")
+        digests["model-00001-of-00001.safetensors"] = hashlib.sha256(b"weights").hexdigest()
+        result = self.run_gate(digests)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("does not pin the model byte manifest digest", result.stderr)
 
 
 if __name__ == "__main__":

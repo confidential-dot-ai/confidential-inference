@@ -71,6 +71,7 @@ spec:
     spec:
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.scheduling.gatewayNodeName | quote }}
+      enableServiceLinks: false
       serviceAccountName: confidential-inference
       terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
       securityContext:

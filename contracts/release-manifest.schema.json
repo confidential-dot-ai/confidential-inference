@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://confidential.ai/schemas/release-manifest/v1",
+  "title": "Confidential inference release manifest",
+  "description": "The signed public release, v0.14.0 and later. It names the software, not a deployment: no target, placement, operator key, or mesh CA.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "release",
+    "releaseTrust",
+    "source",
+    "images",
+    "chart",
+    "c8s",
+    "nodeImage",
+    "mrtd",
+    "rtmr1",
+    "rtmr2",
+    "sourceLock",
+    "model",
+    "allowlist",
+    "publicHostnames"
+  ],
+  "properties": {
+    "schema": {"const": "confidential.ai/release-manifest/v1"},
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "environment"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "environment": {"const": "production"}
+      }
+    },
+    "releaseTrust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policyPath", "policySha256", "signatureType"],
+      "properties": {
+        "policyPath": {"const": "releases/trust/release-signing-policy.json"},
+        "policySha256": {"$ref": "#/$defs/sha256Digest"},
+        "signatureType": {"const": "sigstore-keyless"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit"],
+      "properties": {
+        "repository": {"const": "https://github.com/confidential-dot-ai/confidential-inference"},
+        "commit": {"$ref": "#/$defs/gitCommit"}
+      }
+    },
+    "images": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/imageReference"}
+    },
+    "chart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "sha256"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256Digest"}
+      }
+    },
+    "c8s": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["release", "sourceCommit"],
+      "properties": {
+        "release": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "sourceCommit": {"$ref": "#/$defs/gitCommit"}
+      }
+    },
+    "nodeImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "manifestSha256"],
+      "properties": {
+        "reference": {"$ref": "#/$defs/imageReference"},
+        "manifestSha256": {"$ref": "#/$defs/sha256Digest"}
+      }
+    },
+    "mrtd": {"$ref": "#/$defs/sha384Hex"},
+    "rtmr1": {"$ref": "#/$defs/sha384Hex"},
+    "rtmr2": {"$ref": "#/$defs/sha384Hex"},
+    "sourceLock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"const": "contracts/c8s-admission-source-lock.json"},
+        "sha256": {"$ref": "#/$defs/sha256Digest"}
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "revision", "byteManifestSha256"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "revision": {"$ref": "#/$defs/gitCommit"},
+        "byteManifestSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "allowlist": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"const": "release/allowlist.json"},
+        "sha256": {"$ref": "#/$defs/sha256Digest"}
+      }
+    },
+    "publicHostnames": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$"}
+    }
+  },
+  "$defs": {
+    "sha256Digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "sha384Hex": {"type": "string", "pattern": "^[0-9a-f]{96}$"},
+    "gitCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "imageReference": {"type": "string", "pattern": "^[a-z0-9./_-]+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$"}
+  }
+}

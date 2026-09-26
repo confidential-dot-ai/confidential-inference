@@ -68,3 +68,32 @@ app.kubernetes.io/component: {{ .component }}
   resources:
     {{- toYaml .root.Values.attestationReceipts.resources | nindent 4 }}
 {{- end }}
+
+{{/*
+The inference node of one worker. scheduling.inferenceNodeNames lists one node
+per worker index. An empty list places every worker on
+scheduling.inferenceNodeName.
+*/}}
+{{- define "confidential-inference.inferenceNodeName" -}}
+{{- $names := .root.Values.scheduling.inferenceNodeNames | default list -}}
+{{- if $names -}}
+{{- if ge (int .index) (len $names) -}}
+{{- fail (printf "scheduling.inferenceNodeNames has no entry for worker %d" (int .index)) -}}
+{{- end -}}
+{{- index $names (int .index) -}}
+{{- else -}}
+{{- .root.Values.scheduling.inferenceNodeName -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+The distinct inference nodes, as a JSON list.
+*/}}
+{{- define "confidential-inference.inferenceNodeNames" -}}
+{{- $names := .Values.scheduling.inferenceNodeNames | default list -}}
+{{- if $names -}}
+{{- $names | uniq | toJson -}}
+{{- else -}}
+{{- list .Values.scheduling.inferenceNodeName | toJson -}}
+{{- end -}}
+{{- end }}
