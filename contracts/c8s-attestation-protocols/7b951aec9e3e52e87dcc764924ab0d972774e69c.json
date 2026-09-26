@@ -2,7 +2,8 @@
   "schema": "confidential-inference.c8s-attestation-protocol-manifest/v1",
   "commit": "7b951aec9e3e52e87dcc764924ab0d972774e69c",
   "sharedWithCommits": [
-    "152d58336dfb8ed1aabe515927da1569c8970ca1"
+    "152d58336dfb8ed1aabe515927da1569c8970ca1",
+    "c9d49a67d36b16b7adc306489b6f591611c34968"
   ],
   "attestationProtocol": "c8s/attest-pq/v1+xwing",
   "capturedFrom": {
@@ -10,7 +11,7 @@
     "bundleTypes": "pkg/types/verify.go",
     "cdsAllowlistRoutes": "internal/cmds/cds/routes.go"
   },
-  "capturedFromNote": "pkg/types is byte-identical to v0.20.4 (both trees resolve to 391cfbf24bd411e2917b3735ed1bb33ca7fc1334), so the receipt field set is unchanged. internal/cmds/cds/routes.go is byte-identical too. Only the cds-attest route table moved: c8s PR #637 (commit 77857d3d) deleted the two retired 400-stub handlers, so those paths now answer 404. c8s v0.26.5 commit 152d58336dfb8ed1aabe515927da1569c8970ca1 is byte-identical to v0.26.1 across every source path pinned by the admission source lock and therefore shares this manifest. Read-only diffs confirmed both claims at capture time.",
+  "capturedFromNote": "pkg/types is byte-identical to v0.20.4 (both trees resolve to 391cfbf24bd411e2917b3735ed1bb33ca7fc1334), so the receipt field set is unchanged. internal/cmds/cds/routes.go is byte-identical too. Only the cds-attest route table moved: c8s PR #637 (commit 77857d3d) deleted the two retired 400-stub handlers, so those paths now answer 404. c8s v0.26.5 commit 152d58336dfb8ed1aabe515927da1569c8970ca1 is byte-identical to v0.26.1 across every source path pinned by the admission source lock and therefore shares this manifest. Read-only diffs confirmed both claims at capture time. c8s v0.33.2 commit c9d49a67d36b16b7adc306489b6f591611c34968 is byte-identical to v0.26.5 in internal/cmds/cdsattest/server.go, pkg/types/verify.go, and internal/cmds/cds/routes.go, and therefore shares this manifest.",
   "cdsattestRoutes": [
     {
       "method": "POST",

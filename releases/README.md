@@ -1,5 +1,10 @@
 # Signed release bundles
 
+**From v0.14.0, production releases are built from `release/`.** See
+`release/README.md`. The workflow builds the release manifest at the tag
+commit and signs it. The files below remain for the older prefixed tags until
+they are removed.
+
 The JSON files in this directory are release inputs. They are not trusted by
 themselves. A public release needs these two GitHub Release assets:
 
@@ -20,10 +25,9 @@ deploy either environment.
 ## Create a signed release
 
 1. Build the selected environment release bundle with strict inputs.
-2. Set `release.name` to the intended protected tag:
-   - Production candidate: `v0.14.3-rc.1`.
-   - Final production release: `v0.14.3`.
-   - Integration staging: `integration-staging-v1`.
+2. Set `release.name` to the intended protected tag, for example
+   `integration-staging-v1`. A production tag `vX.Y.Z` does not use this
+   directory.
 3. Commit the bundle and all public release inputs to `main`.
 4. Make sure that the recorded source commit is an ancestor of the tag.
 5. Create and push the exact release tag.
@@ -44,10 +48,9 @@ deploy either environment.
    still names the signed commit. It then creates a new GitHub Release and
    uploads all three files.
 
-For a production tag, the workflow also requires the tag commit to be on
-`main`. A final release requires a published release candidate with the same
-version. The complete final bundle must equal the selected candidate bundle
-except for `release.name`.
+For a production tag `vX.Y.Z`, the workflow requires the tag commit to be on
+`main`, and `release/spec.yaml` at that commit to name the same version. There
+are no release candidates. A fix is a new version.
 
 The signing job can read repository contents and request an OIDC token. It
 cannot write repository contents. The publishing job can create the GitHub
@@ -58,8 +61,9 @@ release tags against deletion and replacement. Require different reviewers for
 the `signed-release-production` and `signed-release-integration-staging`
 environments when the environments have different trust levels.
 
-The workflow selects the bundle from the tag. A tag that starts with `v` and a
-digit signs only `releases/production/release-bundle.json`. A tag that starts
+The workflow selects the signed file from the tag. A tag `vX.Y.Z` signs only
+the release manifest that `scripts/build-release-manifest.py` builds from
+`release/` at the tag commit. The asset keeps the name `release-bundle.json`. A tag that starts
 with `integration-staging-v` and a digit signs only
 `releases/integration-staging/release-bundle.json`. The preparation program
 checks this tag-to-environment binding again. A staging tag cannot sign the

@@ -43,7 +43,7 @@ jobs:
                 ;;
               services/gateway/*) gateway=true ;;
               services/maintenance-gateway/*) maintenance=true ;;
-              scripts/validate-release-tag.py|scripts/affected-release-images.py|tests/release-v0/test_release_tag.py|tests/release-v0/test_affected_release_images.py|.github/workflows/release-bundle.yml|.github/workflows/release-images.yml)
+              scripts/validate-release-tag.py|scripts/affected-release-images.py|tests/release-v0/test_release_tag.py|tests/release-v0/test_affected_release_images.py|.github/workflows/release-bundle.yml|.github/workflows/release-images.yml|scripts/build-release-manifest.py|scripts/generate-release-allowlist.py|scripts/fetch-node-manifest.py|release/*|tests/release-v1/*)
                 python=true
                 release=true
                 ;;
@@ -102,11 +102,18 @@ jobs:
         if: steps.changes.outputs.python == 'true'
         run: python3 -m compileall -q scripts images
 
+      - name: Install hash-locked release test dependencies
+        if: steps.changes.outputs.release == 'true'
+        run: |
+          python3 -m pip install --user --break-system-packages --require-hashes \
+            --requirement scripts/requirements-release-signing.txt
+
       - name: Test release rules
         if: steps.changes.outputs.release == 'true'
         run: |
           python3 -m unittest tests/release-v0/test_release_tag.py
           python3 -m unittest tests/release-v0/test_affected_release_images.py
+          python3 -m unittest discover -s tests/release-v1 -p 'test_*.py'
 
       - name: Set up Helm
         if: steps.changes.outputs.helm_app == 'true' || steps.changes.outputs.helm_maintenance == 'true'

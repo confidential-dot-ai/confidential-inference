@@ -19,6 +19,10 @@ import jsonschema
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "releases/trust/release-signing-policy.json"
 RELEASE_SCHEMA_PATH = ROOT / "contracts/release-bundle.schema.json"
+# v0.14.0 and later sign a release manifest built from release/. The signed
+# file names its own schema; each schema has one contract file.
+RELEASE_MANIFEST_SCHEMA = "confidential.ai/release-manifest/v1"
+RELEASE_MANIFEST_SCHEMA_PATH = ROOT / "contracts/release-manifest.schema.json"
 MAX_RELEASE_BUNDLE_BYTES = 2 * 1024 * 1024
 MAX_SIGNATURE_BUNDLE_BYTES = 2 * 1024 * 1024
 RELEASE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
@@ -196,7 +200,13 @@ def validate_policy(
 
 
 def validate_release_schema(release: dict[str, Any], schema_path: Path | None = None) -> None:
-    _, schema = read_object(schema_path or RELEASE_SCHEMA_PATH, "release schema", 512 * 1024)
+    if schema_path is None:
+        schema_path = (
+            RELEASE_MANIFEST_SCHEMA_PATH
+            if release.get("schema") == RELEASE_MANIFEST_SCHEMA
+            else RELEASE_SCHEMA_PATH
+        )
+    _, schema = read_object(schema_path, "release schema", 512 * 1024)
     try:
         jsonschema.Draft202012Validator(
             schema,

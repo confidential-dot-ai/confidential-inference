@@ -1,59 +1,52 @@
 #!/usr/bin/env python3
-"""Validate a production release tag and its release promotion input."""
+"""Validate a production release tag against release/spec.yaml.
+
+A production release tag is vX.Y.Z. There are no release candidates: a fix is
+a new version. The tag must point to a commit on main, and release/spec.yaml
+at that commit must name the same version.
+"""
 
 from __future__ import annotations
 
 import argparse
-import copy
-import json
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+
+import yaml
 
 
-FINAL_TAG_RE = re.compile(
+TAG_RE = re.compile(
     r"v(?:0|[1-9][0-9]*)\."
     r"(?:0|[1-9][0-9]*)\."
     r"(?:0|[1-9][0-9]*)"
 )
-RC_TAG_RE = re.compile(
-    rf"(?P<final>{FINAL_TAG_RE.pattern})-rc\.(?P<number>[1-9][0-9]*)"
-)
-MAX_BUNDLE_BYTES = 2 * 1024 * 1024
 
 
 class ReleaseTagError(ValueError):
-    """The release tag or promotion input is not valid."""
+    """The release tag is not valid."""
 
 
-def parse_tag(tag: str) -> tuple[str, int | None]:
-    if FINAL_TAG_RE.fullmatch(tag) is not None:
-        return tag, None
-    match = RC_TAG_RE.fullmatch(tag)
-    if match is not None:
-        return match.group("final"), int(match.group("number"))
-    raise ReleaseTagError(
-        "the production release tag must use vX.Y.Z or vX.Y.Z-rc.N"
-    )
+def parse_tag(tag: str) -> str:
+    if TAG_RE.fullmatch(tag) is None:
+        raise ReleaseTagError(
+            "the production release tag must use vX.Y.Z, with no release-candidate suffix"
+        )
+    return tag
 
 
-def read_bundle(path: Path, expected_tag: str) -> dict[str, Any]:
+def read_spec_version(path: Path) -> str:
     if not path.is_file() or path.is_symlink():
-        raise ReleaseTagError("the release bundle must be a regular file")
-    if path.stat().st_size > MAX_BUNDLE_BYTES:
-        raise ReleaseTagError("the release bundle is too large")
+        raise ReleaseTagError("release/spec.yaml must be a regular file")
     try:
-        value = json.loads(path.read_bytes())
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ReleaseTagError("the release bundle is not valid JSON") from error
-    if not isinstance(value, dict):
-        raise ReleaseTagError("the release bundle must contain one JSON object")
-    release = value.get("release")
-    if not isinstance(release, dict) or release.get("name") != expected_tag:
-        raise ReleaseTagError("the release bundle name differs from the tag")
-    return value
+        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        raise ReleaseTagError("release/spec.yaml is not valid YAML") from error
+    version = value.get("version") if isinstance(value, dict) else None
+    if not isinstance(version, str):
+        raise ReleaseTagError("release/spec.yaml has no version")
+    return version
 
 
 def require_commit_on_main(main_ref: str) -> None:
@@ -70,51 +63,21 @@ def require_commit_on_main(main_ref: str) -> None:
         raise ReleaseTagError("the release tag does not point to a commit on main")
 
 
-def require_same_release(
-    candidate: dict[str, Any], final: dict[str, Any]
-) -> None:
-    candidate_copy = copy.deepcopy(candidate)
-    final_copy = copy.deepcopy(final)
-    candidate_copy["release"]["name"] = "vX.Y.Z"
-    final_copy["release"]["name"] = "vX.Y.Z"
-    if candidate_copy != final_copy:
-        raise ReleaseTagError(
-            "the final release differs from the selected release candidate"
-        )
-
-
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--tag", required=True)
-    result.add_argument("--bundle", type=Path, required=True)
+    result.add_argument("--spec", type=Path, default=Path("release/spec.yaml"))
     result.add_argument("--main-ref", required=True)
-    result.add_argument("--candidate-tag")
-    result.add_argument("--candidate-bundle", type=Path)
     return result
 
 
 def main() -> int:
     args = parser().parse_args()
     try:
-        final_tag, candidate_number = parse_tag(args.tag)
-        bundle = read_bundle(args.bundle, args.tag)
+        tag = parse_tag(args.tag)
+        if read_spec_version(args.spec) != tag:
+            raise ReleaseTagError("release/spec.yaml names a different version than the tag")
         require_commit_on_main(args.main_ref)
-        if candidate_number is None:
-            if args.candidate_tag is None or args.candidate_bundle is None:
-                raise ReleaseTagError(
-                    "a final release requires a published release candidate"
-                )
-            candidate_final, selected_number = parse_tag(args.candidate_tag)
-            if selected_number is None or candidate_final != final_tag:
-                raise ReleaseTagError(
-                    "the selected release candidate does not match the final version"
-                )
-            candidate = read_bundle(args.candidate_bundle, args.candidate_tag)
-            require_same_release(candidate, bundle)
-        elif args.candidate_tag is not None or args.candidate_bundle is not None:
-            raise ReleaseTagError(
-                "a release candidate cannot select another release candidate"
-            )
     except (OSError, ReleaseTagError) as error:
         print(f"release tag validation failed: {error}", file=sys.stderr)
         return 1

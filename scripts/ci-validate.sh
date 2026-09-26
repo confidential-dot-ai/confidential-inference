@@ -16,6 +16,7 @@ python3 -m unittest discover -s tests/images/control-plane-node -p 'test_*.py'
 python3 -m unittest discover -s tests/images/sglang -p 'test_*.py'
 python3 -m unittest discover -s tests/model-mount-v0 -p 'test_*.py'
 python3 -m unittest discover -s tests/release-v0 -p 'test_*.py'
+python3 -m unittest discover -s tests/release-v1 -p 'test_*.py'
 python3 -m unittest discover -s tests/source-boundary -p 'test_*.py'
 python3 -m unittest discover -s tests/ci-workflow -p 'test_*.py'
 python3 scripts/validate-json.py

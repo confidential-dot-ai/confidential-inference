@@ -29,11 +29,14 @@ def pre_history_bundle_paths() -> set[Path]:
 
 
 class ReleaseSignatureTests(unittest.TestCase):
-    def test_release_candidates_are_published_as_prereleases(self) -> None:
+    def test_production_releases_have_no_release_candidate_path(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn('[[ "$RELEASE_TAG" =~ -rc\\.[0-9]+$ ]]', workflow)
-        self.assertIn('release_flags+=(--prerelease)', workflow)
-        self.assertIn('"${release_flags[@]}"', workflow)
+        self.assertNotIn("--prerelease", workflow)
+        self.assertNotIn("-rc.", workflow)
+        self.assertNotIn("--candidate-bundle", workflow)
+        self.assertIn("--spec release/spec.yaml", workflow)
+        self.assertIn("scripts/build-release-manifest.py", workflow)
+        self.assertIn('--source-commit "$(git rev-parse HEAD)"', workflow)
 
     def test_policy_and_release_pin_the_exact_trusted_inputs(self) -> None:
         policy_bytes = POLICY.read_bytes()
@@ -223,12 +226,9 @@ class ReleaseSignatureTests(unittest.TestCase):
         self.assertIn("--tag-commit-output dist/release-tag-commit.txt", workflow)
         self.assertIn("--require-hashes", workflow)
         self.assertIn("scripts/validate-release-tag.py", workflow)
-        self.assertIn("must use vX.Y.Z or vX.Y.Z-rc.N", workflow)
         self.assertIn("refs/remotes/origin/main", workflow)
         self.assertIn("The release version is already published", workflow)
-        self.assertIn("The final release has no release candidate", workflow)
-        self.assertIn("--candidate-bundle", workflow)
-        self.assertIn("Verify the selected release candidate", workflow)
+        self.assertIn("sha256sum --check --strict", workflow)
         self.assertIn("release-bundle.sigstore.json", workflow)
         self.assertIn("The release tag moved after signing", workflow)
         self.assertIn("Refusing to replace signed assets", workflow)
