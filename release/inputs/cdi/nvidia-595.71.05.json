@@ -1,0 +1,101 @@
+{
+  "driverVersion": "595.71.05",
+  "toolkitVersion": "1.19.1",
+  "nodeImage": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:2de452d8d7b44db93ffecb55050fb38681135962fa88709a69321190017cab42",
+  "source": "Derived offline with the nvidia-container-toolkit v1.19.1 nvcdi library against the extracted node image root. Copied from confidential-inference-internal receipts/cdi/node-image-v0.33.2-driver-595.71.05-toolkit-1.19.1.allowlist.json (commit 43c9dcf), sha256:9841d10b5f5897a9653c3f0d428ab2d12ee6f05db45d0cc57da6704941debd4d",
+  "env": {
+    "NVIDIA_CTK_LIBCUDA_DIR": "/usr/lib/x86_64-linux-gnu",
+    "NVIDIA_VISIBLE_DEVICES": "void"
+  },
+  "mounts": [
+    {
+      "destination": "/usr/lib/x86_64-linux-gnu/libcuda.so.595.71.05",
+      "kind": "host",
+      "source": "/usr/lib/x86_64-linux-gnu/libcuda.so.595.71.05",
+      "readOnly": true
+    },
+    {
+      "destination": "/usr/lib/x86_64-linux-gnu/libcudadebugger.so.595.71.05",
+      "kind": "host",
+      "source": "/usr/lib/x86_64-linux-gnu/libcudadebugger.so.595.71.05",
+      "readOnly": true
+    },
+    {
+      "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-allocator.so.595.71.05",
+      "kind": "host",
+      "source": "/usr/lib/x86_64-linux-gnu/libnvidia-allocator.so.595.71.05",
+      "readOnly": true
+    },
+    {
+      "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-cfg.so.595.71.05",
+      "kind": "host",
+      "source": "/usr/lib/x86_64-linux-gnu/libnvidia-cfg.so.595.71.05",
+      "readOnly": true
+    },
+    {
+      "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-gpucomp.so.595.71.05",
+      "kind": "host",
+      "source": "/usr/lib/x86_64-linux-gnu/libnvidia-gpucomp.so.595.71.05",
+      "readOnly": true
+    },
+    {
+      "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.595.71.05",
+      "kind": "host",
+      "source": "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.595.71.05",
+      "readOnly": true
+    },
+    {
+      "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-nvvm.so.595.71.05",
+      "kind": "host",
+      "source": "/usr/lib/x86_64-linux-gnu/libnvidia-nvvm.so.595.71.05",
+      "readOnly": true
+    },
+    {
+      "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-pkcs11-openssl3.so.595.71.05",
+      "kind": "host",
+      "source": "/usr/lib/x86_64-linux-gnu/libnvidia-pkcs11-openssl3.so.595.71.05",
+      "readOnly": true
+    },
+    {
+      "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-pkcs11.so.595.71.05",
+      "kind": "host",
+      "source": "/usr/lib/x86_64-linux-gnu/libnvidia-pkcs11.so.595.71.05",
+      "readOnly": true
+    },
+    {
+      "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-ptxjitcompiler.so.595.71.05",
+      "kind": "host",
+      "source": "/usr/lib/x86_64-linux-gnu/libnvidia-ptxjitcompiler.so.595.71.05",
+      "readOnly": true
+    },
+    {
+      "destination": "/run/nvidia-persistenced/socket",
+      "kind": "host",
+      "source": "/run/nvidia-persistenced/socket"
+    },
+    {
+      "destination": "/lib/firmware/nvidia/595.71.05/gsp_ga10x.bin",
+      "kind": "host",
+      "source": "/lib/firmware/nvidia/595.71.05/gsp_ga10x.bin",
+      "readOnly": true
+    },
+    {
+      "destination": "/lib/firmware/nvidia/595.71.05/gsp_tu10x.bin",
+      "kind": "host",
+      "source": "/lib/firmware/nvidia/595.71.05/gsp_tu10x.bin",
+      "readOnly": true
+    },
+    {
+      "destination": "/usr/bin/nvidia-smi",
+      "kind": "host",
+      "source": "/usr/bin/nvidia-smi",
+      "readOnly": true
+    },
+    {
+      "destination": "/usr/bin/nvidia-persistenced",
+      "kind": "host",
+      "source": "/usr/bin/nvidia-persistenced",
+      "readOnly": true
+    }
+  ]
+}

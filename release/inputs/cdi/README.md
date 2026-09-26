@@ -13,8 +13,5 @@ One file for each NVIDIA driver version: `nvidia-<driver>.json`.
 }
 ```
 
-**Missing:** `nvidia-595.71.05.json`, for the c8s v0.33.2 node image. c8s issue
-#693 reports two environment values and 15 driver mounts from a probe CVM, but
-the full probe record is in neither repository. Do not reconstruct it from
-the counts. Add the reviewed record here. Until then, the allowlist generator
-refuses the GPU workers.
+`nvidia-595.71.05.json` is the record for the c8s v0.33.2 node image. It is
+copied from the reviewed internal receipt named in its `source` field.

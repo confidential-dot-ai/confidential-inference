@@ -1,13 +1,4 @@
 {
-  "docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316": {
-    "cmd": [
-      "/bin/bash"
-    ],
-    "entrypoint": [],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    ]
-  },
   "docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24": {
     "cmd": [
       "--config.file=/etc/prometheus/prometheus.yml",
@@ -30,7 +21,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:3532143fd358d46acc2b3eb4902e5c5baae3691e53825aec1d51e1e9ab6c62a4": {
+  "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:6dafa0113321861548c8c645765a080a5c8d4147ec092016c10cfae2f7c65671": {
     "cmd": [],
     "entrypoint": [
       "/usr/local/bin/confidential-gateway"
@@ -40,7 +31,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:07bb13c3be6f8f2c3cbfaac4757b04904bb864e546fdc10de57aae2a28f8d88d": {
+  "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:dc3af4232bfc45903fb4e6401d955a248e60d5c8b1aa42cbfa95c41e6d562c14": {
     "cmd": [],
     "entrypoint": [
       "/opt/nvidia/nvidia_entrypoint.sh"

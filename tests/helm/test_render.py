@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import json
 import yaml
 
 
@@ -79,7 +80,16 @@ def main() -> None:
     )
     gateway_env = {item["name"]: item["value"] for item in gateway_container["env"]}
     assert gateway_env["GATEWAY_ENDPOINT_DRAIN_SECONDS"] == "35"
-    assert gateway_env["GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256"].startswith("sha256:")
+    # The release identity reaches the gateway through a mounted ConfigMap,
+    # not environment variables, so the allowlist can pin the environment.
+    assert "GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256" not in gateway_env
+    identity = next(
+        item for item in documents
+        if item["kind"] == "ConfigMap" and item["metadata"]["name"] == "gateway-release-identity"
+    )
+    identity_values = json.loads(identity["data"]["release-identity.json"])
+    assert identity_values["expectedOperatorKeySetSha256"].startswith("sha256:")
+    assert gateway_env["GATEWAY_RELEASE_IDENTITY_FILE"] == "/mnt/c8s-data/release-identity/release-identity.json"
     assert gateway_container["readinessProbe"]["httpGet"]["path"] == "/ready"
     assert gateway_container["livenessProbe"]["httpGet"]["path"] == "/health"
     assert gateway["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 960
