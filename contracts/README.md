@@ -1,6 +1,8 @@
 # Release and attestation contracts
 
 `release-bundle.schema.json` defines the public release inventory.
+`release-manifest.schema.json` defines the signed release manifest of v0.14.0
+and later, which `scripts/build-release-manifest.py` builds from `release/`.
 
 `workload-attestation.schema.json` defines the gateway response with one receipt for each real c8s workload pod.
 

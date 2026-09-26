@@ -1,0 +1,165 @@
+# Chart values for release v0.14.0.
+#
+# The base is c8s/candidate-values.yaml, the values of the cluster that
+# serves api.confidential.ai today (release v0.13.28-rc.2). This file changes
+# only what c8s v0.33.2 and the new placement need. Each change has a comment.
+#
+# The allowlist is generated from this file, so every value that reaches a
+# container command, argument, environment variable, or mount is part of the
+# signed release. Values that differ per deployment do not belong here. The
+# deployment adds them with its own values file: the node names, the image
+# pull Secret name, and the release manifest SHA-256.
+#
+# PENDING marks a value whose chart support is in another open pull request.
+# Resolve each PENDING before the allowlist is generated.
+
+environment: production                        # changed: the target name
+
+imagePullSecret:
+  name: ghcr-pull                              # changed: no target name in the release
+
+# Placeholders. The deployment sets the real inner node names. The chart
+# renders them into pod node selectors only, so they are not allowlist input.
+scheduling:
+  gatewayNodeName: gateway-node-1
+  inferenceNodeName: inference-node-1
+  # changed: one node for each inference worker, and the router with the
+  # gateway on the control-plane node.
+  inferenceNodeNames: [inference-node-1, inference-node-2]
+  routerNodeName: gateway-node-1
+
+images:
+  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:3532143fd358d46acc2b3eb4902e5c5baae3691e53825aec1d51e1e9ab6c62a4
+  sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:07bb13c3be6f8f2c3cbfaac4757b04904bb864e546fdc10de57aae2a28f8d88d
+  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:07bb13c3be6f8f2c3cbfaac4757b04904bb864e546fdc10de57aae2a28f8d88d
+  metricsCollector: docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24
+  dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
+  nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
+  kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
+  # changed: the c8s v0.33.2 operator image (source commit c9d49a67).
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:c07dbed4486ad69f5370a7c201b7ea44cf55d0c16592eaa25340fb6724f6bd1e
+  # PENDING (gateway state PR): c8s v0.33.2 does not admit the privileged
+  # mounter, so images.stateMounter is removed there.
+  stateMounter: docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
+
+namedWorkloadProxy:
+  enabled: false
+
+c8s:
+  # c8s v0.33.2 still labels the front-door pod `router`.
+  frontDoorPodLabelName: router
+
+attestationReceipts:
+  enabled: true
+  gpuEvidenceFlagEnabled: false
+  legacyC8s615: false
+  evidenceBaseUrl: https://api.confidential.ai   # changed: the production hostname
+  releaseId: v0.14.0                             # changed
+  # The gateway reads these three values from environment variables today.
+  # An exact environment rule would put them into the allowlist. The release
+  # manifest SHA-256 would then depend on itself, and the operator key would
+  # enter the release. PENDING (gateway PR): read them from a mounted file,
+  # so that the deployment sets them and the allowlist pins only the mount.
+  releaseBundleSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  policyMode: operator
+  expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  targets:
+    - {target: gateway, workload: gateway, identity: gateway, url: http://127.0.0.1:8800}
+    - {target: sglang-router, workload: sglang-router, identity: sglang-router, url: http://sglang-router:8801}
+    - {target: inference-worker-0, workload: inference-worker-0, identity: inference-worker-0, url: http://inference-worker-0-0.inference-workers:8802}
+    - {target: inference-worker-1, workload: inference-worker-1, identity: inference-worker-1, url: http://inference-worker-1-0.inference-workers:8802}
+    - {target: metrics-collector, workload: metrics-collector, identity: metrics-collector, url: http://metrics-collector:8803}
+    - {target: kube-state-metrics, workload: kube-state-metrics, identity: kube-state-metrics, url: http://kube-state-metrics:8804}
+  certificateRenewInterval: 30s
+  gatewayPort: 8800
+  routerPort: 8801
+  firstWorkerPort: 8802
+  metricsCollectorPort: 8803
+  kubeStateMetricsPort: 8804
+  platform: tdx
+  attestationApiPort: 8400
+  resources:
+    requests: {cpu: 25m, memory: 32Mi}
+    limits: {cpu: 250m, memory: 128Mi}
+
+gateway:
+  attestedWorkload: gateway
+  secrets:
+    adminSigner:
+      secretName: gateway-admin-mtls           # changed: no target name in the release
+  service:
+    type: ClusterIP
+  keyRegistry:
+    mode: dual                                 # a new gateway starts with no keys
+  shutdownGraceSeconds: 900
+  endpointDrainSeconds: 35
+  terminationGracePeriodSeconds: 960
+  c8sSecrets:
+    apiKeyPepper: {name: GATEWAY_API_KEY_PEPPER, sourcePath: /confidential-inference/gateway/api-key-pepper}
+  # PENDING (gateway state PR): the state disk becomes a c8s mutable
+  # encrypted volume named gwstate. These fields are replaced there.
+  state:
+    enabled: true
+    storageResources: {create: true}
+    absencePolicy: fail-closed
+    startupTimeoutSeconds: 60
+    databasePath: /var/lib/confidential-gateway/gateway.sqlite3
+    mountPath: /var/lib/confidential-gateway
+    claimName: gateway-state
+    persistentVolumeName: gateway-state
+    storageClassName: confidential-inference-gateway-state
+    storageNamespace: kube-system
+    size: 16Gi
+    nodeName: gateway-node-1
+    hostStateRootPath: /var/lib/confidential-inference/gateway-state-root
+    hostMountPath: /var/lib/confidential-inference/gateway-state-root/data
+    devicePath: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_confai-gateway-state
+    diskSerial: confai-gateway-state
+    allowFormat: true
+
+inference:
+  enabled: true
+  mode: model
+  replicas: 2
+  gpusPerReplica: 4
+  gpuArchitectures: [BLACKWELL]
+  reasoningParser: deepseek-v4
+  # changed: each worker has its own 4-GPU CVM, so each attests 4 devices.
+  attestedGpuCount: 4
+  attestedWorkloads: [inference-worker-0, inference-worker-1]
+  model:
+    name: deepseek-ai/DeepSeek-V4-Flash-0731
+    revision: 9e165c30e2704aec5d9d593cce3eebd58bbef1cb
+    c8sVolumeSource: /confidential-inference/volumes/dsv4
+    volumeNames: [dsv4, dsv4-1]
+    # PENDING (chart PR): an exact c8s mount rule needs the opened volume
+    # below /mnt/c8s-data/. The chart schema and images/sglang/source.lock
+    # pin /models today, so the chart must move both together.
+    # The worker checks every model file against the byte manifest, whose
+    # SHA-256 is the .model-lock-local-manifest.json entry below.
+    mountVerification:
+      expectedFiles:
+        .model-lock-local-manifest.json: cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c
+        config.json: 6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023
+        model.safetensors.index.json: 98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b
+        tokenizer_config.json: 6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
+
+router:
+  attestedWorkload: sglang-router
+  enabled: true
+
+metricsCollector:
+  enabled: true
+  attestedWorkload: metrics-collector
+  remoteWrite:
+    enabled: true
+    url: https://admin.api.confidential.ai:9443/api/v1/write
+    address: 20.163.209.126
+    serverName: admin.api.confidential.ai
+    secretName: metrics-remote-write-mtls
+    destinationCidrs:
+      - 20.163.209.126/32
+
+kubeStateMetrics:
+  attestedWorkload: kube-state-metrics

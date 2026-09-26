@@ -1,0 +1,113 @@
+{
+  "docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316": {
+    "cmd": [
+      "/bin/bash"
+    ],
+    "entrypoint": [],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24": {
+    "cmd": [
+      "--config.file=/etc/prometheus/prometheus.yml",
+      "--storage.tsdb.path=/prometheus"
+    ],
+    "entrypoint": [
+      "/bin/prometheus"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:c07dbed4486ad69f5370a7c201b7ea44cf55d0c16592eaa25340fb6724f6bd1e": {
+    "cmd": [],
+    "entrypoint": [
+      "/c8s"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:3532143fd358d46acc2b3eb4902e5c5baae3691e53825aec1d51e1e9ab6c62a4": {
+    "cmd": [],
+    "entrypoint": [
+      "/usr/local/bin/confidential-gateway"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:07bb13c3be6f8f2c3cbfaac4757b04904bb864e546fdc10de57aae2a28f8d88d": {
+    "cmd": [],
+    "entrypoint": [
+      "/opt/nvidia/nvidia_entrypoint.sh"
+    ],
+    "env": [
+      "PATH=/root/.cargo/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/nvidia/bin",
+      "NVARCH=x86_64",
+      "NVIDIA_REQUIRE_CUDA=cuda>=13.0 brand=unknown,driver>=535,driver<536 brand=grid,driver>=535,driver<536 brand=tesla,driver>=535,driver<536 brand=nvidia,driver>=535,driver<536 brand=quadro,driver>=535,driver<536 brand=quadrortx,driver>=535,driver<536 brand=nvidiartx,driver>=535,driver<536 brand=vapps,driver>=535,driver<536 brand=vpc,driver>=535,driver<536 brand=vcs,driver>=535,driver<536 brand=vws,driver>=535,driver<536 brand=cloudgaming,driver>=535,driver<536 brand=unknown,driver>=550,driver<551 brand=grid,driver>=550,driver<551 brand=tesla,driver>=550,driver<551 brand=nvidia,driver>=550,driver<551 brand=quadro,driver>=550,driver<551 brand=quadrortx,driver>=550,driver<551 brand=nvidiartx,driver>=550,driver<551 brand=vapps,driver>=550,driver<551 brand=vpc,driver>=550,driver<551 brand=vcs,driver>=550,driver<551 brand=vws,driver>=550,driver<551 brand=cloudgaming,driver>=550,driver<551 brand=unknown,driver>=565,driver<566 brand=grid,driver>=565,driver<566 brand=tesla,driver>=565,driver<566 brand=nvidia,driver>=565,driver<566 brand=quadro,driver>=565,driver<566 brand=quadrortx,driver>=565,driver<566 brand=nvidiartx,driver>=565,driver<566 brand=vapps,driver>=565,driver<566 brand=vpc,driver>=565,driver<566 brand=vcs,driver>=565,driver<566 brand=vws,driver>=565,driver<566 brand=cloudgaming,driver>=565,driver<566 brand=unknown,driver>=570,driver<571 brand=grid,driver>=570,driver<571 brand=tesla,driver>=570,driver<571 brand=nvidia,driver>=570,driver<571 brand=quadro,driver>=570,driver<571 brand=quadrortx,driver>=570,driver<571 brand=nvidiartx,driver>=570,driver<571 brand=vapps,driver>=570,driver<571 brand=vpc,driver>=570,driver<571 brand=vcs,driver>=570,driver<571 brand=vws,driver>=570,driver<571 brand=cloudgaming,driver>=570,driver<571 brand=unknown,driver>=575,driver<576 brand=grid,driver>=575,driver<576 brand=tesla,driver>=575,driver<576 brand=nvidia,driver>=575,driver<576 brand=quadro,driver>=575,driver<576 brand=quadrortx,driver>=575,driver<576 brand=nvidiartx,driver>=575,driver<576 brand=vapps,driver>=575,driver<576 brand=vpc,driver>=575,driver<576 brand=vcs,driver>=575,driver<576 brand=vws,driver>=575,driver<576 brand=cloudgaming,driver>=575,driver<576",
+      "NV_CUDA_CUDART_VERSION=13.0.96-1",
+      "CUDA_VERSION=13.0.3",
+      "LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64",
+      "NVIDIA_VISIBLE_DEVICES=all",
+      "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+      "NV_CUDA_LIB_VERSION=13.0.3-1",
+      "NV_NVTX_VERSION=13.0.85-1",
+      "NV_LIBNPP_VERSION=13.0.1.2-1",
+      "NV_LIBNPP_PACKAGE=libnpp-13-0=13.0.1.2-1",
+      "NV_LIBCUSPARSE_VERSION=12.6.3.3-1",
+      "NV_LIBCUBLAS_PACKAGE_NAME=libcublas-13-0",
+      "NV_LIBCUBLAS_VERSION=13.1.1.3-1",
+      "NV_LIBCUBLAS_PACKAGE=libcublas-13-0=13.1.1.3-1",
+      "NV_LIBNCCL_PACKAGE_NAME=libnccl2",
+      "NV_LIBNCCL_PACKAGE_VERSION=2.28.3-1",
+      "NCCL_VERSION=2.28.3-1",
+      "NV_LIBNCCL_PACKAGE=libnccl2=2.28.3-1+cuda13.0",
+      "NVIDIA_PRODUCT_NAME=CUDA",
+      "NV_CUDA_CUDART_DEV_VERSION=13.0.96-1",
+      "NV_NVML_DEV_VERSION=13.0.87-1",
+      "NV_LIBCUSPARSE_DEV_VERSION=12.6.3.3-1",
+      "NV_LIBNPP_DEV_VERSION=13.0.1.2-1",
+      "NV_LIBNPP_DEV_PACKAGE=libnpp-dev-13-0=13.0.1.2-1",
+      "NV_LIBCUBLAS_DEV_VERSION=13.1.1.3-1",
+      "NV_LIBCUBLAS_DEV_PACKAGE_NAME=libcublas-dev-13-0",
+      "NV_LIBCUBLAS_DEV_PACKAGE=libcublas-dev-13-0=13.1.1.3-1",
+      "NV_CUDA_NSIGHT_COMPUTE_VERSION=13.0.3-1",
+      "NV_CUDA_NSIGHT_COMPUTE_DEV_PACKAGE=cuda-nsight-compute-13-0=13.0.3-1",
+      "NV_LIBNCCL_DEV_PACKAGE_NAME=libnccl-dev",
+      "NV_LIBNCCL_DEV_PACKAGE_VERSION=2.28.3-1",
+      "NV_LIBNCCL_DEV_PACKAGE=libnccl-dev=2.28.3-1+cuda13.0",
+      "LIBRARY_PATH=/usr/local/cuda/lib64/stubs",
+      "NV_CUDNN_VERSION=9.14.0.64-1",
+      "NV_CUDNN_PACKAGE_NAME=libcudnn9-cuda-13",
+      "NV_CUDNN_PACKAGE=libcudnn9-cuda-13=9.14.0.64-1",
+      "NV_CUDNN_PACKAGE_DEV=libcudnn9-dev-cuda-13=9.14.0.64-1",
+      "NV_CUDNN_PACKAGE_DEV_HEADERS=libcudnn9-headers-cuda-13=9.14.0.64-1",
+      "DEBIAN_FRONTEND=noninteractive",
+      "CUDA_HOME=/usr/local/cuda",
+      "GDRCOPY_HOME=/usr/src/gdrdrv-2.5.1/",
+      "FLASHINFER_VERSION=0.6.17",
+      "LANG=en_US.UTF-8",
+      "LANGUAGE=en_US:en",
+      "LC_ALL=en_US.UTF-8",
+      "SGLANG_BUILD_COMMIT=71de97b264b04dcd514cf904003028aefe9775c8",
+      "SGLANG_BUILD_URL=https://github.com/sgl-project/sglang/actions/runs/32520522511",
+      "SGLANG_IMAGE_TAG=lmsysorg/sglang:v0.5.18"
+    ]
+  },
+  "registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9": {
+    "cmd": [],
+    "entrypoint": [
+      "/kube-state-metrics",
+      "--port=8080",
+      "--telemetry-port=8081"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+    ]
+  }
+}

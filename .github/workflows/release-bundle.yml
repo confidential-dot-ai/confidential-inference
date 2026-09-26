@@ -47,64 +47,45 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          release_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'
-          if [[ ! "$RELEASE_TAG" =~ $release_pattern ]]; then
-            echo "The production release tag must use vX.Y.Z or vX.Y.Z-rc.N." >&2
-            exit 1
-          fi
-
+          # v0.14.0 and later: vX.Y.Z only. A fix is a new version, so there
+          # is no release-candidate step.
           git fetch --no-tags origin \
             '+refs/heads/main:refs/remotes/origin/main'
-
           if gh release view "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "The release version is already published." >&2
             exit 1
           fi
-
-          arguments=(
-            --tag "$RELEASE_TAG"
-            --bundle releases/production/release-bundle.json
+          python3 scripts/validate-release-tag.py \
+            --tag "$RELEASE_TAG" \
+            --spec release/spec.yaml \
             --main-ref refs/remotes/origin/main
-          )
-          if [[ ! "$RELEASE_TAG" =~ -rc\.[1-9][0-9]*$ ]]; then
-            escaped_tag="${RELEASE_TAG//./\\.}"
-            candidate_pattern="^${escaped_tag}-rc\.[1-9][0-9]*$"
-            candidate_tag=""
-            while IFS= read -r possible_tag; do
-              if [[ "$possible_tag" =~ $candidate_pattern ]] && \
-                gh release view "$possible_tag" \
-                  --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-                candidate_tag="$possible_tag"
-                break
-              fi
-            done < <(
-              git tag --list "$RELEASE_TAG-rc.*" --sort=-version:refname
-            )
-            if [[ -z "$candidate_tag" ]]; then
-              echo "The final release has no release candidate." >&2
-              exit 1
-            fi
-            mkdir -p /tmp/confidential-inference-candidate
-            gh release download "$candidate_tag" \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern release-bundle.json \
-              --pattern release-bundle.sigstore.json \
-              --dir /tmp/confidential-inference-candidate
-            arguments+=(
-              --candidate-tag "$candidate_tag"
-              --candidate-bundle \
-                /tmp/confidential-inference-candidate/release-bundle.json
-            )
-          fi
-          python3 scripts/validate-release-tag.py "${arguments[@]}"
 
-      - name: Prepare the exact release bytes
+      - name: Install the pinned Helm
+        if: startsWith(github.ref_name, 'v')
+        run: |
+          curl -fsSL -o /tmp/helm.tar.gz \
+            https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz
+          echo "a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c1ef29c259  /tmp/helm.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
+          sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+
+      - name: Build the release manifest at the tag commit
+        if: startsWith(github.ref_name, 'v')
+        run: |
+          mkdir -p dist
+          git rev-parse HEAD > dist/release-tag-commit.txt
+          python3 scripts/build-release-manifest.py \
+            --source-commit "$(git rev-parse HEAD)" \
+            --output dist/release-bundle.json
+
+      - name: Prepare the exact legacy release bytes
+        if: ${{ !startsWith(github.ref_name, 'v') }}
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           case "$RELEASE_TAG" in
-            v[0-9]*) source=releases/production/release-bundle.json ;;
             integration-staging-v[0-9]*) source=releases/integration-staging/release-bundle.json ;;
             conf-inference-prod-v[0-9]*) source=releases/conf-inference-prod/release-bundle.json ;;
             *) echo "The release tag is not allowed." >&2; exit 1 ;;
@@ -119,17 +100,6 @@ jobs:
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.2
-
-      - name: Verify the selected release candidate
-        run: |
-          candidate=/tmp/confidential-inference-candidate/release-bundle.json
-          if [[ -f "$candidate" ]]; then
-            python3 scripts/verify-release-bundle-signature.py \
-              --bundle "$candidate" \
-              --signature-bundle \
-                /tmp/confidential-inference-candidate/release-bundle.sigstore.json \
-              --cosign "$(command -v cosign)"
-          fi
 
       - name: Create the keyless Sigstore bundle
         run: |
@@ -203,17 +173,12 @@ jobs:
             echo "The release tag changed during publication. Refusing publication." >&2
             exit 1
           fi
-          release_flags=()
-          if [[ "$RELEASE_TAG" =~ -rc\.[0-9]+$ ]]; then
-            release_flags+=(--prerelease)
-          fi
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --target "$expected_commit" \
             --title "$RELEASE_TAG" \
-            --notes "Signed Confidential Inference release bundle." \
-            "${release_flags[@]}" \
+            --notes "Signed Confidential Inference release. For vX.Y.Z tags the signed file is the release manifest built from release/ at the tag commit." \
             "dist/release-bundle.json#Release bundle" \
             "dist/release-bundle.sigstore.json#Sigstore verification bundle" \
             "dist/release-tag-commit.txt#Signed tag commit"

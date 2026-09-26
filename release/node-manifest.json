@@ -1,0 +1,50 @@
+{
+  "version": 3,
+  "build": {
+    "timestamp": "2026-09-24T13:19:34Z",
+    "memory": "16G",
+    "format": "raw",
+    "platform": "tdx"
+  },
+  "inputs": {
+    "kernel": {
+      "linux_version": "6.18.49",
+      "vmlinuz_sha256": "a150ce74893d6ed6bc242e6ea22fad290034095c16dab73c9717e22c91156fab",
+      "required_config_sha256": "ea97d2774893e2d33674db7bab601a2e029402ee3058b1f414fe14ace19618f2",
+      "hardening_config_sha256": "0114a50e7b2695170be396b3820f2dbce940f84e7421414985197de17e4746ee",
+      "kernel_extra_config_sha256": "451ff6778589a8e05e2678438aa6299a6274a98ca42217671a8693781a0d7aee",
+      "snapshot_config_sha256": "a4c06aaee4b43c2e7df0e8f84fd233b801ce101e38e261f75872b9cfc85d264b",
+      "module_signing_cert_sha256": "7c9f63b0206dc794e5be126b86ce50c68cd33d1c22ecd5979984614c476a986e",
+      "randstruct_seed_sha256": "7d6b81e63586f80ea22920623630caee43ec2eeab3113be606ab75da779ce317",
+      "trusted_dsdt_sha256": "6c5ed8e54d9178d1fe2040f6ea97899422353d441ab5ba469641afd342016d0f",
+      "trusted_aml_patch_sha256": "9b26d516d5860cba4aea34248177b4caedf7f0528a7920c697b13723efcc2d77"
+    },
+    "initrd": {
+      "path": "initrd.img",
+      "sha256": "a6d303be15f2d95a85d15a64de7d106da2d05704b40015bad8ccd0801a767a10"
+    },
+    "base_image": {
+      "path": "image.raw",
+      "sha256": "52398dcaa73f6c8d1ca39d3116121f3632449f0963ae90d3d0fee69673a5ed21"
+    }
+  },
+  "outputs": {
+    "disk_image": {
+      "path": "disk.raw",
+      "sha256": "52398dcaa73f6c8d1ca39d3116121f3632449f0963ae90d3d0fee69673a5ed21"
+    },
+    "uki": {
+      "path": "uki.efi",
+      "sha256": "2b2eb7106281465b4fb3c03dc01d816c6e6f3094f7a8e341de7c2fe374dcecb4"
+    }
+  },
+  "tdx": {
+    "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
+    "rtmr1": "56d7d86c40e58e44ad190bcf23bf1db71f4066bffe8404a102f34ebc2d142d9a421aad7a4230a576969e414abc6c7e31",
+    "rtmr2": "06954c23b1afd46c7d0ec37436ae8ad9839242ca9ebc7a132a934d67f4c544416ac4041d0408674b0f11f546d976307f",
+    "firmware": {
+      "path": "OVMF.tdx.fd",
+      "sha256": "a7edaeff6fc4bef8924461cb0fb68a194c3595d08ccad2720cca926dea12f7cf"
+    }
+  }
+}
