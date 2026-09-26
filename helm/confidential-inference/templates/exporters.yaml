@@ -35,9 +35,19 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.dcgmExporter.port | quote }}
     spec:
+      enableServiceLinks: false
       serviceAccountName: confidential-inference
-      nodeSelector:
-        kubernetes.io/hostname: {{ .Values.scheduling.inferenceNodeName | quote }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      {{- range (include "confidential-inference.inferenceNodeNames" . | fromJsonArray) }}
+                      - {{ . | quote }}
+                      {{- end }}
       securityContext:
         seccompProfile:
           type: RuntimeDefault
@@ -110,6 +120,7 @@ spec:
         confidential.ai/cw: kube-state-metrics
         confidential.ai/c8s-renew-interval: {{ .Values.attestationReceipts.certificateRenewInterval | quote }}
     spec:
+      enableServiceLinks: false
       serviceAccountName: kube-state-metrics
       securityContext:
         seccompProfile:
@@ -121,7 +132,7 @@ spec:
           args:
             - --host=0.0.0.0
             - --port={{ .Values.kubeStateMetrics.port }}
-            - --resources=deployments,daemonsets,statefulsets,pods,nodes
+            - --resources=deployments,daemonsets,statefulsets,pods
             - --namespaces={{ .Release.Namespace }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -186,6 +197,7 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.nodeExporter.port | quote }}
     spec:
+      enableServiceLinks: false
       serviceAccountName: confidential-inference
       securityContext:
         seccompProfile:

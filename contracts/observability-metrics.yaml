@@ -18,7 +18,6 @@ collection:
     - sglang-router
     - inference-workers
     - inference-gpu-workers
-    - kubernetes-container-resources
     - kube-state-metrics
   sensitiveLabelsForbidden:
     - authorization
@@ -112,12 +111,6 @@ recordingRules:
   - record: confidential:gpu_ecc_uncorrected_errors:sum
     source: confidential_inference_gpu_ecc_uncorrected_errors_total
     promql: sum by (environment) (confidential_inference_gpu_ecc_uncorrected_errors_total)
-  - record: confidential:cpu_use_ratio
-    source: container_cpu_usage_seconds_total
-    promql: sum by (environment, pod, container) (rate(container_cpu_usage_seconds_total{container=~"sglang-.*"}[5m]))
-  - record: confidential:ram_use_bytes
-    source: container_memory_working_set_bytes
-    promql: sum by (environment, pod, container) (container_memory_working_set_bytes{container=~"sglang-.*"})
   - record: confidential:requests_per_second
     source: gateway_requests
     promql: sum by (environment) (rate(gateway_requests[5m]))

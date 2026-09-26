@@ -18,7 +18,9 @@
       "required": ["gatewayNodeName", "inferenceNodeName"],
       "properties": {
         "gatewayNodeName": {"$ref": "#/definitions/kubernetesName"},
-        "inferenceNodeName": {"$ref": "#/definitions/kubernetesName"}
+        "inferenceNodeName": {"$ref": "#/definitions/kubernetesName"},
+        "inferenceNodeNames": {"type": "array", "items": {"$ref": "#/definitions/kubernetesName"}},
+        "routerNodeName": {"anyOf": [{"const": ""}, {"$ref": "#/definitions/kubernetesName"}]}
       }
     },
     "images": {
