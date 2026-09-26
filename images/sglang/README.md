@@ -19,6 +19,8 @@ FlashInfer 0.6.17 already contains the merged global-timer and multicast-free wo
 The image also contains the public `wait_for_model.py` and `gpu_metrics.py` repository files.
 The gate waits for the late c8s mount and checks its read-only dm-verity source.
 The gate also checks the model revision, metadata digests, model index, and weight shard presence.
+The gate then hashes every file on the volume against the byte manifest. The release pins the
+manifest's SHA-256 with `--expected-file`. A missing, extra, resized, or changed file fails the gate.
 The gate fails closed before SGLang starts.
 Each worker starts one local GPU metrics endpoint after the model mount passes.
 The endpoint reads only the four GPUs assigned to that worker. It exports use, memory,
