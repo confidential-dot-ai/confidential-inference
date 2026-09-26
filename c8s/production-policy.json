@@ -29,7 +29,6 @@
   },
   "workloads": [
     {"name": "gateway-db0b6ee", "controller": "Deployment/gateway", "secretReads": ["/confidential-inference/gateway/api-key-pepper"]},
-    {"name": "gateway-state-mounter", "controller": "DaemonSet/gateway-state-mounter"},
     {"name": "inference-worker-0-tool-calls-v1", "controller": "StatefulSet/inference-worker-0", "secretReads": ["/confidential-inference/volumes/dsv4"]},
     {"name": "inference-worker-1-tool-calls-v1", "controller": "StatefulSet/inference-worker-1", "secretReads": ["/confidential-inference/volumes/dsv4"]},
     {"name": "kube-state-metrics-a941ea9", "controller": "Deployment/kube-state-metrics"},

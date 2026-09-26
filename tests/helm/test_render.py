@@ -86,12 +86,53 @@ def main() -> None:
     for workload in workloads:
         for container in workload["spec"]["template"]["spec"]["containers"]:
             assert PINNED.fullmatch(container["image"]), container["image"]
-            if container["name"] != "gateway-state-mounter":
-                security = container["securityContext"]
-                assert security["allowPrivilegeEscalation"] is False
-                assert "ALL" in security["capabilities"]["drop"]
+            security = container["securityContext"]
+            assert security["allowPrivilegeEscalation"] is False
+            assert "ALL" in security["capabilities"]["drop"]
     rendered = yaml.safe_dump_all(documents)
     assert "nvidia.com/gpu" not in rendered
+
+    # The gateway state is a c8s mutable encrypted volume. The chart creates
+    # no host storage, no cluster-scoped storage objects, and no admission
+    # policy for it.
+    stateful = [
+        item for item in yaml.safe_load_all(
+            helm(
+                "template", "example", str(CHART), "--namespace", "inference",
+                *NEUTRAL_MODE, "--set", "gateway.state.enabled=true",
+            )
+        ) if item
+    ]
+    assert not {
+        "PersistentVolume", "PersistentVolumeClaim", "StorageClass",
+        "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding",
+    } & {item["kind"] for item in stateful}
+    assert not any(item["kind"] == "DaemonSet" and "state" in item["metadata"]["name"] for item in stateful)
+    stateful_gateway = next(
+        item for item in stateful
+        if item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway"
+    )
+    assert stateful_gateway["spec"]["strategy"] == {"type": "Recreate"}
+    annotations = stateful_gateway["spec"]["template"]["metadata"]["annotations"]
+    assert annotations["confidential.ai/c8s-volumes"] == "gwstate=/confidential-inference/volumes/gwstate"
+    assert annotations["confidential.ai/c8s-volume-dir"] == "/mnt/c8s-data"
+    stateful_env = {
+        item["name"]: item["value"]
+        for item in stateful_gateway["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert stateful_env["GATEWAY_STATE_VOLUME"] == "c8s"
+    assert stateful_env["GATEWAY_STATE_VOLUME_NAME"] == "gwstate"
+    assert stateful_env["GATEWAY_STATE_DATABASE"] == "/mnt/c8s-data/gwstate/gateway.sqlite3"
+    assert not any(
+        "persistentVolumeClaim" in volume
+        for volume in stateful_gateway["spec"]["template"]["spec"]["volumes"]
+    )
+    helm(
+        "template", "example", str(CHART), *NEUTRAL_MODE,
+        "--set", "gateway.state.enabled=true",
+        "--set", "gateway.state.databasePath=/mnt/c8s-data/other/gateway.sqlite3",
+        success=False,
+    )
     helm(
         "lint", str(CHART), *NEUTRAL_MODE, "--set-string",
         "images.gateway=example.invalid/gateway:latest", success=False,

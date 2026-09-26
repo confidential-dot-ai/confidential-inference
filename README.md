@@ -42,7 +42,7 @@ inputs and measured TDX values are in `images/control-plane-node/`.
 
 This section builds and starts the gateway on your own machine. Use it for
 local development only. It does not enable attestation, and it does not
-enable the persistent state disk that production uses.
+enable the encrypted c8s state volume that production uses.
 
 The `GATEWAY_C8S_RECEIPT_TARGETS` value below names the same inference-worker
 targets that integration staging uses. This quickstart never calls
@@ -89,8 +89,8 @@ curl -s http://127.0.0.1:9443/health
 This returns `{"status":"ok"}`.
 
 The gateway is fail-closed by design. It refuses every request, including
-`/v1/chat/completions`, until it can read a real, mounted, production-style
-state disk. A bare local build has no such disk, so a request to
+`/v1/chat/completions`, until it can read a real, mounted, production-style c8s
+state volume. A bare local build has no such volume, so a request to
 `/v1/chat/completions` here correctly returns a `429` with the code
 `gateway_state_unavailable`. This is intended security behavior, not a bug,
 and this quickstart does not attempt to bypass it.

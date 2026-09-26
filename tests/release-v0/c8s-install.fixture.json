@@ -132,12 +132,6 @@
       ]
     },
     {
-      "allowlistName": "gateway-state-mounter",
-      "controllers": [
-        "DaemonSet/gateway-state-mounter"
-      ]
-    },
-    {
       "allowlistName": "inference-worker-0",
       "confidentialWorkloadId": "inference-worker-0",
       "secretReads": [
@@ -230,7 +224,7 @@
   },
   "allowlist": {
     "file": "tests/release-v0/allowlist.fixture.json",
-    "digest": "sha256:ff44096e9edb0089e8c46ad042e5566b125d359f165f1ab155123a344756c55f"
+    "digest": "sha256:3018421b67e12dfd7e264616af639b282d4227d5ae614c3ac266f9880e69e7b4"
   },
   "gatewayAttach": {
     "workloadRef": "gateway=confidential-inference/deployment/gateway:9443",

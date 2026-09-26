@@ -92,7 +92,6 @@ COMPARED_FIELDS = [
     "images.nodeExporter",
     "images.kubeStateMetrics",
     "images.c8sOperator",
-    "images.stateMounter",
     "scheduling.gatewayNodeName",
     "scheduling.inferenceNodeName",
     "namedWorkloadProxy.enabled",

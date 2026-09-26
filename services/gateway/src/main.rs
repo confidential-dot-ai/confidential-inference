@@ -14,7 +14,7 @@ use clap::Parser;
 use confidential_gateway::{
     GatewayConfig, TracingAuditSink,
     admin_auth::{AdminRequestVerifier, require_signed_admin_request},
-    api_keys::{GatewayState, admin_router},
+    api_keys::{GatewayState, StateError, admin_router},
     attestation::{
         C8S_ATTESTATION_PROTOCOL, C8S_ATTESTATION_PROTOCOL_COMMIT, C8sAttestationConfig,
         C8sAttestationProvider,
@@ -120,6 +120,14 @@ struct Args {
         default_value = "confai-gateway-state"
     )]
     state_disk_serial: String,
+    // Where the state lives. "disk" is the legacy host disk with a root-owned
+    // marker. "c8s" is a c8s mutable encrypted volume that c8s volumed mounts
+    // after the pod starts.
+    #[arg(long, env = "GATEWAY_STATE_VOLUME", default_value = "disk")]
+    state_volume: String,
+    // The c8s volume name. Used only when GATEWAY_STATE_VOLUME is "c8s".
+    #[arg(long, env = "GATEWAY_STATE_VOLUME_NAME", default_value = "gwstate")]
+    state_volume_name: String,
     #[arg(
         long,
         env = "GATEWAY_API_KEY_PEPPER_FILE",
@@ -216,13 +224,22 @@ async fn main() -> Result<()> {
                 4_096,
                 Duration::from_secs(args.state_startup_timeout_seconds),
             )?;
-            GatewayState::open_persistent(
-                &args.state_database,
-                pepper,
-                &args.environment,
-                &args.state_disk_serial,
-            )
-            .map_err(anyhow::Error::from)
+            if args.state_volume == "c8s" {
+                open_c8s_state(
+                    &args.state_database,
+                    &pepper,
+                    &args.state_volume_name,
+                    Duration::from_secs(args.state_startup_timeout_seconds),
+                )
+            } else {
+                GatewayState::open_persistent(
+                    &args.state_database,
+                    pepper,
+                    &args.environment,
+                    &args.state_disk_serial,
+                )
+                .map_err(anyhow::Error::from)
+            }
         })();
         match state_result {
             Ok(state) => state,
@@ -440,8 +457,11 @@ fn validate_args(args: &Args) -> Result<()> {
     if args.state_absence_policy != "fail-closed" {
         bail!("GATEWAY_STATE_ABSENCE_POLICY must be fail-closed");
     }
-    if !(1..=300).contains(&args.state_startup_timeout_seconds) {
+    if !(1..=600).contains(&args.state_startup_timeout_seconds) {
         bail!("GATEWAY_STATE_STARTUP_TIMEOUT_SECONDS is outside the safe range");
+    }
+    if args.state_volume != "disk" && args.state_volume != "c8s" {
+        bail!("GATEWAY_STATE_VOLUME must be disk or c8s");
     }
     if args.attestation_timeout_seconds == 0
         || args.attestation_timeout_seconds > 120
@@ -481,6 +501,26 @@ fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
         bail!("the mounted file has an unsafe shape");
     }
     fs::read(path).with_context(|| format!("read {}", path.display()))
+}
+
+// c8s volumed mounts the volume after the pod starts, so the first attempts can
+// see the bare emptyDir. Only a missing mount is retried; any other failure,
+// such as a corrupt database, stops at once.
+fn open_c8s_state(
+    database: &Path,
+    pepper: &[u8],
+    volume_name: &str,
+    timeout: Duration,
+) -> Result<GatewayState> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match GatewayState::open_c8s_volume(database, pepper.to_vec(), volume_name) {
+            Err(StateError::Mount) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            result => return result.map_err(anyhow::Error::from),
+        }
+    }
 }
 
 fn wait_for_bounded_file(path: &Path, limit: usize, timeout: Duration) -> Result<Vec<u8>> {
@@ -526,6 +566,8 @@ mod tests {
             environment: "production".to_owned(),
             state_database: PathBuf::from("/var/lib/confidential-gateway/gateway.sqlite3"),
             state_disk_serial: "confai-gateway-state".to_owned(),
+            state_volume: "disk".to_owned(),
+            state_volume_name: "gwstate".to_owned(),
             state_absence_policy: "fail-closed".to_owned(),
             state_enabled: false,
             api_key_pepper_file: PathBuf::from("/run/c8s/secrets/GATEWAY_API_KEY_PEPPER"),

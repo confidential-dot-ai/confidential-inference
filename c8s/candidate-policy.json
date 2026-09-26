@@ -36,10 +36,6 @@
       ]
     },
     {
-      "name": "gateway-state-mounter",
-      "controller": "DaemonSet/gateway-state-mounter"
-    },
-    {
       "name": "inference-worker-0",
       "controller": "StatefulSet/inference-worker-0"
     },
