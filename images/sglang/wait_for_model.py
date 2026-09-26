@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import errno
 import hashlib
 import json
@@ -23,6 +24,11 @@ from pathlib import Path
 DRAIN_DEADLINE_ENV = "WORKER_DRAIN_DEADLINE_SECONDS"
 DRAIN_PATH = "/v1/loads?include=core"
 DEFAULT_DRAIN_PORT = 30000
+# Every model file is hashed before the server starts. Hashing threads release
+# the GIL inside hashlib, so parallel reads keep a large volume's check short.
+HASH_WORKERS = max(1, min(16, os.cpu_count() or 1))
+HASH_BLOCK_BYTES = 8 * 1024 * 1024
+PROGRESS_STEP = 0.1
 
 
 class ModelMountError(ValueError):
@@ -65,7 +71,7 @@ def mount_record(path: Path, mountinfo: Path) -> tuple[set[str], str, str, set[s
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
+        for block in iter(lambda: stream.read(HASH_BLOCK_BYTES), b""):
             digest.update(block)
     return digest.hexdigest()
 
@@ -85,7 +91,7 @@ def verify_revision(
     repository: str,
     expected: str,
     expected_files: dict[str, str],
-) -> None:
+) -> dict[str, tuple[str, int]]:
     metadata = path / metadata_name
     try:
         value = json.loads(metadata.read_text(encoding="utf-8"))
@@ -131,6 +137,80 @@ def verify_revision(
             continue
         if inventory.get(name) != (expected_digest, (path / name).stat().st_size):
             raise ModelMountError("the model revision manifest file inventory does not match the release")
+    if metadata_name in inventory:
+        raise ModelMountError("the model revision manifest lists itself")
+    return inventory
+
+
+def list_model_files(path: Path) -> set[str]:
+    """List every regular file below the mount. Anything else fails closed."""
+    found = set()
+    for directory, directories, files in os.walk(path, followlinks=False):
+        base = Path(directory)
+        for name in directories:
+            if (base / name).is_symlink():
+                raise ModelMountError(f"the model volume contains a symbolic link: {(base / name).relative_to(path)}")
+        for name in files:
+            candidate = base / name
+            relative = str(candidate.relative_to(path))
+            if candidate.is_symlink() or not candidate.is_file():
+                raise ModelMountError(f"the model volume contains a non-regular file: {relative}")
+            found.add(relative)
+    return found
+
+
+def verify_every_file(path: Path, metadata_name: str, inventory: dict[str, tuple[str, int]]) -> None:
+    """Check every file on the volume against the pinned byte manifest.
+
+    The manifest is trusted because its own SHA-256 is pinned in the
+    release argv. A file that is missing, extra, of the wrong size, or of the
+    wrong digest stops the worker before the server reads any weight.
+    """
+    found = list_model_files(path)
+    expected = set(inventory) | {metadata_name}
+    missing = sorted(expected - found)
+    if missing:
+        raise ModelMountError(f"the model volume is missing a manifest file: {missing[0]}")
+    extra = sorted(found - expected)
+    if extra:
+        raise ModelMountError(f"the model volume contains a file the manifest does not list: {extra[0]}")
+    for name, (_digest, size) in inventory.items():
+        if (path / name).stat().st_size != size:
+            raise ModelMountError(f"the model file has the wrong size: {name}")
+    total = sum(size for _digest, size in inventory.values())
+    done = 0
+    next_report = PROGRESS_STEP
+    started = time.monotonic()
+    print(
+        f"model-mount: hashing {len(inventory)} files, {total} bytes, with {HASH_WORKERS} threads",
+        file=sys.stderr,
+    )
+    with concurrent.futures.ThreadPoolExecutor(max_workers=HASH_WORKERS) as pool:
+        # Largest files first, so the slowest hash does not start last.
+        order = sorted(inventory, key=lambda name: inventory[name][1], reverse=True)
+        futures = {pool.submit(sha256_file, path / name): name for name in order}
+        try:
+            for future in concurrent.futures.as_completed(futures):
+                name = futures[future]
+                if future.result() != inventory[name][0]:
+                    raise ModelMountError(f"the model file has the wrong digest: {name}")
+                done += inventory[name][1]
+                if total and done / total >= next_report:
+                    print(
+                        f"model-mount: hashed {done * 100 // total}% "
+                        f"in {time.monotonic() - started:.0f}s",
+                        file=sys.stderr,
+                    )
+                    while next_report <= done / total:
+                        next_report += PROGRESS_STEP
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+    print(
+        f"model-mount: every model file matches the manifest ({time.monotonic() - started:.0f}s)",
+        file=sys.stderr,
+    )
 
 
 def verify_index(path: Path) -> None:
@@ -184,14 +264,18 @@ def verify_once(args: argparse.Namespace) -> None:
             raise ModelMountError(f"the required model file is missing: {name}")
         if sha256_file(candidate) != expected:
             raise ModelMountError(f"the required model file has the wrong digest: {name}")
-    verify_revision(
+    expected_files = dict(args.expected_file)
+    if args.revision_metadata not in expected_files:
+        raise ModelMountError("the release does not pin the model byte manifest digest")
+    inventory = verify_revision(
         path,
         args.revision_metadata,
         args.expected_repository,
         args.expected_revision,
-        dict(args.expected_file),
+        expected_files,
     )
     verify_index(path)
+    verify_every_file(path, args.revision_metadata, inventory)
 
 
 def drain_port(command: list[str]) -> int:
