@@ -1,0 +1,17 @@
+version: v0.14.0-staging
+c8s:
+  release: v0.33.2
+  sourceCommit: c9d49a67d36b16b7adc306489b6f591611c34968
+  nodeImage:
+    reference: ghcr.io/confidential-dot-ai/node-guest-base
+    tag: rke2-tdx-cdi-v0.33.2
+    digest: sha256:2de452d8d7b44db93ffecb55050fb38681135962fa88709a69321190017cab42
+  nodeManifestArtifact:
+    tag: rke2-tdx-v0.33.2
+    digest: sha256:05674903ad9d60d5dd9eb811977847ac9963ad4700df8c390b7888458e7c525c
+model:
+  repository: deepseek-ai/DeepSeek-V4-Flash-0731
+  revision: 9e165c30e2704aec5d9d593cce3eebd58bbef1cb
+  byteManifestSha256: cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c
+publicHostnames:
+- staging.api.confidential.ai

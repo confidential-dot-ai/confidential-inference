@@ -16,6 +16,7 @@ read_spec_version = MODULE["read_spec_version"]
 class ReleaseTagTests(unittest.TestCase):
     def test_accepts_semantic_versions(self) -> None:
         self.assertEqual(parse_tag("v0.14.0"), "v0.14.0")
+        self.assertEqual(parse_tag("v0.14.0-staging"), "v0.14.0-staging")
         self.assertEqual(parse_tag("v12.4.103"), "v12.4.103")
 
     def test_rejects_release_candidates_and_other_names(self) -> None:
@@ -27,6 +28,7 @@ class ReleaseTagTests(unittest.TestCase):
             "0.14.3",
             "v0.14.3-t-v0.13.0",
             "integration-staging-v0.14.3",
+            "v0.14.3-staging.1",
         ):
             with self.subTest(tag=tag), self.assertRaises(ReleaseTagError):
                 parse_tag(tag)

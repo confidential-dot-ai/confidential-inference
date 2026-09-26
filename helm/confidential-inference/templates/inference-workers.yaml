@@ -25,8 +25,9 @@ spec:
     {{- end }}
 {{- range $index := until (int .Values.inference.replicas) }}
 {{- $simulatorMode := eq $.Values.inference.mode "simulator" }}
+{{- $modelMount := or (not $simulatorMode) $.Values.inference.simulator.validateModelMount }}
 {{- $volumeName := "" }}
-{{- if not $simulatorMode }}
+{{- if $modelMount }}
 {{- $volumeName = index $.Values.inference.model.volumeNames $index }}
 {{- end }}
 {{- $attestedWorkload := index $.Values.inference.attestedWorkloads $index }}
@@ -58,9 +59,11 @@ spec:
       annotations:
         confidential.ai/cw: inference-worker-{{ $index }}
         confidential.ai/c8s-renew-interval: {{ $.Values.attestationReceipts.certificateRenewInterval | quote }}
-        {{- if not $simulatorMode }}
+        {{- if $modelMount }}
         confidential.ai/c8s-volumes: {{ printf "%s=%s" $volumeName $.Values.inference.model.c8sVolumeSource | quote }}
         confidential.ai/c8s-volume-dir: {{ $.Values.inference.model.volumeDirectory | quote }}
+        {{- end }}
+        {{- if not $simulatorMode }}
         {{- if gt (int $.Values.inference.gpusPerReplica) 0 }}
         confidential.ai/gpu-architectures: {{ join "," $.Values.inference.gpuArchitectures | quote }}
         confidential.ai/attested-gpu-count: {{ gt (int $.Values.inference.attestedGpuCount) 0 | ternary (int $.Values.inference.attestedGpuCount) (int $.Values.inference.gpusPerReplica) | quote }}
@@ -81,14 +84,33 @@ spec:
         - name: sglang
           image: {{ $.Values.images.sglangWorker }}
           imagePullPolicy: IfNotPresent
-          {{- if $simulatorMode }}
+          {{- if and $simulatorMode (not $modelMount) }}
           command: ["python3"]
           {{- else }}
           command: ["/usr/local/bin/wait-for-model"]
           {{- end }}
           args:
+            {{- if and $simulatorMode $modelMount }}
+            - --path={{ $.Values.inference.model.volumeDirectory }}/{{ $volumeName }}
+            - --timeout-seconds={{ $.Values.inference.model.mountVerification.timeoutSeconds }}
+            - --poll-seconds={{ $.Values.inference.model.mountVerification.pollSeconds }}
+            - --expected-repository={{ $.Values.inference.model.name }}
+            - --expected-revision={{ $.Values.inference.model.revision }}
+            - --revision-metadata={{ $.Values.inference.model.mountVerification.revisionMetadata }}
+            {{- range $name, $digest := $.Values.inference.model.mountVerification.expectedFiles }}
+            - --expected-file={{ $name }}={{ $digest }}
+            {{- end }}
+            - --gpu-metrics-port={{ $.Values.inference.metricsPort }}
+            - --gpu-metrics-worker=sglang-{{ $index }}
+            - --
+            {{- end }}
             {{- if $simulatorMode }}
+            {{- if $modelMount }}
+            - python3
             - -m
+            {{- else }}
+            - -m
+            {{- end }}
             - sglang_simulator.simulation.sglang.launch_server
             - --model-path=/opt/confidential-inference/sglang-simulator/test/assets/qwen3-8b
             - --tokenizer-path=/opt/confidential-inference/sglang-simulator/examples/assets/tokenizer

@@ -13,8 +13,8 @@ on:
         required: true
         type: boolean
         default: false
-      release_candidate:
-        description: Intended release version (vX.Y.Z)
+      release_version:
+        description: Intended release version (vX.Y.Z or vX.Y.Z-staging)
         required: true
         type: string
       base_ref:
@@ -51,11 +51,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Validate the release candidate name
+      - name: Validate the release version
         env:
-          RELEASE_CANDIDATE: ${{ inputs.release_candidate }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
-          [[ "$RELEASE_CANDIDATE" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-staging)?$ ]]
 
       - name: Select affected images
         id: select
@@ -67,10 +67,10 @@ jobs:
         env:
           AFFECTED_IMAGES: ${{ steps.select.outputs.names }}
           BASE_REF: ${{ inputs.base_ref }}
-          RELEASE_CANDIDATE: ${{ inputs.release_candidate }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
           printf "### %s\n\nBase: \`%s\`\n\nAffected images: \`%s\`\n" \
-            "$RELEASE_CANDIDATE" "$BASE_REF" "${AFFECTED_IMAGES:-none}" >> "$GITHUB_STEP_SUMMARY"
+            "$RELEASE_VERSION" "$BASE_REF" "${AFFECTED_IMAGES:-none}" >> "$GITHUB_STEP_SUMMARY"
 
   reproducibility:
     if: >-

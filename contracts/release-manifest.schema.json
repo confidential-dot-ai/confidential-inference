@@ -29,9 +29,14 @@
       "additionalProperties": false,
       "required": ["name", "environment"],
       "properties": {
-        "name": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"},
-        "environment": {"const": "production"}
-      }
+        "name": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-staging)?$"},
+        "environment": {"enum": ["production", "staging"]}
+      },
+      "allOf": [{
+        "if": {"properties": {"name": {"pattern": "-staging$"}}},
+        "then": {"properties": {"environment": {"const": "staging"}}},
+        "else": {"properties": {"environment": {"const": "production"}}}
+      }]
     },
     "releaseTrust": {
       "type": "object",
@@ -112,7 +117,7 @@
       "additionalProperties": false,
       "required": ["path", "sha256"],
       "properties": {
-        "path": {"const": "release/allowlist.json"},
+        "path": {"pattern": "^release(?:/staging)?/allowlist\\.json$"},
         "sha256": {"$ref": "#/$defs/sha256Digest"}
       }
     },

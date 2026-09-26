@@ -209,10 +209,47 @@ class ManifestTests(unittest.TestCase):
 
     def test_the_committed_spec_is_valid(self):
         MAN.read_spec(ROOT / "release/spec.yaml")
+        staging = MAN.read_spec(ROOT / "release/staging/spec.yaml")
+        self.assertEqual(staging["version"], "v0.14.0-staging")
 
     def test_release_candidate_versions_are_refused(self):
-        with self.assertRaisesRegex(MAN.ManifestError, "no release-candidate"):
+        with self.assertRaisesRegex(MAN.ManifestError, "vX.Y.Z or vX.Y.Z-staging"):
             MAN.read_spec(self.spec(version="v0.14.0-rc.1"))
+
+    def test_staging_manifest_uses_the_staging_profile(self):
+        manifest = MAN.build(
+            ROOT / "release/staging",
+            ROOT / "helm/confidential-inference",
+            ROOT / "contracts/c8s-admission-source-lock.json",
+            "b" * 40,
+        )
+        self.assertEqual(manifest["release"], {"name": "v0.14.0-staging", "environment": "staging"})
+        self.assertEqual(manifest["allowlist"]["path"], "release/staging/allowlist.json")
+
+    def test_staging_workers_verify_the_model_before_the_simulator(self):
+        documents = MAN.render_chart(
+            ROOT / "helm/confidential-inference",
+            ROOT / "release/staging/values.yaml",
+        )
+        workers = [item for item in documents if item.get("kind") == "StatefulSet"
+                   and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
+        self.assertEqual(len(workers), 2)
+        for worker in workers:
+            pod = worker["spec"]["template"]
+            container = pod["spec"]["containers"][0]
+            self.assertEqual(container["command"], ["/usr/local/bin/wait-for-model"])
+            self.assertIn("python3", container["args"])
+            self.assertIn("sglang_simulator.simulation.sglang.launch_server", container["args"])
+            self.assertIn("confidential.ai/c8s-volumes", pod["metadata"]["annotations"])
+            self.assertEqual(container["resources"]["requests"]["memory"], "16Gi")
+
+        allowlist = json.loads((ROOT / "release/staging/allowlist.json").read_text())
+        zero_digest = "sha256:" + "0" * 64
+        for name in ("inference-worker-0", "inference-worker-1"):
+            policy = allowlist["workloads"][name]["containers"][0]
+            self.assertEqual(policy["command"]["argv"], ["/usr/local/bin/wait-for-model"])
+            self.assertIn("sglang_simulator.simulation.sglang.launch_server", policy["args"]["argv"])
+        self.assertNotIn(zero_digest, (ROOT / "release/staging/allowlist.json").read_text())
 
     def test_the_source_lock_pins_the_spec_commit(self):
         spec = MAN.read_spec(ROOT / "release/spec.yaml")

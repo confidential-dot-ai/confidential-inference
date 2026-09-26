@@ -44,7 +44,7 @@ SCHEMA = "confidential.ai/release-manifest/v1"
 MANIFEST_SCHEMA = ROOT / "contracts/release-manifest.schema.json"
 TRUST_POLICY = ROOT / "releases/trust/release-signing-policy.json"
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
-VERSION = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+VERSION = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-staging)?$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
@@ -91,7 +91,7 @@ def read_spec(path: Path) -> dict[str, Any]:
         "release/spec.yaml must hold exactly version, c8s, model, and publicHostnames",
     )
     require(isinstance(spec["version"], str) and VERSION.fullmatch(spec["version"]) is not None,
-            "version must be vX.Y.Z, with no release-candidate suffix")
+            "version must be vX.Y.Z or vX.Y.Z-staging")
     c8s = spec["c8s"]
     require(isinstance(c8s, dict), "c8s must be a mapping")
     require(isinstance(c8s.get("release"), str) and VERSION.fullmatch(c8s["release"]) is not None,
@@ -196,6 +196,8 @@ def image_names(values: dict[str, Any], images: list[str]) -> dict[str, str]:
 
 
 def build(release: Path, chart: Path, lock_path: Path, source_commit: str) -> dict[str, Any]:
+    release = release.resolve()
+    chart = chart.resolve()
     require(COMMIT.fullmatch(source_commit) is not None, "--source-commit must be a full Git commit")
     spec = read_spec(release / "spec.yaml")
     allowlist_path = release / "allowlist.json"
@@ -219,7 +221,10 @@ def build(release: Path, chart: Path, lock_path: Path, source_commit: str) -> di
     node = node_measurements(release / "node-manifest.json", spec)
     manifest = {
         "schema": SCHEMA,
-        "release": {"name": spec["version"], "environment": "production"},
+        "release": {
+            "name": spec["version"],
+            "environment": "staging" if spec["version"].endswith("-staging") else "production",
+        },
         "releaseTrust": {
             "policyPath": TRUST_POLICY.relative_to(ROOT).as_posix(),
             "policySha256": sha256(TRUST_POLICY.read_bytes()),
@@ -246,7 +251,10 @@ def build(release: Path, chart: Path, lock_path: Path, source_commit: str) -> di
             "sha256": sha256(lock_path.read_bytes()),
         },
         "model": spec["model"],
-        "allowlist": {"path": "release/allowlist.json", "sha256": sha256(allowlist_bytes)},
+        "allowlist": {
+            "path": allowlist_path.relative_to(ROOT).as_posix(),
+            "sha256": sha256(allowlist_bytes),
+        },
         "publicHostnames": spec["publicHostnames"],
     }
     validate_schema(manifest)

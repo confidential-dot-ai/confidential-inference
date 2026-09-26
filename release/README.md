@@ -1,11 +1,14 @@
 # Release
 
-This directory is the one source of truth for the next software release. It
+This directory is the one source of truth for the next production release. It
 replaces the per-target files in `releases/` and `c8s/`. Those files stay
 until the release tools no longer read them.
 
 The release contains no target, placement, operator key, or mesh CA. The
 private deployment repository holds the targets.
+
+`release/staging/` is the matching staging profile. It uses the CPU SGLang
+simulator and validates the encrypted model mount before the simulator starts.
 
 ## Files
 
@@ -76,5 +79,5 @@ service network `10.53.0.0/16`, so the address is the same on every cluster.
 
 ## Versions
 
-A release uses a version of three numbers, `vX.Y.Z`, with no release
-candidate suffix. A fix is a new version.
+A production release uses `vX.Y.Z`. A staging release uses `vX.Y.Z-staging`.
+A fix is a new patch version.

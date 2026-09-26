@@ -1,0 +1,52 @@
+{
+  "schema": "confidential.ai/release-allowlist-policy/v1",
+  "chart": {
+    "release": "confidential-inference",
+    "namespace": "confidential-inference-staging",
+    "kubeVersion": "1.32.0"
+  },
+  "kubernetes": {
+    "serviceHost": "10.53.0.1"
+  },
+  "c8s": {
+    "release": "v0.33.2",
+    "sourceCommit": "c9d49a67d36b16b7adc306489b6f591611c34968",
+    "coreImages": [
+      "ghcr.io/confidential-dot-ai/c8s-operator@sha256:c07dbed4486ad69f5370a7c201b7ea44cf55d0c16592eaa25340fb6724f6bd1e",
+      "ghcr.io/confidential-dot-ai/cds@sha256:7024ac49bd84d232ac303cc164ed9505e65fe8bf72ee2a2d12d78f51f08b5bdf",
+      "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:bd6c5b62707b119380dca6e9157cca072b3a13ff6e1565535a5fb9459fc182c4",
+      "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:b72a96e5720c7de41fce09ebac1388bd1d7574354d14d13f46c6ea7248e52f64",
+      "ghcr.io/confidential-dot-ai/volumed@sha256:ebbf2bbfba5e405a321c21d98ecc0c6648586018d9091a3176708054d13b7e12",
+      "nginxinc/nginx-unprivileged@sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348"
+    ]
+  },
+  "workloads": [
+    {
+      "name": "gateway",
+      "controller": "Deployment/gateway",
+      "secretReads": [
+        "/confidential-inference/gateway/api-key-pepper"
+      ]
+    },
+    {
+      "name": "inference-worker-0",
+      "controller": "StatefulSet/inference-worker-0"
+    },
+    {
+      "name": "inference-worker-1",
+      "controller": "StatefulSet/inference-worker-1"
+    },
+    {
+      "name": "kube-state-metrics",
+      "controller": "Deployment/kube-state-metrics"
+    },
+    {
+      "name": "metrics-collector",
+      "controller": "Deployment/metrics-collector"
+    },
+    {
+      "name": "sglang-router",
+      "controller": "Deployment/sglang-router"
+    }
+  ]
+}

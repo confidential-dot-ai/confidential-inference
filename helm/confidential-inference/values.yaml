@@ -242,6 +242,9 @@ inference:
     cpu: "2"
     memory: 8Gi
   simulator:
+    # Mount and verify the release model before the CPU simulator starts.
+    # Staging enables this to exercise the encrypted model-volume path.
+    validateModelMount: false
     outputMode: BLOCKING
     maxTotalTokens: 8192
     maxRunningRequests: 48

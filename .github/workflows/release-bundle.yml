@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - "v[0-9]*"
-      - "integration-staging-v[0-9]*"
-      - "conf-inference-prod-v[0-9]*"
 
 permissions: {}
 
@@ -18,7 +16,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
-      name: ${{ startsWith(github.ref_name, 'integration-staging-v') && 'signed-release-integration-staging' || startsWith(github.ref_name, 'conf-inference-prod-v') && 'signed-release-conf-inference-prod' || 'signed-release-production' }}
+      name: ${{ endsWith(github.ref_name, '-staging') && 'signed-release-staging' || 'signed-release-production' }}
     permissions:
       contents: read
       id-token: write
@@ -41,14 +39,23 @@ jobs:
           python3 -m pip install --require-hashes \
             --requirement scripts/requirements-release-signing.txt
 
-      - name: Validate the production release tag
-        if: startsWith(github.ref_name, 'v')
+      - name: Select the release profile
+        id: profile
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          case "$RELEASE_TAG" in
+            v*-staging) printf 'path=release/staging\n' >> "$GITHUB_OUTPUT" ;;
+            v*) printf 'path=release\n' >> "$GITHUB_OUTPUT" ;;
+            *) echo "The release tag is not allowed." >&2; exit 1 ;;
+          esac
+
+      - name: Validate the release tag
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          # v0.14.0 and later: vX.Y.Z only. A fix is a new version, so there
-          # is no release-candidate step.
+          # A fix uses a new patch version. Tags are never moved or reused.
           git fetch --no-tags origin \
             '+refs/heads/main:refs/remotes/origin/main'
           if gh release view "$RELEASE_TAG" \
@@ -58,11 +65,10 @@ jobs:
           fi
           python3 scripts/validate-release-tag.py \
             --tag "$RELEASE_TAG" \
-            --spec release/spec.yaml \
+            --spec "${{ steps.profile.outputs.path }}/spec.yaml" \
             --main-ref refs/remotes/origin/main
 
       - name: Install the pinned Helm
-        if: startsWith(github.ref_name, 'v')
         run: |
           curl -fsSL -o /tmp/helm.tar.gz \
             https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz
@@ -72,29 +78,13 @@ jobs:
           sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
 
       - name: Build the release manifest at the tag commit
-        if: startsWith(github.ref_name, 'v')
         run: |
           mkdir -p dist
           git rev-parse HEAD > dist/release-tag-commit.txt
           python3 scripts/build-release-manifest.py \
+            --release "${{ steps.profile.outputs.path }}" \
             --source-commit "$(git rev-parse HEAD)" \
             --output dist/release-bundle.json
-
-      - name: Prepare the exact legacy release bytes
-        if: ${{ !startsWith(github.ref_name, 'v') }}
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          case "$RELEASE_TAG" in
-            integration-staging-v[0-9]*) source=releases/integration-staging/release-bundle.json ;;
-            conf-inference-prod-v[0-9]*) source=releases/conf-inference-prod/release-bundle.json ;;
-            *) echo "The release tag is not allowed." >&2; exit 1 ;;
-          esac
-          python3 scripts/prepare-signed-release.py \
-            --source "$source" \
-            --output dist/release-bundle.json \
-            --tag-commit-output dist/release-tag-commit.txt \
-            --tag "$RELEASE_TAG"
 
       - name: Install the pinned Cosign verifier
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
