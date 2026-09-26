@@ -58,11 +58,25 @@ struct Args {
     c8s_evidence_base_url: String,
     #[arg(long, env = "GATEWAY_RELEASE_ID")]
     release_id: String,
-    #[arg(long, env = "GATEWAY_RELEASE_BUNDLE_SHA256")]
+    // The release manifest hash and the operator key hashes come from a
+    // mounted file, not the environment. The c8s allowlist pins every
+    // environment variable exactly, and the manifest holds the allowlist's
+    // hash, so a pinned manifest hash would depend on itself.
+    #[arg(long, env = "GATEWAY_RELEASE_IDENTITY_FILE")]
+    release_identity_file: Option<PathBuf>,
+    #[arg(long, env = "GATEWAY_RELEASE_BUNDLE_SHA256", default_value = "")]
     release_bundle_sha256: String,
-    #[arg(long, env = "GATEWAY_EXPECTED_OPERATOR_PUBLIC_KEY_SHA256")]
+    #[arg(
+        long,
+        env = "GATEWAY_EXPECTED_OPERATOR_PUBLIC_KEY_SHA256",
+        default_value = ""
+    )]
     expected_operator_public_key_sha256: String,
-    #[arg(long, env = "GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256")]
+    #[arg(
+        long,
+        env = "GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256",
+        default_value = ""
+    )]
     expected_operator_key_set_sha256: String,
     #[arg(long, env = "GATEWAY_C8S_POLICY_MODE", default_value = "operator")]
     c8s_policy_mode: String,
@@ -143,7 +157,7 @@ struct Args {
     #[arg(
         long,
         env = "GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE",
-        default_value = "/run/confidential-inference/admin-auth/client.crt"
+        default_value = "/mnt/c8s-data/admin-auth/client.crt"
     )]
     admin_signer_certificate_file: PathBuf,
     #[arg(long, env = "GATEWAY_MAXIMUM_BODY_BYTES", default_value_t = 2_097_152)]
@@ -214,7 +228,8 @@ async fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-    let args = Args::parse();
+    let mut args = Args::parse();
+    load_release_identity(&mut args)?;
     validate_args(&args)?;
 
     let gateway_state = if args.state_enabled {
@@ -494,6 +509,38 @@ fn validate_args(args: &Args) -> Result<()> {
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(clippy::struct_field_names)] // The names match the JSON file fields.
+struct ReleaseIdentity {
+    release_bundle_sha256: String,
+    #[serde(default)]
+    expected_operator_public_key_sha256: String,
+    #[serde(default)]
+    expected_operator_key_set_sha256: String,
+}
+
+/// Read the release identity file, when one is configured, into `args`.
+fn load_release_identity(args: &mut Args) -> Result<()> {
+    let Some(path) = args.release_identity_file.clone() else {
+        return Ok(());
+    };
+    if !args.release_bundle_sha256.is_empty()
+        || !args.expected_operator_public_key_sha256.is_empty()
+        || !args.expected_operator_key_set_sha256.is_empty()
+    {
+        bail!(
+            "set the release identity in GATEWAY_RELEASE_IDENTITY_FILE or in the environment, not both"
+        );
+    }
+    let identity: ReleaseIdentity = serde_json::from_slice(&read_bounded(&path, 4_096)?)
+        .context("parse the release identity file")?;
+    args.release_bundle_sha256 = identity.release_bundle_sha256;
+    args.expected_operator_public_key_sha256 = identity.expected_operator_public_key_sha256;
+    args.expected_operator_key_set_sha256 = identity.expected_operator_key_set_sha256;
+    Ok(())
+}
+
 fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
     let metadata =
         fs::symlink_metadata(path).with_context(|| format!("inspect {}", path.display()))?;
@@ -555,6 +602,7 @@ mod tests {
             c8s_receipt_targets: "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804".to_owned(),
             c8s_evidence_base_url: "https://api.example.test".to_owned(),
             release_id: "test-release".to_owned(),
+            release_identity_file: None,
             release_bundle_sha256: format!("sha256:{}", "1".repeat(64)),
             expected_operator_public_key_sha256: format!("sha256:{}", "2".repeat(64)),
             expected_operator_key_set_sha256: format!("sha256:{}", "3".repeat(64)),
@@ -573,7 +621,7 @@ mod tests {
             api_key_pepper_file: PathBuf::from("/run/c8s/secrets/GATEWAY_API_KEY_PEPPER"),
             state_startup_timeout_seconds: 60,
             admin_signer_certificate_file: PathBuf::from(
-                "/run/confidential-inference/admin-auth/client.crt",
+                "/mnt/c8s-data/admin-auth/client.crt",
             ),
             maximum_body_bytes: 2_097_152,
             upstream_timeout_seconds: 900,
@@ -717,5 +765,63 @@ mod tests {
         let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
         let path = directory.path().join("pepper");
         assert!(wait_for_bounded_file(&path, 4_096, Duration::from_millis(100)).is_err());
+    }
+
+    #[test]
+    fn release_identity_file_fills_the_attestation_inputs() {
+        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let path = directory.path().join("release-identity.json");
+        fs::write(
+            &path,
+            format!(
+                r#"{{"releaseBundleSha256":"sha256:{}","expectedOperatorPublicKeySha256":"sha256:{}","expectedOperatorKeySetSha256":"sha256:{}"}}"#,
+                "a".repeat(64),
+                "b".repeat(64),
+                "c".repeat(64)
+            ),
+        )
+        .unwrap_or_else(|_| unreachable!());
+        let mut value = args();
+        value.release_bundle_sha256 = String::new();
+        value.expected_operator_public_key_sha256 = String::new();
+        value.expected_operator_key_set_sha256 = String::new();
+        value.release_identity_file = Some(path);
+        assert!(load_release_identity(&mut value).is_ok());
+        assert_eq!(
+            format!("sha256:{}", "a".repeat(64)),
+            value.release_bundle_sha256
+        );
+        assert_eq!(
+            format!("sha256:{}", "b".repeat(64)),
+            value.expected_operator_public_key_sha256
+        );
+        assert_eq!(
+            format!("sha256:{}", "c".repeat(64)),
+            value.expected_operator_key_set_sha256
+        );
+    }
+
+    #[test]
+    fn release_identity_file_and_environment_are_exclusive() {
+        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let path = directory.path().join("release-identity.json");
+        fs::write(&path, r#"{"releaseBundleSha256":"x"}"#).unwrap_or_else(|_| unreachable!());
+        let mut value = args();
+        value.release_identity_file = Some(path);
+        assert!(load_release_identity(&mut value).is_err());
+    }
+
+    #[test]
+    fn release_identity_file_rejects_unknown_fields() {
+        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let path = directory.path().join("release-identity.json");
+        fs::write(&path, r#"{"releaseBundleSha256":"x","extra":1}"#)
+            .unwrap_or_else(|_| unreachable!());
+        let mut value = args();
+        value.release_bundle_sha256 = String::new();
+        value.expected_operator_public_key_sha256 = String::new();
+        value.expected_operator_key_set_sha256 = String::new();
+        value.release_identity_file = Some(path);
+        assert!(load_release_identity(&mut value).is_err());
     }
 }

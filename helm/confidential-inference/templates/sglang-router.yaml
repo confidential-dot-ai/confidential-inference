@@ -58,6 +58,8 @@ spec:
         kubernetes.io/hostname: {{ .Values.scheduling.routerNodeName | default .Values.scheduling.inferenceNodeName | quote }}
       # The router watches Ready worker Pods in this namespace.
       enableServiceLinks: false
+      # A fixed hostname keeps HOSTNAME exact in the c8s allowlist.
+      hostname: sglang-router
       serviceAccountName: sglang-router
       securityContext:
         seccompProfile:

@@ -19,8 +19,8 @@ data:
         enable_http2: true
         tls_config:
           server_name: {{ .Values.metricsCollector.remoteWrite.serverName | quote }}
-          cert_file: /run/prometheus/remote-write/tls.crt
-          key_file: /run/prometheus/remote-write/tls.key
+          cert_file: /mnt/c8s-data/prometheus-remote-write/tls.crt
+          key_file: /mnt/c8s-data/prometheus-remote-write/tls.key
           min_version: TLS12
         queue_config:
           capacity: {{ .Values.metricsCollector.remoteWrite.queue.capacity }}
@@ -205,9 +205,9 @@ data:
   {{- if .Values.metricsCollector.tls.enabled }}
   web.yml: |
     tls_server_config:
-      cert_file: /run/prometheus/tls/tls.crt
-      key_file: /run/prometheus/tls/tls.key
+      cert_file: /mnt/c8s-data/prometheus-tls/tls.crt
+      key_file: /mnt/c8s-data/prometheus-tls/tls.key
       client_auth_type: RequireAndVerifyClientCert
-      client_ca_file: /run/prometheus/client-ca/ca.crt
+      client_ca_file: /mnt/c8s-data/prometheus-client-ca/ca.crt
   {{- end }}
 {{- end }}
