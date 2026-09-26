@@ -6,6 +6,11 @@ imagePullSecret:
 scheduling:
   gatewayNodeName: gateway-node
   inferenceNodeName: inference-node
+  # One node per inference worker, by worker index. An empty list places every
+  # worker on inferenceNodeName.
+  inferenceNodeNames: []
+  # The router node. Empty uses inferenceNodeName.
+  routerNodeName: ""
 
 images:
   gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:13334810afe09f9ec722eed6fc19c4a64e87b406e926ce383a54dd2ede01fea1

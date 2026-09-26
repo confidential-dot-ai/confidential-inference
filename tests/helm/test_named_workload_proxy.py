@@ -212,8 +212,11 @@ def test_router_service_targets_authenticated_proxy_and_health_stays_loopback() 
         port for port in proxy["ports"] if port["name"] == "proxy-tls"
     )["containerPort"] == 9443
     assert "--host=127.0.0.1" in app["args"]
-    assert "http://127.0.0.1:30000/readiness" in app["readinessProbe"]["exec"]["command"][-1]
-    assert "http://127.0.0.1:30000/health" in app["livenessProbe"]["exec"]["command"][-1]
+    # c8s v0.33 seals exec. The router API stays on loopback, so the kubelet
+    # probes the metrics listener over HTTP.
+    for probe in ("readinessProbe", "livenessProbe"):
+        assert "exec" not in app[probe]
+        assert app[probe]["httpGet"] == {"path": "/metrics", "port": "metrics"}
     assert proxy["command"] == ["/c8s"] and proxy["args"][0] == "workload-proxy"
     assert proxy["args"] == ["workload-proxy", *PROXY_ARGS["server"]]
     assert proxy["readinessProbe"] == {

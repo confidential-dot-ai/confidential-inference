@@ -55,8 +55,9 @@ spec:
         prometheus.io/port: {{ .Values.router.metricsPort | quote }}
     spec:
       nodeSelector:
-        kubernetes.io/hostname: {{ .Values.scheduling.inferenceNodeName | quote }}
+        kubernetes.io/hostname: {{ .Values.scheduling.routerNodeName | default .Values.scheduling.inferenceNodeName | quote }}
       # The router watches Ready worker Pods in this namespace.
+      enableServiceLinks: false
       serviceAccountName: sglang-router
       securityContext:
         seccompProfile:
@@ -99,20 +100,29 @@ spec:
             requests:
               cpu: {{ .Values.router.resources.cpu | quote }}
               memory: {{ .Values.router.resources.memory }}
+          # c8s v0.33 seals exec, so the kubelet probes over HTTP. With the
+          # named-workload proxy the router listens on loopback only, so the
+          # probes use the metrics listener instead.
           readinessProbe:
-            exec:
-              command:
-                - python3
-                - -c
-                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:30000/readiness', timeout=3).read()"
+            httpGet:
+              {{- if .Values.namedWorkloadProxy.enabled }}
+              path: /metrics
+              port: metrics
+              {{- else }}
+              path: /readiness
+              port: openai
+              {{- end }}
             periodSeconds: 10
             timeoutSeconds: 5
           livenessProbe:
-            exec:
-              command:
-                - python3
-                - -c
-                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:30000/health', timeout=3).read()"
+            httpGet:
+              {{- if .Values.namedWorkloadProxy.enabled }}
+              path: /metrics
+              port: metrics
+              {{- else }}
+              path: /health
+              port: openai
+              {{- end }}
             periodSeconds: 30
             timeoutSeconds: 5
         {{- if .Values.namedWorkloadProxy.enabled }}

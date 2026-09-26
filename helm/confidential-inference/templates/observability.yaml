@@ -28,6 +28,7 @@ spec:
         - ip: {{ .Values.metricsCollector.remoteWrite.address | quote }}
           hostnames: [{{ .Values.metricsCollector.remoteWrite.serverName | quote }}]
       {{- end }}
+      enableServiceLinks: false
       serviceAccountName: metrics-collector
       securityContext:
         seccompProfile:

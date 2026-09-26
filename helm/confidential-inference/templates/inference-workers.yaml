@@ -70,7 +70,8 @@ spec:
         prometheus.io/port: {{ $.Values.inference.port | quote }}
     spec:
       nodeSelector:
-        kubernetes.io/hostname: {{ $.Values.scheduling.inferenceNodeName | quote }}
+        kubernetes.io/hostname: {{ include "confidential-inference.inferenceNodeName" (dict "root" $ "index" $index) | quote }}
+      enableServiceLinks: false
       serviceAccountName: confidential-inference
       terminationGracePeriodSeconds: {{ $.Values.inference.terminationGracePeriodSeconds }}
       securityContext:
