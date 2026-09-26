@@ -230,6 +230,9 @@ class ManifestTests(unittest.TestCase):
         documents = MAN.render_chart(
             ROOT / "helm/confidential-inference",
             ROOT / "release/staging/values.yaml",
+            release_name="confidential-inference",
+            namespace="confidential-inference-staging",
+            kube_version="1.32.0",
         )
         workers = [item for item in documents if item.get("kind") == "StatefulSet"
                    and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
@@ -250,6 +253,59 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(policy["command"]["argv"], ["/usr/local/bin/wait-for-model"])
             self.assertIn("sglang_simulator.simulation.sglang.launch_server", policy["args"]["argv"])
         self.assertNotIn(zero_digest, (ROOT / "release/staging/allowlist.json").read_text())
+
+    def test_manifest_refuses_model_values_that_differ_from_the_spec(self):
+        spec = MAN.read_spec(ROOT / "release/staging/spec.yaml")
+        values = yaml.safe_load((ROOT / "release/staging/values.yaml").read_text())
+        MAN.require_model_agreement(spec, values)
+        cases = [
+            ("name", "different/model", "repository"),
+            ("revision", "a" * 40, "revision"),
+        ]
+        for field, value, message in cases:
+            changed = json.loads(json.dumps(values))
+            changed["inference"]["model"][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(MAN.ManifestError, message):
+                MAN.require_model_agreement(spec, changed)
+        changed = json.loads(json.dumps(values))
+        metadata = changed["inference"]["model"]["mountVerification"]["revisionMetadata"]
+        changed["inference"]["model"]["mountVerification"]["expectedFiles"][metadata] = "0" * 64
+        with self.assertRaisesRegex(MAN.ManifestError, "byte manifest"):
+            MAN.require_model_agreement(spec, changed)
+
+    def test_staging_policy_uses_its_exact_render_and_allowlist_namespace(self):
+        release = ROOT / "release/staging"
+        spec = MAN.read_spec(release / "spec.yaml")
+        policy = MAN.read_allowlist_policy(release / "allowlist-policy.json", spec)
+        settings = policy["chart"]
+        documents = MAN.render_chart(
+            ROOT / "helm/confidential-inference",
+            release / "values.yaml",
+            release_name=settings["release"],
+            namespace=settings["namespace"],
+            kube_version=settings["kubeVersion"],
+        )
+        allowlist = json.loads((release / "allowlist.json").read_text())
+        configs = json.loads((release / "inputs/image-config.json").read_text())
+        MAN.require_allowlist_contract(allowlist, policy, documents, configs)
+        router = next(item for item in documents if item.get("kind") == "Deployment"
+                      and item.get("metadata", {}).get("name") == "sglang-router")
+        args = router["spec"]["template"]["spec"]["containers"][0]["args"]
+        self.assertIn("--service-discovery-namespace=confidential-inference-staging", args)
+        changed = json.loads(json.dumps(allowlist))
+        changed["workloads"].pop("inference-worker-1")
+        with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
+            MAN.require_allowlist_contract(changed, policy, documents, configs)
+        changed = json.loads(json.dumps(allowlist))
+        changed["workloads"]["sglang-router"]["containers"][0]["args"]["argv"][1] = \
+            "--service-discovery-namespace=wrong"
+        with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
+            MAN.require_allowlist_contract(changed, policy, documents, configs)
+
+    def test_staging_readme_fetches_the_node_manifest_into_the_profile(self):
+        readme = (ROOT / "release/staging/README.md").read_text()
+        self.assertIn("--spec release/staging/spec.yaml", readme)
+        self.assertIn("--output release/staging/node-manifest.json", readme)
 
     def test_the_source_lock_pins_the_spec_commit(self):
         spec = MAN.read_spec(ROOT / "release/spec.yaml")

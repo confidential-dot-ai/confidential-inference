@@ -120,6 +120,7 @@ inference:
         config.json: 6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023
         model.safetensors.index.json: 98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b
         tokenizer_config.json: 6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
+      revisionMetadata: .model-lock-local-manifest.json
   resources:
     cpu: '2'
     memory: 16Gi
