@@ -1,4 +1,5 @@
 version: v0.14.0-staging
+imageSourceCommit: ec87a79551db331180c319202144a53ee0b6f60f
 c8s:
   release: v0.33.2
   sourceCommit: c9d49a67d36b16b7adc306489b6f591611c34968

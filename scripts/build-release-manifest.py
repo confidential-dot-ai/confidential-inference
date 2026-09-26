@@ -28,6 +28,7 @@ import argparse
 import hashlib
 import json
 import re
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -45,6 +46,7 @@ MANIFEST_SCHEMA = ROOT / "contracts/release-manifest.schema.json"
 PUBLICATION_SCHEMA = ROOT / "contracts/image-publication-manifest.schema.json"
 TRUST_POLICY = ROOT / "releases/trust/release-signing-policy.json"
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
+IMAGE_SELECTOR = runpy.run_path(str(ROOT / "scripts/affected-release-images.py"))
 VERSION = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-staging)?$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -88,11 +90,13 @@ def read_spec(path: Path) -> dict[str, Any]:
     spec = read_yaml(path)
     require(isinstance(spec, dict), "release/spec.yaml is not a mapping")
     require(
-        set(spec) == {"version", "c8s", "model", "publicHostnames"},
-        "release/spec.yaml must hold exactly version, c8s, model, and publicHostnames",
+        set(spec) == {"version", "imageSourceCommit", "c8s", "model", "publicHostnames"},
+        "release/spec.yaml must hold exactly version, imageSourceCommit, c8s, model, and publicHostnames",
     )
     require(isinstance(spec["version"], str) and VERSION.fullmatch(spec["version"]) is not None,
             "version must be vX.Y.Z or vX.Y.Z-staging")
+    require(COMMIT.fullmatch(str(spec["imageSourceCommit"])) is not None,
+            "imageSourceCommit must be a full Git commit")
     c8s = spec["c8s"]
     require(isinstance(c8s, dict), "c8s must be a mapping")
     require(isinstance(c8s.get("release"), str) and VERSION.fullmatch(c8s["release"]) is not None,
@@ -317,6 +321,7 @@ def image_publication(
     path: Path,
     *,
     release_version: str,
+    source_commit: str,
     release_images: dict[str, str],
 ) -> dict[str, Any]:
     """Validate publication evidence and bind it into the signed manifest."""
@@ -334,17 +339,29 @@ def image_publication(
             "image publication release version differs from the release specification")
     require(publication["source"]["repository"] == REPOSITORY,
             "image publication repository differs from the release repository")
-    rendered = set(release_images.values())
+    require(publication["source"]["commit"] == source_commit,
+            "image publication source commit differs from imageSourceCommit")
+    deployed_by_repository = {
+        image.rsplit("@", 1)[0]: image
+        for image in release_images.values()
+    }
     names: list[str] = []
     bound: dict[str, str] = {}
+    registered = {
+        f"ghcr.io/confidential-dot-ai/confidential-inference/{image.image}"
+        for image in IMAGE_SELECTOR["IMAGES"]
+    }
     for entry in publication["images"]:
         name = entry["name"]
         pushed = entry["pushedDigest"]
         reproducible = entry["reproducibilityDigest"]
         require(pushed == reproducible,
                 f"published digest differs from reproducibility digest for {name}")
-        require(f"{name}@{pushed}" in rendered,
-                f"published image is absent from the rendered release: {name}@{pushed}")
+        require(name in registered, f"published image is outside the release image registry: {name}")
+        deployed = deployed_by_repository.get(name)
+        if deployed is not None:
+            require(deployed == f"{name}@{pushed}",
+                    f"published image digest differs from the rendered release: {name}@{pushed}")
         names.append(name)
         bound[name] = pushed
     require(names == sorted(names) and len(names) == len(set(names)),
@@ -359,6 +376,30 @@ def image_publication(
     }
 
 
+def verify_image_source_boundary(
+    image_source_commit: str,
+    release_source_commit: str,
+    repo: Path = ROOT,
+) -> None:
+    """Require a later pin-only release commit for the published images."""
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", image_source_commit, release_source_commit],
+        cwd=repo, capture_output=True, text=True,
+    )
+    require(ancestor.returncode == 0,
+            "imageSourceCommit must be an ancestor of the release source commit")
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=ACMRTD",
+         image_source_commit, release_source_commit],
+        cwd=repo, capture_output=True, text=True,
+    )
+    require(changed.returncode == 0, "cannot compare image and release source commits")
+    affected = IMAGE_SELECTOR["affected_images"](changed.stdout.splitlines())
+    require(not affected,
+            "image build inputs changed after imageSourceCommit: "
+            + ", ".join(image.image for image in affected))
+
+
 def build(
     release: Path,
     chart: Path,
@@ -370,6 +411,7 @@ def build(
     chart = chart.resolve()
     require(COMMIT.fullmatch(source_commit) is not None, "--source-commit must be a full Git commit")
     spec = read_spec(release / "spec.yaml")
+    verify_image_source_boundary(spec["imageSourceCommit"], source_commit)
     policy = read_allowlist_policy(release / "allowlist-policy.json", spec)
     allowlist_path = release / "allowlist.json"
     require(allowlist_path.is_file(), "release/allowlist.json is absent; generate it first")
@@ -407,6 +449,7 @@ def build(
     publication = image_publication(
         publication_path,
         release_version=spec["version"],
+        source_commit=spec["imageSourceCommit"],
         release_images=named_images,
     )
     manifest = {

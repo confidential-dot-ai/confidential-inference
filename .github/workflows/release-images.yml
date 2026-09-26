@@ -45,6 +45,8 @@ jobs:
       sglang: ${{ steps.select.outputs.sglang }}
       names: ${{ steps.select.outputs.names }}
       standard_names: ${{ steps.select.outputs.standard_names }}
+      production_version: ${{ steps.profile.outputs.production_version }}
+      staging_version: ${{ steps.profile.outputs.staging_version }}
     steps:
       - name: Check out main with release history
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -52,12 +54,16 @@ jobs:
           fetch-depth: 0
 
       - name: Validate the release version
+        id: profile
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
           PUBLISH: ${{ inputs.publish }}
           REBUILD_AUDIT: ${{ inputs.rebuild_audit }}
         run: |
           [[ "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-staging)?$ ]]
+          production_version="${RELEASE_VERSION%-staging}"
+          printf 'production_version=%s\n' "$production_version" >> "$GITHUB_OUTPUT"
+          printf 'staging_version=%s-staging\n' "$production_version" >> "$GITHUB_OUTPUT"
           if [[ "$PUBLISH" == true && "$REBUILD_AUDIT" != true ]]; then
             echo "Publication requires the deterministic rebuild audit." >&2
             exit 1
@@ -67,7 +73,11 @@ jobs:
         id: select
         env:
           BASE_REF: ${{ inputs.base_ref }}
-        run: python3 scripts/affected-release-images.py --base-ref "$BASE_REF" --head "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+        run: >-
+          python3 scripts/affected-release-images.py
+          --base-ref "$BASE_REF"
+          --head "$GITHUB_SHA"
+          >> "$GITHUB_OUTPUT"
 
       - name: Require an image for publication
         if: inputs.publish
@@ -465,7 +475,8 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}
-          RELEASE_VERSION: ${{ inputs.release_version }}
+          PRODUCTION_VERSION: ${{ needs.select-images.outputs.production_version }}
+          STAGING_VERSION: ${{ needs.select-images.outputs.staging_version }}
         run: |
           scripts/check-image-build-output.sh "$IMAGE_DIGEST"
           reproducibility_digest="$(tr -d '\n' < /tmp/verified-digest/${{ matrix.image }}.platform-digest)"
@@ -474,15 +485,22 @@ jobs:
             --pushed-digest "$IMAGE_DIGEST" \
             --reproducibility-digest "$reproducibility_digest" \
             --source-commit "$GITHUB_SHA" \
-            --release-version "$RELEASE_VERSION" \
-            --output /tmp/${{ matrix.image }}.publication.json
+            --release-version "$PRODUCTION_VERSION" \
+            --output /tmp/${{ matrix.image }}.production.publication.json
+          python3 scripts/image-publication-manifest.py record \
+            --image "$IMAGE_NAME" \
+            --pushed-digest "$IMAGE_DIGEST" \
+            --reproducibility-digest "$reproducibility_digest" \
+            --source-commit "$GITHUB_SHA" \
+            --release-version "$STAGING_VERSION" \
+            --output /tmp/${{ matrix.image }}.staging.publication.json
           printf "### %s\n\n\`%s@%s\`\n" "$IMAGE_NAME" "$IMAGE_NAME" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save the verified publication record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-image-publication-record-${{ matrix.image }}
-          path: /tmp/${{ matrix.image }}.publication.json
+          path: /tmp/${{ matrix.image }}.*.publication.json
           if-no-files-found: error
           retention-days: 1
 
@@ -506,26 +524,40 @@ jobs:
           path: /tmp/publication-records
           merge-multiple: true
 
-      - name: Build the machine-readable publication manifest
+      - name: Build both machine-readable publication manifests
         env:
           SELECTED_IMAGES: ${{ needs.select-images.outputs.names }}
         run: |
-          mkdir -p dist
-          mapfile -t records < <(find /tmp/publication-records -maxdepth 1 -type f -name '*.publication.json' -print | sort)
-          test "${#records[@]}" -gt 0
-          args=()
-          for record in "${records[@]}"; do args+=(--record "$record"); done
-          IFS=, read -ra images <<< "$SELECTED_IMAGES"
-          for image in "${images[@]}"; do args+=(--expected-image "$image"); done
-          python3 scripts/image-publication-manifest.py merge \
-            "${args[@]}" \
-            --output dist/image-publication-manifest.json
+          mkdir -p dist/production dist/staging
+          build_manifest() {
+            local profile="$1" selected="$2" output="$3"
+            local args=()
+            IFS=, read -ra images <<< "$selected"
+            test "${#images[@]}" -gt 0
+            for image in "${images[@]}"; do
+              record="/tmp/publication-records/${image}.${profile}.publication.json"
+              test -f "$record"
+              args+=(--record "$record" --expected-image "$image")
+            done
+            python3 scripts/image-publication-manifest.py merge "${args[@]}" --output "$output"
+          }
+          build_manifest production "$SELECTED_IMAGES" dist/production/image-publication-manifest.json
+          build_manifest staging "$SELECTED_IMAGES" dist/staging/image-publication-manifest.json
 
-      - name: Save the release image publication evidence
+      - name: Save the production image publication evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-image-publication-${{ inputs.release_version }}
-          path: dist/image-publication-manifest.json
+          name: release-image-publication-${{ needs.select-images.outputs.production_version }}
+          path: dist/production/image-publication-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+      - name: Save the staging image publication evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-image-publication-${{ needs.select-images.outputs.staging_version }}
+          path: dist/staging/image-publication-manifest.json
           if-no-files-found: error
           retention-days: 90
           overwrite: true

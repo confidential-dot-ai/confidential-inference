@@ -85,9 +85,13 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           artifact_name="release-image-publication-${RELEASE_TAG}"
+          image_source_commit="$(python3 -c \
+            'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["imageSourceCommit"])' \
+            "${{ steps.profile.outputs.path }}/spec.yaml")"
           run_id="$(python3 scripts/find-image-publication-run.py \
             --repository "$GITHUB_REPOSITORY" \
-            --artifact-name "$artifact_name")"
+            --artifact-name "$artifact_name" \
+            --source-commit "$image_source_commit")"
           printf 'artifact_name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
           printf 'run_id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
 

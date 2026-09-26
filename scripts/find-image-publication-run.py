@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -14,6 +15,9 @@ import urllib.request
 
 class LookupError(ValueError):
     """No unique trusted workflow artifact was found."""
+
+
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 
 def request_json(url: str, token: str) -> dict:
@@ -32,7 +36,15 @@ def request_json(url: str, token: str) -> dict:
         raise LookupError(f"GitHub API request failed: {error}") from error
 
 
-def find_run(api_url: str, repository: str, token: str, artifact_name: str) -> int:
+def find_run(
+    api_url: str,
+    repository: str,
+    token: str,
+    artifact_name: str,
+    source_commit: str,
+) -> int:
+    if COMMIT.fullmatch(source_commit) is None:
+        raise LookupError("source commit must be a full lowercase Git commit")
     query = urllib.parse.urlencode({"name": artifact_name, "per_page": 100})
     artifacts = request_json(
         f"{api_url}/repos/{repository}/actions/artifacts?{query}", token,
@@ -52,12 +64,14 @@ def find_run(api_url: str, repository: str, token: str, artifact_name: str) -> i
             and run.get("path") == ".github/workflows/release-images.yml"
             and run.get("conclusion") == "success"
             and run.get("head_branch") == "main"
+            and run.get("head_sha") == source_commit
             and (run.get("repository") or {}).get("full_name") == repository
         ):
             trusted.append(run_id)
     if len(trusted) != 1:
         raise LookupError(
-            f"expected one successful release-images run on main for {artifact_name}; "
+            f"expected one successful release-images run on main at {source_commit} "
+            f"for {artifact_name}; "
             f"found {trusted}"
         )
     return trusted[0]
@@ -67,6 +81,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--artifact-name", required=True)
+    parser.add_argument("--source-commit", required=True)
     parser.add_argument("--api-url", default=os.environ.get("GITHUB_API_URL", "https://api.github.com"))
     parser.add_argument("--token-env", default="GITHUB_TOKEN")
     args = parser.parse_args()
@@ -77,7 +92,7 @@ def main() -> int:
     try:
         run_id = find_run(
             args.api_url.rstrip("/"), args.repository, token,
-            args.artifact_name,
+            args.artifact_name, args.source_commit,
         )
     except LookupError as error:
         print(f"find-image-publication-run: {error}", file=sys.stderr)

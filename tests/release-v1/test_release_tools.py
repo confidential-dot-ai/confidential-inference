@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -216,8 +217,47 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(MAN.ManifestError, "vX.Y.Z or vX.Y.Z-staging"):
             MAN.read_spec(self.spec(version="v0.14.0-rc.1"))
 
+    def test_image_source_boundary_allows_only_later_non_image_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            gateway = repo / "images/gateway/Dockerfile"
+            gateway.parent.mkdir(parents=True)
+            gateway.write_text("FROM scratch\n")
+            release_values = repo / "release/values.yaml"
+            release_values.parent.mkdir(parents=True)
+            release_values.write_text("version: first\n")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "image source"], cwd=repo, check=True)
+            image_source = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+            ).strip()
+
+            release_values.write_text("version: pinned\n")
+            subprocess.run(["git", "commit", "-qam", "pin release"], cwd=repo, check=True)
+            release_source = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+            ).strip()
+            MAN.verify_image_source_boundary(image_source, release_source, repo)
+
+            gateway.write_text("FROM scratch\nLABEL changed=yes\n")
+            subprocess.run(["git", "commit", "-qam", "change image"], cwd=repo, check=True)
+            changed_source = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+            ).strip()
+            with self.assertRaisesRegex(MAN.ManifestError, "gateway"):
+                MAN.verify_image_source_boundary(image_source, changed_source, repo)
+
     def test_staging_manifest_uses_the_staging_profile(self):
         values = yaml.safe_load((ROOT / "release/staging/values.yaml").read_text())
+        image_source_commit = MAN.read_spec(
+            ROOT / "release/staging/spec.yaml"
+        )["imageSourceCommit"]
+        release_source_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip()
         records = {}
         for value in values["images"].values():
             if value.startswith("ghcr.io/confidential-dot-ai/confidential-inference/"):
@@ -228,7 +268,7 @@ class ManifestTests(unittest.TestCase):
             "releaseVersion": "v0.14.0-staging",
             "source": {
                 "repository": "https://github.com/confidential-dot-ai/confidential-inference",
-                "commit": "b" * 40,
+                "commit": image_source_commit,
             },
             "images": [
                 {"name": name, "pushedDigest": digest, "reproducibilityDigest": digest}
@@ -242,12 +282,13 @@ class ManifestTests(unittest.TestCase):
                 ROOT / "release/staging",
                 ROOT / "helm/confidential-inference",
                 ROOT / "contracts/c8s-admission-source-lock.json",
-                "b" * 40,
+                release_source_commit,
                 publication_path,
             )
         self.assertEqual(manifest["release"], {"name": "v0.14.0-staging", "environment": "staging"})
         self.assertEqual(manifest["allowlist"]["path"], "release/staging/allowlist.json")
-        self.assertEqual(manifest["imagePublication"]["sourceCommit"], "b" * 40)
+        self.assertEqual(manifest["source"]["commit"], release_source_commit)
+        self.assertEqual(manifest["imagePublication"]["sourceCommit"], image_source_commit)
 
     def test_staging_workers_verify_the_model_before_the_simulator(self):
         documents = MAN.render_chart(
@@ -313,10 +354,68 @@ class ManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "publication.json"
             path.write_text(json.dumps(publication))
-            with self.assertRaisesRegex(MAN.ManifestError, "absent from the rendered release"):
+            with self.assertRaisesRegex(MAN.ManifestError, "differs from the rendered release"):
                 MAN.image_publication(
                     path,
                     release_version="v0.14.0-staging",
+                    source_commit="b" * 40,
+                    release_images={
+                        "gateway": "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64,
+                    },
+                )
+
+    def test_manifest_records_a_published_image_outside_the_application_chart(self):
+        publication = {
+            "schema": "confidential.ai/image-publication-manifest/v1",
+            "releaseVersion": "v0.14.0",
+            "source": {
+                "repository": "https://github.com/confidential-dot-ai/confidential-inference",
+                "commit": "b" * 40,
+            },
+            "images": [{
+                "name": "ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway",
+                "pushedDigest": "sha256:" + "2" * 64,
+                "reproducibilityDigest": "sha256:" + "2" * 64,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "publication.json"
+            path.write_text(json.dumps(publication))
+            result = MAN.image_publication(
+                path,
+                release_version="v0.14.0",
+                source_commit="b" * 40,
+                release_images={
+                    "gateway": "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64,
+                },
+            )
+        self.assertEqual(
+            result["images"]["ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway"],
+            "sha256:" + "2" * 64,
+        )
+
+    def test_manifest_refuses_publication_from_another_source_commit(self):
+        publication = {
+            "schema": "confidential.ai/image-publication-manifest/v1",
+            "releaseVersion": "v0.14.0-staging",
+            "source": {
+                "repository": "https://github.com/confidential-dot-ai/confidential-inference",
+                "commit": "a" * 40,
+            },
+            "images": [{
+                "name": "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
+                "pushedDigest": "sha256:" + "1" * 64,
+                "reproducibilityDigest": "sha256:" + "1" * 64,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "publication.json"
+            path.write_text(json.dumps(publication))
+            with self.assertRaisesRegex(MAN.ManifestError, "source commit differs"):
+                MAN.image_publication(
+                    path,
+                    release_version="v0.14.0-staging",
+                    source_commit="b" * 40,
                     release_images={
                         "gateway": "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64,
                     },

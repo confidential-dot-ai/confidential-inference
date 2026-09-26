@@ -24,12 +24,15 @@ simulator and validates the encrypted model mount before the simulator starts.
 | `accepted-lint-findings.json` | A reviewer | The `c8s allowlist lint --strict` findings that the release accepts, each with its reason and issue |
 
 The release workflow builds the release manifest with
-`build-release-manifest.py` at the tag commit. The manifest names that commit,
-so it is not committed here. It also consumes the machine-readable image
+`build-release-manifest.py` at the tag commit. The manifest records that
+release source commit, so it is not committed here. The profile also pins an
+earlier `imageSourceCommit`. It consumes the machine-readable image
 publication artifact from the successful `release-images` run for that
 release version. The evidence records the exact source commit used to build
 the images. It refuses an image whose pushed digest differs
 from its deterministic rebuild digest or from the rendered release values.
+It also refuses a release source commit that changes an image build input
+after `imageSourceCommit`.
 It must match
 `contracts/release-manifest.schema.json`.
 
@@ -37,12 +40,19 @@ It must match
 
 1. A person changes the image source and the version in `spec.yaml`. Merge
    that pull request.
-2. Run `release-images` on main with `publish` and `rebuild_audit` enabled.
-   The workflow rebuilds each selected image twice, publishes a third clean
-   build, and requires all three platform digests to be equal. It writes
-   `image-publication-manifest.json` with the image names, digests, source
-   commit, and release version.
-3. Put the published digests in `values.yaml`. Run the release tools:
+2. After the image source changes are on main, run `release-images` once with
+   `publish` and `rebuild_audit`
+   enabled. Give it the normal `vX.Y.Z` version. The workflow selects every
+   changed repository image. This includes release images such as
+   `maintenance-gateway` even when the application chart does not deploy
+   them. It rebuilds each selected image twice, publishes a third clean build, and
+   requires all three platform digests to be equal. The one run writes two
+   publication artifacts. One names `vX.Y.Z`. The other names
+   `vX.Y.Z-staging`. Both artifacts record the same source commit and image
+   digests.
+3. Put the image run head commit in `imageSourceCommit` in both profile
+   specifications. Put the published digests in each `values.yaml`. Run the
+   release tools:
 
    ```sh
    python3 scripts/fetch-node-manifest.py
@@ -53,9 +63,13 @@ It must match
    The allowlist generator refuses a value that no pinned input gives, such
    as a node IP address or a random pod name.
 4. Merge the release inputs. Tag that release commit `vX.Y.Z`. The release
-   workflow gets the unique publication artifact for the version. It checks
-   that its digest references occur in the rendered release, then binds the
-   image source commit and digest evidence into the signed release manifest.
+   workflow gets the unique publication artifact for the version and exact
+   `imageSourceCommit`. It checks that its digest references occur in the
+   rendered release when that image is deployed. It permits a published
+   release image, such as `maintenance-gateway`, that this application chart
+   does not deploy. It proves that no image build input changed between the
+   image source and tag commits. It then binds both commits and the digest
+   evidence into the signed release manifest.
    The release workflow attaches both manifests, the signature, and the tag
    commit to the GitHub release.
 

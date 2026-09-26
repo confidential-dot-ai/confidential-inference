@@ -50,6 +50,7 @@
       }
     },
     "source": {
+      "description": "The tagged release source. It pins profiles, chart inputs, allowlists, and image digests.",
       "type": "object",
       "additionalProperties": false,
       "required": ["repository", "commit"],
@@ -74,6 +75,7 @@
           "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-staging)?$"
         },
         "sourceCommit": {
+          "description": "The earlier image source commit used by the deterministic image publication run.",
           "$ref": "#/$defs/gitCommit"
         },
         "images": {
