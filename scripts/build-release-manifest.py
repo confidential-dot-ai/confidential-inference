@@ -42,6 +42,7 @@ CHART = ROOT / "helm/confidential-inference"
 SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
 SCHEMA = "confidential.ai/release-manifest/v1"
 MANIFEST_SCHEMA = ROOT / "contracts/release-manifest.schema.json"
+PUBLICATION_SCHEMA = ROOT / "contracts/image-publication-manifest.schema.json"
 TRUST_POLICY = ROOT / "releases/trust/release-signing-policy.json"
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 VERSION = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-staging)?$")
@@ -312,7 +313,59 @@ def image_names(values: dict[str, Any], images: list[str]) -> dict[str, str]:
     return dict(sorted(named.items()))
 
 
-def build(release: Path, chart: Path, lock_path: Path, source_commit: str) -> dict[str, Any]:
+def image_publication(
+    path: Path,
+    *,
+    release_version: str,
+    release_images: dict[str, str],
+) -> dict[str, Any]:
+    """Validate publication evidence and bind it into the signed manifest."""
+    data = path.read_bytes()
+    publication = json.loads(data)
+    schema = read_json(PUBLICATION_SCHEMA)
+    errors = sorted(
+        jsonschema.Draft202012Validator(schema).iter_errors(publication),
+        key=lambda error: list(error.path),
+    )
+    if errors:
+        location = ".".join(str(part) for part in errors[0].path) or "manifest"
+        raise ManifestError(f"image publication {location}: {errors[0].message}")
+    require(publication["releaseVersion"] == release_version,
+            "image publication release version differs from the release specification")
+    require(publication["source"]["repository"] == REPOSITORY,
+            "image publication repository differs from the release repository")
+    rendered = set(release_images.values())
+    names: list[str] = []
+    bound: dict[str, str] = {}
+    for entry in publication["images"]:
+        name = entry["name"]
+        pushed = entry["pushedDigest"]
+        reproducible = entry["reproducibilityDigest"]
+        require(pushed == reproducible,
+                f"published digest differs from reproducibility digest for {name}")
+        require(f"{name}@{pushed}" in rendered,
+                f"published image is absent from the rendered release: {name}@{pushed}")
+        names.append(name)
+        bound[name] = pushed
+    require(names == sorted(names) and len(names) == len(set(names)),
+            "image publication entries must have unique sorted names")
+    require(bool(bound), "image publication has no image")
+    return {
+        "artifact": "image-publication-manifest.json",
+        "manifestSha256": sha256(data),
+        "releaseVersion": publication["releaseVersion"],
+        "sourceCommit": publication["source"]["commit"],
+        "images": dict(sorted(bound.items())),
+    }
+
+
+def build(
+    release: Path,
+    chart: Path,
+    lock_path: Path,
+    source_commit: str,
+    publication_path: Path,
+) -> dict[str, Any]:
     release = release.resolve()
     chart = chart.resolve()
     require(COMMIT.fullmatch(source_commit) is not None, "--source-commit must be a full Git commit")
@@ -350,6 +403,12 @@ def build(release: Path, chart: Path, lock_path: Path, source_commit: str) -> di
     node_reference = f"{spec['c8s']['nodeImage']['reference']}@{spec['c8s']['nodeImage']['digest']}"
     require(lock["nodeImage"] == node_reference, "the source lock node image differs from c8s.nodeImage")
     node = node_measurements(release / "node-manifest.json", spec)
+    named_images = image_names(values, images)
+    publication = image_publication(
+        publication_path,
+        release_version=spec["version"],
+        release_images=named_images,
+    )
     manifest = {
         "schema": SCHEMA,
         "release": {
@@ -362,7 +421,8 @@ def build(release: Path, chart: Path, lock_path: Path, source_commit: str) -> di
             "signatureType": "sigstore-keyless",
         },
         "source": {"repository": REPOSITORY, "commit": source_commit},
-        "images": image_names(values, images),
+        "imagePublication": publication,
+        "images": named_images,
         "chart": {
             "name": chart_identity(chart)["name"],
             "version": chart_identity(chart)["version"],
@@ -411,11 +471,19 @@ def main() -> int:
     parser.add_argument("--source-lock", type=Path, default=SOURCE_LOCK)
     parser.add_argument("--source-commit", required=True,
                         help="the commit of this repository that the release tag names")
+    parser.add_argument("--image-publication", type=Path, required=True,
+                        help="verified image publication manifest from the release-images workflow")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     try:
-        data = encode(build(args.release, args.chart, args.source_lock.resolve(), args.source_commit))
+        data = encode(build(
+            args.release,
+            args.chart,
+            args.source_lock.resolve(),
+            args.source_commit,
+            args.image_publication.resolve(),
+        ))
         output = args.output
         if args.check:
             require(output.is_file() and output.read_bytes() == data,

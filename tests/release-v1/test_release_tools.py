@@ -217,14 +217,37 @@ class ManifestTests(unittest.TestCase):
             MAN.read_spec(self.spec(version="v0.14.0-rc.1"))
 
     def test_staging_manifest_uses_the_staging_profile(self):
-        manifest = MAN.build(
-            ROOT / "release/staging",
-            ROOT / "helm/confidential-inference",
-            ROOT / "contracts/c8s-admission-source-lock.json",
-            "b" * 40,
-        )
+        values = yaml.safe_load((ROOT / "release/staging/values.yaml").read_text())
+        records = {}
+        for value in values["images"].values():
+            if value.startswith("ghcr.io/confidential-dot-ai/confidential-inference/"):
+                name, digest = value.split("@", 1)
+                records[name] = digest
+        publication = {
+            "schema": "confidential.ai/image-publication-manifest/v1",
+            "releaseVersion": "v0.14.0-staging",
+            "source": {
+                "repository": "https://github.com/confidential-dot-ai/confidential-inference",
+                "commit": "b" * 40,
+            },
+            "images": [
+                {"name": name, "pushedDigest": digest, "reproducibilityDigest": digest}
+                for name, digest in sorted(records.items())
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            publication_path = Path(temporary) / "publication.json"
+            publication_path.write_text(json.dumps(publication))
+            manifest = MAN.build(
+                ROOT / "release/staging",
+                ROOT / "helm/confidential-inference",
+                ROOT / "contracts/c8s-admission-source-lock.json",
+                "b" * 40,
+                publication_path,
+            )
         self.assertEqual(manifest["release"], {"name": "v0.14.0-staging", "environment": "staging"})
         self.assertEqual(manifest["allowlist"]["path"], "release/staging/allowlist.json")
+        self.assertEqual(manifest["imagePublication"]["sourceCommit"], "b" * 40)
 
     def test_staging_workers_verify_the_model_before_the_simulator(self):
         documents = MAN.render_chart(
@@ -272,6 +295,32 @@ class ManifestTests(unittest.TestCase):
         changed["inference"]["model"]["mountVerification"]["expectedFiles"][metadata] = "0" * 64
         with self.assertRaisesRegex(MAN.ManifestError, "byte manifest"):
             MAN.require_model_agreement(spec, changed)
+
+    def test_manifest_refuses_publication_evidence_for_an_unrendered_digest(self):
+        publication = {
+            "schema": "confidential.ai/image-publication-manifest/v1",
+            "releaseVersion": "v0.14.0-staging",
+            "source": {
+                "repository": "https://github.com/confidential-dot-ai/confidential-inference",
+                "commit": "b" * 40,
+            },
+            "images": [{
+                "name": "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
+                "pushedDigest": "sha256:" + "0" * 64,
+                "reproducibilityDigest": "sha256:" + "0" * 64,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "publication.json"
+            path.write_text(json.dumps(publication))
+            with self.assertRaisesRegex(MAN.ManifestError, "absent from the rendered release"):
+                MAN.image_publication(
+                    path,
+                    release_version="v0.14.0-staging",
+                    release_images={
+                        "gateway": "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64,
+                    },
+                )
 
     def test_staging_policy_uses_its_exact_render_and_allowlist_namespace(self):
         release = ROOT / "release/staging"

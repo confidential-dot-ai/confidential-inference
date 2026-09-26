@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Build each selected image once and publish it to GHCR
+        description: Publish each selected image after two deterministic rebuilds
         required: true
         type: boolean
         default: false
@@ -54,14 +54,30 @@ jobs:
       - name: Validate the release version
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
+          PUBLISH: ${{ inputs.publish }}
+          REBUILD_AUDIT: ${{ inputs.rebuild_audit }}
         run: |
           [[ "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-staging)?$ ]]
+          if [[ "$PUBLISH" == true && "$REBUILD_AUDIT" != true ]]; then
+            echo "Publication requires the deterministic rebuild audit." >&2
+            exit 1
+          fi
 
       - name: Select affected images
         id: select
         env:
           BASE_REF: ${{ inputs.base_ref }}
         run: python3 scripts/affected-release-images.py --base-ref "$BASE_REF" --head "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Require an image for publication
+        if: inputs.publish
+        env:
+          AFFECTED_IMAGES: ${{ steps.select.outputs.names }}
+        run: |
+          if [[ -z "$AFFECTED_IMAGES" ]]; then
+            echo "Publication selected no image. Refusing a release run without evidence." >&2
+            exit 1
+          fi
 
       - name: Report the selection
         env:
@@ -358,9 +374,14 @@ jobs:
 
   publish-images:
     if: >-
+      always() &&
       inputs.publish &&
-      needs.select-images.outputs.names != ''
-    needs: select-images
+      inputs.rebuild_audit &&
+      needs.select-images.result == 'success' &&
+      needs.select-images.outputs.names != '' &&
+      (needs.select-images.outputs.standard_names == '' || needs.reproducibility.result == 'success') &&
+      (needs.select-images.outputs.sglang != 'true' || needs.reproducibility-sglang-compare.result == 'success')
+    needs: [select-images, reproducibility, reproducibility-sglang-compare]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: ghcr-production
@@ -377,6 +398,12 @@ jobs:
       - name: Get the stable source epoch
         id: source
         run: printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
+      - name: Download the verified reproducibility digest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-platform-digest-${{ matrix.image }}
+          path: /tmp/verified-digest
 
       - name: Free runner storage for SGLang
         if: matrix.image == 'sglang'
@@ -421,24 +448,84 @@ jobs:
             SOURCE_REVISION=${{ github.sha }}
             SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
           platforms: linux/amd64
+          no-cache: true
           outputs: type=image,name=ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}:sha-${{ github.sha }},push=true,rewrite-timestamp=true
           labels: |
             org.opencontainers.image.title=${{ matrix.title }}
             org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=sha-${{ github.sha }}
-          provenance: mode=max
-          # The sglang image is a ~20 GB Python/CUDA image. Its generated
-          # SBOM exceeds BuildKit's hard-coded 40 MiB attestation cap and
-          # fails the build. Disable the SBOM attestation for sglang only;
-          # every other image keeps it. Provenance stays on for all images:
-          # only the SBOM step hit the cap.
-          sbom: ${{ matrix.image != 'sglang' }}
+          # The pushed object must have the same digest as the deterministic
+          # platform manifest. Extra attestations create a different index
+          # digest, so release image provenance is the publication manifest.
+          provenance: false
+          sbom: false
 
-      - name: Record the immutable image digest
+      - name: Prove and record the immutable image digest
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
           scripts/check-image-build-output.sh "$IMAGE_DIGEST"
+          reproducibility_digest="$(tr -d '\n' < /tmp/verified-digest/${{ matrix.image }}.platform-digest)"
+          python3 scripts/image-publication-manifest.py record \
+            --image "$IMAGE_NAME" \
+            --pushed-digest "$IMAGE_DIGEST" \
+            --reproducibility-digest "$reproducibility_digest" \
+            --source-commit "$GITHUB_SHA" \
+            --release-version "$RELEASE_VERSION" \
+            --output /tmp/${{ matrix.image }}.publication.json
           printf "### %s\n\n\`%s@%s\`\n" "$IMAGE_NAME" "$IMAGE_NAME" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the verified publication record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-image-publication-record-${{ matrix.image }}
+          path: /tmp/${{ matrix.image }}.publication.json
+          if-no-files-found: error
+          retention-days: 1
+
+  publication-manifest:
+    if: >-
+      inputs.publish &&
+      needs.publish-images.result == 'success'
+    needs: [select-images, publish-images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the published source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download all verified publication records
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-image-publication-record-*
+          path: /tmp/publication-records
+          merge-multiple: true
+
+      - name: Build the machine-readable publication manifest
+        env:
+          SELECTED_IMAGES: ${{ needs.select-images.outputs.names }}
+        run: |
+          mkdir -p dist
+          mapfile -t records < <(find /tmp/publication-records -maxdepth 1 -type f -name '*.publication.json' -print | sort)
+          test "${#records[@]}" -gt 0
+          args=()
+          for record in "${records[@]}"; do args+=(--record "$record"); done
+          IFS=, read -ra images <<< "$SELECTED_IMAGES"
+          for image in "${images[@]}"; do args+=(--expected-image "$image"); done
+          python3 scripts/image-publication-manifest.py merge \
+            "${args[@]}" \
+            --output dist/image-publication-manifest.json
+
+      - name: Save the release image publication evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-image-publication-${{ inputs.release_version }}
+          path: dist/image-publication-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true

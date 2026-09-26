@@ -31,5 +31,6 @@ Build the unsigned manifest for review:
 python3 scripts/build-release-manifest.py \
   --release release/staging \
   --source-commit "$(git rev-parse HEAD)" \
+  --image-publication /path/to/image-publication-manifest.json \
   --output /tmp/v0.14.0-staging-release-manifest.json
 ```

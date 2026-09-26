@@ -25,16 +25,24 @@ simulator and validates the encrypted model mount before the simulator starts.
 
 The release workflow builds the release manifest with
 `build-release-manifest.py` at the tag commit. The manifest names that commit,
-so it is not committed here. It must match
+so it is not committed here. It also consumes the machine-readable image
+publication artifact from the successful `release-images` run for that
+release version. The evidence records the exact source commit used to build
+the images. It refuses an image whose pushed digest differs
+from its deterministic rebuild digest or from the rendered release values.
+It must match
 `contracts/release-manifest.schema.json`.
 
 ## Order
 
-1. A person changes `spec.yaml` and `values.yaml` in a pull request. This
-   specifies the release.
-2. CI builds the container images from the pull request's commit. Put the
-   new digests in `values.yaml`.
-3. Run the release tools:
+1. A person changes the image source and the version in `spec.yaml`. Merge
+   that pull request.
+2. Run `release-images` on main with `publish` and `rebuild_audit` enabled.
+   The workflow rebuilds each selected image twice, publishes a third clean
+   build, and requires all three platform digests to be equal. It writes
+   `image-publication-manifest.json` with the image names, digests, source
+   commit, and release version.
+3. Put the published digests in `values.yaml`. Run the release tools:
 
    ```sh
    python3 scripts/fetch-node-manifest.py
@@ -44,15 +52,19 @@ so it is not committed here. It must match
 
    The allowlist generator refuses a value that no pinned input gives, such
    as a node IP address or a random pod name.
-4. Merge the pull request. Tag the merge commit `vX.Y.Z`. The release
-   workflow builds the manifest, signs it with Sigstore, and attaches the
-   manifest, its signature, and the tag commit to the GitHub release.
+4. Merge the release inputs. Tag that release commit `vX.Y.Z`. The release
+   workflow gets the unique publication artifact for the version. It checks
+   that its digest references occur in the rendered release, then binds the
+   image source commit and digest evidence into the signed release manifest.
+   The release workflow attaches both manifests, the signature, and the tag
+   commit to the GitHub release.
 
 To rebuild the manifest from the tagged tree:
 
 ```sh
 python3 scripts/build-release-manifest.py \
   --source-commit "$(git rev-parse vX.Y.Z^{commit})" \
+  --image-publication /path/to/image-publication-manifest.json \
   --output /tmp/release-manifest.json
 ```
 

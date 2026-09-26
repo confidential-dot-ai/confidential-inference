@@ -18,6 +18,7 @@ jobs:
     environment:
       name: ${{ endsWith(github.ref_name, '-staging') && 'signed-release-staging' || 'signed-release-production' }}
     permissions:
+      actions: read
       contents: read
       id-token: write
     steps:
@@ -77,13 +78,38 @@ jobs:
           tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
           sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
 
+      - name: Find the image publication evidence
+        id: publication
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          artifact_name="release-image-publication-${RELEASE_TAG}"
+          run_id="$(python3 scripts/find-image-publication-run.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --artifact-name "$artifact_name")"
+          printf 'artifact_name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
+          printf 'run_id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download the verified image publication evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ steps.publication.outputs.artifact_name }}
+          path: dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.publication.outputs.run_id }}
+
       - name: Build the release manifest at the tag commit
         run: |
           mkdir -p dist
+          python3 scripts/image-publication-manifest.py check \
+            dist/image-publication-manifest.json
           git rev-parse HEAD > dist/release-tag-commit.txt
           python3 scripts/build-release-manifest.py \
             --release "${{ steps.profile.outputs.path }}" \
             --source-commit "$(git rev-parse HEAD)" \
+            --image-publication dist/image-publication-manifest.json \
             --output dist/release-bundle.json
 
       - name: Install the pinned Cosign verifier
@@ -112,6 +138,7 @@ jobs:
             dist/release-bundle.json
             dist/release-bundle.sigstore.json
             dist/release-tag-commit.txt
+            dist/image-publication-manifest.json
           if-no-files-found: error
           retention-days: 90
 
@@ -171,4 +198,5 @@ jobs:
             --notes "Signed Confidential Inference release. For vX.Y.Z tags the signed file is the release manifest built from release/ at the tag commit." \
             "dist/release-bundle.json#Release bundle" \
             "dist/release-bundle.sigstore.json#Sigstore verification bundle" \
-            "dist/release-tag-commit.txt#Signed tag commit"
+            "dist/release-tag-commit.txt#Signed tag commit" \
+            "dist/image-publication-manifest.json#Image publication evidence"
