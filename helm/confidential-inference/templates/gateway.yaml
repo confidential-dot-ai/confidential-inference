@@ -234,13 +234,14 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 5
           volumeMounts:
+            # Directory mounts, not subPath: the node image policy cannot
+            # establish the storage of a kubelet subPath bind, so an exact
+            # mount rule on one never admits. The files keep their paths.
             - name: admin-auth
-              mountPath: /mnt/c8s-data/admin-auth/client.crt
-              subPath: client.crt
+              mountPath: /mnt/c8s-data/admin-auth
               readOnly: true
             - name: release-identity
-              mountPath: /mnt/c8s-data/release-identity/release-identity.json
-              subPath: release-identity.json
+              mountPath: /mnt/c8s-data/release-identity
               readOnly: true
             - name: run
               mountPath: /run/confidential-gateway
