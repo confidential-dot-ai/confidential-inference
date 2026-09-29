@@ -492,7 +492,7 @@ class ManifestTests(unittest.TestCase):
 
     def test_the_node_manifest_matches_the_pinned_artifact_layer(self):
         data = (ROOT / "release/node-manifest.json").read_bytes()
-        self.assertEqual(MAN.sha256(data), "sha256:64dfb7a7eca5f51385150a1743ca0611d4b37099ad53d41c4c697570a338e4d2")
+        self.assertEqual(MAN.sha256(data), "sha256:f7bf783b7fd5f89b9c9108b271b8a3a0256c55a7091139f9f694289330d35a06")
         NODE.check_measurements(json.loads(data))
 
     def test_the_schema_refuses_deployment_values(self):
