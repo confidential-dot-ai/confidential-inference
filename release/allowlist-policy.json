@@ -10,7 +10,7 @@
   },
   "c8s": {
     "release": "v0.33.4",
-    "sourceCommit": "c9d49a67d36b16b7adc306489b6f591611c34968",
+    "sourceCommit": "090f4778620d25951e954fcec231fc659b382d45",
     "coreImages": [
       "ghcr.io/confidential-dot-ai/c8s-operator@sha256:72acd2c8dfa8326ebefa21fe0ad55e284962bb9ef0d111e418d52e57c5b047e2",
       "ghcr.io/confidential-dot-ai/cds@sha256:3314b51672f934419fdfc53f96be2eff19966d4222d3cac750c32e946f8fea5e",

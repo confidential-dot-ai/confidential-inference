@@ -1,8 +1,8 @@
 {
   "driverVersion": "595.71.05",
   "toolkitVersion": "1.19.1",
-  "nodeImage": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:2de452d8d7b44db93ffecb55050fb38681135962fa88709a69321190017cab42",
-  "source": "Derived offline with the nvidia-container-toolkit v1.19.1 nvcdi library against the extracted node image root. Copied from confidential-inference-internal receipts/cdi/node-image-v0.33.2-driver-595.71.05-toolkit-1.19.1.allowlist.json (commit 43c9dcf), sha256:9841d10b5f5897a9653c3f0d428ab2d12ee6f05db45d0cc57da6704941debd4d",
+  "nodeImage": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:e5c6e7f85f881a838b1e3431e516c7d12717774da522a53851d46271adb6afe1",
+  "source": "Reused for the c8s v0.33.4 node image because its NVIDIA driver 595.71.05 and nvidia-container-toolkit 1.19.1 inputs are unchanged. The CDI data was derived offline with the nvcdi library against the extracted c8s v0.33.2 node image root and recorded in confidential-inference-internal receipts/cdi/node-image-v0.33.2-driver-595.71.05-toolkit-1.19.1.allowlist.json (commit 43c9dcf), sha256:9841d10b5f5897a9653c3f0d428ab2d12ee6f05db45d0cc57da6704941debd4d",
   "env": {
     "NVIDIA_CTK_LIBCUDA_DIR": "/usr/lib/x86_64-linux-gnu",
     "NVIDIA_VISIBLE_DEVICES": "void"

@@ -484,16 +484,25 @@ class ManifestTests(unittest.TestCase):
         self.assertIn("--output release/staging/node-manifest.json", readme)
 
     def test_the_source_lock_pins_the_spec_commit(self):
-        spec = MAN.read_spec(ROOT / "release/spec.yaml")
         lock = json.loads((ROOT / "contracts/c8s-admission-source-lock.json").read_text())
-        entry = MAN.source_lock_entry(lock, spec["c8s"]["sourceCommit"])
-        self.assertEqual(entry["tag"], spec["c8s"]["release"])
-        self.assertEqual(entry["nodeImage"], spec["c8s"]["nodeImage"]["reference"] + "@" + spec["c8s"]["nodeImage"]["digest"])
+        for profile in ("release", "release/staging"):
+            with self.subTest(profile=profile):
+                spec = MAN.read_spec(ROOT / profile / "spec.yaml")
+                entry = MAN.source_lock_entry(lock, spec["c8s"]["sourceCommit"])
+                self.assertEqual(entry["tag"], spec["c8s"]["release"])
+                self.assertEqual(
+                    entry["nodeImage"],
+                    spec["c8s"]["nodeImage"]["reference"]
+                    + "@"
+                    + spec["c8s"]["nodeImage"]["digest"],
+                )
 
     def test_the_node_manifest_matches_the_pinned_artifact_layer(self):
-        data = (ROOT / "release/node-manifest.json").read_bytes()
-        self.assertEqual(MAN.sha256(data), "sha256:f7bf783b7fd5f89b9c9108b271b8a3a0256c55a7091139f9f694289330d35a06")
-        NODE.check_measurements(json.loads(data))
+        for profile in ("release", "release/staging"):
+            with self.subTest(profile=profile):
+                data = (ROOT / profile / "node-manifest.json").read_bytes()
+                self.assertEqual(MAN.sha256(data), "sha256:f7bf783b7fd5f89b9c9108b271b8a3a0256c55a7091139f9f694289330d35a06")
+                NODE.check_measurements(json.loads(data))
 
     def test_the_schema_refuses_deployment_values(self):
         schema = json.loads((ROOT / "contracts/release-manifest.schema.json").read_text())

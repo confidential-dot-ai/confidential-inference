@@ -13,5 +13,5 @@ One file for each NVIDIA driver version: `nvidia-<driver>.json`.
 }
 ```
 
-`nvidia-595.71.05.json` is the record for the c8s v0.33.2 node image. It is
+`nvidia-595.71.05.json` is the record for the c8s v0.33.4 node image. It is
 copied from the reviewed internal receipt named in its `source` field.

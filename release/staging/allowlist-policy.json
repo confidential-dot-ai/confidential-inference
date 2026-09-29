@@ -9,14 +9,14 @@
     "serviceHost": "10.53.0.1"
   },
   "c8s": {
-    "release": "v0.33.2",
-    "sourceCommit": "c9d49a67d36b16b7adc306489b6f591611c34968",
+    "release": "v0.33.4",
+    "sourceCommit": "090f4778620d25951e954fcec231fc659b382d45",
     "coreImages": [
-      "ghcr.io/confidential-dot-ai/c8s-operator@sha256:c07dbed4486ad69f5370a7c201b7ea44cf55d0c16592eaa25340fb6724f6bd1e",
-      "ghcr.io/confidential-dot-ai/cds@sha256:7024ac49bd84d232ac303cc164ed9505e65fe8bf72ee2a2d12d78f51f08b5bdf",
-      "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:bd6c5b62707b119380dca6e9157cca072b3a13ff6e1565535a5fb9459fc182c4",
-      "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:b72a96e5720c7de41fce09ebac1388bd1d7574354d14d13f46c6ea7248e52f64",
-      "ghcr.io/confidential-dot-ai/volumed@sha256:ebbf2bbfba5e405a321c21d98ecc0c6648586018d9091a3176708054d13b7e12",
+      "ghcr.io/confidential-dot-ai/c8s-operator@sha256:72acd2c8dfa8326ebefa21fe0ad55e284962bb9ef0d111e418d52e57c5b047e2",
+      "ghcr.io/confidential-dot-ai/cds@sha256:3314b51672f934419fdfc53f96be2eff19966d4222d3cac750c32e946f8fea5e",
+      "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:58de0ca8ab1813ac265bde2aec19fbe13d22cf5210609366c7a8cc4f7c5538ae",
+      "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:dc2d834ce1a3883d56bae20fde32f6aec6b44f182daed8c7c23e9096951931a3",
+      "ghcr.io/confidential-dot-ai/volumed@sha256:44db6bafd586034d1e3d8481fb971c0ddcdf744243b06283ac54ae6f5221aea8",
       "nginxinc/nginx-unprivileged@sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348"
     ]
   },
