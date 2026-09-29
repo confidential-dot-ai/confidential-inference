@@ -13,17 +13,17 @@ imageSourceCommit: ec87a79551db331180c319202144a53ee0b6f60f
 
 c8s:
   # The c8s release. It fixes the node image and its measurements.
-  release: v0.33.2
-  sourceCommit: c9d49a67d36b16b7adc306489b6f591611c34968
+  release: v0.33.4
+  sourceCommit: 090f4778620d25951e954fcec231fc659b382d45
   nodeImage:
     reference: ghcr.io/confidential-dot-ai/node-guest-base
-    tag: rke2-tdx-cdi-v0.33.2
-    digest: sha256:2de452d8d7b44db93ffecb55050fb38681135962fa88709a69321190017cab42
+    tag: rke2-tdx-cdi-v0.33.4
+    digest: sha256:e5c6e7f85f881a838b1e3431e516c7d12717774da522a53851d46271adb6afe1
   # The artifact that c8s publishes with the node image. It holds the TDX
   # measurements MRTD, RTMR1, and RTMR2.
   nodeManifestArtifact:
-    tag: rke2-tdx-v0.33.2
-    digest: sha256:05674903ad9d60d5dd9eb811977847ac9963ad4700df8c390b7888458e7c525c
+    tag: rke2-tdx-v0.33.4
+    digest: sha256:37541e46cdc8ebf6f2be648ff1bfd3808acbc5c20eb4226cdb8acf9fc1a65ae5
 
 model:
   repository: deepseek-ai/DeepSeek-V4-Flash-0731
