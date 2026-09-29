@@ -89,7 +89,7 @@ def main() -> None:
     )
     identity_values = json.loads(identity["data"]["release-identity.json"])
     assert identity_values["expectedOperatorKeySetSha256"].startswith("sha256:")
-    assert gateway_env["GATEWAY_RELEASE_IDENTITY_FILE"] == "/mnt/c8s-data/release-identity/release-identity.json"
+    assert gateway_env["GATEWAY_RELEASE_IDENTITY_FILE"] == "/mnt/c8s-data/release-identity/..data/release-identity.json"
     assert gateway_container["readinessProbe"]["httpGet"]["path"] == "/ready"
     assert gateway_container["livenessProbe"]["httpGet"]["path"] == "/health"
     assert gateway["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 960
