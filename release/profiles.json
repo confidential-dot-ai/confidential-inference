@@ -1,0 +1,19 @@
+{
+  "schema": "confidential.ai/release-profiles/v1",
+  "profiles": [
+    {
+      "name": "production",
+      "tagSuffix": "",
+      "environment": "production",
+      "signingEnvironment": "signed-release-production",
+      "layers": ["release"]
+    },
+    {
+      "name": "staging",
+      "tagSuffix": "-staging",
+      "environment": "staging",
+      "signingEnvironment": "signed-release-staging",
+      "layers": ["release", "release/staging"]
+    }
+  ]
+}

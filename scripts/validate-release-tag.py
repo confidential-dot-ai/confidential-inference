@@ -1,27 +1,23 @@
 #!/usr/bin/env python3
 """Validate a release tag against its release profile.
 
-A release tag is vX.Y.Z or vX.Y.Z-staging. There are no release candidates: a
-fix is a new version. The tag must point to a commit on main, and the selected
-profile specification at that commit must name the same version.
+A release tag is vX.Y.Z followed by the tag suffix of one release profile
+(release/profiles.json). There are no release candidates: a fix is a new
+version. The tag must point to a commit on main, and the specification of the
+profile at that commit must name the same version.
 """
 
 from __future__ import annotations
 
 import argparse
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 import yaml
 
-
-TAG_RE = re.compile(
-    r"v(?:0|[1-9][0-9]*)\."
-    r"(?:0|[1-9][0-9]*)\."
-    r"(?:0|[1-9][0-9]*)(?:-staging)?"
-)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import release_profiles
 
 
 class ReleaseTagError(ValueError):
@@ -29,11 +25,12 @@ class ReleaseTagError(ValueError):
 
 
 def parse_tag(tag: str) -> str:
-    if TAG_RE.fullmatch(tag) is None:
-        raise ReleaseTagError(
-            "the release tag must use vX.Y.Z or vX.Y.Z-staging"
-        )
-    return tag
+    try:
+        release_profiles.for_tag(tag)
+        return tag
+    except release_profiles.ProfileError:
+        suffixes = ", ".join(f"vX.Y.Z{p.tag_suffix}" for p in release_profiles.load())
+        raise ReleaseTagError(f"the release tag must use one of: {suffixes}") from None
 
 
 def read_spec_version(path: Path) -> str:
@@ -66,7 +63,8 @@ def require_commit_on_main(main_ref: str) -> None:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--tag", required=True)
-    result.add_argument("--spec", type=Path, default=Path("release/spec.yaml"))
+    result.add_argument("--spec", type=Path,
+                        help="the specification that names the version (default: the profile of the tag)")
     result.add_argument("--main-ref", required=True)
     return result
 
@@ -75,8 +73,13 @@ def main() -> int:
     args = parser().parse_args()
     try:
         tag = parse_tag(args.tag)
-        if read_spec_version(args.spec) != tag:
-            raise ReleaseTagError("release/spec.yaml names a different version than the tag")
+        profile = release_profiles.for_tag(tag)
+        if args.spec is not None:
+            version, source = read_spec_version(args.spec), args.spec
+        else:
+            version, source = release_profiles.read_spec(profile).get("version"), f"the {profile.name} specification"
+        if version != tag:
+            raise ReleaseTagError(f"{source} names a different version than the tag")
         require_commit_on_main(args.main_ref)
     except (OSError, ReleaseTagError) as error:
         print(f"release tag validation failed: {error}", file=sys.stderr)

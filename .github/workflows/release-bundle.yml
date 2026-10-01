@@ -12,11 +12,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The release profile of the tag selects the signing environment, so it is
+  # read before the signing job starts.
+  select-profile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      directory: ${{ steps.profile.outputs.directory }}
+      signing_environment: ${{ steps.profile.outputs.signing_environment }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Select the release profile
+        id: profile
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 scripts/release_profiles.py resolve --tag "$RELEASE_TAG" --format github \
+            >> "$GITHUB_OUTPUT"
+
   sign-release-bundle:
+    needs: select-profile
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
-      name: ${{ endsWith(github.ref_name, '-staging') && 'signed-release-staging' || 'signed-release-production' }}
+      name: ${{ needs.select-profile.outputs.signing_environment }}
     permissions:
       actions: read
       contents: read
@@ -40,17 +65,6 @@ jobs:
           python3 -m pip install --require-hashes \
             --requirement scripts/requirements-release-signing.txt
 
-      - name: Select the release profile
-        id: profile
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          case "$RELEASE_TAG" in
-            v*-staging) printf 'path=release/staging\n' >> "$GITHUB_OUTPUT" ;;
-            v*) printf 'path=release\n' >> "$GITHUB_OUTPUT" ;;
-            *) echo "The release tag is not allowed." >&2; exit 1 ;;
-          esac
-
       - name: Validate the release tag
         env:
           GH_TOKEN: ${{ github.token }}
@@ -66,7 +80,6 @@ jobs:
           fi
           python3 scripts/validate-release-tag.py \
             --tag "$RELEASE_TAG" \
-            --spec "${{ steps.profile.outputs.path }}/spec.yaml" \
             --main-ref refs/remotes/origin/main
 
       - name: Install the pinned Helm
@@ -84,10 +97,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          artifact_name="release-image-publication-${RELEASE_TAG}"
-          image_source_commit="$(python3 -c \
-            'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["imageSourceCommit"])' \
-            "${{ steps.profile.outputs.path }}/spec.yaml")"
+          image_source_commit="$(python3 scripts/release_profiles.py spec --tag "$RELEASE_TAG" --key imageSourceCommit)"
+          artifact_name="release-image-publication-${image_source_commit}"
           run_id="$(python3 scripts/find-image-publication-run.py \
             --repository "$GITHUB_REPOSITORY" \
             --artifact-name "$artifact_name" \
@@ -111,7 +122,7 @@ jobs:
             dist/image-publication-manifest.json
           git rev-parse HEAD > dist/release-tag-commit.txt
           python3 scripts/build-release-manifest.py \
-            --release "${{ steps.profile.outputs.path }}" \
+            --release "${{ needs.select-profile.outputs.directory }}" \
             --source-commit "$(git rev-parse HEAD)" \
             --image-publication dist/image-publication-manifest.json \
             --output dist/release-bundle.json

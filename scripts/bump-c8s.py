@@ -1,26 +1,34 @@
 #!/usr/bin/env python3
-"""Move every release profile to one c8s release tag.
+"""Move release profiles to one c8s release tag.
 
 Usage:
 
-    scripts/bump-c8s.py --tag v0.33.8 --c8s-repo ../c8s
+    scripts/bump-c8s.py --tag v0.33.8 --c8s-repo ../c8s [--profile staging]
+        [--confos-repo ../confidential-os-builder]
 
---c8s-repo is a clean c8s checkout at the tag. The script:
+--c8s-repo is a clean c8s checkout at the tag. Without --profile, the script
+moves every profile. With --profile, it moves only the named profiles: a
+profile that takes c8s from a shared layer gets its own c8s pins, so staging
+can move ahead of production. The script:
 
 1. reads the published digests of the tag from the registry with crane;
-2. replaces the old c8s pins in each profile (spec, values, allowlist policy,
-   accepted lint findings);
+2. writes the new `c8s` mapping into the spec.yaml layer that holds it, and
+   the c8s operator image into the values.yaml layer that holds it. It edits
+   only those values, then parses each file again and requires that nothing
+   else changed;
 3. adds the source lock entry, and shares the attestation protocol manifest
    when the protocol source files did not change;
-4. renames the NVIDIA CDI record when the node image driver inputs did not
-   change;
-5. fetches each node manifest, refreshes the image config, and regenerates
-   each allowlist with a c8s CLI built from the tag;
+4. adds the new node image to the NVIDIA CDI record when the pinned driver
+   inputs did not change. The inputs are bin/confos-fetch-gpu at the
+   confidential-os-builder ref that c8s pins in .github/build-pins.json. When
+   the ref changed, --confos-repo must be a confidential-os-builder checkout;
+5. fetches each node manifest, refreshes the image config, and regenerates the
+   allowlist of each moved profile with a c8s CLI built from the tag;
 6. runs the release checks.
 
 It stops when a step needs a person: changed protocol source files, changed
-NVIDIA driver inputs, or a failed check. Review the full diff before you
-commit. The image config diff is a release input.
+NVIDIA driver inputs, a pin it cannot edit in place, or a failed check. Review
+the full diff before you commit. The image config diff is a release input.
 """
 
 from __future__ import annotations
@@ -32,25 +40,31 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import release_profiles
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
 PROTOCOLS = ROOT / "contracts/c8s-attestation-protocols"
 CDI_DIR = ROOT / "release/inputs/cdi"
 CANONICAL_TOOL = ROOT / "tools/c8s-allowlist-canonical"
-RELEASE_TESTS = ROOT / "tests/release-v1/test_release_tools.py"
+NODE = runpy.run_path(str(ROOT / "scripts/fetch-node-manifest.py"))
 REGISTRY = "ghcr.io/confidential-dot-ai/"
-NODE_IMAGE = REGISTRY + "node-guest-base"
 C8S_MODULE = "github.com/confidential-dot-ai/c8s"
 TAG = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
-# Node image changes in these words can change the NVIDIA CDI record.
-DRIVER_WORDS = re.compile(r"nvidia|driver|toolkit|cuda", re.IGNORECASE)
+# The c8s file that pins the confidential-os-builder ref of the node image, and
+# the confidential-os-builder script that pins the NVIDIA driver and toolkit.
+BUILD_PINS = ".github/build-pins.json"
+GPU_FETCH = "bin/confos-fetch-gpu"
 # The protocol manifest also depends on the whole pkg/types tree.
 PROTOCOL_TREES = ("pkg/types",)
 
@@ -72,6 +86,13 @@ def sha256_bytes(data: bytes) -> str:
 
 def git(repo: Path, *args: str) -> str:
     return run(["git", "-C", str(repo), *args]).strip()
+
+
+def git_show(repo: Path, commit: str, name: str) -> bytes:
+    result = subprocess.run(["git", "-C", str(repo), "show", f"{commit}:{name}"], capture_output=True, check=False)
+    if result.returncode:
+        raise BumpError(f"cannot read {name} at {commit} in {repo}")
+    return result.stdout
 
 
 def go_env() -> dict[str, str]:
@@ -97,102 +118,153 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def replace_all(path: Path, pairs: list[tuple[str, str]]) -> None:
+# ---------------------------------------------------------------------------
+# Pins
+# ---------------------------------------------------------------------------
+
+
+def operator_image(c8s: dict[str, Any]) -> str:
+    return next(image for image in c8s["coreImages"] if image.partition("@")[0] == f"{REGISTRY}c8s-operator")
+
+
+def new_c8s(tag: str, commit: str, old: dict[str, Any]) -> dict[str, Any]:
+    """Return the c8s mapping of the tag in the shape of the old one."""
+    old_tag = old["release"]
+    node, artifact = old["nodeImage"], old["nodeManifestArtifact"]
+    if node["tag"] != f"rke2-tdx-cdi-{old_tag}" or artifact["tag"] != f"rke2-tdx-{old_tag}":
+        raise BumpError("the node image tags do not follow the c8s release tag; edit them by hand")
+    reference = node["reference"]
+    artifact_digest = digest(f"{reference}:rke2-tdx-{tag}")
+    core = []
+    for image in old["coreImages"]:
+        name = image.partition("@")[0]
+        core.append(f"{name}@{digest(f'{name}:{tag}')}" if name.startswith(REGISTRY) else image)
+    value = copy.deepcopy(old)
+    value.update({
+        "release": tag,
+        "sourceCommit": commit,
+        "coreImages": core,
+    })
+    value["nodeImage"].update({"tag": f"rke2-tdx-cdi-{tag}", "digest": digest(f"{reference}:rke2-tdx-cdi-{tag}")})
+    value["nodeManifestArtifact"].update({
+        "tag": f"rke2-tdx-{tag}",
+        "digest": artifact_digest,
+        "manifestJson": NODE["manifest_json_digest"](reference, artifact_digest),
+    })
+    return value
+
+
+def leaves(value: Any, path: tuple[Any, ...] = ()) -> dict[tuple[Any, ...], Any]:
+    if isinstance(value, dict):
+        return {k: v for key, child in value.items() for k, v in leaves(child, (*path, key)).items()}
+    if isinstance(value, list):
+        return {k: v for index, child in enumerate(value) for k, v in leaves(child, (*path, index)).items()}
+    return {path: value}
+
+
+def set_key(document: dict[str, Any], path: tuple[str, ...], value: Any) -> dict[str, Any]:
+    result = copy.deepcopy(document)
+    target = result
+    for key in path[:-1]:
+        target = target.setdefault(key, {})
+    target[path[-1]] = value
+    return result
+
+
+def edit_yaml(path: Path, key_path: tuple[str, ...], value: Any) -> None:
+    """Set one key of a commented YAML file and keep every other byte.
+
+    Each changed scalar is replaced where it is the whole value of a line. The
+    file is then parsed again and must equal the old document with only that
+    key changed. A key that the file does not set is appended.
+    """
     text = path.read_text(encoding="utf-8")
-    for old, new in pairs:
-        text = text.replace(old, new)
+    document = yaml.safe_load(text) or {}
+    expected = set_key(document, key_path, value)
+    current: Any = document
+    for key in key_path:
+        current = current.get(key) if isinstance(current, dict) else None
+    if current is None:
+        if len(key_path) > 1 and key_path[0] in document:
+            raise BumpError(f"{path.relative_to(ROOT)} sets {key_path[0]} but not {'.'.join(key_path)}; edit it by hand")
+        appended = {key_path[0]: expected[key_path[0]]}
+        text = text.rstrip("\n") + "\n\n" + yaml.safe_dump(appended, sort_keys=False)
+    else:
+        old_leaves, new_leaves = leaves(current), leaves(value)
+        if old_leaves.keys() != new_leaves.keys():
+            raise BumpError(f"{path.relative_to(ROOT)} {'.'.join(key_path)} changes shape; edit it by hand")
+        for leaf, old in old_leaves.items():
+            new = new_leaves[leaf]
+            if old == new:
+                continue
+            pattern = re.compile(rf"(?m)^(\s*(?:[A-Za-z0-9_]+:|-)\s+)(['\"]?){re.escape(str(old))}\2[ \t]*$")
+            text, count = pattern.subn(lambda match: f"{match.group(1)}{match.group(2)}{new}{match.group(2)}", text)
+            if count == 0:
+                raise BumpError(f"{path.relative_to(ROOT)} has no line for {old}; edit it by hand")
+    if yaml.safe_load(text) != expected:
+        raise BumpError(f"{path.relative_to(ROOT)} changed more than {'.'.join(key_path)}; edit it by hand")
     path.write_text(text, encoding="utf-8")
 
 
-def profiles() -> list[Path]:
-    return sorted(path.parent for path in (ROOT / "release").glob("**/spec.yaml"))
+def target_file(layer_file: Path, owner: release_profiles.Profile, moved: list[release_profiles.Profile],
+                users: list[release_profiles.Profile]) -> Path:
+    """Edit a shared layer only when every profile that uses it moves."""
+    if all(profile in moved for profile in users):
+        return layer_file
+    return owner.directory / layer_file.name
 
 
-def old_pins(profile: Path) -> dict[str, str]:
-    spec = yaml.safe_load((profile / "spec.yaml").read_text(encoding="utf-8"))
-    c8s = spec["c8s"]
-    policy = json.loads((profile / "allowlist-policy.json").read_text(encoding="utf-8"))
+def pin_profiles(moved: list[release_profiles.Profile], everyone: tuple[release_profiles.Profile, ...],
+                 c8s: dict[str, Any]) -> None:
+    # The file that holds each pin, for every profile, read once.
     pins = {
-        "release": c8s["release"],
-        "commit": c8s["sourceCommit"],
-        "nodeImage": c8s["nodeImage"]["digest"],
-        "nodeManifestArtifact": c8s["nodeManifestArtifact"]["digest"],
+        ("c8s",): ({p: release_profiles.owning_file(p.spec_files, ("c8s",)) for p in everyone}, c8s),
+        ("images", "c8sOperator"): (
+            {p: release_profiles.owning_file(p.values_files, ("images", "c8sOperator")) for p in everyone},
+            operator_image(c8s),
+        ),
     }
-    for image in policy["c8s"]["coreImages"]:
-        name, _, value = image.partition("@")
-        if name.startswith(REGISTRY):
-            pins["core:" + name.removeprefix(REGISTRY)] = value
-    return pins
+    for key_path, (owners, value) in pins.items():
+        targets = set()
+        for profile in moved:
+            users = [other for other in everyone if owners[other] == owners[profile]]
+            targets.add(target_file(owners[profile], profile, moved, users))
+        for path in sorted(targets):
+            edit_yaml(path, key_path, value)
 
 
-def new_pins(tag: str, commit: str, old: dict[str, str]) -> dict[str, str]:
-    pins = {
-        "release": tag,
-        "commit": commit,
-        "nodeImage": digest(f"{NODE_IMAGE}:rke2-tdx-cdi-{tag}"),
-        "nodeManifestArtifact": digest(f"{NODE_IMAGE}:rke2-tdx-{tag}"),
-    }
-    for key in old:
-        if key.startswith("core:"):
-            pins[key] = digest(f"{REGISTRY}{key.removeprefix('core:')}:{tag}")
-    return pins
-
-
-def pairs_for(old: dict[str, str], new: dict[str, str]) -> list[tuple[str, str]]:
-    # Full values first, then the short commit, then the version text.
-    pairs = [(old[key], new[key]) for key in old if key not in ("release", "commit")]
-    pairs.append((old["commit"], new["commit"]))
-    pairs.append((old["commit"][:8], new["commit"][:8]))
-    pairs.append((old["release"], new["release"]))
-    return pairs
-
-
-NODE_IMAGE_TEXT = re.compile(r"c8s v[0-9]+\.[0-9]+\.[0-9]+ node image")
-
-
-def bump_profile(profile: Path, pairs: list[tuple[str, str]], new: dict[str, str]) -> None:
-    for name in ("spec.yaml", "values.yaml", "allowlist-policy.json", "accepted-lint-findings.json"):
-        path = profile / name
-        if path.exists():
-            replace_all(path, pairs)
-    # The policy records the source commit that the generator checks against
-    # the c8s CLI. An older profile can hold a stale value.
-    policy_path = profile / "allowlist-policy.json"
-    text, count = re.subn(r'"sourceCommit": "[0-9a-f]{40}"', f'"sourceCommit": "{new["commit"]}"',
-                          policy_path.read_text(encoding="utf-8"))
-    if count != 1:
-        raise BumpError(f"{policy_path.relative_to(ROOT)} must have one sourceCommit")
-    policy_path.write_text(text, encoding="utf-8")
-    # A lint reason can name an older node image than the old pin.
-    lint = profile / "accepted-lint-findings.json"
-    if lint.exists():
-        lint.write_text(NODE_IMAGE_TEXT.sub(f"c8s {new['release']} node image", lint.read_text(encoding="utf-8")),
-                        encoding="utf-8")
+# ---------------------------------------------------------------------------
+# Shared c8s records
+# ---------------------------------------------------------------------------
 
 
 def bump_module(old_tag: str, tag: str) -> None:
-    replace_all(CANONICAL_TOOL / "go.mod", [(f"require {C8S_MODULE} {old_tag}", f"require {C8S_MODULE} {tag}")])
+    path = CANONICAL_TOOL / "go.mod"
+    text = path.read_text(encoding="utf-8")
+    old_line, new_line = f"require {C8S_MODULE} {old_tag}\n", f"require {C8S_MODULE} {tag}\n"
+    if old_line in text:
+        path.write_text(text.replace(old_line, new_line), encoding="utf-8")
+    elif new_line not in text:
+        raise BumpError(f"{path.relative_to(ROOT)} does not require {C8S_MODULE} {old_tag}")
     run(["go", "mod", "tidy"], cwd=CANONICAL_TOOL, env=go_env())
 
 
-def add_source_lock(c8s_repo: Path, old: dict[str, str], new: dict[str, str]) -> None:
+def add_source_lock(c8s_repo: Path, old: dict[str, Any], new: dict[str, Any]) -> None:
     lock = json.loads(SOURCE_LOCK.read_text(encoding="utf-8"))
-    if any(entry["commit"] == new["commit"] for entry in lock["commits"]):
+    if any(entry["commit"] == new["sourceCommit"] for entry in lock["commits"]):
         return
-    previous = [entry for entry in lock["commits"] if entry["commit"] == old["commit"]]
+    previous = [entry for entry in lock["commits"] if entry["commit"] == old["sourceCommit"]]
     if not previous:
-        raise BumpError(f"the source lock has no entry for the old commit {old['commit']}")
+        raise BumpError(f"the source lock has no entry for the old commit {old['sourceCommit']}")
     entry = copy.deepcopy(previous[0])
     entry.update({
-        "commit": new["commit"],
+        "commit": new["sourceCommit"],
         "tag": new["release"],
-        "nodeImage": f"{NODE_IMAGE}@{new['nodeImage']}",
-        "c8sOperatorImage": f"{REGISTRY}c8s-operator@{new['core:c8s-operator']}",
+        "nodeImage": f"{new['nodeImage']['reference']}@{new['nodeImage']['digest']}",
+        "c8sOperatorImage": operator_image(new),
     })
     for name in entry["files"]:
-        data = subprocess.run(["git", "-C", str(c8s_repo), "show", f"{new['commit']}:{name}"],
-                              capture_output=True, check=True).stdout
-        entry["files"][name] = sha256_bytes(data)
+        entry["files"][name] = sha256_bytes(git_show(c8s_repo, new["sourceCommit"], name))
     lock["commits"].append(entry)
     write_json(SOURCE_LOCK, lock)
 
@@ -220,24 +292,38 @@ def share_protocol_manifest(c8s_repo: Path, old_commit: str, new_commit: str, ta
     raise BumpError(f"no attestation protocol manifest covers the old commit {old_commit}")
 
 
-def rename_cdi_record(c8s_repo: Path, old: dict[str, str], new: dict[str, str]) -> None:
-    diff = git(c8s_repo, "diff", old["commit"], new["commit"], "--", "node-guest-image")
-    changed = [line for line in diff.splitlines()
-               if line[:1] in "+-" and not line.startswith(("+++", "---")) and DRIVER_WORDS.search(line)]
-    if changed:
-        raise BumpError("the node image NVIDIA inputs changed. Derive the CDI record again:\n" + "\n".join(changed[:10]))
-    for path in sorted(CDI_DIR.glob("*")):
-        text = NODE_IMAGE_TEXT.sub(f"c8s {new['release']} node image", path.read_text(encoding="utf-8"))
-        path.write_text(text, encoding="utf-8")
-        if path.suffix == ".json":
-            record = json.loads(text)
-            if "nodeImage" in record:
-                record["nodeImage"] = f"{NODE_IMAGE}@{new['nodeImage']}"
-                reuse = (f"Reused for the c8s {new['release']} node image because its NVIDIA inputs "
-                         "did not change.")
-                source = re.sub(r"^Reused for the c8s v[0-9.]+ node image because [^.]*\. ", "", record["source"])
-                record["source"] = f"{reuse} {source}"
-                write_json(path, record)
+def confos_ref(c8s_repo: Path, commit: str) -> str:
+    pins = json.loads(git_show(c8s_repo, commit, BUILD_PINS))
+    return pins["builds"]["node-image"]["confos_ref"]
+
+
+def driver_inputs(c8s_repo: Path, commit: str, confos_repo: Path | None) -> str:
+    """Return the SHA-256 of the confidential-os-builder script that pins the driver."""
+    if confos_repo is None:
+        raise BumpError("the node image confidential-os-builder ref changed; pass --confos-repo")
+    return sha256_bytes(git_show(confos_repo, confos_ref(c8s_repo, commit), GPU_FETCH))
+
+
+def extend_cdi_record(c8s_repo: Path, confos_repo: Path | None, old: dict[str, Any], new: dict[str, Any]) -> None:
+    """Let each CDI record hold for the new node image when its driver inputs did not change."""
+    old_image = f"{old['nodeImage']['reference']}@{old['nodeImage']['digest']}"
+    new_image = f"{new['nodeImage']['reference']}@{new['nodeImage']['digest']}"
+    same_ref = confos_ref(c8s_repo, old["sourceCommit"]) == confos_ref(c8s_repo, new["sourceCommit"])
+    for path in sorted(CDI_DIR.glob("*.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if old_image not in record.get("nodeImages", []) or new_image in record["nodeImages"]:
+            continue
+        if not same_ref:
+            pinned = record.get("driverInputs", {}).get("confosFetchGpuSha256")
+            if driver_inputs(c8s_repo, new["sourceCommit"], confos_repo) != pinned:
+                raise BumpError(f"the pinned NVIDIA driver inputs changed. Derive {path.name} again.")
+        record["nodeImages"].append(new_image)
+        write_json(path, record)
+
+
+# ---------------------------------------------------------------------------
+# Generation and checks
+# ---------------------------------------------------------------------------
 
 
 def build(c8s_repo: Path, out: Path) -> tuple[Path, Path]:
@@ -249,21 +335,27 @@ def build(c8s_repo: Path, out: Path) -> tuple[Path, Path]:
     return c8s, canonical
 
 
-def regenerate(profile: Path, c8s: Path, canonical: Path) -> None:
-    relative = str(profile.relative_to(ROOT))
-    run([sys.executable, "scripts/fetch-node-manifest.py", "--spec", f"{relative}/spec.yaml",
-         "--output", f"{relative}/node-manifest.json"], cwd=ROOT)
-    tools = ["--release", relative, "--c8s", str(c8s), "--canonical-tool", str(canonical)]
-    run([sys.executable, "scripts/generate-release-allowlist.py", *tools, "--refresh-image-config"], cwd=ROOT)
-    run([sys.executable, "scripts/generate-release-allowlist.py", *tools], cwd=ROOT)
+def regenerate(moved: list[release_profiles.Profile], c8s: Path, canonical: Path) -> None:
+    # Profiles can share a node manifest, so each file is fetched once.
+    fetched: set[Path] = set()
+    for profile in moved:
+        manifest = release_profiles.node_manifest(profile)
+        if manifest not in fetched:
+            fetched.add(manifest)
+            run([sys.executable, "scripts/fetch-node-manifest.py", "--release", profile.relative(profile.directory)],
+                cwd=ROOT)
+    run([sys.executable, "scripts/generate-release-allowlist.py", "--refresh-image-config"], cwd=ROOT)
+    for profile in moved:
+        run([sys.executable, "scripts/generate-release-allowlist.py", "--release", profile.relative(profile.directory),
+             "--c8s", str(c8s), "--canonical-tool", str(canonical)], cwd=ROOT)
 
 
-def check(c8s_repo: Path, commit: str, c8s: Path, canonical: Path) -> None:
+def check(c8s_repo: Path, commit: str, moved: list[release_profiles.Profile], c8s: Path, canonical: Path) -> None:
     run([sys.executable, "scripts/verify-c8s-admission-source.py", "--repository", str(c8s_repo),
          "--commit", commit], cwd=ROOT)
     run([sys.executable, "scripts/check-c8s-protocol-lockstep.py"], cwd=ROOT)
-    for profile in profiles():
-        run([sys.executable, "scripts/generate-release-allowlist.py", "--release", str(profile.relative_to(ROOT)),
+    for profile in moved:
+        run([sys.executable, "scripts/generate-release-allowlist.py", "--release", profile.relative(profile.directory),
              "--c8s", str(c8s), "--canonical-tool", str(canonical), "--check"], cwd=ROOT)
     run([sys.executable, "-m", "unittest", "discover", "-s", "tests/release-v1", "-p", "test_*.py"], cwd=ROOT)
 
@@ -272,6 +364,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tag", required=True, help="the c8s release tag, for example v0.33.8")
     parser.add_argument("--c8s-repo", required=True, type=Path, help="a clean c8s checkout at the tag")
+    parser.add_argument("--profile", action="append", help="a profile to move (default: every profile)")
+    parser.add_argument("--confos-repo", type=Path, help="a confidential-os-builder checkout")
     args = parser.parse_args()
     try:
         if not TAG.fullmatch(args.tag):
@@ -282,36 +376,35 @@ def main() -> int:
             raise BumpError(f"--c8s-repo must be a clean checkout at {args.tag}")
         if git(ROOT, "status", "--porcelain"):
             raise BumpError("the repository must be clean")
+        everyone = release_profiles.load()
+        names = args.profile or [profile.name for profile in everyone]
+        unknown = sorted(set(names) - {profile.name for profile in everyone})
+        if unknown:
+            raise BumpError(f"unknown profiles: {unknown}")
+        moved = [profile for profile in everyone
+                 if profile.name in names and release_profiles.read_spec(profile)["c8s"]["release"] != args.tag]
+        if not moved:
+            raise BumpError(f"the profiles already pin {args.tag}")
+        olds = [release_profiles.read_spec(profile)["c8s"] for profile in moved]
+        if any(value != olds[0] for value in olds):
+            raise BumpError("the moved profiles pin different c8s releases; move them one at a time")
+        old = olds[0]
+        new = new_c8s(args.tag, commit, old)
 
-        normal = ROOT / "release"
-        old = old_pins(normal)
-        if old["release"] == args.tag:
-            raise BumpError(f"the normal profile already pins {args.tag}")
-        new = new_pins(args.tag, commit, old)
-        old_manifest = sha256_bytes((normal / "node-manifest.json").read_bytes())
-
-        for profile in profiles():
-            profile_old = old_pins(profile)
-            if profile_old["release"] != args.tag:
-                profile_new = new_pins(args.tag, commit, profile_old)
-                bump_profile(profile, pairs_for(profile_old, profile_new), profile_new)
+        pin_profiles(moved, everyone, new)
         bump_module(old["release"], args.tag)
         add_source_lock(c8s_repo, old, new)
-        share_protocol_manifest(c8s_repo, old["commit"], commit, args.tag)
-        rename_cdi_record(c8s_repo, old, new)
+        share_protocol_manifest(c8s_repo, old["sourceCommit"], commit, args.tag)
+        extend_cdi_record(c8s_repo, args.confos_repo.resolve() if args.confos_repo else None, old, new)
 
         with tempfile.TemporaryDirectory() as directory:
             c8s, canonical = build(c8s_repo, Path(directory))
-            for profile in profiles():
-                regenerate(profile, c8s, canonical)
-            new_manifest = sha256_bytes((normal / "node-manifest.json").read_bytes())
-            replace_all(RELEASE_TESTS, [(old_manifest, new_manifest)])
-            check(c8s_repo, commit, c8s, canonical)
-    except BumpError as error:
+            regenerate(moved, c8s, canonical)
+            check(c8s_repo, commit, moved, c8s, canonical)
+    except (BumpError, release_profiles.ProfileError, NODE["FetchError"]) as error:
         print(f"bump-c8s: {error}", file=sys.stderr)
         return 1
-    print(json.dumps({"tag": args.tag, "commit": commit, **{k: v for k, v in new.items() if k not in ("release", "commit")}},
-                     indent=2))
+    print(json.dumps({"tag": args.tag, "profiles": [profile.name for profile in moved], "c8s": new}, indent=2))
     return 0
 
 
