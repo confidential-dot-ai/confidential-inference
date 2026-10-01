@@ -41,8 +41,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = ROOT / "release"
-POLICY = RELEASE / "allowlist-policy.json"
-ACCEPTED_FINDINGS = RELEASE / "accepted-lint-findings.json"
 SEARCH_PATH_FINDING = re.compile(
     r'^error: workload "(?P<entry>[^"]+)" container sha256:[0-9a-f]{64} pins (?P<variable>[A-Z_]+) '
     r'to a search path overlapping (?P<kind>[a-zA-Z]+) mount "(?P<path>[^"]+)"; '

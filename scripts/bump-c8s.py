@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import functools
 import hashlib
 import json
 import os
@@ -80,6 +81,7 @@ def go_env() -> dict[str, str]:
     return env
 
 
+@functools.cache
 def digest(reference: str) -> str:
     value = run(["crane", "digest", reference]).strip()
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
@@ -204,10 +206,9 @@ def share_protocol_manifest(c8s_repo: Path, old_commit: str, new_commit: str, ta
         if old_commit != manifest["commit"] and old_commit not in shared:
             continue
         sources = list(manifest["capturedFrom"].values()) + list(PROTOCOL_TREES)
-        changed = [name for name in sources
-                   if git(c8s_repo, "rev-parse", f"{old_commit}:{name}") != git(c8s_repo, "rev-parse", f"{new_commit}:{name}")]
+        changed = git(c8s_repo, "diff", "--name-only", old_commit, new_commit, "--", *sources)
         if changed:
-            raise BumpError("the attestation protocol source files changed: " + ", ".join(changed)
+            raise BumpError("the attestation protocol source files changed: " + ", ".join(changed.splitlines())
                             + ". Capture a new protocol manifest by hand.")
         manifest["sharedWithCommits"] = shared + [new_commit]
         manifest["capturedFromNote"] += (
@@ -248,16 +249,11 @@ def build(c8s_repo: Path, out: Path) -> tuple[Path, Path]:
     return c8s, canonical
 
 
-def release_args(profile: Path) -> list[str]:
-    # The generator reads the normal profile when no --release is given.
-    return [] if profile == ROOT / "release" else ["--release", str(profile.relative_to(ROOT))]
-
-
 def regenerate(profile: Path, c8s: Path, canonical: Path) -> None:
     relative = str(profile.relative_to(ROOT))
     run([sys.executable, "scripts/fetch-node-manifest.py", "--spec", f"{relative}/spec.yaml",
          "--output", f"{relative}/node-manifest.json"], cwd=ROOT)
-    tools = release_args(profile) + ["--c8s", str(c8s), "--canonical-tool", str(canonical)]
+    tools = ["--release", relative, "--c8s", str(c8s), "--canonical-tool", str(canonical)]
     run([sys.executable, "scripts/generate-release-allowlist.py", *tools, "--refresh-image-config"], cwd=ROOT)
     run([sys.executable, "scripts/generate-release-allowlist.py", *tools], cwd=ROOT)
 
@@ -267,7 +263,7 @@ def check(c8s_repo: Path, commit: str, c8s: Path, canonical: Path) -> None:
          "--commit", commit], cwd=ROOT)
     run([sys.executable, "scripts/check-c8s-protocol-lockstep.py"], cwd=ROOT)
     for profile in profiles():
-        run([sys.executable, "scripts/generate-release-allowlist.py", *release_args(profile),
+        run([sys.executable, "scripts/generate-release-allowlist.py", "--release", str(profile.relative_to(ROOT)),
              "--c8s", str(c8s), "--canonical-tool", str(canonical), "--check"], cwd=ROOT)
     run([sys.executable, "-m", "unittest", "discover", "-s", "tests/release-v1", "-p", "test_*.py"], cwd=ROOT)
 

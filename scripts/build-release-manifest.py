@@ -37,16 +37,20 @@ from typing import Any
 import jsonschema
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from release_signature import environment_for_tag
+
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = ROOT / "release"
 CHART = ROOT / "helm/confidential-inference"
 SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
 SCHEMA = "confidential.ai/release-manifest/v1"
 MANIFEST_SCHEMA = ROOT / "contracts/release-manifest.schema.json"
-PUBLICATION_SCHEMA = ROOT / "contracts/image-publication-manifest.schema.json"
 TRUST_POLICY = ROOT / "releases/trust/release-signing-policy.json"
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 IMAGE_SELECTOR = runpy.run_path(str(ROOT / "scripts/affected-release-images.py"))
+ALLOWLIST_GENERATOR = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
+PUBLICATION = runpy.run_path(str(ROOT / "scripts/image-publication-manifest.py"))
 VERSION = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-staging)?$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -189,34 +193,24 @@ def require_model_agreement(spec: dict[str, Any], values: dict[str, Any]) -> Non
             "values model byte manifest differs from spec model byte manifest")
 
 
-def allowlist_core_name(image: str) -> str:
-    match = OCI.fullmatch(image)
-    require(match is not None, f"an allowlist core image is not digest-pinned: {image!r}")
-    base = image.split("@")[0].rsplit("/", 1)[-1].split(":")[0][:50]
-    return base + "-" + match.group(2).removeprefix("sha256:")[:12]
-
-
 def require_allowlist_contract(
     allowlist: dict[str, Any],
     policy: dict[str, Any],
     documents: list[dict[str, Any]],
     image_configs: dict[str, Any],
 ) -> None:
-    rendered = {
-        f"{item['kind']}/{item['metadata']['name']}": item
-        for item in documents
-        if item.get("kind") in {"Deployment", "StatefulSet", "DaemonSet"}
-    }
+    rendered = ALLOWLIST_GENERATOR["controllers"](documents)
     policy_controllers = {item["controller"] for item in policy["workloads"]}
     require(set(rendered) == policy_controllers,
             f"rendered controllers differ from allowlist policy: rendered={sorted(rendered)} policy={sorted(policy_controllers)}")
     expected_names = {item["name"] for item in policy["workloads"]}
-    expected_names |= {allowlist_core_name(image) for image in policy["c8s"].get("coreImages", [])}
+    expected_names |= {ALLOWLIST_GENERATOR["floor_entry"](image)[0] for image in policy["c8s"].get("coreImages", [])}
     workloads = allowlist.get("workloads")
     require(isinstance(workloads, dict) and set(workloads) == expected_names,
             "release/allowlist.json entries differ from the profile allowlist policy")
     core_digests = {OCI.fullmatch(image).group(2) for image in policy["c8s"].get("coreImages", [])}
-    injected = {"get-cert", "get-secret", "get-volume", "/c8s"}
+    injected = ALLOWLIST_GENERATOR["INJECTED_ENTRYPOINTS"]
+    effective_process = ALLOWLIST_GENERATOR["effective_process"]
     for item in policy["workloads"]:
         pod = rendered[item["controller"]]["spec"]["template"]["spec"]
         expected_processes = []
@@ -224,11 +218,11 @@ def require_allowlist_contract(
             image = container.get("image")
             match = OCI.fullmatch(image) if isinstance(image, str) else None
             require(match is not None, f"{item['controller']} has an unpinned container image")
-            config = image_configs.get(image, {})
-            command = container.get("command") or config.get("entrypoint") or []
-            args = container.get("args") if container.get("args") else (
-                [] if container.get("command") else config.get("cmd") or []
-            )
+            try:
+                process = effective_process(container, image_configs.get(image, {}))
+            except ALLOWLIST_GENERATOR["GenerationError"] as error:
+                raise ManifestError(f"{item['controller']}: {error}") from error
+            command, args = process["command"], process.get("args", [])
             if match.group(2) in core_digests and command and command[0] in injected:
                 continue
             expected_processes.append((match.group(2), command, args))
@@ -326,15 +320,10 @@ def image_publication(
 ) -> dict[str, Any]:
     """Validate publication evidence and bind it into the signed manifest."""
     data = path.read_bytes()
-    publication = json.loads(data)
-    schema = read_json(PUBLICATION_SCHEMA)
-    errors = sorted(
-        jsonschema.Draft202012Validator(schema).iter_errors(publication),
-        key=lambda error: list(error.path),
-    )
-    if errors:
-        location = ".".join(str(part) for part in errors[0].path) or "manifest"
-        raise ManifestError(f"image publication {location}: {errors[0].message}")
+    try:
+        publication = PUBLICATION["validate"](json.loads(data))
+    except PUBLICATION["PublicationError"] as error:
+        raise ManifestError(f"image publication: {error}") from error
     require(publication["releaseVersion"] == release_version,
             "image publication release version differs from the release specification")
     require(publication["source"]["repository"] == REPOSITORY,
@@ -345,7 +334,6 @@ def image_publication(
         image.rsplit("@", 1)[0]: image
         for image in release_images.values()
     }
-    names: list[str] = []
     bound: dict[str, str] = {}
     registered = {
         f"ghcr.io/confidential-dot-ai/confidential-inference/{image.image}"
@@ -354,18 +342,12 @@ def image_publication(
     for entry in publication["images"]:
         name = entry["name"]
         pushed = entry["pushedDigest"]
-        reproducible = entry["reproducibilityDigest"]
-        require(pushed == reproducible,
-                f"published digest differs from reproducibility digest for {name}")
         require(name in registered, f"published image is outside the release image registry: {name}")
         deployed = deployed_by_repository.get(name)
         if deployed is not None:
             require(deployed == f"{name}@{pushed}",
                     f"published image digest differs from the rendered release: {name}@{pushed}")
-        names.append(name)
         bound[name] = pushed
-    require(names == sorted(names) and len(names) == len(set(names)),
-            "image publication entries must have unique sorted names")
     require(bool(bound), "image publication has no image")
     return {
         "artifact": "image-publication-manifest.json",
@@ -391,19 +373,15 @@ def verify_image_source_boundary(
     require(ancestor.returncode == 0,
             "imageSourceCommit must be an ancestor of the release source commit")
     changed = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=ACMRTD",
+        ["git", "diff", "--name-only", "--no-renames", "--diff-filter=ACMRTD",
          image_source_commit, release_source_commit],
         cwd=repo, capture_output=True, text=True,
     )
     require(changed.returncode == 0, "cannot compare image and release source commits")
-    selector_path = "scripts/affected-release-images.py"
-    selector_changed = subprocess.run(
-        ["git", "diff", "--quiet", image_source_commit, release_source_commit, "--", selector_path],
-        cwd=repo,
-    )
-    require(selector_changed.returncode == 0,
+    changed_paths = changed.stdout.splitlines()
+    require("scripts/affected-release-images.py" not in changed_paths,
             "the image selector changed after imageSourceCommit")
-    affected = IMAGE_SELECTOR["affected_images"](changed.stdout.splitlines())
+    affected = IMAGE_SELECTOR["affected_images"](changed_paths)
     require(not affected,
             "image build inputs changed after imageSourceCommit: "
             + ", ".join(image.image for image in affected))
@@ -465,7 +443,7 @@ def build(
         "schema": SCHEMA,
         "release": {
             "name": spec["version"],
-            "environment": "staging" if spec["version"].endswith("-staging") else "production",
+            "environment": environment_for_tag(spec["version"]),
         },
         "releaseTrust": {
             "policyPath": TRUST_POLICY.relative_to(ROOT).as_posix(),

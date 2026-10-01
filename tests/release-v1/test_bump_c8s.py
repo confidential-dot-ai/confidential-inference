@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,10 +20,6 @@ NEW = {"release": "v0.33.7", "commit": "b" * 40, "nodeImage": "sha256:" + "4" * 
        "nodeManifestArtifact": "sha256:" + "5" * 64, "core:cds": "sha256:" + "6" * 64}
 
 
-def git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
-
-
 class BumpTests(unittest.TestCase):
     def test_pairs_replace_the_full_commit_before_the_short_one(self):
         pairs = BUMP.pairs_for(OLD, NEW)
@@ -36,10 +31,6 @@ class BumpTests(unittest.TestCase):
             text = text.replace(old, new)
         self.assertEqual(text, f"commit {'b' * 40} short {'b' * 8} digest sha256:{'6' * 64}")
 
-    def test_only_an_extra_profile_gets_a_release_argument(self):
-        self.assertEqual(BUMP.release_args(ROOT / "release"), [])
-        self.assertEqual(BUMP.release_args(ROOT / "release/staging"), ["--release", "release/staging"])
-
     def test_the_node_image_text_matches_any_version(self):
         text = "The CDI specification of the c8s v0.33.2 node image mounts"
         self.assertEqual(BUMP.NODE_IMAGE_TEXT.sub("c8s v0.33.7 node image", text),
@@ -49,15 +40,15 @@ class BumpTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory) / "c8s"
             (repo / "pkg/types").mkdir(parents=True)
-            git(repo.parent, "init", "-q", str(repo))
+            BUMP.git(repo.parent, "init", "-q", str(repo))
             (repo / "server.go").write_text("old\n")
             (repo / "pkg/types/verify.go").write_text("types\n")
-            git(repo, "add", "-A")
-            git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "old")
-            old = git(repo, "rev-parse", "HEAD")
+            BUMP.git(repo, "add", "-A")
+            BUMP.git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "old")
+            old = BUMP.git(repo, "rev-parse", "HEAD")
             (repo / "server.go").write_text("new\n")
-            git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "new")
-            new = git(repo, "rev-parse", "HEAD")
+            BUMP.git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "new")
+            new = BUMP.git(repo, "rev-parse", "HEAD")
             protocols = Path(directory) / "protocols"
             protocols.mkdir()
             manifest = {"commit": old, "sharedWithCommits": [], "capturedFrom": {"routes": "server.go"},
