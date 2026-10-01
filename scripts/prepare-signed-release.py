@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Validate and copy the exact release bytes for the tag signing job."""
+"""Validate historical v0 release bytes for old receipt verification.
+
+Do not use this tool to create a current release. The current tag workflow
+builds and signs the v1 release manifest.
+"""
 
 from __future__ import annotations
 

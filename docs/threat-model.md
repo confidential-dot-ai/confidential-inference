@@ -1,5 +1,10 @@
 # Threat model
 
+Some file references in this document describe the historical v0 release
+format under `releases/production/`. Use the signed GitHub Release assets and
+`contracts/release-manifest.schema.json` for the current public release
+contract. The historical references remain for old receipt verification.
+
 This document states who and what this deployment trusts, what a verified
 attestation proves, and the residual risks and known gaps. Every claim below
 cites the file it comes from. Read `README.md` and

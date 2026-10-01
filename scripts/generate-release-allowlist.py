@@ -402,19 +402,19 @@ def canonicalize(document: dict[str, Any], tool: Path | None) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def generate(policy_path: Path, executable: Path, tool: Path | None) -> bytes:
+def generate(policy_path: Path, executable: Path, tool: Path | None, release: Path = RELEASE) -> bytes:
     policy = read_json(policy_path)
     if policy.get("schema") != "confidential.ai/release-allowlist-policy/v1":
         raise GenerationError("release/allowlist-policy.json has the wrong schema")
     verify_c8s_binary(executable, policy["c8s"]["sourceCommit"])
-    rendered = controllers(render_chart(policy, RELEASE / "values.yaml"))
+    rendered = controllers(render_chart(policy, release / "values.yaml"))
     expected = {item["controller"] for item in policy["workloads"]}
     if set(rendered) != expected:
         raise GenerationError(
             f"the chart workloads differ from the policy: missing={sorted(expected - set(rendered))} "
             f"extra={sorted(set(rendered) - expected)}"
         )
-    image_env = read_json(RELEASE / "inputs/image-config.json")
+    image_env = read_json(release / "inputs/image-config.json")
     cdi = read_cdi(policy)
     core_digests = {split_image(image)[1] for image in policy["c8s"]["coreImages"]}
     workloads: dict[str, Any] = {}
@@ -466,7 +466,7 @@ def generate(policy_path: Path, executable: Path, tool: Path | None) -> bytes:
     with tempfile.TemporaryDirectory(prefix="release-allowlist-lint-") as directory:
         candidate = Path(directory) / "allowlist.json"
         candidate.write_bytes(canonical)
-        lint(executable, candidate, read_accepted_findings(ACCEPTED_FINDINGS))
+        lint(executable, candidate, read_accepted_findings(release / "accepted-lint-findings.json"))
     return canonical
 
 
@@ -535,10 +535,10 @@ def volume_reads(controller: dict[str, Any]) -> list[str]:
     return sorted({entry.partition("=")[2] for entry in encoded.split(",") if entry})
 
 
-def refresh_image_config(policy_path: Path) -> dict[str, dict[str, list[str]]]:
+def refresh_image_config(policy_path: Path, release: Path = RELEASE) -> dict[str, dict[str, list[str]]]:
     policy = read_json(policy_path)
     images: set[str] = set()
-    for controller in controllers(render_chart(policy, RELEASE / "values.yaml")).values():
+    for controller in controllers(render_chart(policy, release / "values.yaml")).values():
         pod = controller["spec"]["template"]["spec"]
         for container in pod.get("initContainers", []) + pod.get("containers", []):
             split_image(container["image"])
@@ -556,23 +556,26 @@ def refresh_image_config(policy_path: Path) -> dict[str, dict[str, list[str]]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--policy", type=Path, default=POLICY)
+    parser.add_argument("--release", type=Path, default=RELEASE)
+    parser.add_argument("--policy", type=Path)
     parser.add_argument("--c8s", type=Path, help="the c8s CLI built from the pinned source commit")
     parser.add_argument("--canonical-tool", type=Path, help="a built tools/c8s-allowlist-canonical binary")
     parser.add_argument("--check", action="store_true", help="fail when release/allowlist.json differs")
     parser.add_argument("--refresh-image-config", action="store_true")
     args = parser.parse_args()
     try:
+        release = args.release.resolve()
+        policy = args.policy.resolve() if args.policy else release / "allowlist-policy.json"
         if args.refresh_image_config:
-            path = RELEASE / "inputs/image-config.json"
+            path = release / "inputs/image-config.json"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(refresh_image_config(args.policy), indent=2, sort_keys=True) + "\n")
+            path.write_text(json.dumps(refresh_image_config(policy, release), indent=2, sort_keys=True) + "\n")
             print(json.dumps({"imageConfig": str(path)}))
             return 0
         if args.c8s is None:
             raise GenerationError("--c8s is required")
-        canonical = generate(args.policy, args.c8s.resolve(), args.canonical_tool)
-        output = RELEASE / "allowlist.json"
+        canonical = generate(policy, args.c8s.resolve(), args.canonical_tool, release)
+        output = release / "allowlist.json"
         if args.check:
             if not output.is_file() or output.read_bytes() not in (canonical, canonical + b"\n"):
                 raise GenerationError("release/allowlist.json differs from a new generation")
@@ -582,7 +585,7 @@ def main() -> int:
         print(f"generate-release-allowlist: {error}", file=sys.stderr)
         return 1
     # The SHA-256 of the file bytes, which the release manifest records.
-    print(json.dumps({"allowlist": "release/allowlist.json", "sha256": "sha256:" + hashlib.sha256(canonical + b"\n").hexdigest()}))
+    print(json.dumps({"allowlist": str(output), "sha256": "sha256:" + hashlib.sha256(canonical + b"\n").hexdigest()}))
     return 0
 
 

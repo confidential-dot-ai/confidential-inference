@@ -123,6 +123,12 @@ and the known gaps under remediation.
 
 ## Verify one live attestation
 
+The command below documents the historical v0 verification contract. It is
+kept to verify old receipts. It is not the current release or deployment
+workflow. Current releases publish `release-bundle.json`, its Sigstore bundle,
+the tag commit, and image publication evidence through
+`.github/workflows/release-bundle.yml`.
+
 Install Python 3, `jsonschema`, and `cryptography`. Build the c8s command from
 the exact public c8s commit in
 `contracts/c8s-admission-source-lock.json`:

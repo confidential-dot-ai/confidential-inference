@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Validate a production release tag against release/spec.yaml.
+"""Validate a release tag against its release profile.
 
-A production release tag is vX.Y.Z. There are no release candidates: a fix is
-a new version. The tag must point to a commit on main, and release/spec.yaml
-at that commit must name the same version.
+A release tag is vX.Y.Z or vX.Y.Z-staging. There are no release candidates: a
+fix is a new version. The tag must point to a commit on main, and the selected
+profile specification at that commit must name the same version.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import yaml
 TAG_RE = re.compile(
     r"v(?:0|[1-9][0-9]*)\."
     r"(?:0|[1-9][0-9]*)\."
-    r"(?:0|[1-9][0-9]*)"
+    r"(?:0|[1-9][0-9]*)(?:-staging)?"
 )
 
 
@@ -31,7 +31,7 @@ class ReleaseTagError(ValueError):
 def parse_tag(tag: str) -> str:
     if TAG_RE.fullmatch(tag) is None:
         raise ReleaseTagError(
-            "the production release tag must use vX.Y.Z, with no release-candidate suffix"
+            "the release tag must use vX.Y.Z or vX.Y.Z-staging"
         )
     return tag
 

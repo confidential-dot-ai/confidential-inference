@@ -43,7 +43,7 @@ jobs:
                 ;;
               services/gateway/*) gateway=true ;;
               services/maintenance-gateway/*) maintenance=true ;;
-              scripts/validate-release-tag.py|scripts/affected-release-images.py|tests/release-v0/test_release_tag.py|tests/release-v0/test_affected_release_images.py|.github/workflows/release-bundle.yml|.github/workflows/release-images.yml|scripts/build-release-manifest.py|scripts/generate-release-allowlist.py|scripts/fetch-node-manifest.py|release/*|tests/release-v1/*)
+              scripts/validate-release-tag.py|scripts/affected-release-images.py|scripts/find-image-publication-run.py|scripts/image-publication-manifest.py|tests/release-v0/test_release_tag.py|tests/release-v0/test_affected_release_images.py|.github/workflows/release-bundle.yml|.github/workflows/release-images.yml|scripts/build-release-manifest.py|scripts/generate-release-allowlist.py|scripts/fetch-node-manifest.py|release/*|tests/release-v1/*)
                 python=true
                 release=true
                 ;;

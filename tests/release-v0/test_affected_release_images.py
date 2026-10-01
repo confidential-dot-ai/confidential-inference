@@ -57,6 +57,7 @@ class AffectedReleaseImagesTests(unittest.TestCase):
 
     def test_base_ref_accepts_only_release_tags_or_full_commits(self) -> None:
         self.assertIsNotNone(BASE_REF.fullmatch("v0.14.3"))
+        self.assertIsNotNone(BASE_REF.fullmatch("v0.14.3-staging"))
         self.assertIsNotNone(BASE_REF.fullmatch("v0.14.3-rc.2"))
         self.assertIsNotNone(BASE_REF.fullmatch("a" * 40))
         self.assertIsNone(BASE_REF.fullmatch("main"))

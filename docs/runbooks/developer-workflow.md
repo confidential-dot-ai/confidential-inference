@@ -46,14 +46,10 @@ authentication, attestation evidence, release schemas, and operator interfaces.
 Internal implementation changes do not require a major version when these
 interfaces remain compatible.
 
-Only `vX.Y.Z` and `vX.Y.Z-rc.N` are valid production release tags. Use a tag
-such as `v0.14.3-rc.1` when a release needs deployment validation before final
-publication. The tag must point to a commit on `main`. After publication, the
-tag must never move or be deleted.
-
-If validation succeeds, `v0.14.3` must contain the same release content as the
-latest published release candidate. Only the release name can change. If any
-artifact or other release input changes, create another release candidate.
+Only `vX.Y.Z` and `vX.Y.Z-staging` are valid new release tags. The staging tag
+uses the reviewed simulator profile. A fix to either profile uses a new patch
+version. The tag must point to a commit on `main`. After publication, the tag
+must never move or be deleted.
 
 C8s, TEEriminator, and other release dependencies are exact release inputs. A
 dependency update enters a cluster only through a new Confidential Inference
@@ -78,9 +74,9 @@ artifacts.
 
 1. Create `feature/better-streaming` from `main`.
 2. Make the change and merge it into `main`.
-3. Create `v0.14.3-rc.1` from that exact commit.
+3. Create `v0.14.3-staging` from that exact commit.
 4. Build and sign the release with exact artifact and dependency digests.
 5. Give the signed release reference to `confidential-inference-internal`.
 6. Validate those artifacts in staging and in the candidate production slot.
-7. If validation succeeds, publish `v0.14.3` with the same artifact digests.
-8. If code or an artifact changes, return to `main` and create `v0.14.3-rc.2`.
+7. Publish `v0.14.3` when the production profile is approved.
+8. If code or an artifact changes, return to `main` and increase the patch version.

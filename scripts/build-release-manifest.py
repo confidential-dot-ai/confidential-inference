@@ -28,6 +28,7 @@ import argparse
 import hashlib
 import json
 import re
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -42,9 +43,11 @@ CHART = ROOT / "helm/confidential-inference"
 SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
 SCHEMA = "confidential.ai/release-manifest/v1"
 MANIFEST_SCHEMA = ROOT / "contracts/release-manifest.schema.json"
+PUBLICATION_SCHEMA = ROOT / "contracts/image-publication-manifest.schema.json"
 TRUST_POLICY = ROOT / "releases/trust/release-signing-policy.json"
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
-VERSION = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+IMAGE_SELECTOR = runpy.run_path(str(ROOT / "scripts/affected-release-images.py"))
+VERSION = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-staging)?$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
@@ -87,11 +90,13 @@ def read_spec(path: Path) -> dict[str, Any]:
     spec = read_yaml(path)
     require(isinstance(spec, dict), "release/spec.yaml is not a mapping")
     require(
-        set(spec) == {"version", "c8s", "model", "publicHostnames"},
-        "release/spec.yaml must hold exactly version, c8s, model, and publicHostnames",
+        set(spec) == {"version", "imageSourceCommit", "c8s", "model", "publicHostnames"},
+        "release/spec.yaml must hold exactly version, imageSourceCommit, c8s, model, and publicHostnames",
     )
     require(isinstance(spec["version"], str) and VERSION.fullmatch(spec["version"]) is not None,
-            "version must be vX.Y.Z, with no release-candidate suffix")
+            "version must be vX.Y.Z or vX.Y.Z-staging")
+    require(COMMIT.fullmatch(str(spec["imageSourceCommit"])) is not None,
+            "imageSourceCommit must be a full Git commit")
     c8s = spec["c8s"]
     require(isinstance(c8s, dict), "c8s must be a mapping")
     require(isinstance(c8s.get("release"), str) and VERSION.fullmatch(c8s["release"]) is not None,
@@ -116,16 +121,133 @@ def read_spec(path: Path) -> dict[str, Any]:
     return spec
 
 
-def render_chart(chart: Path, values: Path) -> list[dict[str, Any]]:
+def render_chart(
+    chart: Path,
+    values: Path,
+    *,
+    release_name: str,
+    namespace: str,
+    kube_version: str,
+) -> list[dict[str, Any]]:
     result = subprocess.run(
-        ["helm", "template", "confidential-inference", str(chart),
-         "--namespace", "confidential-inference", "--kube-version", "1.32.0",
+        ["helm", "template", release_name, str(chart),
+         "--namespace", namespace, "--kube-version", kube_version,
          "--values", str(values)],
         capture_output=True, text=True, check=False,
     )
     if result.returncode:
         raise ManifestError(f"helm template failed: {result.stderr.strip()}")
     return [item for item in yaml.safe_load_all(result.stdout) if isinstance(item, dict)]
+
+
+def read_allowlist_policy(path: Path, spec: dict[str, Any]) -> dict[str, Any]:
+    policy = read_json(path)
+    require(isinstance(policy, dict) and policy.get("schema") == "confidential.ai/release-allowlist-policy/v1",
+            "release/allowlist-policy.json has the wrong schema")
+    chart = policy.get("chart")
+    require(isinstance(chart, dict) and set(chart) == {"release", "namespace", "kubeVersion"},
+            "allowlist policy chart settings are incomplete")
+    for name in ("release", "namespace", "kubeVersion"):
+        require(isinstance(chart[name], str) and bool(chart[name]),
+                f"allowlist policy chart.{name} is invalid")
+    c8s = policy.get("c8s")
+    require(isinstance(c8s, dict), "allowlist policy c8s settings are absent")
+    require(c8s.get("release") == spec["c8s"]["release"],
+            "allowlist policy c8s release differs from the release specification")
+    require(c8s.get("sourceCommit") == spec["c8s"]["sourceCommit"],
+            "allowlist policy c8s source commit differs from the release specification")
+    core_images = c8s.get("coreImages")
+    require(isinstance(core_images, list) and core_images
+            and len(set(core_images)) == len(core_images)
+            and all(isinstance(image, str) and OCI.fullmatch(image) is not None for image in core_images),
+            "allowlist policy core images are invalid")
+    workloads = policy.get("workloads")
+    require(isinstance(workloads, list) and workloads,
+            "allowlist policy has no workloads")
+    require(all(isinstance(item, dict) and isinstance(item.get("name"), str)
+                and isinstance(item.get("controller"), str) for item in workloads),
+            "allowlist policy has an invalid workload")
+    require(len({item["name"] for item in workloads}) == len(workloads)
+            and len({item["controller"] for item in workloads}) == len(workloads),
+            "allowlist policy repeats a workload name or controller")
+    return policy
+
+
+def require_model_agreement(spec: dict[str, Any], values: dict[str, Any]) -> None:
+    model = values.get("inference", {}).get("model", {})
+    release_model = spec["model"]
+    require(model.get("name") == release_model["repository"],
+            "values model name differs from spec model repository")
+    require(model.get("revision") == release_model["revision"],
+            "values model revision differs from spec model revision")
+    verification = model.get("mountVerification", {})
+    metadata = verification.get("revisionMetadata")
+    expected = verification.get("expectedFiles", {})
+    require(isinstance(metadata, str) and metadata,
+            "values model mount verification has no revision metadata file")
+    require(isinstance(expected, dict) and expected.get(metadata) == release_model["byteManifestSha256"],
+            "values model byte manifest differs from spec model byte manifest")
+
+
+def allowlist_core_name(image: str) -> str:
+    match = OCI.fullmatch(image)
+    require(match is not None, f"an allowlist core image is not digest-pinned: {image!r}")
+    base = image.split("@")[0].rsplit("/", 1)[-1].split(":")[0][:50]
+    return base + "-" + match.group(2).removeprefix("sha256:")[:12]
+
+
+def require_allowlist_contract(
+    allowlist: dict[str, Any],
+    policy: dict[str, Any],
+    documents: list[dict[str, Any]],
+    image_configs: dict[str, Any],
+) -> None:
+    rendered = {
+        f"{item['kind']}/{item['metadata']['name']}": item
+        for item in documents
+        if item.get("kind") in {"Deployment", "StatefulSet", "DaemonSet"}
+    }
+    policy_controllers = {item["controller"] for item in policy["workloads"]}
+    require(set(rendered) == policy_controllers,
+            f"rendered controllers differ from allowlist policy: rendered={sorted(rendered)} policy={sorted(policy_controllers)}")
+    expected_names = {item["name"] for item in policy["workloads"]}
+    expected_names |= {allowlist_core_name(image) for image in policy["c8s"].get("coreImages", [])}
+    workloads = allowlist.get("workloads")
+    require(isinstance(workloads, dict) and set(workloads) == expected_names,
+            "release/allowlist.json entries differ from the profile allowlist policy")
+    core_digests = {OCI.fullmatch(image).group(2) for image in policy["c8s"].get("coreImages", [])}
+    injected = {"get-cert", "get-secret", "get-volume", "/c8s"}
+    for item in policy["workloads"]:
+        pod = rendered[item["controller"]]["spec"]["template"]["spec"]
+        expected_processes = []
+        for container in pod.get("initContainers", []) + pod.get("containers", []):
+            image = container.get("image")
+            match = OCI.fullmatch(image) if isinstance(image, str) else None
+            require(match is not None, f"{item['controller']} has an unpinned container image")
+            config = image_configs.get(image, {})
+            command = container.get("command") or config.get("entrypoint") or []
+            args = container.get("args") if container.get("args") else (
+                [] if container.get("command") else config.get("cmd") or []
+            )
+            if match.group(2) in core_digests and command and command[0] in injected:
+                continue
+            expected_processes.append((match.group(2), command, args))
+        actual_processes = []
+        entry = workloads[item["name"]]
+        for container in entry.get("initContainers", []) + entry.get("containers", []):
+            command_policy = container.get("command", {})
+            args_policy = container.get("args", {})
+            require(command_policy.get("policy") == "exact",
+                    f"allowlist workload {item['name']} has a non-exact command")
+            require(args_policy.get("policy") in {"exact", "deny"},
+                    f"allowlist workload {item['name']} has a non-exact argument policy")
+            actual_processes.append((
+                container.get("digest"),
+                command_policy.get("argv"),
+                args_policy.get("argv", []) if args_policy.get("policy") == "exact" else [],
+            ))
+        require(actual_processes == expected_processes,
+                f"allowlist workload {item['name']} process differs from the rendered profile")
 
 
 def rendered_images(documents: list[dict[str, Any]]) -> list[str]:
@@ -195,16 +317,131 @@ def image_names(values: dict[str, Any], images: list[str]) -> dict[str, str]:
     return dict(sorted(named.items()))
 
 
-def build(release: Path, chart: Path, lock_path: Path, source_commit: str) -> dict[str, Any]:
+def image_publication(
+    path: Path,
+    *,
+    release_version: str,
+    source_commit: str,
+    release_images: dict[str, str],
+) -> dict[str, Any]:
+    """Validate publication evidence and bind it into the signed manifest."""
+    data = path.read_bytes()
+    publication = json.loads(data)
+    schema = read_json(PUBLICATION_SCHEMA)
+    errors = sorted(
+        jsonschema.Draft202012Validator(schema).iter_errors(publication),
+        key=lambda error: list(error.path),
+    )
+    if errors:
+        location = ".".join(str(part) for part in errors[0].path) or "manifest"
+        raise ManifestError(f"image publication {location}: {errors[0].message}")
+    require(publication["releaseVersion"] == release_version,
+            "image publication release version differs from the release specification")
+    require(publication["source"]["repository"] == REPOSITORY,
+            "image publication repository differs from the release repository")
+    require(publication["source"]["commit"] == source_commit,
+            "image publication source commit differs from imageSourceCommit")
+    deployed_by_repository = {
+        image.rsplit("@", 1)[0]: image
+        for image in release_images.values()
+    }
+    names: list[str] = []
+    bound: dict[str, str] = {}
+    registered = {
+        f"ghcr.io/confidential-dot-ai/confidential-inference/{image.image}"
+        for image in IMAGE_SELECTOR["IMAGES"]
+    }
+    for entry in publication["images"]:
+        name = entry["name"]
+        pushed = entry["pushedDigest"]
+        reproducible = entry["reproducibilityDigest"]
+        require(pushed == reproducible,
+                f"published digest differs from reproducibility digest for {name}")
+        require(name in registered, f"published image is outside the release image registry: {name}")
+        deployed = deployed_by_repository.get(name)
+        if deployed is not None:
+            require(deployed == f"{name}@{pushed}",
+                    f"published image digest differs from the rendered release: {name}@{pushed}")
+        names.append(name)
+        bound[name] = pushed
+    require(names == sorted(names) and len(names) == len(set(names)),
+            "image publication entries must have unique sorted names")
+    require(bool(bound), "image publication has no image")
+    return {
+        "artifact": "image-publication-manifest.json",
+        "manifestSha256": sha256(data),
+        "releaseVersion": publication["releaseVersion"],
+        "sourceCommit": publication["source"]["commit"],
+        "baseRef": publication["source"]["baseRef"],
+        "baseRefCommit": publication["source"]["baseRefCommit"],
+        "images": dict(sorted(bound.items())),
+    }
+
+
+def verify_image_source_boundary(
+    image_source_commit: str,
+    release_source_commit: str,
+    repo: Path = ROOT,
+) -> None:
+    """Require a later pin-only release commit for the published images."""
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", image_source_commit, release_source_commit],
+        cwd=repo, capture_output=True, text=True,
+    )
+    require(ancestor.returncode == 0,
+            "imageSourceCommit must be an ancestor of the release source commit")
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=ACMRTD",
+         image_source_commit, release_source_commit],
+        cwd=repo, capture_output=True, text=True,
+    )
+    require(changed.returncode == 0, "cannot compare image and release source commits")
+    selector_path = "scripts/affected-release-images.py"
+    selector_changed = subprocess.run(
+        ["git", "diff", "--quiet", image_source_commit, release_source_commit, "--", selector_path],
+        cwd=repo,
+    )
+    require(selector_changed.returncode == 0,
+            "the image selector changed after imageSourceCommit")
+    affected = IMAGE_SELECTOR["affected_images"](changed.stdout.splitlines())
+    require(not affected,
+            "image build inputs changed after imageSourceCommit: "
+            + ", ".join(image.image for image in affected))
+
+
+def build(
+    release: Path,
+    chart: Path,
+    lock_path: Path,
+    source_commit: str,
+    publication_path: Path,
+) -> dict[str, Any]:
+    release = release.resolve()
+    chart = chart.resolve()
     require(COMMIT.fullmatch(source_commit) is not None, "--source-commit must be a full Git commit")
     spec = read_spec(release / "spec.yaml")
+    verify_image_source_boundary(spec["imageSourceCommit"], source_commit)
+    policy = read_allowlist_policy(release / "allowlist-policy.json", spec)
     allowlist_path = release / "allowlist.json"
     require(allowlist_path.is_file(), "release/allowlist.json is absent; generate it first")
     allowlist_bytes = allowlist_path.read_bytes()
     allowlist = json.loads(allowlist_bytes)
     require(allowlist.get("schema") == "c8s.allowlist/v1", "release/allowlist.json has the wrong schema")
     values = read_yaml(release / "values.yaml")
-    images = rendered_images(render_chart(chart, release / "values.yaml"))
+    require(isinstance(values, dict), "release/values.yaml is not a mapping")
+    require_model_agreement(spec, values)
+    image_configs = read_json(release / "inputs/image-config.json")
+    require(isinstance(image_configs, dict), "release image configuration is not a mapping")
+    chart_settings = policy["chart"]
+    documents = render_chart(
+        chart,
+        release / "values.yaml",
+        release_name=chart_settings["release"],
+        namespace=chart_settings["namespace"],
+        kube_version=chart_settings["kubeVersion"],
+    )
+    require_allowlist_contract(allowlist, policy, documents, image_configs)
+    images = rendered_images(documents)
     allowlisted = {
         container["digest"]
         for entry in allowlist["workloads"].values()
@@ -217,16 +454,27 @@ def build(release: Path, chart: Path, lock_path: Path, source_commit: str) -> di
     node_reference = f"{spec['c8s']['nodeImage']['reference']}@{spec['c8s']['nodeImage']['digest']}"
     require(lock["nodeImage"] == node_reference, "the source lock node image differs from c8s.nodeImage")
     node = node_measurements(release / "node-manifest.json", spec)
+    named_images = image_names(values, images)
+    publication = image_publication(
+        publication_path,
+        release_version=spec["version"],
+        source_commit=spec["imageSourceCommit"],
+        release_images=named_images,
+    )
     manifest = {
         "schema": SCHEMA,
-        "release": {"name": spec["version"], "environment": "production"},
+        "release": {
+            "name": spec["version"],
+            "environment": "staging" if spec["version"].endswith("-staging") else "production",
+        },
         "releaseTrust": {
             "policyPath": TRUST_POLICY.relative_to(ROOT).as_posix(),
             "policySha256": sha256(TRUST_POLICY.read_bytes()),
             "signatureType": "sigstore-keyless",
         },
         "source": {"repository": REPOSITORY, "commit": source_commit},
-        "images": image_names(values, images),
+        "imagePublication": publication,
+        "images": named_images,
         "chart": {
             "name": chart_identity(chart)["name"],
             "version": chart_identity(chart)["version"],
@@ -246,7 +494,10 @@ def build(release: Path, chart: Path, lock_path: Path, source_commit: str) -> di
             "sha256": sha256(lock_path.read_bytes()),
         },
         "model": spec["model"],
-        "allowlist": {"path": "release/allowlist.json", "sha256": sha256(allowlist_bytes)},
+        "allowlist": {
+            "path": allowlist_path.relative_to(ROOT).as_posix(),
+            "sha256": sha256(allowlist_bytes),
+        },
         "publicHostnames": spec["publicHostnames"],
     }
     validate_schema(manifest)
@@ -272,11 +523,19 @@ def main() -> int:
     parser.add_argument("--source-lock", type=Path, default=SOURCE_LOCK)
     parser.add_argument("--source-commit", required=True,
                         help="the commit of this repository that the release tag names")
+    parser.add_argument("--image-publication", type=Path, required=True,
+                        help="verified image publication manifest from the release-images workflow")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     try:
-        data = encode(build(args.release, args.chart, args.source_lock.resolve(), args.source_commit))
+        data = encode(build(
+            args.release,
+            args.chart,
+            args.source_lock.resolve(),
+            args.source_commit,
+            args.image_publication.resolve(),
+        ))
         output = args.output
         if args.check:
             require(output.is_file() and output.read_bytes() == data,

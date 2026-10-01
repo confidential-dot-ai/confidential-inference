@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Render Helm and create a deterministic v0 release bundle."""
+"""Render a historical v0 release bundle for old receipt verification.
+
+Do not use this tool to create a current release. Current releases use
+scripts/build-release-manifest.py and the release-bundle workflow.
+"""
 
 from __future__ import annotations
 

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://confidential.ai/schemas/image-publication-manifest/v1",
+  "title": "Confidential inference image publication manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "releaseVersion", "source", "images"],
+  "properties": {
+    "schema": {
+      "const": "confidential.ai/image-publication-manifest/v1"
+    },
+    "releaseVersion": {
+      "type": "string",
+      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-staging)?$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "baseRef", "baseRefCommit"],
+      "properties": {
+        "repository": {
+          "const": "https://github.com/confidential-dot-ai/confidential-inference"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "baseRef": {"type": "string", "minLength": 1, "pattern": "^\\S+$"},
+        "baseRefCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "images": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "pushedDigest", "reproducibilityDigest"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^ghcr\\.io/confidential-dot-ai/confidential-inference/[a-z0-9][a-z0-9._-]*$"
+          },
+          "pushedDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "reproducibilityDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  }
+}

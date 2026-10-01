@@ -2,7 +2,7 @@
   "schema": "confidential.ai/release-allowlist-policy/v1",
   "chart": {
     "release": "confidential-inference",
-    "namespace": "confidential-inference",
+    "namespace": "confidential-inference-staging",
     "kubeVersion": "1.32.0"
   },
   "kubernetes": {
@@ -20,17 +20,33 @@
       "nginxinc/nginx-unprivileged@sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348"
     ]
   },
-  "cdi": {
-    "driverVersion": "595.71.05",
-    "input": "release/inputs/cdi/nvidia-595.71.05.json"
-  },
   "workloads": [
-    {"name": "gateway", "controller": "Deployment/gateway",
-     "secretReads": ["/confidential-inference/gateway/api-key-pepper"]},
-    {"name": "inference-worker-0", "controller": "StatefulSet/inference-worker-0"},
-    {"name": "inference-worker-1", "controller": "StatefulSet/inference-worker-1"},
-    {"name": "kube-state-metrics", "controller": "Deployment/kube-state-metrics"},
-    {"name": "metrics-collector", "controller": "Deployment/metrics-collector"},
-    {"name": "sglang-router", "controller": "Deployment/sglang-router"}
+    {
+      "name": "gateway",
+      "controller": "Deployment/gateway",
+      "secretReads": [
+        "/confidential-inference/gateway/api-key-pepper"
+      ]
+    },
+    {
+      "name": "inference-worker-0",
+      "controller": "StatefulSet/inference-worker-0"
+    },
+    {
+      "name": "inference-worker-1",
+      "controller": "StatefulSet/inference-worker-1"
+    },
+    {
+      "name": "kube-state-metrics",
+      "controller": "Deployment/kube-state-metrics"
+    },
+    {
+      "name": "metrics-collector",
+      "controller": "Deployment/metrics-collector"
+    },
+    {
+      "name": "sglang-router",
+      "controller": "Deployment/sglang-router"
+    }
   ]
 }

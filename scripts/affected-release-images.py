@@ -39,7 +39,7 @@ RUST_IMAGE_INPUTS = (
 )
 BASE_REF = re.compile(
     r"(?:[0-9a-f]{40}|v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\."
-    r"(?:0|[1-9][0-9]*)(?:-rc\.[1-9][0-9]*)?)"
+    r"(?:0|[1-9][0-9]*)(?:-staging|-rc\.[1-9][0-9]*)?)"
 )
 IMAGES = (
     Image(
@@ -106,7 +106,7 @@ def affected_images(paths: list[str]) -> list[Image]:
 
 def changed_paths(base_ref: str, head: str) -> list[str]:
     if BASE_REF.fullmatch(base_ref) is None:
-        raise ValueError("base ref must be a full commit or vX.Y.Z[-rc.N] tag")
+        raise ValueError("base ref must be a full commit or a historical or current release tag")
     subprocess.run(
         ["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"],
         check=True,
