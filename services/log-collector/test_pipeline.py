@@ -90,7 +90,7 @@ def main():
     pod = {"apiVersion": "v1", "kind": "Pod",
            "metadata": {"name": "gateway-test", "namespace": "confidential-inference",
                         "uid": "00000000-0000-0000-0000-000000000001",
-                        "labels": {"app.kubernetes.io/instance": "confidential-inference"}},
+                        "labels": {"app.kubernetes.io/part-of": "confidential-inference"}},
            "spec": {"nodeName": "node-test", "containers": [
                {"name": "gateway", "image": "test", "ports": [{"containerPort": 9443}, {"containerPort": 9090}]},
                {"name": "cds-attest", "image": "test", "ports": [{"containerPort": 9000}]}]},
@@ -214,7 +214,7 @@ def main():
                        "--volume", str(sa)+":/var/run/secrets/kubernetes.io/serviceaccount:ro",
                        "--volume", str(client)+":/mnt/c8s-data/admin-client:ro"]
             for key, value in {"KUBE_API_URL": "https://127.0.0.1:"+str(kube.server_port),
-                               "LOG_NAMESPACE": "confidential-inference", "LOG_RELEASE": "confidential-inference",
+                               "LOG_NAMESPACE": "confidential-inference", "LOG_APPLICATION": "confidential-inference",
                                "DEPLOYMENT_ID": "test-deployment",
                                "SSL_CERT_FILE": "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
                                "LOKI_URL": "https://127.0.0.1:"+str(loki.server_port)+"/loki/api/v1/push"}.items():
@@ -235,7 +235,7 @@ def main():
             assert any("[REDACTED]" in value for value in values), "Bearer redaction did not run"
             assert set(reads) == {"gateway"}, "A helper container was read"
             assert any(urllib.parse.parse_qs(urllib.parse.urlparse(path).query).get("labelSelector") ==
-                       ["app.kubernetes.io/instance=confidential-inference"] for path in paths), "Release selector is missing"
+                       ["app.kubernetes.io/part-of=confidential-inference"] for path in paths), "Application selector is missing"
             assert all(stream["stream"].get("deployment")=="test-deployment" for stream in streams)
             assert all(set(stream["stream"]) <= {"deployment", "namespace", "pod", "container"} for stream in streams)
             print(json.dumps({"passed": True, "checks": ["authenticated Kubernetes log reads",

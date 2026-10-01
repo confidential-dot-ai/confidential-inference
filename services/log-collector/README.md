@@ -5,8 +5,8 @@ This image contains a fixed Grafana Alloy configuration. Enable it with
 `deploymentId`, and the matching deployment log URL.
 
 The service account can read pods and pod logs in the release namespace.
-It cannot read Secrets or execute commands. The collector selects the release
-label and reads only the main application containers. It excludes itself and
+It cannot read Secrets or execute commands. The collector selects the shared
+application label and reads only the main application containers. It excludes itself and
 certificate, secret, and volume helpers.
 
 The collector sends logs through the admin mTLS ingress. It uses the existing

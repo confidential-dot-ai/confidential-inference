@@ -15,7 +15,7 @@ discovery.kubernetes "application" {
   }
   selectors {
     role = "pod"
-    label = "app.kubernetes.io/instance=" + sys.env("LOG_RELEASE")
+    label = "app.kubernetes.io/part-of=" + sys.env("LOG_APPLICATION")
   }
 }
 

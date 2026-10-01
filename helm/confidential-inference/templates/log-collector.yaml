@@ -96,8 +96,8 @@ spec:
               value: https://kubernetes.default.svc:443
             - name: LOG_NAMESPACE
               value: {{ .Release.Namespace | quote }}
-            - name: LOG_RELEASE
-              value: {{ .Release.Name | quote }}
+            - name: LOG_APPLICATION
+              value: confidential-inference
             - name: DEPLOYMENT_ID
               value: {{ .Values.deploymentId | quote }}
             - name: LOKI_URL
