@@ -11,7 +11,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:72acd2c8dfa8326ebefa21fe0ad55e284962bb9ef0d111e418d52e57c5b047e2": {
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f0ea51f52efcf7fecdbdec00fffb8585e026a0f7d78276e79f3ee52cf0aa8a5a": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
