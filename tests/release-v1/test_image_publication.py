@@ -79,7 +79,7 @@ class ImagePublicationTests(unittest.TestCase):
         self.assertEqual(images.count("--reproducibility-digest"), 2)
         self.assertEqual(images.count("--pushed-digest"), 2)
         self.assertIn("name: release-image-publication-${{ github.sha }}", images)
-        self.assertNotIn("release_version", images)
+        self.assertNotIn("inputs.release_version", images)
         self.assertIn('artifact_name="release-image-publication-${image_source_commit}"', bundle)
         self.assertIn("--source-commit \"$image_source_commit\"", bundle)
         self.assertIn("scripts/find-image-publication-run.py", bundle)

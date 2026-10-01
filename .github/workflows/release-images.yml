@@ -13,6 +13,13 @@ on:
         required: true
         type: boolean
         default: false
+      # Unused. The evidence names the image source commit. Kept for one
+      # release so that callers that still pass it do not fail; remove it
+      # after confidential-inference-internal stops passing it.
+      release_version:
+        description: Unused; kept for callers that still pass it
+        required: false
+        type: string
       base_ref:
         description: Prior release tag or commit used to find affected images
         required: true
