@@ -176,6 +176,10 @@ spec:
               value: {{ join "," $receiptTargets | quote }}
             - name: GATEWAY_C8S_EVIDENCE_BASE_URL
               value: {{ .Values.attestationReceipts.evidenceBaseUrl | quote }}
+            {{- with .Values.attestationReceipts.evidenceConnectHost }}
+            - name: GATEWAY_C8S_EVIDENCE_CONNECT_HOST
+              value: {{ . | quote }}
+            {{- end }}
             - name: GATEWAY_RELEASE_ID
               value: {{ .Values.attestationReceipts.releaseId | quote }}
             # The release manifest hash and the operator key hashes are in a

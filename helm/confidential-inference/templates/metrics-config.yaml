@@ -12,6 +12,9 @@ data:
       scrape_timeout: 10s
       external_labels:
         environment: {{ .Values.environment | quote }}
+        {{- with .Values.deploymentId }}
+        deployment: {{ . | quote }}
+        {{- end }}
     {{- if .Values.metricsCollector.remoteWrite.enabled }}
     remote_write:
       - url: {{ .Values.metricsCollector.remoteWrite.url | quote }}

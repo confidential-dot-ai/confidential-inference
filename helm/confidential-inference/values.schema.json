@@ -4,6 +4,7 @@
   "required": ["environment", "imagePullSecret", "images", "scheduling", "gateway", "inference", "router", "metricsCollector", "kubeStateMetrics", "attestationReceipts", "namedWorkloadProxy"],
   "properties": {
     "environment": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"},
+    "deploymentId": {"type": "string", "maxLength": 63, "pattern": "^(|[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)$"},
     "imagePullSecret": {
       "type": "object",
       "additionalProperties": false,
@@ -56,6 +57,7 @@
         "gpuEvidenceFlagEnabled": {"type": "boolean"},
         "legacyC8s615": {"type": "boolean"},
         "evidenceBaseUrl": {"type": "string", "pattern": "^https://[^/?#]+(?::[0-9]{1,5})?$"},
+        "evidenceConnectHost": {"type": "string", "pattern": "^[A-Za-z0-9.:-]*$"},
         "evidenceEgressCidrs": {
           "type": "array",
           "uniqueItems": true,
