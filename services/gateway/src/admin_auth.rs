@@ -2,8 +2,6 @@
 
 use std::{
     collections::BTreeMap,
-    fs,
-    path::Path,
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -26,6 +24,9 @@ const MAX_CLOCK_SKEW_SECONDS: u64 = 60;
 const MAX_ADMIN_BODY_BYTES: usize = 1_048_576;
 const MAX_NONCES: usize = 4_096;
 
+/// The largest admin signer certificate file that the gateway reads.
+pub const MAX_CERTIFICATE_BYTES: usize = 256 * 1_024;
+
 #[derive(Clone)]
 pub struct AdminRequestVerifier {
     public_key: Arc<Vec<u8>>,
@@ -33,17 +34,19 @@ pub struct AdminRequestVerifier {
 }
 
 impl AdminRequestVerifier {
-    /// Load the exact admin client public certificate.
+    /// Load the exact admin client public certificate from its PEM bytes.
+    ///
+    /// The caller reads the mounted file, so one bounded reader checks the
+    /// shape of every mounted gateway input.
     ///
     /// # Errors
     ///
-    /// Returns an error when the file is absent, too large, malformed, or not P-256.
-    pub fn from_certificate_file(path: &Path) -> Result<Self, String> {
-        let bytes = fs::read(path).map_err(|_| "read the admin signer certificate")?;
-        if bytes.is_empty() || bytes.len() > 256 * 1_024 {
+    /// Returns an error when the certificate is empty, too large, malformed, or not P-256.
+    pub fn from_certificate_pem(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.is_empty() || bytes.len() > MAX_CERTIFICATE_BYTES {
             return Err("the admin signer certificate has an unsafe size".to_owned());
         }
-        let (_, pem) = parse_x509_pem(&bytes).map_err(|_| "parse the admin signer PEM")?;
+        let (_, pem) = parse_x509_pem(bytes).map_err(|_| "parse the admin signer PEM")?;
         let (_, certificate) = parse_x509_certificate(&pem.contents)
             .map_err(|_| "parse the admin signer certificate")?;
         let public_key = certificate.public_key().subject_public_key.data.to_vec();
@@ -172,7 +175,7 @@ fn rejection(code: &'static str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use std::{error::Error, process::Command};
+    use std::{error::Error, fs, process::Command};
 
     use super::*;
 
@@ -232,14 +235,14 @@ mod tests {
         ] {
             headers.insert(name, value.parse()?);
         }
-        let verifier = AdminRequestVerifier::from_certificate_file(&certificate)?;
+        let verifier = AdminRequestVerifier::from_certificate_pem(&fs::read(&certificate)?)?;
         verifier.verify(method, path, &headers, body, 1_787_616_000)?;
         assert_eq!(
             verifier.verify(method, path, &headers, body, 1_787_616_000),
             Err("replayed_signature")
         );
 
-        let other = AdminRequestVerifier::from_certificate_file(&certificate)?;
+        let other = AdminRequestVerifier::from_certificate_pem(&fs::read(&certificate)?)?;
         assert_eq!(
             other.verify(method, path, &headers, b"changed", 1_787_616_000),
             Err("body_hash_mismatch")

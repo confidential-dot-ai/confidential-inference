@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Create and validate evidence for deterministic image publication."""
+"""Create and validate evidence for deterministic image publication.
+
+The evidence names the image source commit, not a release version. Every
+release profile that pins that commit as imageSourceCommit uses the same
+evidence, and the signed release manifest binds it to the release.
+"""
 
 from __future__ import annotations
 
@@ -14,10 +19,9 @@ import jsonschema
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "contracts/image-publication-manifest.schema.json"
-SCHEMA = "confidential.ai/image-publication-manifest/v1"
+SCHEMA = "confidential.ai/image-publication-manifest/v2"
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 REGISTRY = "ghcr.io/confidential-dot-ai/confidential-inference"
-VERSION = re.compile(r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-staging)?$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 IMAGE = re.compile(r"^ghcr\.io/confidential-dot-ai/confidential-inference/[a-z0-9][a-z0-9._-]*$")
@@ -53,18 +57,14 @@ def validate(manifest: Any) -> dict[str, Any]:
     names = [entry["name"] for entry in images]
     require(names == sorted(names), "publication images are not sorted by name")
     require(len(names) == len(set(names)), "publication manifest repeats an image")
-    for entry in images:
-        require(
-            entry["pushedDigest"] == entry["reproducibilityDigest"],
-            f"pushed digest differs from the reproducibility digest for {entry['name']}",
-        )
     return manifest
 
 
 def record(
     *, image: str, pushed_digest: str, reproducibility_digest: str,
-    source_commit: str, release_version: str, base_ref: str, base_ref_commit: str,
+    source_commit: str, base_ref: str, base_ref_commit: str,
 ) -> dict[str, Any]:
+    """Record one pushed image. Its digest must equal the audited digest."""
     require(IMAGE.fullmatch(image) is not None, "image name is invalid")
     require(DIGEST.fullmatch(pushed_digest) is not None, "pushed digest is invalid")
     require(DIGEST.fullmatch(reproducibility_digest) is not None,
@@ -75,30 +75,22 @@ def record(
     require(bool(base_ref) and not any(character.isspace() for character in base_ref),
             "base reference is invalid")
     require(COMMIT.fullmatch(base_ref_commit) is not None, "base reference commit is invalid")
-    require(VERSION.fullmatch(release_version) is not None, "release version is invalid")
     return {
         "schema": SCHEMA,
-        "releaseVersion": release_version,
         "source": {
             "repository": REPOSITORY,
             "commit": source_commit,
             "baseRef": base_ref,
             "baseRefCommit": base_ref_commit,
         },
-        "images": [{
-            "name": image,
-            "pushedDigest": pushed_digest,
-            "reproducibilityDigest": reproducibility_digest,
-        }],
+        "images": [{"name": image, "digest": pushed_digest}],
     }
 
 
 def merge(paths: list[Path], expected_names: list[str]) -> dict[str, Any]:
     require(bool(paths), "no publication records were supplied")
     manifests = [validate(read_json(path)) for path in sorted(paths)]
-    release_versions = {item["releaseVersion"] for item in manifests}
     sources = {json.dumps(item["source"], sort_keys=True) for item in manifests}
-    require(len(release_versions) == 1, "publication records have different release versions")
     require(len(sources) == 1, "publication records have different source commits")
     images = [entry for item in manifests for entry in item["images"]]
     names = [entry["name"] for entry in images]
@@ -107,7 +99,6 @@ def merge(paths: list[Path], expected_names: list[str]) -> dict[str, Any]:
             f"publication image set differs from the selected images: got={sorted(names)} expected={expected}")
     manifest = {
         "schema": SCHEMA,
-        "releaseVersion": next(iter(release_versions)),
         "source": json.loads(next(iter(sources))),
         "images": sorted(images, key=lambda entry: entry["name"]),
     }
@@ -128,7 +119,6 @@ def main() -> int:
     record_parser.add_argument("--source-commit", required=True)
     record_parser.add_argument("--base-ref", required=True)
     record_parser.add_argument("--base-ref-commit", required=True)
-    record_parser.add_argument("--release-version", required=True)
     record_parser.add_argument("--output", type=Path, required=True)
     merge_parser = subparsers.add_parser("merge")
     merge_parser.add_argument("--record", type=Path, action="append", required=True)
@@ -144,7 +134,6 @@ def main() -> int:
                 pushed_digest=args.pushed_digest,
                 reproducibility_digest=args.reproducibility_digest,
                 source_commit=args.source_commit,
-                release_version=args.release_version,
                 base_ref=args.base_ref,
                 base_ref_commit=args.base_ref_commit,
             )

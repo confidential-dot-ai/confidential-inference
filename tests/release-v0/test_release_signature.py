@@ -42,7 +42,8 @@ class ReleaseSignatureTests(unittest.TestCase):
         self.assertNotIn("--prerelease", workflow)
         self.assertNotIn("-rc.", workflow)
         self.assertNotIn("--candidate-bundle", workflow)
-        self.assertIn('--spec "${{ steps.profile.outputs.path }}/spec.yaml"', workflow)
+        self.assertIn('release_profiles.py resolve --tag "$RELEASE_TAG"', workflow)
+        self.assertIn('--release "${{ needs.select-profile.outputs.directory }}"', workflow)
         self.assertIn("scripts/build-release-manifest.py", workflow)
         self.assertIn('--source-commit "$(git rev-parse HEAD)"', workflow)
 
@@ -222,8 +223,10 @@ class ReleaseSignatureTests(unittest.TestCase):
     def test_workflow_uses_keyless_oidc_and_refuses_asset_replacement(self) -> None:
         workflow = WORKFLOW.read_text()
         self.assertIn("id-token: write", workflow)
-        self.assertIn("signed-release-production", workflow)
-        self.assertIn("signed-release-staging", workflow)
+        self.assertIn("name: ${{ needs.select-profile.outputs.signing_environment }}", workflow)
+        profiles = (ROOT / "release/profiles.json").read_text(encoding="utf-8")
+        self.assertIn('"signed-release-production"', profiles)
+        self.assertIn('"signed-release-staging"', profiles)
         self.assertNotIn("environment: signed-release\n", workflow)
         self.assertIn("group: signed-release-${{ github.ref_name }}", workflow)
         self.assertIn("cosign-release: v3.1.2", workflow)

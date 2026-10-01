@@ -62,17 +62,13 @@
     "imagePublication": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["artifact", "manifestSha256", "releaseVersion", "sourceCommit", "baseRef", "baseRefCommit", "images"],
+      "required": ["artifact", "manifestSha256", "sourceCommit", "baseRef", "baseRefCommit", "images"],
       "properties": {
         "artifact": {
           "const": "image-publication-manifest.json"
         },
         "manifestSha256": {
           "$ref": "#/$defs/sha256Digest"
-        },
-        "releaseVersion": {
-          "type": "string",
-          "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-staging)?$"
         },
         "sourceCommit": {
           "description": "The earlier image source commit used by the deterministic image publication run.",

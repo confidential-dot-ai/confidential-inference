@@ -9,11 +9,15 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import jsonschema
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import release_profiles
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,11 +30,10 @@ RELEASE_MANIFEST_SCHEMA_PATH = ROOT / "contracts/release-manifest.schema.json"
 MAX_RELEASE_BUNDLE_BYTES = 2 * 1024 * 1024
 MAX_SIGNATURE_BUNDLE_BYTES = 2 * 1024 * 1024
 RELEASE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
-TAG_ENVIRONMENTS = (
-    (re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-staging"), "staging"),
-    (re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"), "production"),
-    # Keep these mappings for verification of signed historical releases.
-    # The publication workflow no longer accepts either legacy prefix.
+# A release profile maps its tags to its environment (release/profiles.json).
+# Keep these other mappings for verification of signed historical releases.
+# The publication workflow no longer accepts either legacy prefix.
+LEGACY_TAG_ENVIRONMENTS = (
     (re.compile(r"v[0-9][a-z0-9._-]{0,126}"), "production"),
     (re.compile(r"integration-staging-v[0-9][a-z0-9._-]{0,106}"), "integration-staging"),
     (re.compile(r"conf-inference-prod-v[0-9][a-z0-9._-]{0,107}"), "conf-inference-prod"),
@@ -43,7 +46,11 @@ class ReleaseSignatureError(ValueError):
 
 def environment_for_tag(tag: str) -> str:
     """Return the one environment that a protected release tag can sign."""
-    for pattern, environment in TAG_ENVIRONMENTS:
+    try:
+        return release_profiles.for_tag(tag).environment
+    except release_profiles.ProfileError:
+        pass
+    for pattern, environment in LEGACY_TAG_ENVIRONMENTS:
         if pattern.fullmatch(tag) is not None:
             return environment
     raise ReleaseSignatureError("the release tag is not an allowed environment tag")

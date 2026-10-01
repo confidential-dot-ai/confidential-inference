@@ -2,7 +2,8 @@
 #
 # The base is c8s/candidate-values.yaml, the values of the cluster that
 # serves api.confidential.ai today (release v0.13.28-rc.2). This file changes
-# only what c8s v0.33.7 and the new placement need. Each change has a comment.
+# only what the pinned c8s release and the new placement need. Each change has
+# a comment.
 #
 # The allowlist is generated from this file, so every value that reaches a
 # container command, argument, environment variable, or mount is part of the
@@ -36,14 +37,15 @@ images:
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
-  # changed: the c8s v0.33.7 operator image (source commit fd905ada).
+  # changed: the c8s operator image. It must be one of the spec.yaml
+  # c8s.coreImages, which scripts/bump-c8s.py moves together.
   c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:f0ea51f52efcf7fecdbdec00fffb8585e026a0f7d78276e79f3ee52cf0aa8a5a
 
 namedWorkloadProxy:
   enabled: false
 
 c8s:
-  # c8s v0.33.7 still labels the front-door pod `router`.
+  # c8s labels the front-door pod `router`.
   frontDoorPodLabelName: router
 
 attestationReceipts:

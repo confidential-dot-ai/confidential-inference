@@ -8,7 +8,12 @@ import fnmatch
 import json
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import release_profiles
 
 
 @dataclass(frozen=True)
@@ -37,9 +42,10 @@ RUST_IMAGE_INPUTS = (
     "services/maintenance-gateway/Cargo.toml",
     "services/maintenance-gateway/src/**",
 )
+# A base is a commit, a release tag, or a legacy release candidate tag.
 BASE_REF = re.compile(
-    r"(?:[0-9a-f]{40}|v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\."
-    r"(?:0|[1-9][0-9]*)(?:-staging|-rc\.[1-9][0-9]*)?)"
+    f"[0-9a-f]{{40}}|{release_profiles.tag_pattern().pattern}"
+    f"|{release_profiles.VERSION}-rc\\.[1-9][0-9]*"
 )
 IMAGES = (
     Image(

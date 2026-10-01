@@ -19,11 +19,22 @@ c8s:
     reference: ghcr.io/confidential-dot-ai/node-guest-base
     tag: rke2-tdx-cdi-v0.33.7
     digest: sha256:1c8a672c5017f6709e36f5a4ab74790a00d02be726b093589f13b69b8671cf46
+  # The c8s core images. The allowlist gives each one an unrestricted entry,
+  # as the c8s bootstrap seed does.
+  coreImages:
+    - ghcr.io/confidential-dot-ai/c8s-operator@sha256:f0ea51f52efcf7fecdbdec00fffb8585e026a0f7d78276e79f3ee52cf0aa8a5a
+    - ghcr.io/confidential-dot-ai/cds@sha256:2216259e47eff27eba7d0e35c3aef3e4e749d68d5da7e4efb2a5a02ddc985606
+    - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:305e1a18c7c8573b384728b1e1c1069579330ad18c1091a7469b18f52246e754
+    - ghcr.io/confidential-dot-ai/ratls-mesh@sha256:cbcf4c68c2d72fc01d1dc0cd9ddef0311f2db073d1cea2d4486645d1c5044b95
+    - ghcr.io/confidential-dot-ai/volumed@sha256:c4a3e581e9e6063c98448a4455bbfdc11efc0d63c2596fd12cf87ac20f46acf0
+    - nginxinc/nginx-unprivileged@sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348
   # The artifact that c8s publishes with the node image. It holds the TDX
   # measurements MRTD, RTMR1, and RTMR2.
   nodeManifestArtifact:
     tag: rke2-tdx-v0.33.7
     digest: sha256:fc81bdd46c7441064188e3090fe77188593edcaa918318f7fc0547f8f332e459
+    # The SHA-256 of the manifest.json layer, which is node-manifest.json.
+    manifestJson: sha256:bf2364e9104890d8f755e2aaf124985535f3013a99e3904ce50cdf4d6d1b276e
 
 model:
   repository: deepseek-ai/DeepSeek-V4-Flash-0731

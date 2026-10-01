@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Generate release/allowlist.json with exact environment and mount rules.
+"""Generate the allowlist.json of a release profile with exact environment and mount rules.
 
 Every application container gets `env: exact` and `mounts: exact`. The final
 container environment and mount set combine five pinned sources, as the
 internal release runbook describes:
 
 1. the image: its `ENV` list, recorded in release/inputs/image-config.json;
-2. the pod specification: the chart rendered with release/values.yaml;
+2. the pod specification: the chart rendered with the profile values files
+   (release/profiles.json);
 3. Kubernetes: the `kubernetes` Service variables and `HOSTNAME`;
 4. c8s: the certificate, secret, and volume mounts that its webhook adds;
 5. NVIDIA CDI: the driver variables and mounts, recorded for one driver
@@ -22,7 +23,8 @@ pinned Go tool in tools/c8s-allowlist-canonical writes the canonical bytes,
 and `c8s allowlist lint --strict` must pass.
 
 `--refresh-image-config` records the `ENV`, `ENTRYPOINT`, and `CMD` of every
-rendered image with crane. Review that diff by hand: it is a release input.
+image that any profile renders, with crane. All profiles share this record.
+Review that diff by hand: it is a release input.
 """
 
 from __future__ import annotations
@@ -39,10 +41,12 @@ from typing import Any
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import release_profiles
+
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = ROOT / "release"
-POLICY = RELEASE / "allowlist-policy.json"
-ACCEPTED_FINDINGS = RELEASE / "accepted-lint-findings.json"
+POLICY_SCHEMA = "confidential.ai/release-allowlist-policy/v2"
 SEARCH_PATH_FINDING = re.compile(
     r'^error: workload "(?P<entry>[^"]+)" container sha256:[0-9a-f]{64} pins (?P<variable>[A-Z_]+) '
     r'to a search path overlapping (?P<kind>[a-zA-Z]+) mount "(?P<path>[^"]+)"; '
@@ -96,12 +100,13 @@ def split_image(image: Any) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def render_chart(policy: dict[str, Any], values: Path) -> list[dict[str, Any]]:
+def render_chart(policy: dict[str, Any], profile: release_profiles.Profile) -> list[dict[str, Any]]:
+    """Render the chart with the profile values files, in layer order."""
     chart = policy["chart"]
     output = run([
         "helm", "template", chart["release"], str(CHART),
         "--namespace", chart["namespace"], "--kube-version", chart["kubeVersion"],
-        "--values", str(values),
+        *release_profiles.helm_values_args(profile),
     ]).decode()
     return [item for item in yaml.safe_load_all(output) if isinstance(item, dict)]
 
@@ -307,7 +312,12 @@ def container_mounts(
     return sorted(rules, key=lambda rule: rule["destination"])
 
 
-def read_cdi(policy: dict[str, Any]) -> dict[str, Any] | None:
+def read_cdi(policy: dict[str, Any], node_image: str) -> dict[str, Any] | None:
+    """Read the CDI record. It must list the pinned node image when one is given.
+
+    A record lists every node image that it holds for. scripts/bump-c8s.py adds
+    a node image only when the pinned NVIDIA driver inputs did not change.
+    """
     record = policy.get("cdi")
     if record is None:
         return None
@@ -317,6 +327,8 @@ def read_cdi(policy: dict[str, Any]) -> dict[str, Any] | None:
     value = read_json(path)
     if value.get("driverVersion") != record["driverVersion"]:
         raise GenerationError(f"{record['input']} records a different driver version")
+    if node_image not in value.get("nodeImages", []):
+        raise GenerationError(f"{record['input']} does not hold for the node image {node_image}")
     for rule in value["mounts"]:
         if rule.get("kind") != "host" or not rule.get("source") or not rule.get("destination"):
             raise GenerationError(f"{record['input']} has a mount that is not an exact host rule")
@@ -402,21 +414,26 @@ def canonicalize(document: dict[str, Any], tool: Path | None) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def generate(policy_path: Path, executable: Path, tool: Path | None, release: Path = RELEASE) -> bytes:
-    policy = read_json(policy_path)
-    if policy.get("schema") != "confidential.ai/release-allowlist-policy/v1":
-        raise GenerationError("release/allowlist-policy.json has the wrong schema")
-    verify_c8s_binary(executable, policy["c8s"]["sourceCommit"])
-    rendered = controllers(render_chart(policy, release / "values.yaml"))
+def generate(
+    profile: release_profiles.Profile, executable: Path, tool: Path | None, policy_path: Path | None = None,
+) -> bytes:
+    policy = read_json(policy_path or profile.policy)
+    if policy.get("schema") != POLICY_SCHEMA:
+        raise GenerationError(f"{profile.relative(profile.policy)} has the wrong schema")
+    # The specification is the one place that pins c8s.
+    c8s = release_profiles.read_spec(profile)["c8s"]
+    verify_c8s_binary(executable, c8s["sourceCommit"])
+    node_image = f"{c8s['nodeImage']['reference']}@{c8s['nodeImage']['digest']}"
+    rendered = controllers(render_chart(policy, profile))
     expected = {item["controller"] for item in policy["workloads"]}
     if set(rendered) != expected:
         raise GenerationError(
             f"the chart workloads differ from the policy: missing={sorted(expected - set(rendered))} "
             f"extra={sorted(set(rendered) - expected)}"
         )
-    image_env = read_json(release / "inputs/image-config.json")
-    cdi = read_cdi(policy)
-    core_digests = {split_image(image)[1] for image in policy["c8s"]["coreImages"]}
+    image_env = read_json(release_profiles.IMAGE_CONFIG)
+    cdi = read_cdi(policy, node_image)
+    core_digests = {split_image(image)[1] for image in c8s["coreImages"]}
     workloads: dict[str, Any] = {}
     errors: list[str] = []
     for item in sorted(policy["workloads"], key=lambda value: value["name"]):
@@ -457,7 +474,7 @@ def generate(policy_path: Path, executable: Path, tool: Path | None, release: Pa
         workloads[item["name"]] = entry
     if errors:
         raise GenerationError("the release allowlist has unpinned inputs:\n  - " + "\n  - ".join(errors))
-    for image in policy["c8s"]["coreImages"]:
+    for image in c8s["coreImages"]:
         name, entry = floor_entry(image)
         if name in workloads:
             raise GenerationError(f"the core entry {name} collides with a workload")
@@ -466,7 +483,7 @@ def generate(policy_path: Path, executable: Path, tool: Path | None, release: Pa
     with tempfile.TemporaryDirectory(prefix="release-allowlist-lint-") as directory:
         candidate = Path(directory) / "allowlist.json"
         candidate.write_bytes(canonical)
-        lint(executable, candidate, read_accepted_findings(release / "accepted-lint-findings.json"))
+        lint(executable, candidate, read_accepted_findings(profile.accepted_findings))
     return canonical
 
 
@@ -535,14 +552,16 @@ def volume_reads(controller: dict[str, Any]) -> list[str]:
     return sorted({entry.partition("=")[2] for entry in encoded.split(",") if entry})
 
 
-def refresh_image_config(policy_path: Path, release: Path = RELEASE) -> dict[str, dict[str, list[str]]]:
-    policy = read_json(policy_path)
+def refresh_image_config(profiles: tuple[release_profiles.Profile, ...]) -> dict[str, dict[str, list[str]]]:
+    """Record the image configuration of every image that a profile renders."""
     images: set[str] = set()
-    for controller in controllers(render_chart(policy, release / "values.yaml")).values():
-        pod = controller["spec"]["template"]["spec"]
-        for container in pod.get("initContainers", []) + pod.get("containers", []):
-            split_image(container["image"])
-            images.add(container["image"])
+    for profile in profiles:
+        policy = read_json(profile.policy)
+        for controller in controllers(render_chart(policy, profile)).values():
+            pod = controller["spec"]["template"]["spec"]
+            for container in pod.get("initContainers", []) + pod.get("containers", []):
+                split_image(container["image"])
+                images.add(container["image"])
     record = {}
     for image in sorted(images):
         config = json.loads(run(["crane", "config", image])).get("config", {})
@@ -556,38 +575,39 @@ def refresh_image_config(policy_path: Path, release: Path = RELEASE) -> dict[str
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--release", type=Path, default=RELEASE)
+    parser.add_argument("--release", type=Path, default=RELEASE, help="the profile directory")
     parser.add_argument("--policy", type=Path)
     parser.add_argument("--c8s", type=Path, help="the c8s CLI built from the pinned source commit")
     parser.add_argument("--canonical-tool", type=Path, help="a built tools/c8s-allowlist-canonical binary")
-    parser.add_argument("--check", action="store_true", help="fail when release/allowlist.json differs")
-    parser.add_argument("--refresh-image-config", action="store_true")
+    parser.add_argument("--check", action="store_true", help="fail when the profile allowlist.json differs")
+    parser.add_argument("--refresh-image-config", action="store_true",
+                        help="record the image configuration of every profile, then stop")
     args = parser.parse_args()
     try:
-        release = args.release.resolve()
-        policy = args.policy.resolve() if args.policy else release / "allowlist-policy.json"
         if args.refresh_image_config:
-            path = release / "inputs/image-config.json"
+            path = release_profiles.IMAGE_CONFIG
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(refresh_image_config(policy, release), indent=2, sort_keys=True) + "\n")
+            record = refresh_image_config(release_profiles.load())
+            path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
             print(json.dumps({"imageConfig": str(path)}))
             return 0
+        profile = release_profiles.for_directory(args.release)
         if args.c8s is None:
             raise GenerationError("--c8s is required")
-        canonical = generate(policy, args.c8s.resolve(), args.canonical_tool, release)
-        output = release / "allowlist.json"
+        policy = args.policy.resolve() if args.policy else None
+        canonical = generate(profile, args.c8s.resolve(), args.canonical_tool, policy)
+        output = profile.allowlist
         if args.check:
             if not output.is_file() or output.read_bytes() not in (canonical, canonical + b"\n"):
-                raise GenerationError("release/allowlist.json differs from a new generation")
+                raise GenerationError(f"{profile.relative(output)} differs from a new generation")
         else:
             output.write_bytes(canonical + b"\n")
-    except (GenerationError, OSError, KeyError) as error:
+    except (GenerationError, release_profiles.ProfileError, OSError, KeyError) as error:
         print(f"generate-release-allowlist: {error}", file=sys.stderr)
         return 1
     # The SHA-256 of the file bytes, which the release manifest records.
     print(json.dumps({"allowlist": str(output), "sha256": "sha256:" + hashlib.sha256(canonical + b"\n").hexdigest()}))
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
