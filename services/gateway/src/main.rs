@@ -2,6 +2,7 @@
 
 use std::{
     fs,
+    io::Read,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -313,10 +314,11 @@ async fn main() -> Result<()> {
         Arc::new(attestation),
         http,
     );
-    let admin_verifier =
-        AdminRequestVerifier::from_certificate_file(&args.admin_signer_certificate_file)
-            .map_err(anyhow::Error::msg)
-            .context("load the admin request signer certificate")?;
+    let admin_certificate = read_bounded(&args.admin_signer_certificate_file, 256 * 1_024)
+        .context("load the admin request signer certificate")?;
+    let admin_verifier = AdminRequestVerifier::from_certificate_pem(&admin_certificate)
+        .map_err(anyhow::Error::msg)
+        .context("load the admin request signer certificate")?;
     let admin = admin_router(gateway_state).layer(middleware::from_fn_with_state(
         admin_verifier,
         require_signed_admin_request,
@@ -541,13 +543,50 @@ fn load_release_identity(args: &mut Args) -> Result<()> {
     Ok(())
 }
 
+// Kubernetes directory mounts expose each file as a symlink into the kubelet
+// atomic-writer directory, such as `<dir>/file -> ..data/file` with
+// `..data -> ..<timestamp>`. A symlink is accepted only when its canonical
+// target stays inside the canonical directory of the configured path and is a
+// non-empty regular file within the limit. The bytes come from one opened
+// handle, so the checked file is the file that is read.
 fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
-    let metadata =
-        fs::symlink_metadata(path).with_context(|| format!("inspect {}", path.display()))?;
-    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > limit as u64 {
+    let canonical =
+        fs::canonicalize(path).with_context(|| format!("resolve {}", path.display()))?;
+    let directory = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let directory = fs::canonicalize(directory)
+        .with_context(|| format!("resolve the directory of {}", path.display()))?;
+    if canonical == directory || !canonical.starts_with(&directory) {
+        bail!("the mounted file resolves outside its directory");
+    }
+    // The canonical path has no symlinks left. Check its shape before the open
+    // so a FIFO or device is never opened, then check the opened handle again.
+    let unsafe_shape = |metadata: &fs::Metadata| {
+        !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > limit as u64
+    };
+    let metadata = fs::symlink_metadata(&canonical)
+        .with_context(|| format!("inspect {}", canonical.display()))?;
+    if unsafe_shape(&metadata) {
         bail!("the mounted file has an unsafe shape");
     }
-    fs::read(path).with_context(|| format!("read {}", path.display()))
+    let file =
+        fs::File::open(&canonical).with_context(|| format!("open {}", canonical.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspect {}", canonical.display()))?;
+    if unsafe_shape(&metadata) {
+        bail!("the mounted file has an unsafe shape");
+    }
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("read {}", canonical.display()))?;
+    if bytes.is_empty() || bytes.len() > limit {
+        bail!("the mounted file has an unsafe shape");
+    }
+    Ok(bytes)
 }
 
 // c8s volumed mounts the volume after the pod starts, so the first attempts can
@@ -570,10 +609,12 @@ fn open_c8s_state(
     }
 }
 
+// The probe follows symlinks, so a kubelet symlink whose target does not exist
+// yet is retried like a missing file.
 fn wait_for_bounded_file(path: &Path, limit: usize, timeout: Duration) -> Result<Vec<u8>> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        match fs::symlink_metadata(path) {
+        match fs::metadata(path) {
             Ok(_) => return read_bounded(path, limit),
             Err(error)
                 if error.kind() == std::io::ErrorKind::NotFound
@@ -743,6 +784,92 @@ mod tests {
     fn absent_state_inputs_fail_closed() {
         let missing = PathBuf::from("/definitely-absent/confidential-gateway/state");
         assert!(read_bounded(&missing, 4_096).is_err());
+    }
+
+    // Build the kubelet atomic-writer layout: `<dir>/..2026_x/<name>`, then
+    // `<dir>/..data -> ..2026_x` and `<dir>/<name> -> ..data/<name>`.
+    #[cfg(unix)]
+    fn kubelet_mount(directory: &Path, name: &str, contents: &[u8]) -> PathBuf {
+        use std::os::unix::fs::symlink;
+        let timestamped = directory.join("..2026_10_01_00_00_00.000000000");
+        fs::create_dir(&timestamped).unwrap_or_else(|_| unreachable!());
+        fs::write(timestamped.join(name), contents).unwrap_or_else(|_| unreachable!());
+        symlink("..2026_10_01_00_00_00.000000000", directory.join("..data"))
+            .unwrap_or_else(|_| unreachable!());
+        let path = directory.join(name);
+        symlink(Path::new("..data").join(name), &path).unwrap_or_else(|_| unreachable!());
+        path
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kubelet_symlinked_file_is_accepted() {
+        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let path = kubelet_mount(directory.path(), "release-identity.json", b"identity");
+        let value = read_bounded(&path, 4_096).unwrap_or_else(|_| unreachable!());
+        assert_eq!(value, b"identity");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kubelet_symlinked_file_over_the_limit_fails() {
+        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let path = kubelet_mount(directory.path(), "pepper", &[b'x'; 4_097]);
+        assert!(read_bounded(&path, 4_096).is_err());
+        assert!(read_bounded(&path, 4_097).is_ok());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlink_outside_the_mount_directory_fails() {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let target = root.path().join("secret");
+        fs::write(&target, b"outside").unwrap_or_else(|_| unreachable!());
+        let directory = root.path().join("mount");
+        fs::create_dir(&directory).unwrap_or_else(|_| unreachable!());
+        let absolute = directory.join("absolute");
+        std::os::unix::fs::symlink(&target, &absolute).unwrap_or_else(|_| unreachable!());
+        assert!(read_bounded(&absolute, 4_096).is_err());
+        let relative = directory.join("relative");
+        std::os::unix::fs::symlink(Path::new("..").join("secret"), &relative)
+            .unwrap_or_else(|_| unreachable!());
+        assert!(read_bounded(&relative, 4_096).is_err());
+        assert!(read_bounded(&target, 4_096).is_ok());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlink_to_a_directory_fails() {
+        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let inner = directory.path().join("..data");
+        fs::create_dir(&inner).unwrap_or_else(|_| unreachable!());
+        let path = directory.path().join("pepper");
+        std::os::unix::fs::symlink("..data", &path).unwrap_or_else(|_| unreachable!());
+        assert!(read_bounded(&path, 4_096).is_err());
+        assert!(read_bounded(directory.path(), 4_096).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dangling_kubelet_symlink_is_retried_until_the_target_appears() {
+        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let path = directory.path().join("pepper");
+        std::os::unix::fs::symlink(Path::new("..data").join("pepper"), &path)
+            .unwrap_or_else(|_| unreachable!());
+        let mount = directory.path().to_path_buf();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let timestamped = mount.join("..2026_10_01_00_00_00.000000000");
+            fs::create_dir(&timestamped).unwrap_or_else(|_| unreachable!());
+            fs::write(timestamped.join("pepper"), b"staging-pepper")
+                .unwrap_or_else(|_| unreachable!());
+            std::os::unix::fs::symlink("..2026_10_01_00_00_00.000000000", mount.join("..data"))
+                .unwrap_or_else(|_| unreachable!());
+        });
+        let value = wait_for_bounded_file(&path, 4_096, Duration::from_secs(2))
+            .unwrap_or_else(|_| unreachable!());
+        handle.join().unwrap_or_else(|_| unreachable!());
+        assert_eq!(value, b"staging-pepper");
     }
 
     #[test]
