@@ -398,10 +398,10 @@ def main() -> int:
                  if profile.name in names and release_profiles.read_spec(profile)["c8s"]["release"] != args.tag]
         if not moved:
             raise BumpError(f"the profiles already pin {args.tag}")
-        olds = {json.dumps(release_profiles.read_spec(profile)["c8s"], sort_keys=True) for profile in moved}
-        if len(olds) != 1:
+        olds = [release_profiles.read_spec(profile)["c8s"] for profile in moved]
+        if any(value != olds[0] for value in olds):
             raise BumpError("the moved profiles pin different c8s releases; move them one at a time")
-        old = json.loads(olds.pop())
+        old = olds[0]
         new = new_c8s(args.tag, commit, old)
 
         pin_profiles(moved, everyone, new)
