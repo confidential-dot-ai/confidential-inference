@@ -325,7 +325,6 @@ def image_names(values: dict[str, Any], images: list[str]) -> dict[str, str]:
 def image_publication(
     path: Path,
     *,
-    release_version: str,
     source_commit: str,
     release_images: dict[str, str],
 ) -> dict[str, Any]:
@@ -335,8 +334,6 @@ def image_publication(
         publication = PUBLICATION["validate"](json.loads(data))
     except PUBLICATION["PublicationError"] as error:
         raise ManifestError(f"image publication: {error}") from error
-    require(publication["releaseVersion"] == release_version,
-            "image publication release version differs from the release specification")
     require(publication["source"]["repository"] == REPOSITORY,
             "image publication repository differs from the release repository")
     require(publication["source"]["commit"] == source_commit,
@@ -352,7 +349,7 @@ def image_publication(
     }
     for entry in publication["images"]:
         name = entry["name"]
-        pushed = entry["pushedDigest"]
+        pushed = entry["digest"]
         require(name in registered, f"published image is outside the release image registry: {name}")
         deployed = deployed_by_repository.get(name)
         if deployed is not None:
@@ -363,7 +360,6 @@ def image_publication(
     return {
         "artifact": "image-publication-manifest.json",
         "manifestSha256": sha256(data),
-        "releaseVersion": publication["releaseVersion"],
         "sourceCommit": publication["source"]["commit"],
         "baseRef": publication["source"]["baseRef"],
         "baseRefCommit": publication["source"]["baseRefCommit"],
@@ -443,7 +439,6 @@ def build(
     named_images = image_names(values, images)
     publication = image_publication(
         publication_path,
-        release_version=spec["version"],
         source_commit=spec["imageSourceCommit"],
         release_images=named_images,
     )

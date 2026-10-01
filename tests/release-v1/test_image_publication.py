@@ -27,14 +27,17 @@ class ImagePublicationTests(unittest.TestCase):
             pushed_digest=digest,
             reproducibility_digest=digest,
             source_commit="b" * 40,
-            release_version="v0.14.0-staging",
             base_ref="v0.13.28-rc.2",
             base_ref_commit="c" * 40,
         )
 
     def test_record_proves_the_pushed_digest(self):
         value = self.record()
-        self.assertEqual(value["images"][0]["pushedDigest"], value["images"][0]["reproducibilityDigest"])
+        self.assertEqual(value["images"][0], {
+            "name": "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
+            "digest": "sha256:" + "a" * 64,
+        })
+        self.assertNotIn("releaseVersion", value)
         MODULE.validate(value)
 
     def test_record_rejects_a_different_pushed_digest(self):
@@ -44,7 +47,6 @@ class ImagePublicationTests(unittest.TestCase):
                 pushed_digest="sha256:" + "a" * 64,
                 reproducibility_digest="sha256:" + "c" * 64,
                 source_commit="b" * 40,
-                release_version="v0.14.0",
                 base_ref="v0.13.28-rc.2",
                 base_ref_commit="c" * 40,
             )
@@ -72,10 +74,11 @@ class ImagePublicationTests(unittest.TestCase):
         images = (ROOT / ".github/workflows/release-images.yml").read_text()
         bundle = (ROOT / ".github/workflows/release-bundle.yml").read_text()
         self.assertIn("needs: [select-images, reproducibility, reproducibility-sglang-compare]", images)
-        self.assertIn("--reproducibility-digest", images)
-        self.assertIn("--pushed-digest", images)
-        self.assertIn("release-image-publication-${{ needs.select-images.outputs.production_version }}", images)
-        self.assertIn("release-image-publication-${{ needs.select-images.outputs.staging_version }}", images)
+        self.assertEqual(images.count("--reproducibility-digest"), 1)
+        self.assertEqual(images.count("--pushed-digest"), 1)
+        self.assertIn("name: release-image-publication-${{ github.sha }}", images)
+        self.assertNotIn("release_version", images)
+        self.assertIn('artifact_name="release-image-publication-${image_source_commit}"', bundle)
         self.assertIn("--source-commit \"$image_source_commit\"", bundle)
         self.assertIn("scripts/find-image-publication-run.py", bundle)
         self.assertIn("--image-publication dist/image-publication-manifest.json", bundle)
@@ -92,7 +95,7 @@ class PublicationRunLookupTests(unittest.TestCase):
         def response(url, _token):
             if "actions/artifacts" in url:
                 return {"artifacts": [{
-                    "name": "release-image-publication-v0.14.0",
+                    "name": "release-image-publication-" + "b" * 40,
                     "expired": False,
                     "workflow_run": {"id": 73},
                 }]}
@@ -111,7 +114,7 @@ class PublicationRunLookupTests(unittest.TestCase):
                 "https://api.github.test",
                 "confidential-dot-ai/confidential-inference",
                 "token",
-                "release-image-publication-v0.14.0",
+                "release-image-publication-" + "b" * 40,
                 "b" * 40,
             ), 73)
         finally:
@@ -121,9 +124,9 @@ class PublicationRunLookupTests(unittest.TestCase):
         def response(url, _token):
             if "actions/artifacts" in url:
                 return {"artifacts": [
-                    {"name": "release-image-publication-v0.14.0", "expired": False,
+                    {"name": "release-image-publication-" + "b" * 40, "expired": False,
                      "workflow_run": {"id": 73}},
-                    {"name": "release-image-publication-v0.14.0", "expired": False,
+                    {"name": "release-image-publication-" + "b" * 40, "expired": False,
                      "workflow_run": {"id": 74}},
                 ]}
             return {
@@ -142,7 +145,7 @@ class PublicationRunLookupTests(unittest.TestCase):
                     "https://api.github.test",
                     "confidential-dot-ai/confidential-inference",
                     "token",
-                    "release-image-publication-v0.14.0",
+                    "release-image-publication-" + "b" * 40,
                     "b" * 40,
                 )
         finally:
@@ -152,9 +155,9 @@ class PublicationRunLookupTests(unittest.TestCase):
         def response(url, _token):
             if "actions/artifacts" in url:
                 return {"artifacts": [
-                    {"name": "release-image-publication-v0.14.0", "expired": False,
+                    {"name": "release-image-publication-" + "b" * 40, "expired": False,
                      "workflow_run": {"id": 72}},
-                    {"name": "release-image-publication-v0.14.0", "expired": False,
+                    {"name": "release-image-publication-" + "b" * 40, "expired": False,
                      "workflow_run": {"id": 73}},
                 ]}
             run_id = int(url.rsplit("/", 1)[-1])
@@ -173,39 +176,9 @@ class PublicationRunLookupTests(unittest.TestCase):
                 "https://api.github.test",
                 "confidential-dot-ai/confidential-inference",
                 "token",
-                "release-image-publication-v0.14.0",
+                "release-image-publication-" + "b" * 40,
                 "b" * 40,
             ), 73)
-        finally:
-            FINDER.request_json = original
-
-    def test_one_run_can_own_normal_and_staging_artifacts(self):
-        def response(url, _token):
-            if "actions/artifacts" in url:
-                name = "release-image-publication-v0.14.0-staging" if "staging" in url else \
-                    "release-image-publication-v0.14.0"
-                return {"artifacts": [{
-                    "name": name, "expired": False, "workflow_run": {"id": 73},
-                }]}
-            return {
-                "event": "workflow_dispatch",
-                "path": ".github/workflows/release-images.yml",
-                "conclusion": "success",
-                "head_branch": "main",
-                "head_sha": "b" * 40,
-                "repository": {"full_name": "confidential-dot-ai/confidential-inference"},
-            }
-        original = FINDER.request_json
-        FINDER.request_json = response
-        try:
-            for version in ("v0.14.0", "v0.14.0-staging"):
-                self.assertEqual(FINDER.find_run(
-                    "https://api.github.test",
-                    "confidential-dot-ai/confidential-inference",
-                    "token",
-                    f"release-image-publication-{version}",
-                    "b" * 40,
-                ), 73)
         finally:
             FINDER.request_json = original
 

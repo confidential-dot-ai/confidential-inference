@@ -280,8 +280,7 @@ class ManifestTests(unittest.TestCase):
                 name, digest = value.split("@", 1)
                 records[name] = digest
         publication = {
-            "schema": "confidential.ai/image-publication-manifest/v1",
-            "releaseVersion": "v0.14.0-staging",
+            "schema": "confidential.ai/image-publication-manifest/v2",
             "source": {
                 "repository": "https://github.com/confidential-dot-ai/confidential-inference",
                 "commit": image_source_commit,
@@ -289,7 +288,7 @@ class ManifestTests(unittest.TestCase):
                 "baseRefCommit": "a54319a2ebb2ae51f161d7c2085bffcca02e082c",
             },
             "images": [
-                {"name": name, "pushedDigest": digest, "reproducibilityDigest": digest}
+                {"name": name, "digest": digest}
                 for name, digest in sorted(records.items())
             ],
         }
@@ -357,8 +356,7 @@ class ManifestTests(unittest.TestCase):
 
     def test_manifest_refuses_publication_evidence_for_an_unrendered_digest(self):
         publication = {
-            "schema": "confidential.ai/image-publication-manifest/v1",
-            "releaseVersion": "v0.14.0-staging",
+            "schema": "confidential.ai/image-publication-manifest/v2",
             "source": {
                 "repository": "https://github.com/confidential-dot-ai/confidential-inference",
                 "commit": "b" * 40,
@@ -367,8 +365,7 @@ class ManifestTests(unittest.TestCase):
             },
             "images": [{
                 "name": "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
-                "pushedDigest": "sha256:" + "0" * 64,
-                "reproducibilityDigest": "sha256:" + "0" * 64,
+                "digest": "sha256:" + "0" * 64,
             }],
         }
         with tempfile.TemporaryDirectory() as temporary:
@@ -377,7 +374,6 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(MAN.ManifestError, "differs from the rendered release"):
                 MAN.image_publication(
                     path,
-                    release_version="v0.14.0-staging",
                     source_commit="b" * 40,
                     release_images={
                         "gateway": "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64,
@@ -386,8 +382,7 @@ class ManifestTests(unittest.TestCase):
 
     def test_manifest_records_a_published_image_outside_the_application_chart(self):
         publication = {
-            "schema": "confidential.ai/image-publication-manifest/v1",
-            "releaseVersion": "v0.14.0",
+            "schema": "confidential.ai/image-publication-manifest/v2",
             "source": {
                 "repository": "https://github.com/confidential-dot-ai/confidential-inference",
                 "commit": "b" * 40,
@@ -396,8 +391,7 @@ class ManifestTests(unittest.TestCase):
             },
             "images": [{
                 "name": "ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway",
-                "pushedDigest": "sha256:" + "2" * 64,
-                "reproducibilityDigest": "sha256:" + "2" * 64,
+                "digest": "sha256:" + "2" * 64,
             }],
         }
         with tempfile.TemporaryDirectory() as temporary:
@@ -405,7 +399,6 @@ class ManifestTests(unittest.TestCase):
             path.write_text(json.dumps(publication))
             result = MAN.image_publication(
                 path,
-                release_version="v0.14.0",
                 source_commit="b" * 40,
                 release_images={
                     "gateway": "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64,
@@ -418,8 +411,7 @@ class ManifestTests(unittest.TestCase):
 
     def test_manifest_refuses_publication_from_another_source_commit(self):
         publication = {
-            "schema": "confidential.ai/image-publication-manifest/v1",
-            "releaseVersion": "v0.14.0-staging",
+            "schema": "confidential.ai/image-publication-manifest/v2",
             "source": {
                 "repository": "https://github.com/confidential-dot-ai/confidential-inference",
                 "commit": "a" * 40,
@@ -428,8 +420,7 @@ class ManifestTests(unittest.TestCase):
             },
             "images": [{
                 "name": "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
-                "pushedDigest": "sha256:" + "1" * 64,
-                "reproducibilityDigest": "sha256:" + "1" * 64,
+                "digest": "sha256:" + "1" * 64,
             }],
         }
         with tempfile.TemporaryDirectory() as temporary:
@@ -438,7 +429,6 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(MAN.ManifestError, "source commit differs"):
                 MAN.image_publication(
                     path,
-                    release_version="v0.14.0-staging",
                     source_commit="b" * 40,
                     release_images={
                         "gateway": "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64,
