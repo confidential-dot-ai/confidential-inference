@@ -111,6 +111,12 @@ recordingRules:
   - record: confidential:gpu_ecc_uncorrected_errors:sum
     source: confidential_inference_gpu_ecc_uncorrected_errors_total
     promql: sum by (environment) (confidential_inference_gpu_ecc_uncorrected_errors_total)
+  - record: confidential:worker_cpu_cores:sum
+    source: confidential_inference_container_cpu_seconds_total
+    promql: sum by (environment) (rate(confidential_inference_container_cpu_seconds_total[5m]))
+  - record: confidential:worker_memory_working_set_bytes:sum
+    source: confidential_inference_container_memory_working_set_bytes
+    promql: sum by (environment) (confidential_inference_container_memory_working_set_bytes)
   - record: confidential:requests_per_second
     source: gateway_requests
     promql: sum by (environment) (rate(gateway_requests[5m]))

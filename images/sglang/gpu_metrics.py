@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Expose bounded NVIDIA GPU metrics for one SGLang worker container."""
+"""Expose GPU and resource metrics for one SGLang worker container."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import io
 import re
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 
 QUERY_FIELDS = (
@@ -37,6 +38,45 @@ class GpuSample:
     temperature_celsius: float
     corrected_ecc_errors: int | None
     uncorrected_ecc_errors: int | None
+
+
+@dataclass(frozen=True)
+class ContainerSample:
+    cpu_usage_usec: int
+    memory_working_set_bytes: int
+
+
+def _read_counter_file(path: Path) -> dict[str, int]:
+    with path.open(encoding="ascii") as source:
+        text = source.read(65537)
+    if len(text) > 65536:
+        raise ValueError("resource counter file exceeds the limit")
+    counters: dict[str, int] = {}
+    for line in text.splitlines():
+        name, raw = line.split()
+        value = int(raw)
+        if value < 0 or name in counters:
+            raise ValueError("invalid resource counter")
+        counters[name] = value
+    return counters
+
+
+def query_container_resources(
+    root: Path = Path("/sys/fs/cgroup"),
+    membership: Path = Path("/proc/self/cgroup"),
+) -> ContainerSample:
+    # C8s requires a private cgroup namespace. Read only its root, never a
+    # host path or another container. Missing counters produce no values.
+    if membership.read_text(encoding="ascii").strip() != "0::/":
+        raise ValueError("a private cgroup v2 root is required")
+    cpu = _read_counter_file(root / "cpu.stat")
+    memory = _read_counter_file(root / "memory.stat")
+    with (root / "memory.current").open(encoding="ascii") as source:
+        current = int(source.read(64))
+    if current < 0:
+        raise ValueError("invalid current memory")
+    # These reads are not atomic. Clamp a negative difference during reclaim.
+    return ContainerSample(cpu["usage_usec"], max(0, current - memory["inactive_file"]))
 
 
 def _number(value: str, name: str) -> float:
@@ -114,14 +154,29 @@ def query_nvidia_smi() -> list[GpuSample]:
     return parse_nvidia_smi(completed.stdout)
 
 
-def render_metrics(worker: str, samples: list[GpuSample], *, success: bool = True) -> bytes:
+def render_metrics(
+    worker: str, samples: list[GpuSample], *, success: bool = True,
+    resources: ContainerSample | None = None,
+) -> bytes:
     if not WORKER_PATTERN.fullmatch(worker):
         raise GpuMetricsError("invalid worker label")
     lines = [
         "# HELP confidential_inference_gpu_metrics_scrape_success Whether the local NVIDIA query succeeded.",
         "# TYPE confidential_inference_gpu_metrics_scrape_success gauge",
         f'confidential_inference_gpu_metrics_scrape_success{{worker="{worker}"}} {1 if success else 0}',
+        "# HELP confidential_inference_container_metrics_scrape_success Whether the private container resource counters were read.",
+        "# TYPE confidential_inference_container_metrics_scrape_success gauge",
+        f'confidential_inference_container_metrics_scrape_success{{worker="{worker}"}} {1 if resources is not None else 0}',
     ]
+    if resources is not None:
+        lines.extend((
+            "# HELP confidential_inference_container_cpu_seconds_total CPU time for all processes in this container.",
+            "# TYPE confidential_inference_container_cpu_seconds_total counter",
+            f'confidential_inference_container_cpu_seconds_total{{worker="{worker}"}} {resources.cpu_usage_usec / 1_000_000:.6f}',
+            "# HELP confidential_inference_container_memory_working_set_bytes Container memory use minus inactive file cache.",
+            "# TYPE confidential_inference_container_memory_working_set_bytes gauge",
+            f'confidential_inference_container_memory_working_set_bytes{{worker="{worker}"}} {resources.memory_working_set_bytes}',
+        ))
     families = (
         ("confidential_inference_gpu_utilization_ratio", "gauge", "GPU execution use as a ratio from zero to one."),
         ("confidential_inference_gpu_memory_used_bytes", "gauge", "GPU memory in use."),
@@ -167,9 +222,14 @@ def handler(worker: str) -> type[http.server.BaseHTTPRequestHandler]:
                 self.send_error(404)
                 return
             try:
-                body = render_metrics(worker, query_nvidia_smi())
+                samples, success = query_nvidia_smi(), True
             except (GpuMetricsError, OSError, subprocess.SubprocessError):
-                body = render_metrics(worker, [], success=False)
+                samples, success = [], False
+            try:
+                resources = query_container_resources()
+            except (ValueError, OSError, KeyError, UnicodeError):
+                resources = None
+            body = render_metrics(worker, samples, success=success, resources=resources)
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
