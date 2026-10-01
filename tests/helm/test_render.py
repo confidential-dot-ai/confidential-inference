@@ -492,6 +492,23 @@ def main() -> None:
             for item in container.get("volumeMounts", [])
         )
 
+    # New measured C8s images expose the node attester through an NRI socket.
+    socket_url = "unix:///run/c8s/workload-claims/attestation-api.sock"
+    socket_documents = [item for item in yaml.safe_load_all(helm(
+        "template", "example", str(CHART), "--namespace", "inference",
+        *NEUTRAL_MODE, "--set-string", "attestationReceipts.attestationApiUrl=" + socket_url,
+    )) if item]
+    socket_sidecars = [c for d in socket_documents
+        if d["kind"] in {"Deployment", "StatefulSet", "DaemonSet"}
+        for c in d["spec"]["template"]["spec"]["containers"] if c["name"] == "cds-attest"]
+    assert socket_sidecars
+    for c in socket_sidecars:
+        assert "--attestation-api-url=" + socket_url in c["args"]
+        assert not any(arg.startswith("--attestation-api-url=http") for arg in c["args"])
+    assert not any("hostPath" in v for d in socket_documents
+        if d["kind"] in {"Deployment", "StatefulSet", "DaemonSet"}
+        for v in d["spec"]["template"]["spec"].get("volumes", []))
+
     print("Helm neutral-default and safety tests passed.")
 
 

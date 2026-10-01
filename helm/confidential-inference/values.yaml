@@ -46,9 +46,11 @@ attestationReceipts:
   # Use the node-local attestation API and the two-field gateway target format
   # on the production c8s 615 release.
   legacyC8s615: false
-  # cds-attest reads TEE evidence from the measured node service at
-  # http://$(HOST_IP):attestationApiPort. Current c8s node-mode clusters do
-  # not serve a workload-claims Unix socket.
+  # Empty keeps the node HTTP URL for older C8s images. Measured images with
+  # a loopback-only attester need unix:///run/c8s/workload-claims/attestation-api.sock.
+  # The node NRI plugin must supply its read-only socket mount to cds-attest.
+  # Do not add a pod hostPath volume or expose the attester on the network.
+  attestationApiUrl: ""
   # This URL must be the c8s tls-lb front door. The gateway reads only c8s
   # discovery and allowlist evidence from it.
   evidenceBaseUrl: https://api.example.invalid

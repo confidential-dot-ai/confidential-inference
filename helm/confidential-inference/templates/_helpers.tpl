@@ -29,7 +29,11 @@ app.kubernetes.io/component: {{ .component }}
     - --nvidia-gpu-evidence
     {{- end }}
     - --expected-workload={{ .workload }}
+    {{- if .root.Values.attestationReceipts.attestationApiUrl }}
+    - --attestation-api-url={{ .root.Values.attestationReceipts.attestationApiUrl }}
+    {{- else }}
     - --attestation-api-url=http://$(HOST_IP):{{ .root.Values.attestationReceipts.attestationApiPort }}
+    {{- end }}
     - --serving-cert-file=/etc/c8s/certs/tls.crt
     - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
     - --mesh-identity-key-file=/etc/c8s/certs/tls.key
