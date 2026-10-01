@@ -146,7 +146,6 @@ class ReleaseManifestVerifierTests(unittest.TestCase):
             "imagePublication": {
                 "artifact": "image-publication-manifest.json",
                 "manifestSha256": "sha256:" + "5" * 64,
-                "releaseVersion": "v0.14.0",
                 "sourceCommit": "6" * 40,
                 "baseRef": "main",
                 "baseRefCommit": "6" * 40,
