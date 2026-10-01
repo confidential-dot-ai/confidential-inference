@@ -14,7 +14,7 @@ use axum::middleware;
 use clap::Parser;
 use confidential_gateway::{
     GatewayConfig, TracingAuditSink,
-    admin_auth::{AdminRequestVerifier, require_signed_admin_request},
+    admin_auth::{AdminRequestVerifier, MAX_CERTIFICATE_BYTES, require_signed_admin_request},
     api_keys::{GatewayState, StateError, admin_router},
     attestation::{
         C8S_ATTESTATION_PROTOCOL, C8S_ATTESTATION_PROTOCOL_COMMIT, C8sAttestationConfig,
@@ -314,11 +314,12 @@ async fn main() -> Result<()> {
         Arc::new(attestation),
         http,
     );
-    let admin_certificate = read_bounded(&args.admin_signer_certificate_file, 256 * 1_024)
-        .context("load the admin request signer certificate")?;
+    let admin_certificate =
+        read_bounded(&args.admin_signer_certificate_file, MAX_CERTIFICATE_BYTES)
+            .context("read the admin request signer certificate")?;
     let admin_verifier = AdminRequestVerifier::from_certificate_pem(&admin_certificate)
         .map_err(anyhow::Error::msg)
-        .context("load the admin request signer certificate")?;
+        .context("parse the admin request signer certificate")?;
     let admin = admin_router(gateway_state).layer(middleware::from_fn_with_state(
         admin_verifier,
         require_signed_admin_request,
@@ -789,15 +790,28 @@ mod tests {
     // Build the kubelet atomic-writer layout: `<dir>/..2026_x/<name>`, then
     // `<dir>/..data -> ..2026_x` and `<dir>/<name> -> ..data/<name>`.
     #[cfg(unix)]
+    /// Lay out a kubelet atomic-writer mount: `name` -> `..data/name`, and
+    /// `..data` -> a timestamped directory that holds the file.
+    #[cfg(unix)]
     fn kubelet_mount(directory: &Path, name: &str, contents: &[u8]) -> PathBuf {
-        use std::os::unix::fs::symlink;
+        kubelet_data(directory, name, contents);
+        kubelet_link(directory, name)
+    }
+
+    #[cfg(unix)]
+    fn kubelet_data(directory: &Path, name: &str, contents: &[u8]) {
         let timestamped = directory.join("..2026_10_01_00_00_00.000000000");
         fs::create_dir(&timestamped).unwrap_or_else(|_| unreachable!());
         fs::write(timestamped.join(name), contents).unwrap_or_else(|_| unreachable!());
-        symlink("..2026_10_01_00_00_00.000000000", directory.join("..data"))
+        std::os::unix::fs::symlink("..2026_10_01_00_00_00.000000000", directory.join("..data"))
             .unwrap_or_else(|_| unreachable!());
+    }
+
+    #[cfg(unix)]
+    fn kubelet_link(directory: &Path, name: &str) -> PathBuf {
         let path = directory.join(name);
-        symlink(Path::new("..data").join(name), &path).unwrap_or_else(|_| unreachable!());
+        std::os::unix::fs::symlink(Path::new("..data").join(name), &path)
+            .unwrap_or_else(|_| unreachable!());
         path
     }
 
@@ -853,18 +867,11 @@ mod tests {
     #[cfg(unix)]
     fn dangling_kubelet_symlink_is_retried_until_the_target_appears() {
         let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let path = directory.path().join("pepper");
-        std::os::unix::fs::symlink(Path::new("..data").join("pepper"), &path)
-            .unwrap_or_else(|_| unreachable!());
+        let path = kubelet_link(directory.path(), "pepper");
         let mount = directory.path().to_path_buf();
         let handle = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(150));
-            let timestamped = mount.join("..2026_10_01_00_00_00.000000000");
-            fs::create_dir(&timestamped).unwrap_or_else(|_| unreachable!());
-            fs::write(timestamped.join("pepper"), b"staging-pepper")
-                .unwrap_or_else(|_| unreachable!());
-            std::os::unix::fs::symlink("..2026_10_01_00_00_00.000000000", mount.join("..data"))
-                .unwrap_or_else(|_| unreachable!());
+            kubelet_data(&mount, "pepper", b"staging-pepper");
         });
         let value = wait_for_bounded_file(&path, 4_096, Duration::from_secs(2))
             .unwrap_or_else(|_| unreachable!());

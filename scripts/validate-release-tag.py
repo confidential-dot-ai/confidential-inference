@@ -19,18 +19,18 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release_profiles
 
-TAG_RE = release_profiles.tag_pattern()
-
 
 class ReleaseTagError(ValueError):
     """The release tag is not valid."""
 
 
 def parse_tag(tag: str) -> str:
-    if TAG_RE.fullmatch(tag) is None:
+    try:
+        release_profiles.for_tag(tag)
+        return tag
+    except release_profiles.ProfileError:
         suffixes = ", ".join(f"vX.Y.Z{p.tag_suffix}" for p in release_profiles.load())
-        raise ReleaseTagError(f"the release tag must use one of: {suffixes}")
-    return tag
+        raise ReleaseTagError(f"the release tag must use one of: {suffixes}") from None
 
 
 def read_spec_version(path: Path) -> str:
@@ -74,9 +74,12 @@ def main() -> int:
     try:
         tag = parse_tag(args.tag)
         profile = release_profiles.for_tag(tag)
-        spec = args.spec or profile.spec_files[-1]
-        if read_spec_version(spec) != tag:
-            raise ReleaseTagError(f"{spec} names a different version than the tag")
+        if args.spec is not None:
+            version, source = read_spec_version(args.spec), args.spec
+        else:
+            version, source = release_profiles.read_spec(profile).get("version"), f"the {profile.name} specification"
+        if version != tag:
+            raise ReleaseTagError(f"{source} names a different version than the tag")
         require_commit_on_main(args.main_ref)
     except (OSError, ReleaseTagError) as error:
         print(f"release tag validation failed: {error}", file=sys.stderr)

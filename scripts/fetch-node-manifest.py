@@ -85,13 +85,18 @@ def check_measurements(document: dict[str, Any]) -> dict[str, str]:
     return values
 
 
-def fetch(spec: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
-    reference = spec["c8s"]["nodeImage"]["reference"]
-    artifact = spec["c8s"]["nodeManifestArtifact"]["digest"]
+def manifest_json_digest(reference: str, artifact: str) -> str:
+    """Return the manifest.json layer digest of the verified artifact manifest."""
     raw_manifest = run(["crane", "manifest", f"{reference}@{artifact}"])
     if sha256(raw_manifest) != artifact:
         raise FetchError("the registry returned an artifact manifest with a different digest")
-    layer = manifest_layer(json.loads(raw_manifest))
+    return manifest_layer(json.loads(raw_manifest))
+
+
+def fetch(spec: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
+    reference = spec["c8s"]["nodeImage"]["reference"]
+    artifact = spec["c8s"]["nodeManifestArtifact"]["digest"]
+    layer = manifest_json_digest(reference, artifact)
     pinned = spec["c8s"]["nodeManifestArtifact"].get("manifestJson")
     if pinned is not None and pinned != layer:
         raise FetchError("the artifact manifest.json layer differs from c8s.nodeManifestArtifact.manifestJson")

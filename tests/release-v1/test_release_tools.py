@@ -311,7 +311,7 @@ class ManifestTests(unittest.TestCase):
     def test_staging_workers_verify_the_model_before_the_simulator(self):
         documents = MAN.render_chart(
             ROOT / "helm/confidential-inference",
-            STAGING.values_files,
+            STAGING,
             {"release": "confidential-inference", "namespace": "confidential-inference-staging",
              "kubeVersion": "1.32.0"},
         )
@@ -439,7 +439,7 @@ class ManifestTests(unittest.TestCase):
         spec = MAN.read_spec(STAGING)
         policy = MAN.read_allowlist_policy(STAGING.policy)
         core = spec["c8s"]["coreImages"]
-        documents = MAN.render_chart(ROOT / "helm/confidential-inference", STAGING.values_files, policy["chart"])
+        documents = MAN.render_chart(ROOT / "helm/confidential-inference", STAGING, policy["chart"])
         allowlist = json.loads(STAGING.allowlist.read_text())
         configs = json.loads(PROFILES.IMAGE_CONFIG.read_text())
         MAN.require_allowlist_contract(allowlist, policy, core, documents, configs)

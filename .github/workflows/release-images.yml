@@ -452,9 +452,7 @@ jobs:
             --platform linux/amd64 \
             --revision "${{ github.sha }}" \
             --source-date-epoch "${{ steps.source.outputs.epoch }}" \
-            --record /tmp/${{ matrix.image }}.record.json
-          archive_digest="$(python3 -c "import json;print(json.load(open('/tmp/${{ matrix.image }}.record.json'))['digest'])")"
-          test "$archive_digest" = "$(tr -d '\n' < /tmp/verified-digest/${{ matrix.image }}.platform-digest)"
+            --expected-digest "$(tr -d '\n' < /tmp/verified-digest/${{ matrix.image }}.platform-digest)"
           mkdir -p /tmp/layout
           tar -xf /tmp/audited/${{ matrix.image }}-first.tar -C /tmp/layout
 

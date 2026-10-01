@@ -123,11 +123,8 @@ def write_json(path: Path, value: object) -> None:
 # ---------------------------------------------------------------------------
 
 
-def manifest_json_digest(reference: str, artifact: str) -> str:
-    raw = run(["crane", "manifest", f"{reference}@{artifact}"]).encode()
-    if sha256_bytes(raw) != artifact:
-        raise BumpError("the registry returned an artifact manifest with a different digest")
-    return NODE["manifest_layer"](json.loads(raw))
+def operator_image(c8s: dict[str, Any]) -> str:
+    return next(image for image in c8s["coreImages"] if image.partition("@")[0] == f"{REGISTRY}c8s-operator")
 
 
 def new_c8s(tag: str, commit: str, old: dict[str, Any]) -> dict[str, Any]:
@@ -152,7 +149,7 @@ def new_c8s(tag: str, commit: str, old: dict[str, Any]) -> dict[str, Any]:
     value["nodeManifestArtifact"].update({
         "tag": f"rke2-tdx-{tag}",
         "digest": artifact_digest,
-        "manifestJson": manifest_json_digest(reference, artifact_digest),
+        "manifestJson": NODE["manifest_json_digest"](reference, artifact_digest),
     })
     return value
 
@@ -209,16 +206,6 @@ def edit_yaml(path: Path, key_path: tuple[str, ...], value: Any) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def values_layer(profile: release_profiles.Profile, key_path: tuple[str, ...]) -> Path:
-    for path in reversed(profile.values_files):
-        current: Any = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for key in key_path:
-            current = current.get(key) if isinstance(current, dict) else None
-        if current is not None:
-            return path
-    raise BumpError(f"no values.yaml of profile {profile.name} sets {'.'.join(key_path)}")
-
-
 def target_file(layer_file: Path, owner: release_profiles.Profile, moved: list[release_profiles.Profile],
                 users: list[release_profiles.Profile]) -> Path:
     """Edit a shared layer only when every profile that uses it moves."""
@@ -229,20 +216,21 @@ def target_file(layer_file: Path, owner: release_profiles.Profile, moved: list[r
 
 def pin_profiles(moved: list[release_profiles.Profile], everyone: tuple[release_profiles.Profile, ...],
                  c8s: dict[str, Any]) -> None:
-    operator = next(image for image in c8s["coreImages"] if image.partition("@")[0] == f"{REGISTRY}c8s-operator")
-    spec_files: set[Path] = set()
-    values_files: set[Path] = set()
-    for profile in moved:
-        layer = release_profiles.spec_layer(profile, "c8s") / "spec.yaml"
-        users = [other for other in everyone if release_profiles.spec_layer(other, "c8s") / "spec.yaml" == layer]
-        spec_files.add(target_file(layer, profile, moved, users))
-        layer = values_layer(profile, ("images", "c8sOperator"))
-        users = [other for other in everyone if values_layer(other, ("images", "c8sOperator")) == layer]
-        values_files.add(target_file(layer, profile, moved, users))
-    for path in sorted(spec_files):
-        edit_yaml(path, ("c8s",), c8s)
-    for path in sorted(values_files):
-        edit_yaml(path, ("images", "c8sOperator"), operator)
+    # The file that holds each pin, for every profile, read once.
+    pins = {
+        ("c8s",): ({p: release_profiles.owning_file(p.spec_files, ("c8s",)) for p in everyone}, c8s),
+        ("images", "c8sOperator"): (
+            {p: release_profiles.owning_file(p.values_files, ("images", "c8sOperator")) for p in everyone},
+            operator_image(c8s),
+        ),
+    }
+    for key_path, (owners, value) in pins.items():
+        targets = set()
+        for profile in moved:
+            users = [other for other in everyone if owners[other] == owners[profile]]
+            targets.add(target_file(owners[profile], profile, moved, users))
+        for path in sorted(targets):
+            edit_yaml(path, key_path, value)
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +261,7 @@ def add_source_lock(c8s_repo: Path, old: dict[str, Any], new: dict[str, Any]) ->
         "commit": new["sourceCommit"],
         "tag": new["release"],
         "nodeImage": f"{new['nodeImage']['reference']}@{new['nodeImage']['digest']}",
-        "c8sOperatorImage": next(image for image in new["coreImages"]
-                                 if image.partition("@")[0] == f"{REGISTRY}c8s-operator"),
+        "c8sOperatorImage": operator_image(new),
     })
     for name in entry["files"]:
         entry["files"][name] = sha256_bytes(git_show(c8s_repo, new["sourceCommit"], name))
@@ -414,7 +401,7 @@ def main() -> int:
             c8s, canonical = build(c8s_repo, Path(directory))
             regenerate(moved, c8s, canonical)
             check(c8s_repo, commit, moved, c8s, canonical)
-    except (BumpError, release_profiles.ProfileError) as error:
+    except (BumpError, release_profiles.ProfileError, NODE["FetchError"]) as error:
         print(f"bump-c8s: {error}", file=sys.stderr)
         return 1
     print(json.dumps({"tag": args.tag, "profiles": [profile.name for profile in moved], "c8s": new}, indent=2))

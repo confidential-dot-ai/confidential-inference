@@ -24,6 +24,9 @@ const MAX_CLOCK_SKEW_SECONDS: u64 = 60;
 const MAX_ADMIN_BODY_BYTES: usize = 1_048_576;
 const MAX_NONCES: usize = 4_096;
 
+/// The largest admin signer certificate file that the gateway reads.
+pub const MAX_CERTIFICATE_BYTES: usize = 256 * 1_024;
+
 #[derive(Clone)]
 pub struct AdminRequestVerifier {
     public_key: Arc<Vec<u8>>,
@@ -40,7 +43,7 @@ impl AdminRequestVerifier {
     ///
     /// Returns an error when the certificate is empty, too large, malformed, or not P-256.
     pub fn from_certificate_pem(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.is_empty() || bytes.len() > 256 * 1_024 {
+        if bytes.is_empty() || bytes.len() > MAX_CERTIFICATE_BYTES {
             return Err("the admin signer certificate has an unsafe size".to_owned());
         }
         let (_, pem) = parse_x509_pem(bytes).map_err(|_| "parse the admin signer PEM")?;

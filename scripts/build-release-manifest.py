@@ -143,12 +143,12 @@ def validate_spec(spec: Any, profile: release_profiles.Profile) -> dict[str, Any
     return spec
 
 
-def render_chart(chart: Path, values: list[Path], settings: dict[str, str]) -> list[dict[str, Any]]:
+def render_chart(chart: Path, profile: release_profiles.Profile, settings: dict[str, str]) -> list[dict[str, Any]]:
     """Render the chart with the profile values files, in layer order."""
     result = subprocess.run(
         ["helm", "template", settings["release"], str(chart),
          "--namespace", settings["namespace"], "--kube-version", settings["kubeVersion"],
-         *[argument for path in values for argument in ("--values", str(path))]],
+         *release_profiles.helm_values_args(profile)],
         capture_output=True, text=True, check=False,
     )
     if result.returncode:
@@ -421,7 +421,7 @@ def build(
     require_c8s_agreement(spec, values)
     image_configs = read_json(release_profiles.IMAGE_CONFIG)
     require(isinstance(image_configs, dict), "release image configuration is not a mapping")
-    documents = render_chart(chart, profile.values_files, policy["chart"])
+    documents = render_chart(chart, profile, policy["chart"])
     require_allowlist_contract(allowlist, policy, spec["c8s"]["coreImages"], documents, image_configs)
     images = rendered_images(documents)
     allowlisted = {

@@ -100,13 +100,13 @@ def split_image(image: Any) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def render_chart(policy: dict[str, Any], values: list[Path]) -> list[dict[str, Any]]:
+def render_chart(policy: dict[str, Any], profile: release_profiles.Profile) -> list[dict[str, Any]]:
     """Render the chart with the profile values files, in layer order."""
     chart = policy["chart"]
     output = run([
         "helm", "template", chart["release"], str(CHART),
         "--namespace", chart["namespace"], "--kube-version", chart["kubeVersion"],
-        *[argument for path in values for argument in ("--values", str(path))],
+        *release_profiles.helm_values_args(profile),
     ]).decode()
     return [item for item in yaml.safe_load_all(output) if isinstance(item, dict)]
 
@@ -312,7 +312,7 @@ def container_mounts(
     return sorted(rules, key=lambda rule: rule["destination"])
 
 
-def read_cdi(policy: dict[str, Any], node_image: str | None = None) -> dict[str, Any] | None:
+def read_cdi(policy: dict[str, Any], node_image: str) -> dict[str, Any] | None:
     """Read the CDI record. It must list the pinned node image when one is given.
 
     A record lists every node image that it holds for. scripts/bump-c8s.py adds
@@ -327,7 +327,7 @@ def read_cdi(policy: dict[str, Any], node_image: str | None = None) -> dict[str,
     value = read_json(path)
     if value.get("driverVersion") != record["driverVersion"]:
         raise GenerationError(f"{record['input']} records a different driver version")
-    if node_image is not None and node_image not in value.get("nodeImages", []):
+    if node_image not in value.get("nodeImages", []):
         raise GenerationError(f"{record['input']} does not hold for the node image {node_image}")
     for rule in value["mounts"]:
         if rule.get("kind") != "host" or not rule.get("source") or not rule.get("destination"):
@@ -424,7 +424,7 @@ def generate(
     c8s = release_profiles.read_spec(profile)["c8s"]
     verify_c8s_binary(executable, c8s["sourceCommit"])
     node_image = f"{c8s['nodeImage']['reference']}@{c8s['nodeImage']['digest']}"
-    rendered = controllers(render_chart(policy, profile.values_files))
+    rendered = controllers(render_chart(policy, profile))
     expected = {item["controller"] for item in policy["workloads"]}
     if set(rendered) != expected:
         raise GenerationError(
@@ -557,7 +557,7 @@ def refresh_image_config(profiles: tuple[release_profiles.Profile, ...]) -> dict
     images: set[str] = set()
     for profile in profiles:
         policy = read_json(profile.policy)
-        for controller in controllers(render_chart(policy, profile.values_files)).values():
+        for controller in controllers(render_chart(policy, profile)).values():
             pod = controller["spec"]["template"]["spec"]
             for container in pod.get("initContainers", []) + pod.get("containers", []):
                 split_image(container["image"])

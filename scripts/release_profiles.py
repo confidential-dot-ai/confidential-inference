@@ -19,11 +19,13 @@ Usage:
 
     scripts/release_profiles.py resolve --tag v0.14.0-staging
     scripts/release_profiles.py resolve --release release/staging --format github
+    scripts/release_profiles.py spec --tag v0.14.0-staging --key imageSourceCommit
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
 import sys
@@ -80,6 +82,7 @@ class Profile:
         return path.relative_to(ROOT).as_posix()
 
 
+@functools.cache
 def load(path: Path = PROFILES) -> tuple[Profile, ...]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -109,24 +112,24 @@ def load(path: Path = PROFILES) -> tuple[Profile, ...]:
     return tuple(profiles)
 
 
-def tag_pattern(profiles: tuple[Profile, ...] | None = None) -> re.Pattern[str]:
+def tag_pattern() -> re.Pattern[str]:
     """Match every release tag that a profile accepts."""
-    suffixes = sorted((re.escape(p.tag_suffix) for p in profiles or load()), key=len, reverse=True)
+    suffixes = sorted((re.escape(p.tag_suffix) for p in load()), key=len, reverse=True)
     return re.compile(f"{VERSION}(?:{'|'.join(suffixes)})")
 
 
-def for_tag(tag: str, profiles: tuple[Profile, ...] | None = None) -> Profile:
+def for_tag(tag: str) -> Profile:
     # A longer suffix first: every tag also ends with the empty suffix.
-    for profile in sorted(profiles or load(), key=lambda p: len(p.tag_suffix), reverse=True):
+    for profile in sorted(load(), key=lambda p: len(p.tag_suffix), reverse=True):
         version = tag[:len(tag) - len(profile.tag_suffix)]
         if tag.endswith(profile.tag_suffix) and re.fullmatch(VERSION, version):
             return profile
     raise ProfileError(f"no release profile accepts the tag {tag!r}")
 
 
-def for_directory(path: Path, profiles: tuple[Profile, ...] | None = None) -> Profile:
+def for_directory(path: Path) -> Profile:
     directory = (path if path.is_absolute() else ROOT / path).resolve()
-    for profile in profiles or load():
+    for profile in load():
         if profile.directory == directory:
             return profile
     raise ProfileError(f"no release profile has the directory {path}")
@@ -148,14 +151,22 @@ def read_spec(profile: Profile) -> dict[str, Any]:
     return spec
 
 
-def spec_layer(profile: Profile, key: str) -> Path:
-    """Return the last layer whose spec.yaml sets `key`."""
+def owning_file(files: list[Path], key_path: tuple[str, ...]) -> Path:
+    """Return the last of the layer files that sets the key path."""
     import yaml
 
-    for path in reversed(profile.spec_files):
-        if key in (yaml.safe_load(path.read_text(encoding="utf-8")) or {}):
-            return path.parent
-    raise ProfileError(f"no spec.yaml of profile {profile.name} sets {key}")
+    for path in reversed(files):
+        current: Any = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for key in key_path:
+            current = current.get(key) if isinstance(current, dict) else None
+        if current is not None:
+            return path
+    raise ProfileError(f"no layer file sets {'.'.join(key_path)}: {[str(path) for path in files]}")
+
+
+def spec_layer(profile: Profile, key: str) -> Path:
+    """Return the last layer whose spec.yaml sets `key`."""
+    return owning_file(profile.spec_files, (key,)).parent
 
 
 def node_manifest(profile: Profile) -> Path:
@@ -183,6 +194,7 @@ def read_values(profile: Profile) -> dict[str, Any]:
 
 
 def helm_values_args(profile: Profile) -> list[str]:
+    """Give helm each values file of the profile, in layer order."""
     return [argument for path in profile.values_files for argument in ("--values", str(path))]
 
 
@@ -204,9 +216,18 @@ def main() -> int:
     target.add_argument("--tag")
     target.add_argument("--release", type=Path)
     resolve.add_argument("--format", choices=("json", "github"), default="json")
+    spec = subparsers.add_parser("spec", help="print one top-level value of the specification of a tag")
+    spec.add_argument("--tag", required=True)
+    spec.add_argument("--key", required=True)
     args = parser.parse_args()
     try:
         profile = for_tag(args.tag) if args.tag else for_directory(args.release)
+        if args.command == "spec":
+            value = read_spec(profile)
+            if args.key not in value:
+                raise ProfileError(f"the specification of {args.tag} has no {args.key}")
+            print(value[args.key] if isinstance(value[args.key], str) else json.dumps(value[args.key]))
+            return 0
     except ProfileError as error:
         print(f"release-profiles: {error}", file=sys.stderr)
         return 1
