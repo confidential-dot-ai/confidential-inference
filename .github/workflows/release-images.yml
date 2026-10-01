@@ -321,7 +321,7 @@ jobs:
           push: false
           outputs: type=oci,dest=/mnt/release-oci/sglang-${{ matrix.pass }}.tar,rewrite-timestamp=true
           labels: |
-            org.opencontainers.image.title=Confidential Inference stock SGLang
+            org.opencontainers.image.title=Confidential Inference SGLang
             org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=sha-${{ github.sha }}
