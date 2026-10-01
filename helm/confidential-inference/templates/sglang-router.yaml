@@ -68,8 +68,13 @@ spec:
         - name: sglang-router
           image: {{ .Values.images.sglang }}
           imagePullPolicy: IfNotPresent
+          # The same non-root user as the workers, which run this image under
+          # the restricted Pod Security level the c8s node enforces.
           securityContext:
             allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
             capabilities:
               drop: ["ALL"]
           command: ["python3", "-m", "sglang_router.launch_router"]

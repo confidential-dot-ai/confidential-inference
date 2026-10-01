@@ -501,7 +501,7 @@ class ManifestTests(unittest.TestCase):
         for profile in ("release", "release/staging"):
             with self.subTest(profile=profile):
                 data = (ROOT / profile / "node-manifest.json").read_bytes()
-                self.assertEqual(MAN.sha256(data), "sha256:f7bf783b7fd5f89b9c9108b271b8a3a0256c55a7091139f9f694289330d35a06")
+                self.assertEqual(MAN.sha256(data), "sha256:bf2364e9104890d8f755e2aaf124985535f3013a99e3904ce50cdf4d6d1b276e")
                 NODE.check_measurements(json.loads(data))
 
     def test_the_schema_refuses_deployment_values(self):

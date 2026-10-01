@@ -180,8 +180,10 @@ spec:
               value: {{ .Values.attestationReceipts.releaseId | quote }}
             # The release manifest hash and the operator key hashes are in a
             # mounted file, so the exact allowlist does not pin them.
+            # A directory mount holds kubelet's symlinks, which the gateway
+            # refuses. The file under ..data is the regular file they point at.
             - name: GATEWAY_RELEASE_IDENTITY_FILE
-              value: /mnt/c8s-data/release-identity/release-identity.json
+              value: /mnt/c8s-data/release-identity/..data/release-identity.json
             - name: GATEWAY_C8S_POLICY_MODE
               value: {{ .Values.attestationReceipts.policyMode | quote }}
             {{- if eq .Values.attestationReceipts.policyMode "static" }}
@@ -203,7 +205,7 @@ spec:
             - name: GATEWAY_API_KEY_PEPPER_FILE
               value: {{ printf "/run/c8s/secrets/%s" .Values.gateway.c8sSecrets.apiKeyPepper.name | quote }}
             - name: GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE
-              value: /mnt/c8s-data/admin-auth/client.crt
+              value: /mnt/c8s-data/admin-auth/..data/client.crt
             - name: DEPLOYMENT_ENVIRONMENT
               value: {{ .Values.environment | quote }}
             - name: GATEWAY_METRICS_API_KEY_LABEL_ALLOWLIST
@@ -234,13 +236,14 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 5
           volumeMounts:
+            # Directory mounts, not subPath: the node image policy cannot
+            # establish the storage of a kubelet subPath bind, so an exact
+            # mount rule on one never admits. The files keep their paths.
             - name: admin-auth
-              mountPath: /mnt/c8s-data/admin-auth/client.crt
-              subPath: client.crt
+              mountPath: /mnt/c8s-data/admin-auth
               readOnly: true
             - name: release-identity
-              mountPath: /mnt/c8s-data/release-identity/release-identity.json
-              subPath: release-identity.json
+              mountPath: /mnt/c8s-data/release-identity
               readOnly: true
             - name: run
               mountPath: /run/confidential-gateway
