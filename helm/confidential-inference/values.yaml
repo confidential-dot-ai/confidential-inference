@@ -322,3 +322,12 @@ network:
   clusterCidrs:
     - 10.52.0.0/16
     - 10.53.0.0/16
+
+# The image contains the log pipeline. It does not load code from a ConfigMap.
+logCollector:
+  enabled: false
+  image: ""
+  url: https://logs.example.invalid:9443/deployments/example/loki/api/v1/push
+  resources:
+    cpu: 100m
+    memory: 256Mi

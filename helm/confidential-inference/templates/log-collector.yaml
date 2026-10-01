@@ -1,0 +1,155 @@
+{{- if .Values.logCollector.enabled }}
+{{- if not .Values.deploymentId }}
+{{- fail "logCollector requires a stable deploymentId" }}
+{{- end }}
+{{- if not (hasSuffix (printf "/deployments/%s/loki/api/v1/push" .Values.deploymentId) .Values.logCollector.url) }}
+{{- fail "logCollector.url must use the same deploymentId" }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: log-collector
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+automountServiceAccountToken: true
+{{- if .Values.imagePullSecret.name }}
+imagePullSecrets:
+  - name: {{ .Values.imagePullSecret.name }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-log-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-log-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-log-reader
+subjects:
+  - kind: ServiceAccount
+    name: log-collector
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: log-collector
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: log-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "confidential-inference.selector" (dict "root" . "component" "log-collector") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "confidential-inference.selector" (dict "root" . "component" "log-collector") | nindent 8 }}
+        confidential.ai/environment: {{ .Values.environment | quote }}
+      annotations:
+        confidential.ai/cw: log-collector
+        confidential.ai/c8s-renew-interval: {{ .Values.attestationReceipts.certificateRenewInterval | quote }}
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.scheduling.gatewayNodeName | quote }}
+      enableServiceLinks: false
+      hostname: log-collector
+      serviceAccountName: log-collector
+      automountServiceAccountToken: true
+      {{- if .Values.metricsCollector.remoteWrite.address }}
+      hostAliases:
+        - ip: {{ .Values.metricsCollector.remoteWrite.address | quote }}
+          hostnames:
+            - {{ .Values.metricsCollector.remoteWrite.serverName | quote }}
+      {{- end }}
+      securityContext:
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: alloy
+          image: {{ required "logCollector.image must be digest-pinned" .Values.logCollector.image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          env:
+            - name: KUBE_API_URL
+              value: https://kubernetes.default.svc:443
+            - name: LOG_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: LOG_RELEASE
+              value: {{ .Release.Name | quote }}
+            - name: DEPLOYMENT_ID
+              value: {{ .Values.deploymentId | quote }}
+            - name: LOKI_URL
+              value: {{ .Values.logCollector.url | quote }}
+          resources:
+            requests:
+              cpu: {{ .Values.logCollector.resources.cpu | quote }}
+              memory: {{ .Values.logCollector.resources.memory | quote }}
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /tmp
+            - name: admin-client
+              mountPath: /mnt/c8s-data/admin-client
+              readOnly: true
+      volumes:
+        - name: data
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: admin-client
+          secret:
+            secretName: {{ .Values.metricsCollector.remoteWrite.secretName | quote }}
+            defaultMode: 0440
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: log-collector-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: log-collector
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: {{ .Values.metricsCollector.kubeApi.port }}}
+    - to:
+        {{- range .Values.metricsCollector.remoteWrite.destinationCidrs }}
+        - ipBlock: {cidr: {{ . | quote }} }
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 9443}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: c8s-system
+      ports:
+        - {protocol: TCP, port: 8443}
+    - ports:
+        - {protocol: TCP, port: {{ .Values.attestationReceipts.attestationApiPort }}}
+{{- end }}

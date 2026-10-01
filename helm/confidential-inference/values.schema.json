@@ -5,6 +5,32 @@
   "properties": {
     "environment": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"},
     "deploymentId": {"type": "string", "maxLength": 63, "pattern": "^(|[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)$"},
+    "logCollector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "image",
+        "url",
+        "resources"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "string",
+          "pattern": "^(|[^@\\s]+@sha256:[0-9a-f]{64})$"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https://[^/]+(?::[0-9]{1,5})?/deployments/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?/loki/api/v1/push$"
+        },
+        "resources": {
+          "$ref": "#/definitions/resources"
+        }
+      }
+    },
     "imagePullSecret": {
       "type": "object",
       "additionalProperties": false,
