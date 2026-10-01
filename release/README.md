@@ -26,9 +26,9 @@ written to `release/staging/node-manifest.json`.
 
 | File | Written by | Contents |
 | --- | --- | --- |
-| `spec.yaml` | A person | The version, the c8s release and its node image, the model identity, and the public hostnames |
+| `spec.yaml` | A person, or `bump-c8s.py` for `c8s` | The version, the c8s release with its node image and core images, the model identity, and the public hostnames. It is the one place that pins c8s |
 | `values.yaml` | A person | The chart values of the release. Only release values, no deployment values |
-| `allowlist-policy.json` | A person | The workloads, the c8s core images, and the inputs of the allowlist |
+| `allowlist-policy.json` | A person | The workloads and the inputs of the allowlist. The c8s pins come from `spec.yaml` |
 | `profiles.json` | A person | The release profiles and their layers |
 | `inputs/image-config.json` | `generate-release-allowlist.py --refresh-image-config` | The `ENV`, `ENTRYPOINT`, and `CMD` of every image that a profile renders. All profiles share it. Review the diff by hand |
 | `inputs/cdi/nvidia-<driver>.json` | A person, from a reviewed record | The NVIDIA CDI environment variables and driver mounts of one driver version |

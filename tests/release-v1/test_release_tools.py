@@ -209,8 +209,6 @@ class ManifestTests(unittest.TestCase):
         MAN.read_spec(PRODUCTION)
         staging = MAN.read_spec(STAGING)
         self.assertEqual(staging["version"], "v0.14.0-staging")
-        # Staging takes every other key from the production layer.
-        self.assertEqual(staging["c8s"], MAN.read_spec(PRODUCTION)["c8s"])
 
     def test_release_candidate_versions_are_refused(self):
         spec = MAN.read_spec(PRODUCTION)
@@ -449,11 +447,12 @@ class ManifestTests(unittest.TestCase):
 
     def test_staging_policy_uses_its_exact_render_and_allowlist_namespace(self):
         spec = MAN.read_spec(STAGING)
-        policy = MAN.read_allowlist_policy(STAGING.policy, spec)
+        policy = MAN.read_allowlist_policy(STAGING.policy)
+        core = spec["c8s"]["coreImages"]
         documents = MAN.render_chart(ROOT / "helm/confidential-inference", STAGING.values_files, policy["chart"])
         allowlist = json.loads(STAGING.allowlist.read_text())
         configs = json.loads(PROFILES.IMAGE_CONFIG.read_text())
-        MAN.require_allowlist_contract(allowlist, policy, documents, configs)
+        MAN.require_allowlist_contract(allowlist, policy, core, documents, configs)
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
@@ -461,17 +460,20 @@ class ManifestTests(unittest.TestCase):
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"].pop("inference-worker-1")
         with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
-            MAN.require_allowlist_contract(changed, policy, documents, configs)
+            MAN.require_allowlist_contract(changed, policy, core, documents, configs)
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"]["sglang-router"]["containers"][0]["args"]["argv"][1] = \
             "--service-discovery-namespace=wrong"
         with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
-            MAN.require_allowlist_contract(changed, policy, documents, configs)
+            MAN.require_allowlist_contract(changed, policy, core, documents, configs)
 
-    def test_staging_shares_the_production_node_manifest(self):
-        self.assertEqual(PROFILES.node_manifest(STAGING), ROOT / "release/node-manifest.json")
-        self.assertFalse((ROOT / "release/staging/node-manifest.json").exists())
-        self.assertFalse((ROOT / "release/staging/inputs/image-config.json").exists())
+    def test_each_node_manifest_belongs_to_the_layer_that_pins_c8s(self):
+        for profile in PROFILES.load():
+            with self.subTest(profile=profile.name):
+                if (profile.directory / "node-manifest.json").exists():
+                    self.assertEqual(PROFILES.node_manifest(profile), profile.directory / "node-manifest.json")
+                self.assertFalse((profile.directory / "inputs/image-config.json").exists()
+                                 and profile.directory / "inputs/image-config.json" != PROFILES.IMAGE_CONFIG)
 
     def test_the_source_lock_pins_the_spec_commit(self):
         lock = json.loads((ROOT / "contracts/c8s-admission-source-lock.json").read_text())
@@ -491,7 +493,8 @@ class ManifestTests(unittest.TestCase):
         for profile in PROFILES.load():
             with self.subTest(profile=profile.name):
                 data = PROFILES.node_manifest(profile).read_bytes()
-                self.assertEqual(MAN.sha256(data), "sha256:bf2364e9104890d8f755e2aaf124985535f3013a99e3904ce50cdf4d6d1b276e")
+                pinned = MAN.read_spec(profile)["c8s"]["nodeManifestArtifact"]["manifestJson"]
+                self.assertEqual(MAN.sha256(data), pinned)
                 NODE.check_measurements(json.loads(data))
 
     def test_the_schema_refuses_deployment_values(self):

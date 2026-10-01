@@ -123,6 +123,13 @@ def validate_spec(spec: Any, profile: release_profiles.Profile) -> dict[str, Any
             "c8s.nodeImage needs a reference and a digest")
     require(DIGEST.fullmatch(str(c8s.get("nodeManifestArtifact", {}).get("digest"))) is not None,
             "c8s.nodeManifestArtifact.digest must be a SHA-256 digest")
+    require(DIGEST.fullmatch(str(c8s["nodeManifestArtifact"].get("manifestJson"))) is not None,
+            "c8s.nodeManifestArtifact.manifestJson must be a SHA-256 digest")
+    core_images = c8s.get("coreImages")
+    require(isinstance(core_images, list) and core_images
+            and len(set(core_images)) == len(core_images)
+            and all(isinstance(image, str) and OCI.fullmatch(image) is not None for image in core_images),
+            "c8s.coreImages must be unique digest-pinned images")
     model = spec["model"]
     require(isinstance(model, dict) and set(model) == {"repository", "revision", "byteManifestSha256"},
             "model must hold exactly repository, revision, and byteManifestSha256")
@@ -149,27 +156,17 @@ def render_chart(chart: Path, values: list[Path], settings: dict[str, str]) -> l
     return [item for item in yaml.safe_load_all(result.stdout) if isinstance(item, dict)]
 
 
-def read_allowlist_policy(path: Path, spec: dict[str, Any]) -> dict[str, Any]:
+def read_allowlist_policy(path: Path) -> dict[str, Any]:
     policy = read_json(path)
-    require(isinstance(policy, dict) and policy.get("schema") == "confidential.ai/release-allowlist-policy/v1",
-            "release/allowlist-policy.json has the wrong schema")
+    require(isinstance(policy, dict) and policy.get("schema") == ALLOWLIST_GENERATOR["POLICY_SCHEMA"],
+            f"{path.name} has the wrong schema")
     chart = policy.get("chart")
     require(isinstance(chart, dict) and set(chart) == {"release", "namespace", "kubeVersion"},
             "allowlist policy chart settings are incomplete")
     for name in ("release", "namespace", "kubeVersion"):
         require(isinstance(chart[name], str) and bool(chart[name]),
                 f"allowlist policy chart.{name} is invalid")
-    c8s = policy.get("c8s")
-    require(isinstance(c8s, dict), "allowlist policy c8s settings are absent")
-    require(c8s.get("release") == spec["c8s"]["release"],
-            "allowlist policy c8s release differs from the release specification")
-    require(c8s.get("sourceCommit") == spec["c8s"]["sourceCommit"],
-            "allowlist policy c8s source commit differs from the release specification")
-    core_images = c8s.get("coreImages")
-    require(isinstance(core_images, list) and core_images
-            and len(set(core_images)) == len(core_images)
-            and all(isinstance(image, str) and OCI.fullmatch(image) is not None for image in core_images),
-            "allowlist policy core images are invalid")
+    require("c8s" not in policy, "the allowlist policy must not pin c8s; spec.yaml does")
     workloads = policy.get("workloads")
     require(isinstance(workloads, list) and workloads,
             "allowlist policy has no workloads")
@@ -198,9 +195,16 @@ def require_model_agreement(spec: dict[str, Any], values: dict[str, Any]) -> Non
             "values model byte manifest differs from spec model byte manifest")
 
 
+def require_c8s_agreement(spec: dict[str, Any], values: dict[str, Any]) -> None:
+    operator = values.get("images", {}).get("c8sOperator")
+    require(operator in spec["c8s"]["coreImages"],
+            "values c8s operator image is not one of the spec c8s core images")
+
+
 def require_allowlist_contract(
     allowlist: dict[str, Any],
     policy: dict[str, Any],
+    core_images: list[str],
     documents: list[dict[str, Any]],
     image_configs: dict[str, Any],
 ) -> None:
@@ -209,11 +213,11 @@ def require_allowlist_contract(
     require(set(rendered) == policy_controllers,
             f"rendered controllers differ from allowlist policy: rendered={sorted(rendered)} policy={sorted(policy_controllers)}")
     expected_names = {item["name"] for item in policy["workloads"]}
-    expected_names |= {ALLOWLIST_GENERATOR["floor_entry"](image)[0] for image in policy["c8s"].get("coreImages", [])}
+    expected_names |= {ALLOWLIST_GENERATOR["floor_entry"](image)[0] for image in core_images}
     workloads = allowlist.get("workloads")
     require(isinstance(workloads, dict) and set(workloads) == expected_names,
             "release/allowlist.json entries differ from the profile allowlist policy")
-    core_digests = {OCI.fullmatch(image).group(2) for image in policy["c8s"].get("coreImages", [])}
+    core_digests = {OCI.fullmatch(image).group(2) for image in core_images}
     injected = ALLOWLIST_GENERATOR["INJECTED_ENTRYPOINTS"]
     effective_process = ALLOWLIST_GENERATOR["effective_process"]
     for item in policy["workloads"]:
@@ -292,6 +296,8 @@ def source_lock_entry(lock: dict[str, Any], commit: str) -> dict[str, Any]:
 
 def node_measurements(path: Path, spec: dict[str, Any]) -> dict[str, Any]:
     data = path.read_bytes()
+    require(sha256(data) == spec["c8s"]["nodeManifestArtifact"]["manifestJson"],
+            f"{path.name} differs from c8s.nodeManifestArtifact.manifestJson")
     document = json.loads(data)
     tdx = document.get("tdx", {})
     values = {name: tdx.get(name) for name in ("mrtd", "rtmr1", "rtmr2")}
@@ -407,7 +413,7 @@ def build(
     require(COMMIT.fullmatch(source_commit) is not None, "--source-commit must be a full Git commit")
     spec = read_spec(profile)
     verify_image_source_boundary(spec["imageSourceCommit"], source_commit)
-    policy = read_allowlist_policy(profile.policy, spec)
+    policy = read_allowlist_policy(profile.policy)
     allowlist_path = profile.allowlist
     require(allowlist_path.is_file(), f"{profile.relative(allowlist_path)} is absent; generate it first")
     allowlist_bytes = allowlist_path.read_bytes()
@@ -416,10 +422,11 @@ def build(
     values = release_profiles.read_values(profile)
     require(isinstance(values, dict) and bool(values), "the profile values are not a mapping")
     require_model_agreement(spec, values)
+    require_c8s_agreement(spec, values)
     image_configs = read_json(release_profiles.IMAGE_CONFIG)
     require(isinstance(image_configs, dict), "release image configuration is not a mapping")
     documents = render_chart(chart, profile.values_files, policy["chart"])
-    require_allowlist_contract(allowlist, policy, documents, image_configs)
+    require_allowlist_contract(allowlist, policy, spec["c8s"]["coreImages"], documents, image_configs)
     images = rendered_images(documents)
     allowlisted = {
         container["digest"]

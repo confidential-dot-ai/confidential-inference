@@ -46,6 +46,7 @@ import release_profiles
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = ROOT / "release"
+POLICY_SCHEMA = "confidential.ai/release-allowlist-policy/v2"
 SEARCH_PATH_FINDING = re.compile(
     r'^error: workload "(?P<entry>[^"]+)" container sha256:[0-9a-f]{64} pins (?P<variable>[A-Z_]+) '
     r'to a search path overlapping (?P<kind>[a-zA-Z]+) mount "(?P<path>[^"]+)"; '
@@ -311,7 +312,12 @@ def container_mounts(
     return sorted(rules, key=lambda rule: rule["destination"])
 
 
-def read_cdi(policy: dict[str, Any]) -> dict[str, Any] | None:
+def read_cdi(policy: dict[str, Any], node_image: str | None = None) -> dict[str, Any] | None:
+    """Read the CDI record. It must list the pinned node image when one is given.
+
+    A record lists every node image that it holds for. scripts/bump-c8s.py adds
+    a node image only when the pinned NVIDIA driver inputs did not change.
+    """
     record = policy.get("cdi")
     if record is None:
         return None
@@ -321,6 +327,8 @@ def read_cdi(policy: dict[str, Any]) -> dict[str, Any] | None:
     value = read_json(path)
     if value.get("driverVersion") != record["driverVersion"]:
         raise GenerationError(f"{record['input']} records a different driver version")
+    if node_image is not None and node_image not in value.get("nodeImages", []):
+        raise GenerationError(f"{record['input']} does not hold for the node image {node_image}")
     for rule in value["mounts"]:
         if rule.get("kind") != "host" or not rule.get("source") or not rule.get("destination"):
             raise GenerationError(f"{record['input']} has a mount that is not an exact host rule")
@@ -410,9 +418,12 @@ def generate(
     profile: release_profiles.Profile, executable: Path, tool: Path | None, policy_path: Path | None = None,
 ) -> bytes:
     policy = read_json(policy_path or profile.policy)
-    if policy.get("schema") != "confidential.ai/release-allowlist-policy/v1":
-        raise GenerationError("release/allowlist-policy.json has the wrong schema")
-    verify_c8s_binary(executable, policy["c8s"]["sourceCommit"])
+    if policy.get("schema") != POLICY_SCHEMA:
+        raise GenerationError(f"{profile.relative(profile.policy)} has the wrong schema")
+    # The specification is the one place that pins c8s.
+    c8s = release_profiles.read_spec(profile)["c8s"]
+    verify_c8s_binary(executable, c8s["sourceCommit"])
+    node_image = f"{c8s['nodeImage']['reference']}@{c8s['nodeImage']['digest']}"
     rendered = controllers(render_chart(policy, profile.values_files))
     expected = {item["controller"] for item in policy["workloads"]}
     if set(rendered) != expected:
@@ -421,8 +432,8 @@ def generate(
             f"extra={sorted(set(rendered) - expected)}"
         )
     image_env = read_json(release_profiles.IMAGE_CONFIG)
-    cdi = read_cdi(policy)
-    core_digests = {split_image(image)[1] for image in policy["c8s"]["coreImages"]}
+    cdi = read_cdi(policy, node_image)
+    core_digests = {split_image(image)[1] for image in c8s["coreImages"]}
     workloads: dict[str, Any] = {}
     errors: list[str] = []
     for item in sorted(policy["workloads"], key=lambda value: value["name"]):
@@ -463,7 +474,7 @@ def generate(
         workloads[item["name"]] = entry
     if errors:
         raise GenerationError("the release allowlist has unpinned inputs:\n  - " + "\n  - ".join(errors))
-    for image in policy["c8s"]["coreImages"]:
+    for image in c8s["coreImages"]:
         name, entry = floor_entry(image)
         if name in workloads:
             raise GenerationError(f"the core entry {name} collides with a workload")

@@ -1,5 +1,5 @@
 {
-  "schema": "confidential.ai/release-allowlist-policy/v1",
+  "schema": "confidential.ai/release-allowlist-policy/v2",
   "chart": {
     "release": "confidential-inference",
     "namespace": "confidential-inference",
@@ -7,18 +7,6 @@
   },
   "kubernetes": {
     "serviceHost": "10.53.0.1"
-  },
-  "c8s": {
-    "release": "v0.33.7",
-    "sourceCommit": "fd905adaec03b618eb9cce0ba99341dee2623234",
-    "coreImages": [
-      "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f0ea51f52efcf7fecdbdec00fffb8585e026a0f7d78276e79f3ee52cf0aa8a5a",
-      "ghcr.io/confidential-dot-ai/cds@sha256:2216259e47eff27eba7d0e35c3aef3e4e749d68d5da7e4efb2a5a02ddc985606",
-      "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:305e1a18c7c8573b384728b1e1c1069579330ad18c1091a7469b18f52246e754",
-      "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:cbcf4c68c2d72fc01d1dc0cd9ddef0311f2db073d1cea2d4486645d1c5044b95",
-      "ghcr.io/confidential-dot-ai/volumed@sha256:c4a3e581e9e6063c98448a4455bbfdc11efc0d63c2596fd12cf87ac20f46acf0",
-      "nginxinc/nginx-unprivileged@sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348"
-    ]
   },
   "cdi": {
     "driverVersion": "595.71.05",

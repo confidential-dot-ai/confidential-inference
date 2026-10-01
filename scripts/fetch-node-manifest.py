@@ -92,6 +92,9 @@ def fetch(spec: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
     if sha256(raw_manifest) != artifact:
         raise FetchError("the registry returned an artifact manifest with a different digest")
     layer = manifest_layer(json.loads(raw_manifest))
+    pinned = spec["c8s"]["nodeManifestArtifact"].get("manifestJson")
+    if pinned is not None and pinned != layer:
+        raise FetchError("the artifact manifest.json layer differs from c8s.nodeManifestArtifact.manifestJson")
     data = run(["crane", "blob", f"{reference}@{layer}"])
     if sha256(data) != layer:
         raise FetchError("the registry returned a manifest.json with a different digest")

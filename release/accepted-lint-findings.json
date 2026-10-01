@@ -1,6 +1,5 @@
 {
   "schema": "confidential.ai/release-accepted-lint-findings/v1",
-  "c8sRelease": "v0.33.7",
   "reviewedBy": "the release coordinator, 2026-09-26",
   "findings": [
     {
@@ -32,6 +31,6 @@
       "mountPath": "/usr/bin/nvidia-smi"
     }
   ],
-  "reason": "The NVIDIA CDI specification of the c8s v0.33.7 node image mounts these two files from the node root into /usr/bin of every GPU container. The source is the measured, dm-verity node image root, not operator content. c8s lint treats every host mount as operator-supplied (internal/cmds/allowlist/lint.go, searchPathFindings). CDS does not enforce this rule on write.",
+  "reason": "The NVIDIA CDI specification of the pinned c8s node image mounts these two files from the node root into /usr/bin of every GPU container. The source is the measured, dm-verity node image root, not operator content. c8s lint treats every host mount as operator-supplied (internal/cmds/allowlist/lint.go, searchPathFindings). CDS does not enforce this rule on write.",
   "issue": "https://github.com/confidential-dot-ai/C8s/issues/713"
 }
