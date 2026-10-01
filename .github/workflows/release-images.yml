@@ -209,6 +209,17 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      # The publish job pushes these audited bytes. It does not build again.
+      - name: Save the audited OCI archive for publication
+        if: inputs.publish
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-oci-${{ matrix.image }}
+          path: ${{ steps.oci-dir.outputs.dir }}/${{ matrix.image }}-first.tar
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
   # The sglang image is ~20 GB. Building it clean twice in one job, even
   # after relocating Docker's data root and the OCI output to /mnt, still
   # exhausts the runner's root disk (`No space left on device` writing the
@@ -387,25 +398,26 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  publish-images:
+  # A standard image is published from the OCI archive that its audit built
+  # and proved, so the pushed digest is the audited digest by construction.
+  # It starts as soon as the standard audit ends, without the sglang audit.
+  publish-standard:
     if: >-
       always() &&
       inputs.publish &&
-      inputs.rebuild_audit &&
       needs.select-images.result == 'success' &&
-      needs.select-images.outputs.names != '' &&
-      (needs.select-images.outputs.standard_names == '' || needs.reproducibility.result == 'success') &&
-      (needs.select-images.outputs.sglang != 'true' || needs.reproducibility-sglang-compare.result == 'success')
-    needs: [select-images, reproducibility, reproducibility-sglang-compare]
+      needs.select-images.outputs.standard_names != '' &&
+      needs.reproducibility.result == 'success'
+    needs: [select-images, reproducibility]
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 30
     environment: ghcr-production
     permissions:
       contents: read
       packages: write
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.select-images.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.select-images.outputs.standard_matrix) }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -420,8 +432,109 @@ jobs:
           name: release-platform-digest-${{ matrix.image }}
           path: /tmp/verified-digest
 
+      - name: Download the audited OCI archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-oci-${{ matrix.image }}
+          path: /tmp/audited
+
+      - name: Prove the archive holds the audited digest
+        run: |
+          python3 scripts/verify-reproducible-oci.py \
+            /tmp/audited/${{ matrix.image }}-first.tar \
+            --platform linux/amd64 \
+            --revision "${{ github.sha }}" \
+            --source-date-epoch "${{ steps.source.outputs.epoch }}" \
+            --record /tmp/${{ matrix.image }}.record.json
+          archive_digest="$(python3 -c "import json;print(json.load(open('/tmp/${{ matrix.image }}.record.json'))['digest'])")"
+          test "$archive_digest" = "$(tr -d '\n' < /tmp/verified-digest/${{ matrix.image }}.platform-digest)"
+          mkdir -p /tmp/layout
+          tar -xf /tmp/audited/${{ matrix.image }}-first.tar -C /tmp/layout
+
+      - name: Install the pinned crane
+        run: |
+          curl -fsSL -o /tmp/crane.tar.gz \
+            https://github.com/google/go-containerregistry/releases/download/v0.21.6/go-containerregistry_Linux_x86_64.tar.gz
+          echo "7ebbdcd05b652345c1f5105f8475e518534b90d66f3bdb50017be63f426ea435  /tmp/crane.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf /tmp/crane.tar.gz -C /tmp crane
+          sudo install -m 0755 /tmp/crane /usr/local/bin/crane
+
+      - name: Log in to GHCR
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the audited image
+        id: push
+        env:
+          IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}
+        run: |
+          crane push /tmp/layout "$IMAGE_NAME:sha-$GITHUB_SHA" --image-refs /tmp/refs.txt
+          reference="$(tr -d '\n' < /tmp/refs.txt)"
+          test "${reference%@*}" = "$IMAGE_NAME"
+          printf 'digest=%s\n' "${reference#*@}" >> "$GITHUB_OUTPUT"
+
+      - name: Prove and record the immutable image digest
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}
+          BASE_REF: ${{ needs.select-images.outputs.base_ref }}
+          BASE_REF_COMMIT: ${{ needs.select-images.outputs.base_ref_commit }}
+        run: |
+          scripts/check-image-build-output.sh "$IMAGE_DIGEST"
+          python3 scripts/image-publication-manifest.py record \
+            --image "$IMAGE_NAME" \
+            --pushed-digest "$IMAGE_DIGEST" \
+            --reproducibility-digest "$(tr -d '\n' < /tmp/verified-digest/${{ matrix.image }}.platform-digest)" \
+            --source-commit "$GITHUB_SHA" \
+            --base-ref "$BASE_REF" \
+            --base-ref-commit "$BASE_REF_COMMIT" \
+            --output /tmp/${{ matrix.image }}.publication.json
+          printf "### %s\n\n\`%s@%s\`\n" "$IMAGE_NAME" "$IMAGE_NAME" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the verified publication record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-image-publication-record-${{ matrix.image }}
+          path: /tmp/${{ matrix.image }}.publication.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # The sglang OCI archive (~20 GB) is too large to pass between jobs, so the
+  # publish job builds it once more and pushes only a digest equal to the
+  # audited one. No unaudited sglang bytes reach the registry.
+  publish-sglang:
+    if: >-
+      always() &&
+      inputs.publish &&
+      needs.select-images.result == 'success' &&
+      needs.select-images.outputs.sglang == 'true' &&
+      needs.reproducibility-sglang-compare.result == 'success'
+    needs: [select-images, reproducibility-sglang-compare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: ghcr-production
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Get the stable source epoch
+        id: source
+        run: printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
+      - name: Download the verified reproducibility digest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-platform-digest-sglang
+          path: /tmp/verified-digest
+
       - name: Free runner storage for SGLang
-        if: matrix.image == 'sglang'
         run: |
           echo "--- disk before cleanup ---"
           df -h / /mnt || true
@@ -457,16 +570,16 @@ jobs:
         id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
+          context: images/sglang
+          file: images/sglang/Dockerfile
           build-args: |
             SOURCE_REVISION=${{ github.sha }}
             SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
           platforms: linux/amd64
           no-cache: true
-          outputs: type=image,name=ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}:sha-${{ github.sha }},push=true,rewrite-timestamp=true
+          outputs: type=image,name=ghcr.io/confidential-dot-ai/confidential-inference/sglang:sha-${{ github.sha }},push=true,rewrite-timestamp=true
           labels: |
-            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.title=Confidential Inference stock SGLang
             org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=sha-${{ github.sha }}
@@ -479,7 +592,7 @@ jobs:
       - name: Prove and record the immutable image digest
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-          IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}
+          IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/sglang
           BASE_REF: ${{ needs.select-images.outputs.base_ref }}
           BASE_REF_COMMIT: ${{ needs.select-images.outputs.base_ref_commit }}
         run: |
@@ -487,18 +600,18 @@ jobs:
           python3 scripts/image-publication-manifest.py record \
             --image "$IMAGE_NAME" \
             --pushed-digest "$IMAGE_DIGEST" \
-            --reproducibility-digest "$(tr -d '\n' < /tmp/verified-digest/${{ matrix.image }}.platform-digest)" \
+            --reproducibility-digest "$(tr -d '\n' < /tmp/verified-digest/sglang.platform-digest)" \
             --source-commit "$GITHUB_SHA" \
             --base-ref "$BASE_REF" \
             --base-ref-commit "$BASE_REF_COMMIT" \
-            --output /tmp/${{ matrix.image }}.publication.json
+            --output /tmp/sglang.publication.json
           printf "### %s\n\n\`%s@%s\`\n" "$IMAGE_NAME" "$IMAGE_NAME" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save the verified publication record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-image-publication-record-${{ matrix.image }}
-          path: /tmp/${{ matrix.image }}.publication.json
+          name: release-image-publication-record-sglang
+          path: /tmp/sglang.publication.json
           if-no-files-found: error
           retention-days: 1
 
@@ -506,9 +619,12 @@ jobs:
   # pins this commit uses the same artifact.
   publication-manifest:
     if: >-
+      always() &&
       inputs.publish &&
-      needs.publish-images.result == 'success'
-    needs: [select-images, publish-images]
+      needs.select-images.result == 'success' &&
+      (needs.select-images.outputs.standard_names == '' || needs.publish-standard.result == 'success') &&
+      (needs.select-images.outputs.sglang != 'true' || needs.publish-sglang.result == 'success')
+    needs: [select-images, publish-standard, publish-sglang]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

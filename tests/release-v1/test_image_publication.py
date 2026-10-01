@@ -73,9 +73,11 @@ class ImagePublicationTests(unittest.TestCase):
     def test_workflows_bind_publication_to_reproducibility_and_signing(self):
         images = (ROOT / ".github/workflows/release-images.yml").read_text()
         bundle = (ROOT / ".github/workflows/release-bundle.yml").read_text()
-        self.assertIn("needs: [select-images, reproducibility, reproducibility-sglang-compare]", images)
-        self.assertEqual(images.count("--reproducibility-digest"), 1)
-        self.assertEqual(images.count("--pushed-digest"), 1)
+        self.assertIn("needs: [select-images, reproducibility]\n", images)
+        self.assertIn("needs: [select-images, reproducibility-sglang-compare]\n", images)
+        self.assertIn("needs: [select-images, publish-standard, publish-sglang]\n", images)
+        self.assertEqual(images.count("--reproducibility-digest"), 2)
+        self.assertEqual(images.count("--pushed-digest"), 2)
         self.assertIn("name: release-image-publication-${{ github.sha }}", images)
         self.assertNotIn("release_version", images)
         self.assertIn('artifact_name="release-image-publication-${image_source_commit}"', bundle)
@@ -83,6 +85,15 @@ class ImagePublicationTests(unittest.TestCase):
         self.assertIn("scripts/find-image-publication-run.py", bundle)
         self.assertIn("--image-publication dist/image-publication-manifest.json", bundle)
         self.assertIn("dist/image-publication-manifest.json#Image publication evidence", bundle)
+
+    def test_standard_images_publish_the_audited_archive(self):
+        images = (ROOT / ".github/workflows/release-images.yml").read_text()
+        standard = images[images.index("  publish-standard:"):images.index("  publish-sglang:")]
+        self.assertIn("name: release-oci-${{ matrix.image }}", standard)
+        self.assertIn("crane push /tmp/layout", standard)
+        self.assertIn("sha256sum --check --strict", standard)
+        self.assertNotIn("docker/build-push-action", standard)
+        self.assertNotIn("reproducibility-sglang", standard)
 
     def test_publication_schema_is_valid(self):
         import jsonschema

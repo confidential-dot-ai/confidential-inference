@@ -40,10 +40,12 @@ The release workflow builds the release manifest with
 `build-release-manifest.py` at the tag commit. The manifest records that
 release source commit, so it is not committed here. The profile also pins an
 earlier `imageSourceCommit`. It consumes the machine-readable image
-publication artifact from the successful `release-images` run for that
-release version. The evidence records the exact source commit used to build
-the images. It refuses an image whose pushed digest differs
-from its deterministic rebuild digest or from the rendered release values.
+publication artifact `release-image-publication-<imageSourceCommit>` from the
+successful `release-images` run at that commit. The evidence names the image
+source commit, not a release version, so every profile that pins the commit
+uses the same evidence. Each image has one digest: the publish job pushes
+only the digest that the deterministic rebuild audit proved. The builder
+refuses an image digest that differs from the rendered release values.
 It also refuses a release source commit that changes an image build input
 after `imageSourceCommit`.
 It must match
@@ -55,14 +57,15 @@ It must match
    that pull request.
 2. After the image source changes are on main, run `release-images` once with
    `publish` and `rebuild_audit`
-   enabled. Give it the normal `vX.Y.Z` version. The workflow selects every
-   changed repository image. This includes release images such as
-   `maintenance-gateway` even when the application chart does not deploy
-   them. It rebuilds each selected image twice, publishes a third clean build, and
-   requires all three platform digests to be equal. The one run writes two
-   publication artifacts. One names `vX.Y.Z`. The other names
-   `vX.Y.Z-staging`. Both artifacts record the same source commit and image
-   digests.
+   enabled. The workflow selects every changed repository image. This
+   includes release images such as `maintenance-gateway` even when the
+   application chart does not deploy them. It builds each selected image
+   twice and requires equal platform digests. It then pushes the first
+   audited OCI archive, so the pushed digest is the audited digest. The
+   sglang archive is too large to pass between jobs, so sglang is built a
+   third time and must give the same digest. Standard images do not wait for
+   the sglang audit. The run writes one publication artifact,
+   `release-image-publication-<commit>`.
 3. Put the image run head commit in `imageSourceCommit` in `spec.yaml` and
    the published digests in `values.yaml`. Staging takes both from this
    layer. Run the release tools for each profile:
@@ -77,7 +80,7 @@ It must match
    The allowlist generator refuses a value that no pinned input gives, such
    as a node IP address or a random pod name.
 4. Merge the release inputs. Tag that release commit `vX.Y.Z`. The release
-   workflow gets the unique publication artifact for the version and exact
+   workflow gets the unique publication artifact for the exact
    `imageSourceCommit`. It checks that its digest references occur in the
    rendered release when that image is deployed. It permits a published
    release image, such as `maintenance-gateway`, that this application chart
