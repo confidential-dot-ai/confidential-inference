@@ -9,7 +9,7 @@ version: v0.14.0
 # The main commit used to build all repository-owned release images. The
 # later release commit can pin the resulting digests. No image build input
 # can change between these two commits.
-imageSourceCommit: 0e6c31fa026dcb497fac23d3dfc558bd6860e494
+imageSourceCommit: 0db01e682c4a7964156a140ffa6370b1b3f0cd18
 
 c8s:
   # The c8s release. It fixes the node image and its measurements.

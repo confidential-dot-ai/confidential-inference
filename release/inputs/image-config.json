@@ -21,7 +21,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:37022697e16c18c5d86f116615fe23ab8da060f9e7f80236c5beb4eb05362dfc": {
+  "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:1d6ba18732374a457ab89a2e7ca170b7d5a32f47ad85cdb7147a90cf20da6040": {
     "cmd": [],
     "entrypoint": [
       "/usr/local/bin/confidential-gateway"
@@ -31,7 +31,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:aa61ff59d9bcad9d16ba3445a35c07e6d7e93523e8a0ca88dc683cc9d19140c9": {
+  "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809": {
     "cmd": [],
     "entrypoint": [
       "/opt/nvidia/nvidia_entrypoint.sh"
