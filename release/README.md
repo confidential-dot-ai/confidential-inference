@@ -84,6 +84,20 @@ python3 scripts/build-release-manifest.py \
 
 Its bytes must equal the signed `release-bundle.json` asset.
 
+## Change the c8s release
+
+Use one command to move every profile to a new c8s tag:
+
+```sh
+scripts/bump-c8s.py --tag vX.Y.Z --c8s-repo <clean c8s checkout at the tag>
+```
+
+It needs `crane`, Go, and read access to the c8s Go module. It changes the c8s
+pins, the source lock, the node manifests, the image configs, and the
+allowlists, and then runs the release checks. It stops when the attestation
+protocol files or the NVIDIA inputs of the node image change. Do those steps
+by hand. Review the full diff before you commit.
+
 ## The allowlist
 
 Every application container gets exact environment and mount rules. The
