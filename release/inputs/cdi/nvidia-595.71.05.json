@@ -2,7 +2,8 @@
   "driverVersion": "595.71.05",
   "toolkitVersion": "1.19.1",
   "nodeImages": [
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:1c8a672c5017f6709e36f5a4ab74790a00d02be726b093589f13b69b8671cf46"
+    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:1c8a672c5017f6709e36f5a4ab74790a00d02be726b093589f13b69b8671cf46",
+    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:94f24b73d86ef46e320509998a061aefc1ac766379a5dc9a3a62812b1d179e97"
   ],
   "driverInputs": {
     "confosFetchGpuSha256": "sha256:df1bf1d3de34089623bc996f56a42e87d0c6d173938a26a80c62811d23e53204"

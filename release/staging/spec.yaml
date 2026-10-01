@@ -9,3 +9,22 @@ version: v0.14.0-staging
 
 publicHostnames:
   - staging.api.confidential.ai
+
+c8s:
+  release: v0.33.10
+  sourceCommit: e9f977ced0364ef6ace61811b5c6ebf4dc00a5a6
+  nodeImage:
+    reference: ghcr.io/confidential-dot-ai/node-guest-base
+    tag: rke2-tdx-cdi-v0.33.10
+    digest: sha256:94f24b73d86ef46e320509998a061aefc1ac766379a5dc9a3a62812b1d179e97
+  coreImages:
+  - ghcr.io/confidential-dot-ai/c8s-operator@sha256:457ea1703fc118d3f438a299de1a3096b1d9bd06d09c13b0d6794cc7e3cfc459
+  - ghcr.io/confidential-dot-ai/cds@sha256:098dcca050a4afd6a659909de8a8d01d360bb362feb1b93e76a0b10d97156d92
+  - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:edc58d5e025abf7136bb4f201f5efc93d3dc91f6820313cb41aa5576391c0770
+  - ghcr.io/confidential-dot-ai/ratls-mesh@sha256:eddc05cd2daf84d9148d9bd5c55efa0bcf0b91229d1dc055088d8050cfd76774
+  - ghcr.io/confidential-dot-ai/volumed@sha256:93c3b806c9de607950ab660cda8a35c90297a7e019c931960d66b8ee8dcae4b7
+  - nginxinc/nginx-unprivileged@sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348
+  nodeManifestArtifact:
+    tag: rke2-tdx-v0.33.10
+    digest: sha256:5788b133d14c772b65e266377f5ae7793f7eeb3ef9d2b220dfdb657b4d21a5e7
+    manifestJson: sha256:a1eb5ecc17e4d5ef816fc467374a92b3bbb8bb5a735385a3eddf5c20e02f968b
