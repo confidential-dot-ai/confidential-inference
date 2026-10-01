@@ -332,7 +332,7 @@
           "required": ["enabled", "url", "address", "serverName", "secretName", "destinationCidrs", "queue"],
           "properties": {
             "enabled": {"type": "boolean"},
-            "url": {"type": "string", "pattern": "^https://[^/]+(?::[0-9]{1,5})?/api/v1/write$"},
+            "url": {"type": "string", "pattern": "^https://[^/]+(?::[0-9]{1,5})?/(?:deployments/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?/)?api/v1/write$"},
             "address": {"type": "string", "format": "ipv4"},
             "serverName": {"type": "string", "format": "hostname"},
             "secretName": {"$ref": "#/definitions/kubernetesName"},
