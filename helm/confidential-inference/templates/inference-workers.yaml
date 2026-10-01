@@ -84,13 +84,13 @@ spec:
         - name: sglang
           image: {{ $.Values.images.sglangWorker }}
           imagePullPolicy: IfNotPresent
-          {{- if $modelMount }}
-          command: ["/usr/local/bin/wait-for-model"]
-          {{- else }}
+          {{- if and $simulatorMode (not $modelMount) }}
           command: ["python3"]
+          {{- else }}
+          command: ["/usr/local/bin/wait-for-model"]
           {{- end }}
           args:
-            {{- if $modelMount }}
+            {{- if and $simulatorMode $modelMount }}
             - --path={{ $.Values.inference.model.volumeDirectory }}/{{ $volumeName }}
             - --timeout-seconds={{ $.Values.inference.model.mountVerification.timeoutSeconds }}
             - --poll-seconds={{ $.Values.inference.model.mountVerification.pollSeconds }}
@@ -103,10 +103,14 @@ spec:
             - --gpu-metrics-port={{ $.Values.inference.metricsPort }}
             - --gpu-metrics-worker=sglang-{{ $index }}
             - --
-            - python3
             {{- end }}
-            - -m
             {{- if $simulatorMode }}
+            {{- if $modelMount }}
+            - python3
+            - -m
+            {{- else }}
+            - -m
+            {{- end }}
             - sglang_simulator.simulation.sglang.launch_server
             - --model-path=/opt/confidential-inference/sglang-simulator/test/assets/qwen3-8b
             - --tokenizer-path=/opt/confidential-inference/sglang-simulator/examples/assets/tokenizer
@@ -124,6 +128,20 @@ spec:
             - --host=0.0.0.0
             - --port={{ $.Values.inference.port }}
             {{- else }}
+            - --path={{ $.Values.inference.model.volumeDirectory }}/{{ $volumeName }}
+            - --timeout-seconds={{ $.Values.inference.model.mountVerification.timeoutSeconds }}
+            - --poll-seconds={{ $.Values.inference.model.mountVerification.pollSeconds }}
+            - --expected-repository={{ $.Values.inference.model.name }}
+            - --expected-revision={{ $.Values.inference.model.revision }}
+            - --revision-metadata={{ $.Values.inference.model.mountVerification.revisionMetadata }}
+            {{- range $name, $digest := $.Values.inference.model.mountVerification.expectedFiles }}
+            - --expected-file={{ $name }}={{ $digest }}
+            {{- end }}
+            - --gpu-metrics-port={{ $.Values.inference.metricsPort }}
+            - --gpu-metrics-worker=sglang-{{ $index }}
+            - --
+            - python3
+            - -m
             - sglang.launch_server
             - --model-path={{ $.Values.inference.model.volumeDirectory }}/{{ $volumeName }}
             - --served-model-name={{ $.Values.inference.model.name }}
