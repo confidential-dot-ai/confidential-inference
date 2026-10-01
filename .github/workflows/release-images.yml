@@ -535,6 +535,15 @@ jobs:
         id: source
         run: printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
+      # The publish title comes from the image selector, as it does for the
+      # standard images, so the workflow holds one SGLang title literal.
+      - name: Get the image title
+        id: title
+        run: >-
+          python3 -c 'import runpy; m = runpy.run_path("scripts/affected-release-images.py");
+          print("title=" + next(i.title for i in m["IMAGES"] if i.image == "sglang"))'
+          >> "$GITHUB_OUTPUT"
+
       - name: Download the verified reproducibility digest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -586,7 +595,7 @@ jobs:
           no-cache: true
           outputs: type=image,name=ghcr.io/confidential-dot-ai/confidential-inference/sglang:sha-${{ github.sha }},push=true,rewrite-timestamp=true
           labels: |
-            org.opencontainers.image.title=Confidential Inference stock SGLang
+            org.opencontainers.image.title=${{ steps.title.outputs.title }}
             org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=sha-${{ github.sha }}
