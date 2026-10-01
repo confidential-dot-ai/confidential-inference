@@ -26,7 +26,7 @@ DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 IMAGE_TITLES = {
     "gateway": "Confidential Inference gateway",
-    "sglang": "Confidential Inference stock SGLang",
+    "sglang": "Confidential Inference SGLang",
     "maintenance-gateway": "Confidential Inference maintenance gateway",
     "metrics-collector": "Confidential Inference metrics collector",
     "kube-state-metrics": "Confidential Inference kube-state metrics",
