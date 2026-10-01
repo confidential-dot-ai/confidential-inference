@@ -39,6 +39,9 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import release_profiles
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
 PROTOCOLS = ROOT / "contracts/c8s-attestation-protocols"
@@ -105,7 +108,7 @@ def replace_all(path: Path, pairs: list[tuple[str, str]]) -> None:
 
 
 def profiles() -> list[Path]:
-    return sorted(path.parent for path in (ROOT / "release").glob("**/spec.yaml"))
+    return [profile.directory for profile in release_profiles.load()]
 
 
 def old_pins(profile: Path) -> dict[str, str]:
@@ -249,13 +252,20 @@ def build(c8s_repo: Path, out: Path) -> tuple[Path, Path]:
     return c8s, canonical
 
 
-def regenerate(profile: Path, c8s: Path, canonical: Path) -> None:
-    relative = str(profile.relative_to(ROOT))
-    run([sys.executable, "scripts/fetch-node-manifest.py", "--spec", f"{relative}/spec.yaml",
-         "--output", f"{relative}/node-manifest.json"], cwd=ROOT)
-    tools = ["--release", relative, "--c8s", str(c8s), "--canonical-tool", str(canonical)]
-    run([sys.executable, "scripts/generate-release-allowlist.py", *tools, "--refresh-image-config"], cwd=ROOT)
-    run([sys.executable, "scripts/generate-release-allowlist.py", *tools], cwd=ROOT)
+def regenerate(c8s: Path, canonical: Path) -> None:
+    # Profiles share a node manifest unless one overrides c8s, and they share
+    # the image configuration, so each file is written once.
+    fetched: set[Path] = set()
+    for profile in release_profiles.load():
+        manifest = release_profiles.node_manifest(profile)
+        if manifest not in fetched:
+            fetched.add(manifest)
+            run([sys.executable, "scripts/fetch-node-manifest.py", "--release", profile.relative(profile.directory)],
+                cwd=ROOT)
+    run([sys.executable, "scripts/generate-release-allowlist.py", "--refresh-image-config"], cwd=ROOT)
+    for profile in release_profiles.load():
+        run([sys.executable, "scripts/generate-release-allowlist.py", "--release", profile.relative(profile.directory),
+             "--c8s", str(c8s), "--canonical-tool", str(canonical)], cwd=ROOT)
 
 
 def check(c8s_repo: Path, commit: str, c8s: Path, canonical: Path) -> None:
@@ -302,8 +312,7 @@ def main() -> int:
 
         with tempfile.TemporaryDirectory() as directory:
             c8s, canonical = build(c8s_repo, Path(directory))
-            for profile in profiles():
-                regenerate(profile, c8s, canonical)
+            regenerate(c8s, canonical)
             new_manifest = sha256_bytes((normal / "node-manifest.json").read_bytes())
             replace_all(RELEASE_TESTS, [(old_manifest, new_manifest)])
             check(c8s_repo, commit, c8s, canonical)

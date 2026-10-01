@@ -7,8 +7,20 @@ until the release tools no longer read them.
 The release contains no target, placement, operator key, or mesh CA. The
 private deployment repository holds the targets.
 
-`release/staging/` is the matching staging profile. It uses the CPU SGLang
-simulator and validates the encrypted model mount before the simulator starts.
+`release/profiles.json` declares the release profiles: the tag suffix, the
+environment, the signing environment, and the layers of each profile. The
+tools read the profile of a tag or a directory from it with
+`scripts/release_profiles.py`.
+
+`release/staging/` is the staging profile. It is a layer on top of this
+directory. Its `spec.yaml` replaces only the version and the public hostnames,
+and Helm applies its `values.yaml` after `release/values.yaml`. Staging uses
+the CPU SGLang simulator and validates the encrypted model mount before the
+simulator starts. It has its own allowlist policy, accepted lint findings, and
+allowlist. It shares the node manifest and the image configuration. To move
+staging ahead of production, set `c8s` or `imageSourceCommit` in
+`release/staging/spec.yaml`; the node manifest of that c8s release is then
+written to `release/staging/node-manifest.json`.
 
 ## Files
 
@@ -17,7 +29,8 @@ simulator and validates the encrypted model mount before the simulator starts.
 | `spec.yaml` | A person | The version, the c8s release and its node image, the model identity, and the public hostnames |
 | `values.yaml` | A person | The chart values of the release. Only release values, no deployment values |
 | `allowlist-policy.json` | A person | The workloads, the c8s core images, and the inputs of the allowlist |
-| `inputs/image-config.json` | `generate-release-allowlist.py --refresh-image-config` | The `ENV`, `ENTRYPOINT`, and `CMD` of every rendered image. Review the diff by hand |
+| `profiles.json` | A person | The release profiles and their layers |
+| `inputs/image-config.json` | `generate-release-allowlist.py --refresh-image-config` | The `ENV`, `ENTRYPOINT`, and `CMD` of every image that a profile renders. All profiles share it. Review the diff by hand |
 | `inputs/cdi/nvidia-<driver>.json` | A person, from a reviewed record | The NVIDIA CDI environment variables and driver mounts of one driver version |
 | `node-manifest.json` | `fetch-node-manifest.py` | The c8s `manifest.json` of the node image. It holds MRTD, RTMR1, and RTMR2 |
 | `allowlist.json` | `generate-release-allowlist.py` | The exact c8s allowlist of the release, in canonical bytes |
@@ -50,14 +63,15 @@ It must match
    publication artifacts. One names `vX.Y.Z`. The other names
    `vX.Y.Z-staging`. Both artifacts record the same source commit and image
    digests.
-3. Put the image run head commit in `imageSourceCommit` in both profile
-   specifications. Put the published digests in each `values.yaml`. Run the
-   release tools:
+3. Put the image run head commit in `imageSourceCommit` in `spec.yaml` and
+   the published digests in `values.yaml`. Staging takes both from this
+   layer. Run the release tools for each profile:
 
    ```sh
    python3 scripts/fetch-node-manifest.py
    python3 scripts/generate-release-allowlist.py --refresh-image-config
    python3 scripts/generate-release-allowlist.py --c8s <c8s CLI of the pinned commit>
+   python3 scripts/generate-release-allowlist.py --release release/staging --c8s <c8s CLI of the pinned commit>
    ```
 
    The allowlist generator refuses a value that no pinned input gives, such

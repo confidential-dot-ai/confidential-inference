@@ -32,6 +32,9 @@ def load(name: str, path: str):
 GEN = load("generate_release_allowlist", "scripts/generate-release-allowlist.py")
 MAN = load("build_release_manifest", "scripts/build-release-manifest.py")
 NODE = load("fetch_node_manifest", "scripts/fetch-node-manifest.py")
+PROFILES = sys.modules["release_profiles"]
+PRODUCTION = PROFILES.for_directory(ROOT / "release")
+STAGING = PROFILES.for_directory(ROOT / "release/staging")
 
 DIGEST = "sha256:" + "a" * 64
 IMAGE = f"ghcr.io/example/app@{DIGEST}"
@@ -202,21 +205,19 @@ class AcceptedFindingTests(unittest.TestCase):
 
 
 class ManifestTests(unittest.TestCase):
-    def spec(self, **changes):
-        value = yaml.safe_load((ROOT / "release/spec.yaml").read_text())
-        value.update(changes)
-        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as handle:
-            yaml.safe_dump(value, handle)
-        return Path(handle.name)
-
     def test_the_committed_spec_is_valid(self):
-        MAN.read_spec(ROOT / "release/spec.yaml")
-        staging = MAN.read_spec(ROOT / "release/staging/spec.yaml")
+        MAN.read_spec(PRODUCTION)
+        staging = MAN.read_spec(STAGING)
         self.assertEqual(staging["version"], "v0.14.0-staging")
+        # Staging takes every other key from the production layer.
+        self.assertEqual(staging["c8s"], MAN.read_spec(PRODUCTION)["c8s"])
 
     def test_release_candidate_versions_are_refused(self):
-        with self.assertRaisesRegex(MAN.ManifestError, "vX.Y.Z or vX.Y.Z-staging"):
-            MAN.read_spec(self.spec(version="v0.14.0-rc.1"))
+        spec = MAN.read_spec(PRODUCTION)
+        for version, profile in (("v0.14.0-rc.1", PRODUCTION), ("v0.14.0-staging", PRODUCTION),
+                                 ("v0.14.0", STAGING)):
+            with self.subTest(version=version), self.assertRaisesRegex(MAN.ManifestError, "version must be"):
+                MAN.validate_spec({**spec, "version": version}, profile)
 
     def test_image_source_boundary_allows_only_later_non_image_changes(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -270,10 +271,8 @@ class ManifestTests(unittest.TestCase):
                 MAN.verify_image_source_boundary(image_source, release_source, repo)
 
     def test_staging_manifest_uses_the_staging_profile(self):
-        values = yaml.safe_load((ROOT / "release/staging/values.yaml").read_text())
-        image_source_commit = MAN.read_spec(
-            ROOT / "release/staging/spec.yaml"
-        )["imageSourceCommit"]
+        values = PROFILES.read_values(STAGING)
+        image_source_commit = MAN.read_spec(STAGING)["imageSourceCommit"]
         release_source_commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
         ).strip()
@@ -315,10 +314,9 @@ class ManifestTests(unittest.TestCase):
     def test_staging_workers_verify_the_model_before_the_simulator(self):
         documents = MAN.render_chart(
             ROOT / "helm/confidential-inference",
-            ROOT / "release/staging/values.yaml",
-            release_name="confidential-inference",
-            namespace="confidential-inference-staging",
-            kube_version="1.32.0",
+            STAGING.values_files,
+            {"release": "confidential-inference", "namespace": "confidential-inference-staging",
+             "kubeVersion": "1.32.0"},
         )
         workers = [item for item in documents if item.get("kind") == "StatefulSet"
                    and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
@@ -341,8 +339,8 @@ class ManifestTests(unittest.TestCase):
         self.assertNotIn(zero_digest, (ROOT / "release/staging/allowlist.json").read_text())
 
     def test_manifest_refuses_model_values_that_differ_from_the_spec(self):
-        spec = MAN.read_spec(ROOT / "release/staging/spec.yaml")
-        values = yaml.safe_load((ROOT / "release/staging/values.yaml").read_text())
+        spec = MAN.read_spec(STAGING)
+        values = PROFILES.read_values(STAGING)
         MAN.require_model_agreement(spec, values)
         cases = [
             ("name", "different/model", "repository"),
@@ -450,19 +448,11 @@ class ManifestTests(unittest.TestCase):
                 )
 
     def test_staging_policy_uses_its_exact_render_and_allowlist_namespace(self):
-        release = ROOT / "release/staging"
-        spec = MAN.read_spec(release / "spec.yaml")
-        policy = MAN.read_allowlist_policy(release / "allowlist-policy.json", spec)
-        settings = policy["chart"]
-        documents = MAN.render_chart(
-            ROOT / "helm/confidential-inference",
-            release / "values.yaml",
-            release_name=settings["release"],
-            namespace=settings["namespace"],
-            kube_version=settings["kubeVersion"],
-        )
-        allowlist = json.loads((release / "allowlist.json").read_text())
-        configs = json.loads((release / "inputs/image-config.json").read_text())
+        spec = MAN.read_spec(STAGING)
+        policy = MAN.read_allowlist_policy(STAGING.policy, spec)
+        documents = MAN.render_chart(ROOT / "helm/confidential-inference", STAGING.values_files, policy["chart"])
+        allowlist = json.loads(STAGING.allowlist.read_text())
+        configs = json.loads(PROFILES.IMAGE_CONFIG.read_text())
         MAN.require_allowlist_contract(allowlist, policy, documents, configs)
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
@@ -478,16 +468,16 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
             MAN.require_allowlist_contract(changed, policy, documents, configs)
 
-    def test_staging_readme_fetches_the_node_manifest_into_the_profile(self):
-        readme = (ROOT / "release/staging/README.md").read_text()
-        self.assertIn("--spec release/staging/spec.yaml", readme)
-        self.assertIn("--output release/staging/node-manifest.json", readme)
+    def test_staging_shares_the_production_node_manifest(self):
+        self.assertEqual(PROFILES.node_manifest(STAGING), ROOT / "release/node-manifest.json")
+        self.assertFalse((ROOT / "release/staging/node-manifest.json").exists())
+        self.assertFalse((ROOT / "release/staging/inputs/image-config.json").exists())
 
     def test_the_source_lock_pins_the_spec_commit(self):
         lock = json.loads((ROOT / "contracts/c8s-admission-source-lock.json").read_text())
-        for profile in ("release", "release/staging"):
-            with self.subTest(profile=profile):
-                spec = MAN.read_spec(ROOT / profile / "spec.yaml")
+        for profile in PROFILES.load():
+            with self.subTest(profile=profile.name):
+                spec = MAN.read_spec(profile)
                 entry = MAN.source_lock_entry(lock, spec["c8s"]["sourceCommit"])
                 self.assertEqual(entry["tag"], spec["c8s"]["release"])
                 self.assertEqual(
@@ -498,9 +488,9 @@ class ManifestTests(unittest.TestCase):
                 )
 
     def test_the_node_manifest_matches_the_pinned_artifact_layer(self):
-        for profile in ("release", "release/staging"):
-            with self.subTest(profile=profile):
-                data = (ROOT / profile / "node-manifest.json").read_bytes()
+        for profile in PROFILES.load():
+            with self.subTest(profile=profile.name):
+                data = PROFILES.node_manifest(profile).read_bytes()
                 self.assertEqual(MAN.sha256(data), "sha256:bf2364e9104890d8f755e2aaf124985535f3013a99e3904ce50cdf4d6d1b276e")
                 NODE.check_measurements(json.loads(data))
 

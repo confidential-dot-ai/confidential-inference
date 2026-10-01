@@ -4,7 +4,7 @@
 The manifest states what the release is. The client verifies it. It lists:
 
 - the release version and the public hostnames;
-- every container image digest that the chart renders with release/values.yaml;
+- every container image digest that the chart renders with the profile values;
 - the Helm chart identity;
 - the c8s release, its source commit, its core image digests, and the source
   lock entry for that commit;
@@ -38,7 +38,7 @@ import jsonschema
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_signature import environment_for_tag
+import release_profiles
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = ROOT / "release"
@@ -51,7 +51,7 @@ REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 IMAGE_SELECTOR = runpy.run_path(str(ROOT / "scripts/affected-release-images.py"))
 ALLOWLIST_GENERATOR = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
 PUBLICATION = runpy.run_path(str(ROOT / "scripts/image-publication-manifest.py"))
-VERSION = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-staging)?$")
+C8S_VERSION = re.compile(f"^{release_profiles.VERSION}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
@@ -90,20 +90,31 @@ def require(condition: bool, message: str) -> None:
         raise ManifestError(message)
 
 
-def read_spec(path: Path) -> dict[str, Any]:
-    spec = read_yaml(path)
-    require(isinstance(spec, dict), "release/spec.yaml is not a mapping")
+def read_spec(profile: release_profiles.Profile) -> dict[str, Any]:
+    """Read the profile specification, which its spec.yaml layers make."""
+    try:
+        spec = release_profiles.read_spec(profile)
+    except release_profiles.ProfileError as error:
+        raise ManifestError(str(error)) from error
+    return validate_spec(spec, profile)
+
+
+def validate_spec(spec: Any, profile: release_profiles.Profile) -> dict[str, Any]:
+    require(isinstance(spec, dict), "the release specification is not a mapping")
     require(
         set(spec) == {"version", "imageSourceCommit", "c8s", "model", "publicHostnames"},
-        "release/spec.yaml must hold exactly version, imageSourceCommit, c8s, model, and publicHostnames",
+        "the release specification must hold exactly version, imageSourceCommit, c8s, model, and publicHostnames",
     )
-    require(isinstance(spec["version"], str) and VERSION.fullmatch(spec["version"]) is not None,
-            "version must be vX.Y.Z or vX.Y.Z-staging")
+    try:
+        version_profile = release_profiles.for_tag(str(spec["version"])).name
+    except release_profiles.ProfileError:
+        version_profile = None
+    require(version_profile == profile.name, f"version must be vX.Y.Z{profile.tag_suffix} in profile {profile.name}")
     require(COMMIT.fullmatch(str(spec["imageSourceCommit"])) is not None,
             "imageSourceCommit must be a full Git commit")
     c8s = spec["c8s"]
     require(isinstance(c8s, dict), "c8s must be a mapping")
-    require(isinstance(c8s.get("release"), str) and VERSION.fullmatch(c8s["release"]) is not None,
+    require(isinstance(c8s.get("release"), str) and C8S_VERSION.fullmatch(c8s["release"]) is not None,
             "c8s.release must be vX.Y.Z")
     require(isinstance(c8s.get("sourceCommit"), str) and COMMIT.fullmatch(c8s["sourceCommit"]) is not None,
             "c8s.sourceCommit must be a full Git commit")
@@ -125,18 +136,12 @@ def read_spec(path: Path) -> dict[str, Any]:
     return spec
 
 
-def render_chart(
-    chart: Path,
-    values: Path,
-    *,
-    release_name: str,
-    namespace: str,
-    kube_version: str,
-) -> list[dict[str, Any]]:
+def render_chart(chart: Path, values: list[Path], settings: dict[str, str]) -> list[dict[str, Any]]:
+    """Render the chart with the profile values files, in layer order."""
     result = subprocess.run(
-        ["helm", "template", release_name, str(chart),
-         "--namespace", namespace, "--kube-version", kube_version,
-         "--values", str(values)],
+        ["helm", "template", settings["release"], str(chart),
+         "--namespace", settings["namespace"], "--kube-version", settings["kubeVersion"],
+         *[argument for path in values for argument in ("--values", str(path))]],
         capture_output=True, text=True, check=False,
     )
     if result.returncode:
@@ -292,7 +297,7 @@ def node_measurements(path: Path, spec: dict[str, Any]) -> dict[str, Any]:
     values = {name: tdx.get(name) for name in ("mrtd", "rtmr1", "rtmr2")}
     for name, value in values.items():
         require(isinstance(value, str) and MEASUREMENT.fullmatch(value) is not None,
-                f"release/node-manifest.json tdx.{name} is invalid")
+                f"the node manifest tdx.{name} is invalid")
     node = spec["c8s"]["nodeImage"]
     return {
         "image": f"{node['reference']}@{node['digest']}",
@@ -394,30 +399,26 @@ def build(
     source_commit: str,
     publication_path: Path,
 ) -> dict[str, Any]:
-    release = release.resolve()
+    try:
+        profile = release_profiles.for_directory(release)
+    except release_profiles.ProfileError as error:
+        raise ManifestError(str(error)) from error
     chart = chart.resolve()
     require(COMMIT.fullmatch(source_commit) is not None, "--source-commit must be a full Git commit")
-    spec = read_spec(release / "spec.yaml")
+    spec = read_spec(profile)
     verify_image_source_boundary(spec["imageSourceCommit"], source_commit)
-    policy = read_allowlist_policy(release / "allowlist-policy.json", spec)
-    allowlist_path = release / "allowlist.json"
-    require(allowlist_path.is_file(), "release/allowlist.json is absent; generate it first")
+    policy = read_allowlist_policy(profile.policy, spec)
+    allowlist_path = profile.allowlist
+    require(allowlist_path.is_file(), f"{profile.relative(allowlist_path)} is absent; generate it first")
     allowlist_bytes = allowlist_path.read_bytes()
     allowlist = json.loads(allowlist_bytes)
     require(allowlist.get("schema") == "c8s.allowlist/v1", "release/allowlist.json has the wrong schema")
-    values = read_yaml(release / "values.yaml")
-    require(isinstance(values, dict), "release/values.yaml is not a mapping")
+    values = release_profiles.read_values(profile)
+    require(isinstance(values, dict) and bool(values), "the profile values are not a mapping")
     require_model_agreement(spec, values)
-    image_configs = read_json(release / "inputs/image-config.json")
+    image_configs = read_json(release_profiles.IMAGE_CONFIG)
     require(isinstance(image_configs, dict), "release image configuration is not a mapping")
-    chart_settings = policy["chart"]
-    documents = render_chart(
-        chart,
-        release / "values.yaml",
-        release_name=chart_settings["release"],
-        namespace=chart_settings["namespace"],
-        kube_version=chart_settings["kubeVersion"],
-    )
+    documents = render_chart(chart, profile.values_files, policy["chart"])
     require_allowlist_contract(allowlist, policy, documents, image_configs)
     images = rendered_images(documents)
     allowlisted = {
@@ -431,7 +432,7 @@ def build(
     require(lock.get("tag") == spec["c8s"]["release"], "the source lock tag differs from c8s.release")
     node_reference = f"{spec['c8s']['nodeImage']['reference']}@{spec['c8s']['nodeImage']['digest']}"
     require(lock["nodeImage"] == node_reference, "the source lock node image differs from c8s.nodeImage")
-    node = node_measurements(release / "node-manifest.json", spec)
+    node = node_measurements(release_profiles.node_manifest(profile), spec)
     named_images = image_names(values, images)
     publication = image_publication(
         publication_path,
@@ -443,7 +444,7 @@ def build(
         "schema": SCHEMA,
         "release": {
             "name": spec["version"],
-            "environment": environment_for_tag(spec["version"]),
+            "environment": profile.environment,
         },
         "releaseTrust": {
             "policyPath": TRUST_POLICY.relative_to(ROOT).as_posix(),

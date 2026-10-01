@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Fetch the node image manifest.json named by release/spec.yaml.
+"""Fetch the node image manifest.json named by a release profile.
 
 c8s publishes a measurement artifact beside each node image. The artifact
 holds manifest.json, which records the TDX measurements MRTD, RTMR1, and
 RTMR2 of the node image. This script downloads that file through the digest
-chain that release/spec.yaml pins, checks every digest, checks the
-measurements, and writes the exact bytes to release/node-manifest.json.
+chain that the profile specification pins, checks every digest, checks the
+measurements, and writes the exact bytes to node-manifest.json in the layer
+that sets `c8s` (release/node-manifest.json unless a profile overrides c8s).
 
-Anyone can repeat the check: the SHA-256 of release/node-manifest.json must
-equal the manifest.json layer digest of the pinned artifact.
+Anyone can repeat the check: the SHA-256 of node-manifest.json must equal the
+manifest.json layer digest of the pinned artifact.
 """
 
 from __future__ import annotations
@@ -24,9 +25,10 @@ from typing import Any
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import release_profiles
+
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = ROOT / "release/spec.yaml"
-OUTPUT = ROOT / "release/node-manifest.json"
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 MEASUREMENT = re.compile(r"^[0-9a-f]{96}$")
 MANIFEST_TITLE = "manifest.json"
@@ -48,14 +50,13 @@ def sha256(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def read_spec(path: Path) -> dict[str, Any]:
-    spec = yaml.safe_load(path.read_text(encoding="utf-8"))
+def read_spec(spec: Any) -> dict[str, Any]:
     try:
         c8s = spec["c8s"]
         reference = c8s["nodeImage"]["reference"]
         artifact = c8s["nodeManifestArtifact"]["digest"]
     except (KeyError, TypeError) as error:
-        raise FetchError("release/spec.yaml has no c8s node manifest artifact") from error
+        raise FetchError("the release specification has no c8s node manifest artifact") from error
     if not isinstance(reference, str) or "@" in reference or ":" in reference.rsplit("/", 1)[-1]:
         raise FetchError("c8s.nodeImage.reference must be a repository without tag or digest")
     if not isinstance(artifact, str) or not DIGEST.fullmatch(artifact):
@@ -101,21 +102,23 @@ def fetch(spec: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--spec", type=Path, default=SPEC)
-    parser.add_argument("--output", type=Path, default=OUTPUT)
+    parser.add_argument("--release", type=Path, default=ROOT / "release", help="the profile directory")
+    parser.add_argument("--output", type=Path, help="default: node-manifest.json in the layer that sets c8s")
     parser.add_argument(
         "--check", action="store_true",
         help="fail when the committed file differs from the registry bytes",
     )
     args = parser.parse_args()
     try:
-        data, record = fetch(read_spec(args.spec))
+        profile = release_profiles.for_directory(args.release)
+        data, record = fetch(read_spec(release_profiles.read_spec(profile)))
+        args.output = args.output or release_profiles.node_manifest(profile)
         if args.check:
             if args.output.read_bytes() != data:
                 raise FetchError(f"{args.output} differs from the pinned artifact")
         else:
             args.output.write_bytes(data)
-    except (OSError, FetchError, json.JSONDecodeError, yaml.YAMLError) as error:
+    except (OSError, FetchError, release_profiles.ProfileError, json.JSONDecodeError, yaml.YAMLError) as error:
         print(f"fetch-node-manifest: {error}", file=sys.stderr)
         return 1
     print(json.dumps(record, sort_keys=True))

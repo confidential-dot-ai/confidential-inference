@@ -99,8 +99,8 @@ jobs:
         run: |
           artifact_name="release-image-publication-${RELEASE_TAG}"
           image_source_commit="$(python3 -c \
-            'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["imageSourceCommit"])' \
-            "${{ needs.select-profile.outputs.directory }}/spec.yaml")"
+            'import sys; sys.path.insert(0, "scripts"); import release_profiles as p; print(p.read_spec(p.for_tag(sys.argv[1]))["imageSourceCommit"])' \
+            "$RELEASE_TAG")"
           run_id="$(python3 scripts/find-image-publication-run.py \
             --repository "$GITHUB_REPOSITORY" \
             --artifact-name "$artifact_name" \
