@@ -1,14 +1,15 @@
 # Staging chart values
 #
 # Helm applies this file after release/values.yaml (release/profiles.json).
-# It holds only what differs from production: the staging names and the CPU
-# SGLang simulator, which first verifies the encrypted model mount.
+# It holds only what differs from production: the staging names, the CPU
+# SGLang simulator, and the small model that the simulator first verifies on
+# the encrypted model mount.
 
 environment: staging
 
 attestationReceipts:
   evidenceBaseUrl: https://staging.api.confidential.ai
-  releaseId: v0.14.0-staging
+  releaseId: v0.14.1-staging
 
 inference:
   mode: simulator
@@ -18,6 +19,18 @@ inference:
   resources:
     cpu: '2'
     memory: 16Gi
+  # The model pins of release/staging/spec.yaml.
+  model:
+    name: hf-internal-testing/tiny-random-LlamaForCausalLM
+    revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998
+    mountVerification:
+      expectedFileList:
+        - path: .model-lock-local-manifest.json
+          sha256: d39aa41f901cb2cb07087157bcdc9c8ec32b6bf1e82c5018df35eff8cad6522e
+        - path: config.json
+          sha256: 5b52782dd9a2b8a4eb87f321448a61cd56cf0764493a1ff73f327259e14ab382
+        - path: tokenizer_config.json
+          sha256: 1847d0a066bd2bd9fb9cb01a2141e7f3befb0a915689878903c3a4dad0f761f9
   simulator:
     validateModelMount: true
     outputMode: BLOCKING

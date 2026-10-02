@@ -224,6 +224,8 @@ inference:
       revisionMetadata: .model-lock-local-manifest.json
       expectedFiles:
         .model-lock-local-manifest.json: "0000000000000000000000000000000000000000000000000000000000000000"
+      # expectedFileList: a list of {path, sha256} that replaces expectedFiles
+      # (see the confidential-inference.expectedFiles helper).
   port: 30000
   metricsPort: 29000
   # Name of the reasoning parser to pass as --reasoning-parser on the model
