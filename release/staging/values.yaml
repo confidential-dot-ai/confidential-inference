@@ -19,8 +19,7 @@ inference:
   resources:
     cpu: '2'
     memory: 16Gi
-  # The model pins of release/staging/spec.yaml. expectedFileList replaces
-  # the production expectedFiles map, which a layer cannot reduce.
+  # The model pins of release/staging/spec.yaml.
   model:
     name: hf-internal-testing/tiny-random-LlamaForCausalLM
     revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998

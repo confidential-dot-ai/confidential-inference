@@ -186,16 +186,28 @@ def require_model_agreement(spec: dict[str, Any], values: dict[str, Any]) -> Non
             "values model name differs from spec model repository")
     require(model.get("revision") == release_model["revision"],
             "values model revision differs from spec model revision")
-    verification = model.get("mountVerification", {})
-    metadata = verification.get("revisionMetadata")
-    # expectedFileList replaces expectedFiles, as in the chart.
-    listed = verification.get("expectedFileList")
-    expected = ({item.get("path"): item.get("sha256") for item in listed}
-                if listed else verification.get("expectedFiles", {}))
-    require(isinstance(metadata, str) and metadata,
-            "values model mount verification has no revision metadata file")
-    require(isinstance(expected, dict) and expected.get(metadata) == release_model["byteManifestSha256"],
-            "values model byte manifest differs from spec model byte manifest")
+
+
+def require_model_files(spec: dict[str, Any], documents: list[dict[str, Any]]) -> None:
+    """Require each rendered worker to check the byte manifest of the spec.
+
+    The chart decides which files a worker checks, so this reads the rendered
+    arguments, not the values.
+    """
+    workers = [item for item in documents if item.get("kind") == "StatefulSet"
+               and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
+    require(bool(workers), "the chart renders no inference worker")
+    for worker in workers:
+        container = next(item for item in worker["spec"]["template"]["spec"]["containers"]
+                         if item["name"] == "sglang")
+        args = container.get("args", [])
+        metadata = [arg.removeprefix("--revision-metadata=") for arg in args
+                    if arg.startswith("--revision-metadata=")]
+        require(len(metadata) == 1, "a worker has no single revision metadata file")
+        digests = [arg.removeprefix(f"--expected-file={metadata[0]}=") for arg in args
+                   if arg.startswith(f"--expected-file={metadata[0]}=")]
+        require(digests == [spec["model"]["byteManifestSha256"]],
+                "the rendered model byte manifest differs from spec model byte manifest")
 
 
 def require_c8s_agreement(spec: dict[str, Any], values: dict[str, Any]) -> None:
@@ -425,6 +437,7 @@ def build(
     image_configs = read_json(release_profiles.IMAGE_CONFIG)
     require(isinstance(image_configs, dict), "release image configuration is not a mapping")
     documents = render_chart(chart, profile, policy["chart"])
+    require_model_files(spec, documents)
     require_allowlist_contract(allowlist, policy, spec["c8s"]["coreImages"], documents, image_configs)
     images = rendered_images(documents)
     allowlisted = {

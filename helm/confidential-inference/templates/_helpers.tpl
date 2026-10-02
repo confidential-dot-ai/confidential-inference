@@ -99,9 +99,9 @@ The distinct inference nodes, as a JSON list.
 {{- end }}
 
 {{/*
-The model files that the worker checks, as a JSON list of PATH=SHA256 in path
-order. expectedFileList, when set, replaces the expectedFiles map. A later
-values layer cannot remove a key of a map, but it replaces a list.
+The model files that the worker checks, as a sorted JSON list of PATH=SHA256.
+expectedFileList, when set, replaces the expectedFiles map: a later values
+layer cannot remove a key of a map, but it replaces a list.
 */}}
 {{- define "confidential-inference.expectedFiles" -}}
 {{- $verification := .Values.inference.model.mountVerification -}}
@@ -115,5 +115,5 @@ values layer cannot remove a key of a map, but it replaces a list.
 {{- $files = append $files (printf "%s=%s" $name $digest) -}}
 {{- end -}}
 {{- end -}}
-{{- $files | toJson -}}
+{{- $files | sortAlpha | toJson -}}
 {{- end }}

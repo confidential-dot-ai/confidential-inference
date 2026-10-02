@@ -6,6 +6,7 @@ parts of the tools that decide the allowlist and the manifest content.
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import json
 import subprocess
@@ -35,6 +36,17 @@ NODE = load("fetch_node_manifest", "scripts/fetch-node-manifest.py")
 PROFILES = sys.modules["release_profiles"]
 PRODUCTION = PROFILES.for_directory(ROOT / "release")
 STAGING = PROFILES.for_directory(ROOT / "release/staging")
+
+
+@functools.cache
+def rendered(profile) -> list[dict]:
+    """The chart rendered with the profile values and its policy settings. Do not change it."""
+    return MAN.render_chart(MAN.CHART, profile, MAN.read_allowlist_policy(profile.policy)["chart"])
+
+
+def rendered_workers(profile) -> list[dict]:
+    return [item for item in rendered(profile) if item.get("kind") == "StatefulSet"
+            and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
 
 DIGEST = "sha256:" + "a" * 64
 IMAGE = f"ghcr.io/example/app@{DIGEST}"
@@ -309,14 +321,7 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(manifest["imagePublication"]["sourceCommit"], image_source_commit)
 
     def test_staging_workers_verify_the_model_before_the_simulator(self):
-        documents = MAN.render_chart(
-            ROOT / "helm/confidential-inference",
-            STAGING,
-            {"release": "confidential-inference", "namespace": "confidential-inference-staging",
-             "kubeVersion": "1.32.0"},
-        )
-        workers = [item for item in documents if item.get("kind") == "StatefulSet"
-                   and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
+        workers = rendered_workers(STAGING)
         self.assertEqual(len(workers), 2)
         for worker in workers:
             pod = worker["spec"]["template"]
@@ -348,41 +353,35 @@ class ManifestTests(unittest.TestCase):
             changed["inference"]["model"][field] = value
             with self.subTest(field=field), self.assertRaisesRegex(MAN.ManifestError, message):
                 MAN.require_model_agreement(spec, changed)
-        changed = json.loads(json.dumps(values))
-        verification = changed["inference"]["model"]["mountVerification"]
-        listed = next(item for item in verification["expectedFileList"]
-                      if item["path"] == verification["revisionMetadata"])
-        listed["sha256"] = "0" * 64
-        with self.assertRaisesRegex(MAN.ManifestError, "byte manifest"):
-            MAN.require_model_agreement(spec, changed)
 
-    def expected_file_args(self, profile) -> list[list[str]]:
-        policy = MAN.read_allowlist_policy(profile.policy)
-        documents = MAN.render_chart(MAN.CHART, profile, policy["chart"])
-        workers = [document for document in documents
-                   if document.get("kind") == "StatefulSet"
-                   and document["metadata"]["name"].startswith("inference-worker-")]
-        self.assertTrue(workers)
-        return [[argument.removeprefix("--expected-file=")
-                 for argument in worker["spec"]["template"]["spec"]["containers"][0]["args"]
-                 if argument.startswith("--expected-file=")]
-                for worker in workers]
+    def test_manifest_refuses_a_rendered_byte_manifest_that_differs_from_the_spec(self):
+        spec = MAN.read_spec(STAGING)
+        MAN.require_model_files(spec, rendered(STAGING))
+        changed = json.loads(json.dumps(rendered(STAGING)))
+        for worker in changed:
+            if worker.get("kind") == "StatefulSet" and worker["metadata"]["name"].startswith("inference-worker-"):
+                container = worker["spec"]["template"]["spec"]["containers"][0]
+                container["args"] = [arg.replace(spec["model"]["byteManifestSha256"], "0" * 64)
+                                     for arg in container["args"]]
+        with self.assertRaisesRegex(MAN.ManifestError, "byte manifest"):
+            MAN.require_model_files(spec, changed)
+
+    @staticmethod
+    def expected_file_args(profile) -> list[list[str]]:
+        return [[arg.removeprefix("--expected-file=")
+                 for arg in worker["spec"]["template"]["spec"]["containers"][0]["args"]
+                 if arg.startswith("--expected-file=")]
+                for worker in rendered_workers(profile)]
 
     def test_production_workers_check_the_expected_files_map(self):
         verification = PROFILES.read_values(PRODUCTION)["inference"]["model"]["mountVerification"]
-        self.assertNotIn("expectedFileList", verification)
         expected = [f"{name}={digest}" for name, digest in sorted(verification["expectedFiles"].items())]
         for arguments in self.expected_file_args(PRODUCTION):
             self.assertEqual(arguments, expected)
 
     def test_staging_workers_check_only_the_staging_model_files(self):
-        # A layer cannot remove a key of the production expectedFiles map, so
-        # staging sets expectedFileList, which replaces the map in the chart.
-        spec = MAN.read_spec(STAGING)
         verification = PROFILES.read_values(STAGING)["inference"]["model"]["mountVerification"]
-        expected = [f"{item['path']}={item['sha256']}" for item in verification["expectedFileList"]]
-        self.assertEqual(expected, sorted(expected))
-        self.assertIn(f"{verification['revisionMetadata']}={spec['model']['byteManifestSha256']}", expected)
+        expected = sorted(f"{item['path']}={item['sha256']}" for item in verification["expectedFileList"])
         for arguments in self.expected_file_args(STAGING):
             self.assertEqual(arguments, expected)
 
@@ -471,7 +470,7 @@ class ManifestTests(unittest.TestCase):
         spec = MAN.read_spec(STAGING)
         policy = MAN.read_allowlist_policy(STAGING.policy)
         core = spec["c8s"]["coreImages"]
-        documents = MAN.render_chart(ROOT / "helm/confidential-inference", STAGING, policy["chart"])
+        documents = rendered(STAGING)
         allowlist = json.loads(STAGING.allowlist.read_text())
         configs = json.loads(PROFILES.IMAGE_CONFIG.read_text())
         MAN.require_allowlist_contract(allowlist, policy, core, documents, configs)

@@ -8,8 +8,7 @@ manifest, comes from `release/`.
 
 Staging mounts a small public model
 (`hf-internal-testing/tiny-random-LlamaForCausalLM`, 14.9 MB), not the
-production model. The model values use `expectedFileList`, which replaces the
-production `expectedFiles` map.
+production model.
 
 The worker uses the CPU SGLang simulator. It first runs `wait-for-model` against
 the encrypted model mount. This check exercises model download, encryption,
