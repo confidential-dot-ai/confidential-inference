@@ -97,3 +97,23 @@ The distinct inference nodes, as a JSON list.
 {{- list .Values.scheduling.inferenceNodeName | toJson -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+The model files that the worker checks, as a JSON list of PATH=SHA256 in path
+order. expectedFileList, when set, replaces the expectedFiles map. A later
+values layer cannot remove a key of a map, but it replaces a list.
+*/}}
+{{- define "confidential-inference.expectedFiles" -}}
+{{- $verification := .Values.inference.model.mountVerification -}}
+{{- $files := list -}}
+{{- if $verification.expectedFileList -}}
+{{- range $verification.expectedFileList -}}
+{{- $files = append $files (printf "%s=%s" .path .sha256) -}}
+{{- end -}}
+{{- else -}}
+{{- range $name, $digest := $verification.expectedFiles -}}
+{{- $files = append $files (printf "%s=%s" $name $digest) -}}
+{{- end -}}
+{{- end -}}
+{{- $files | toJson -}}
+{{- end }}

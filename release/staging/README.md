@@ -1,10 +1,15 @@
 # Staging release profile
 
 This profile builds `vX.Y.Z-staging`. It is a layer on top of `release/`
-(`release/profiles.json`). `spec.yaml` sets only the version and the public
-hostnames, and `values.yaml` sets only the staging values. Every other value,
-including the image digests, the c8s release, the node manifest, and the model
-identity, comes from `release/`.
+(`release/profiles.json`). `spec.yaml` sets the version, the public
+hostnames, and the model, and `values.yaml` sets the staging values. Every
+other value, including the image digests, the c8s release, and the node
+manifest, comes from `release/`.
+
+Staging mounts a small public model
+(`hf-internal-testing/tiny-random-LlamaForCausalLM`, 14.9 MB), not the
+production model. The model values use `expectedFileList`, which replaces the
+production `expectedFiles` map.
 
 The worker uses the CPU SGLang simulator. It first runs `wait-for-model` against
 the encrypted model mount. This check exercises model download, encryption,

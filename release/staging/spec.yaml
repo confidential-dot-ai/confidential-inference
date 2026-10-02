@@ -5,7 +5,16 @@
 # or `imageSourceCommit` here only to move staging ahead of production; the
 # node manifest then belongs in this directory.
 
-version: v0.14.0-staging
+version: v0.14.1-staging
 
 publicHostnames:
   - staging.api.confidential.ai
+
+# Staging mounts a small public model, not the production model. The
+# simulator reads no weight; the worker still checks the encrypted mount
+# against this byte manifest. See the internal plan
+# docs/plans/staging-small-model.md.
+model:
+  repository: hf-internal-testing/tiny-random-LlamaForCausalLM
+  revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998
+  byteManifestSha256: d39aa41f901cb2cb07087157bcdc9c8ec32b6bf1e82c5018df35eff8cad6522e

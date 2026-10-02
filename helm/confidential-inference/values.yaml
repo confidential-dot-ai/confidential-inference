@@ -224,6 +224,9 @@ inference:
       revisionMetadata: .model-lock-local-manifest.json
       expectedFiles:
         .model-lock-local-manifest.json: "0000000000000000000000000000000000000000000000000000000000000000"
+      # expectedFileList: a list of {path, sha256}. When set, it replaces
+      # expectedFiles. A release layer sets it to change the model files,
+      # because a later values file cannot remove a key of the map above.
   port: 30000
   metricsPort: 29000
   # Name of the reasoning parser to pass as --reasoning-parser on the model

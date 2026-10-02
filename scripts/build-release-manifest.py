@@ -188,7 +188,10 @@ def require_model_agreement(spec: dict[str, Any], values: dict[str, Any]) -> Non
             "values model revision differs from spec model revision")
     verification = model.get("mountVerification", {})
     metadata = verification.get("revisionMetadata")
-    expected = verification.get("expectedFiles", {})
+    # expectedFileList replaces expectedFiles, as in the chart.
+    listed = verification.get("expectedFileList")
+    expected = ({item.get("path"): item.get("sha256") for item in listed}
+                if listed else verification.get("expectedFiles", {}))
     require(isinstance(metadata, str) and metadata,
             "values model mount verification has no revision metadata file")
     require(isinstance(expected, dict) and expected.get(metadata) == release_model["byteManifestSha256"],

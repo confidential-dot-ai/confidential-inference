@@ -97,8 +97,8 @@ spec:
             - --expected-repository={{ $.Values.inference.model.name }}
             - --expected-revision={{ $.Values.inference.model.revision }}
             - --revision-metadata={{ $.Values.inference.model.mountVerification.revisionMetadata }}
-            {{- range $name, $digest := $.Values.inference.model.mountVerification.expectedFiles }}
-            - --expected-file={{ $name }}={{ $digest }}
+            {{- range $file := include "confidential-inference.expectedFiles" $ | fromJsonArray }}
+            - --expected-file={{ $file }}
             {{- end }}
             - --gpu-metrics-port={{ $.Values.inference.metricsPort }}
             - --gpu-metrics-worker=sglang-{{ $index }}
@@ -134,8 +134,8 @@ spec:
             - --expected-repository={{ $.Values.inference.model.name }}
             - --expected-revision={{ $.Values.inference.model.revision }}
             - --revision-metadata={{ $.Values.inference.model.mountVerification.revisionMetadata }}
-            {{- range $name, $digest := $.Values.inference.model.mountVerification.expectedFiles }}
-            - --expected-file={{ $name }}={{ $digest }}
+            {{- range $file := include "confidential-inference.expectedFiles" $ | fromJsonArray }}
+            - --expected-file={{ $file }}
             {{- end }}
             - --gpu-metrics-port={{ $.Values.inference.metricsPort }}
             - --gpu-metrics-worker=sglang-{{ $index }}

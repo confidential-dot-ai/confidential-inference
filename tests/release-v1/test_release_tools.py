@@ -208,7 +208,7 @@ class ManifestTests(unittest.TestCase):
     def test_the_committed_spec_is_valid(self):
         MAN.read_spec(PRODUCTION)
         staging = MAN.read_spec(STAGING)
-        self.assertEqual(staging["version"], "v0.14.0-staging")
+        self.assertEqual(staging["version"], "v0.14.1-staging")
 
     def test_release_candidate_versions_are_refused(self):
         spec = MAN.read_spec(PRODUCTION)
@@ -303,7 +303,7 @@ class ManifestTests(unittest.TestCase):
                     release_source_commit,
                     publication_path,
                 )
-        self.assertEqual(manifest["release"], {"name": "v0.14.0-staging", "environment": "staging"})
+        self.assertEqual(manifest["release"], {"name": "v0.14.1-staging", "environment": "staging"})
         self.assertEqual(manifest["allowlist"]["path"], "release/staging/allowlist.json")
         self.assertEqual(manifest["source"]["commit"], release_source_commit)
         self.assertEqual(manifest["imagePublication"]["sourceCommit"], image_source_commit)
@@ -349,10 +349,42 @@ class ManifestTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaisesRegex(MAN.ManifestError, message):
                 MAN.require_model_agreement(spec, changed)
         changed = json.loads(json.dumps(values))
-        metadata = changed["inference"]["model"]["mountVerification"]["revisionMetadata"]
-        changed["inference"]["model"]["mountVerification"]["expectedFiles"][metadata] = "0" * 64
+        verification = changed["inference"]["model"]["mountVerification"]
+        listed = next(item for item in verification["expectedFileList"]
+                      if item["path"] == verification["revisionMetadata"])
+        listed["sha256"] = "0" * 64
         with self.assertRaisesRegex(MAN.ManifestError, "byte manifest"):
             MAN.require_model_agreement(spec, changed)
+
+    def expected_file_args(self, profile) -> list[list[str]]:
+        policy = MAN.read_allowlist_policy(profile.policy)
+        documents = MAN.render_chart(MAN.CHART, profile, policy["chart"])
+        workers = [document for document in documents
+                   if document.get("kind") == "StatefulSet"
+                   and document["metadata"]["name"].startswith("inference-worker-")]
+        self.assertTrue(workers)
+        return [[argument.removeprefix("--expected-file=")
+                 for argument in worker["spec"]["template"]["spec"]["containers"][0]["args"]
+                 if argument.startswith("--expected-file=")]
+                for worker in workers]
+
+    def test_production_workers_check_the_expected_files_map(self):
+        verification = PROFILES.read_values(PRODUCTION)["inference"]["model"]["mountVerification"]
+        self.assertNotIn("expectedFileList", verification)
+        expected = [f"{name}={digest}" for name, digest in sorted(verification["expectedFiles"].items())]
+        for arguments in self.expected_file_args(PRODUCTION):
+            self.assertEqual(arguments, expected)
+
+    def test_staging_workers_check_only_the_staging_model_files(self):
+        # A layer cannot remove a key of the production expectedFiles map, so
+        # staging sets expectedFileList, which replaces the map in the chart.
+        spec = MAN.read_spec(STAGING)
+        verification = PROFILES.read_values(STAGING)["inference"]["model"]["mountVerification"]
+        expected = [f"{item['path']}={item['sha256']}" for item in verification["expectedFileList"]]
+        self.assertEqual(expected, sorted(expected))
+        self.assertIn(f"{verification['revisionMetadata']}={spec['model']['byteManifestSha256']}", expected)
+        for arguments in self.expected_file_args(STAGING):
+            self.assertEqual(arguments, expected)
 
     def test_manifest_refuses_publication_evidence_for_an_unrendered_digest(self):
         publication = {
