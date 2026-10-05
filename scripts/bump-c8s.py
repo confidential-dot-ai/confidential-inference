@@ -22,9 +22,11 @@ can move ahead of production. The script:
    inputs did not change. The inputs are bin/confos-fetch-gpu at the
    confidential-os-builder ref that c8s pins in .github/build-pins.json. When
    the ref changed, --confos-repo must be a confidential-os-builder checkout;
-5. fetches each node manifest, refreshes the image config, and regenerates the
-   allowlist of each moved profile with a c8s CLI built from the tag;
+5. fetches each node manifest and refreshes the image config;
 6. runs the release checks.
+
+The release build generates the allowlist with a c8s CLI built from the
+pinned commit, so the bump does not write one.
 
 It stops when a step needs a person: changed protocol source files, changed
 NVIDIA driver inputs, a pin it cannot edit in place, or a failed check. Review
@@ -43,7 +45,6 @@ import re
 import runpy
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -326,16 +327,7 @@ def extend_cdi_record(c8s_repo: Path, confos_repo: Path | None, old: dict[str, A
 # ---------------------------------------------------------------------------
 
 
-def build(c8s_repo: Path, out: Path) -> tuple[Path, Path]:
-    c8s = out / "c8s"
-    run(["go", "build", "-o", str(c8s), "./cmd/c8s"], cwd=c8s_repo,
-        env={**go_env(), "GOWORK": os.environ.get("GOWORK", "")})
-    canonical = out / "c8s-allowlist-canonical"
-    run(["go", "build", "-o", str(canonical), "."], cwd=CANONICAL_TOOL, env=go_env())
-    return c8s, canonical
-
-
-def regenerate(moved: list[release_profiles.Profile], c8s: Path, canonical: Path) -> None:
+def regenerate(moved: list[release_profiles.Profile]) -> None:
     # Profiles can share a node manifest, so each file is fetched once.
     fetched: set[Path] = set()
     for profile in moved:
@@ -345,18 +337,12 @@ def regenerate(moved: list[release_profiles.Profile], c8s: Path, canonical: Path
             run([sys.executable, "scripts/fetch-node-manifest.py", "--release", profile.relative(profile.directory)],
                 cwd=ROOT)
     run([sys.executable, "scripts/generate-release-allowlist.py", "--refresh-image-config"], cwd=ROOT)
-    for profile in moved:
-        run([sys.executable, "scripts/generate-release-allowlist.py", "--release", profile.relative(profile.directory),
-             "--c8s", str(c8s), "--canonical-tool", str(canonical)], cwd=ROOT)
 
 
-def check(c8s_repo: Path, commit: str, moved: list[release_profiles.Profile], c8s: Path, canonical: Path) -> None:
+def check(c8s_repo: Path, commit: str) -> None:
     run([sys.executable, "scripts/verify-c8s-admission-source.py", "--repository", str(c8s_repo),
          "--commit", commit], cwd=ROOT)
     run([sys.executable, "scripts/check-c8s-protocol-lockstep.py"], cwd=ROOT)
-    for profile in moved:
-        run([sys.executable, "scripts/generate-release-allowlist.py", "--release", profile.relative(profile.directory),
-             "--c8s", str(c8s), "--canonical-tool", str(canonical), "--check"], cwd=ROOT)
     run([sys.executable, "-m", "unittest", "discover", "-s", "tests/release-v1", "-p", "test_*.py"], cwd=ROOT)
 
 
@@ -397,10 +383,8 @@ def main() -> int:
         share_protocol_manifest(c8s_repo, old["sourceCommit"], commit, args.tag)
         extend_cdi_record(c8s_repo, args.confos_repo.resolve() if args.confos_repo else None, old, new)
 
-        with tempfile.TemporaryDirectory() as directory:
-            c8s, canonical = build(c8s_repo, Path(directory))
-            regenerate(moved, c8s, canonical)
-            check(c8s_repo, commit, moved, c8s, canonical)
+        regenerate(moved)
+        check(c8s_repo, commit)
     except (BumpError, release_profiles.ProfileError, NODE["FetchError"]) as error:
         print(f"bump-c8s: {error}", file=sys.stderr)
         return 1

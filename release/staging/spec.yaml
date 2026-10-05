@@ -2,8 +2,8 @@
 #
 # This layer applies on top of release/spec.yaml (release/profiles.json). Each
 # key that it sets replaces the key of the production specification. Set `c8s`
-# or `imageSourceCommit` here only to move staging ahead of production; the
-# node manifest then belongs in this directory.
+# here only to move staging ahead of production; the node manifest then
+# belongs in this directory.
 
 version: v0.14.2-staging
 

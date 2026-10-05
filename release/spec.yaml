@@ -1,15 +1,11 @@
 # Release specification
 #
 # The one source of truth for what the next software release is. A person
-# writes this file. The release tools read it, and generate the other files
-# in this directory. See release/README.md.
+# writes this file. The release build reads it with the other files in this
+# directory. It holds no image digest of this repository: the build takes them
+# from the image publication evidence. See release/README.md.
 
 version: v0.14.0
-
-# The main commit used to build all repository-owned release images. The
-# later release commit can pin the resulting digests. No image build input
-# can change between these two commits.
-imageSourceCommit: 0db01e682c4a7964156a140ffa6370b1b3f0cd18
 
 c8s:
   # The c8s release. It fixes the node image and its measurements.

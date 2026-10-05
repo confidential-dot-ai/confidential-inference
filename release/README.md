@@ -16,90 +16,105 @@ tools read the profile of a tag or a directory from it with
 directory. Its `spec.yaml` replaces only the version and the public hostnames,
 and Helm applies its `values.yaml` after `release/values.yaml`. Staging uses
 the CPU SGLang simulator and validates the encrypted model mount before the
-simulator starts. It has its own allowlist policy, accepted lint findings, and
-allowlist. It shares the node manifest and the image configuration. To move
-staging ahead of production, set `c8s` or `imageSourceCommit` in
-`release/staging/spec.yaml`; the node manifest of that c8s release is then
-written to `release/staging/node-manifest.json`.
+simulator starts. It has its own allowlist policy and accepted lint findings.
+It shares the node manifest and the image configuration. To move staging
+ahead of production, set `c8s` in `release/staging/spec.yaml`; the node
+manifest of that c8s release is then written to
+`release/staging/node-manifest.json`.
+
+The repository holds no digest of an image that it builds. The release build
+takes each one from signed evidence, so a release needs no commit that pins
+image digests. The release commit is the image source commit.
 
 ## Files
 
 | File | Written by | Contents |
 | --- | --- | --- |
 | `spec.yaml` | A person, or `bump-c8s.py` for `c8s` | The version, the c8s release with its node image and core images, the model identity, and the public hostnames. It is the one place that pins c8s |
-| `values.yaml` | A person | The chart values of the release. Only release values, no deployment values |
+| `values.yaml` | A person | The chart values of the release. Only release values, no deployment values. It names each repository image without a digest |
 | `allowlist-policy.json` | A person | The workloads and the inputs of the allowlist. The c8s pins come from `spec.yaml` |
 | `profiles.json` | A person | The release profiles and their layers |
-| `inputs/image-config.json` | `generate-release-allowlist.py --refresh-image-config` | The `ENV`, `ENTRYPOINT`, and `CMD` of every image that a profile renders. All profiles share it. Review the diff by hand |
+| `inputs/image-config.json` | `generate-release-allowlist.py --refresh-image-config` | The `ENV`, `ENTRYPOINT`, and `CMD` of every image that a profile renders and this repository does not build. All profiles share it. Review the diff by hand |
 | `inputs/cdi/nvidia-<driver>.json` | A person, from a reviewed record | The NVIDIA CDI environment variables and driver mounts of one driver version |
 | `node-manifest.json` | `fetch-node-manifest.py` | The c8s `manifest.json` of the node image. It holds MRTD, RTMR1, and RTMR2 |
-| `allowlist.json` | `generate-release-allowlist.py` | The exact c8s allowlist of the release, in canonical bytes |
 | `accepted-lint-findings.json` | A reviewer | The `c8s allowlist lint --strict` findings that the release accepts, each with its reason and issue |
 
-The release workflow builds the release manifest with
-`build-release-manifest.py` at the tag commit. The manifest records that
-release source commit, so it is not committed here. The profile also pins an
-earlier `imageSourceCommit`. It consumes the machine-readable image
-publication artifact `release-image-publication-<imageSourceCommit>` from the
-successful `release-images` run at that commit. The evidence names the image
-source commit, not a release version, so every profile that pins the commit
-uses the same evidence. Each image has one digest: the publish job pushes
-only the digest that the deterministic rebuild audit proved. The builder
-refuses an image digest that differs from the rendered release values.
-It also refuses a release source commit that changes an image build input
-after `imageSourceCommit`.
-It must match
-`contracts/release-manifest.schema.json`.
+## The release build
+
+The release workflow runs `build-release-manifest.py` at the tag commit. It
+writes three files, and the workflow attaches them to the GitHub release with
+the signature, the tag commit, and the image publication evidence:
+
+| Asset | Contents |
+| --- | --- |
+| `release-bundle.json` | The release manifest. The workflow signs it. It must match `contracts/release-manifest.schema.json` |
+| `allowlist.json` | The exact c8s allowlist of the release, in canonical bytes. The manifest binds its SHA-256 as `allowlist.sha256`; `allowlist.path` names the profile, for example `release/staging/allowlist.json` |
+| `release-values.yaml` | The repository image digests as a Helm values file. Apply it after the profile values files. Each image in it is also in the manifest `images` |
+
+The build takes the image digests from two signed sources:
+
+1. The image publication evidence. The workflow takes the artifact
+   `release-image-publication-<commit>` of the nearest main commit at or
+   before the tag commit that a successful `release-images` run published
+   (`find-image-publication-run.py`). No image build input may change between
+   that commit and the tag commit. Each image has one digest: the publish job
+   pushes only the digest that the deterministic rebuild audit proved.
+2. The signed manifest of the base release of that image run, when its
+   `base_ref` is a release tag. The image run publishes only the images that
+   changed after its base, so every other image keeps the digest of the base
+   release. The build verifies the base signature with the trust policy in
+   `releases/trust/`, requires that the base manifest names the base tag and
+   commit of the evidence, and requires that no build input of such an image
+   changed since the base commit. A base release from the other profile is
+   valid: the images do not depend on the profile. After a change to the
+   trust policy, an older release does not verify; run `release-images` with
+   a base release that the current policy signed, or with a commit base.
+
+When `base_ref` is a commit, the evidence must name every repository image
+that the chart renders.
+
+The build then renders the chart with these digests, reads the
+configuration of each repository image from the registry by digest, and
+generates the allowlist with the c8s CLI built from the pinned c8s commit. It
+binds the release source commit, the image publication evidence, and the
+allowlist digest into the manifest.
 
 ## Order
 
-1. A person changes the image source and the version in `spec.yaml`. Merge
-   that pull request.
-2. After the image source changes are on main, run `release-images` once with
-   `publish` and `rebuild_audit`
-   enabled. The workflow selects every changed repository image. This
-   includes release images such as `maintenance-gateway` even when the
-   application chart does not deploy them. It builds each selected image
-   twice and requires equal platform digests. It then pushes the first
-   audited OCI archive, so the pushed digest is the audited digest. The
-   sglang archive is too large to pass between jobs, so sglang is built a
-   third time and must give the same digest. Standard images do not wait for
-   the sglang audit. The run writes one publication artifact,
-   `release-image-publication-<commit>`.
-3. Put the image run head commit in `imageSourceCommit` in `spec.yaml` and
-   the published digests in `values.yaml`. Staging takes both from this
-   layer. Run the release tools for each profile:
+1. Merge the change to main. A release needs no other commit.
+2. Run `release-images` on main with `publish` and `rebuild_audit` enabled and
+   the newest release tag as `base_ref`. The workflow selects every changed
+   repository image. This includes release images such as
+   `maintenance-gateway` even when the application chart does not deploy
+   them. It builds each selected image twice and requires equal platform
+   digests. It then pushes the first audited OCI archive, so the pushed
+   digest is the audited digest. The sglang archive is too large to pass
+   between jobs, so sglang is built a third time and must give the same
+   digest. Standard images do not wait for the sglang audit. The run writes
+   one publication artifact, `release-image-publication-<commit>`. When no
+   image changed since the newest image run, skip this step.
+3. Tag the commit `vX.Y.Z` or `vX.Y.Z-staging`. The release workflow builds,
+   signs, and publishes the release.
 
-   ```sh
-   python3 scripts/fetch-node-manifest.py
-   python3 scripts/generate-release-allowlist.py --refresh-image-config
-   python3 scripts/generate-release-allowlist.py --c8s <c8s CLI of the pinned commit>
-   python3 scripts/generate-release-allowlist.py --release release/staging --c8s <c8s CLI of the pinned commit>
-   ```
-
-   The allowlist generator refuses a value that no pinned input gives, such
-   as a node IP address or a random pod name.
-4. Merge the release inputs. Tag that release commit `vX.Y.Z`. The release
-   workflow gets the unique publication artifact for the exact
-   `imageSourceCommit`. It checks that its digest references occur in the
-   rendered release when that image is deployed. It permits a published
-   release image, such as `maintenance-gateway`, that this application chart
-   does not deploy. It proves that no image build input changed between the
-   image source and tag commits. It then binds both commits and the digest
-   evidence into the signed release manifest.
-   The release workflow attaches both manifests, the signature, and the tag
-   commit to the GitHub release.
-
-To rebuild the manifest from the tagged tree:
+To build the release again from the tagged tree, give the same evidence, base
+release, and a c8s CLI built from the pinned c8s commit:
 
 ```sh
 python3 scripts/build-release-manifest.py \
-  --source-commit "$(git rev-parse vX.Y.Z^{commit})" \
-  --image-publication /path/to/image-publication-manifest.json \
-  --output /tmp/release-manifest.json
+  --release release/staging \
+  --source-commit "$(git rev-parse vX.Y.Z-staging^{commit})" \
+  --image-publication image-publication-manifest.json \
+  --base-release base/release-bundle.json \
+  --base-release-signature base/release-bundle.sigstore.json \
+  --c8s /path/to/pinned/c8s \
+  --output-dir /tmp/release \
+  --check
 ```
 
-Its bytes must equal the signed `release-bundle.json` asset.
+Without `--check`, it writes the files to `--output-dir`. With `--check`, each
+file there must equal a new build. The checked files are the release assets.
+Verifying the base release needs `cosign`; reading the image configuration
+needs `crane` with read access to the registry.
 
 ## Change the c8s release
 
@@ -110,10 +125,11 @@ scripts/bump-c8s.py --tag vX.Y.Z --c8s-repo <clean c8s checkout at the tag>
 ```
 
 It needs `crane`, Go, and read access to the c8s Go module. It changes the c8s
-pins, the source lock, the node manifests, the image configs, and the
-allowlists, and then runs the release checks. It stops when the attestation
-protocol files or the NVIDIA inputs of the node image change. Do those steps
-by hand. Review the full diff before you commit.
+pins, the source lock, the node manifests, and the image config, and then
+runs the release checks. The next release build generates the allowlist with
+the new c8s CLI. The script stops when the attestation protocol files or the
+NVIDIA inputs of the node image change. Do those steps by hand. Review the
+full diff before you commit.
 
 ## The allowlist
 

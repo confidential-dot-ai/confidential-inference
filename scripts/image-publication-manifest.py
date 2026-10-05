@@ -2,8 +2,8 @@
 """Create and validate evidence for deterministic image publication.
 
 The evidence names the image source commit, not a release version. Every
-release profile that pins that commit as imageSourceCommit uses the same
-evidence, and the signed release manifest binds it to the release.
+release at that commit, or at a later commit that changes no image, uses the
+same evidence, and the signed release manifest binds it to the release.
 """
 
 from __future__ import annotations

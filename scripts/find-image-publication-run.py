@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Find the successful release-images run that owns exact publication evidence."""
+"""Find the image publication evidence of a release commit.
+
+The evidence of a release is the publication artifact of the nearest
+first-parent ancestor of the release commit, the commit itself included,
+that a successful release-images run on main published. The walk stops at a
+commit that changes an image build input: older evidence cannot hold the
+images of the release. build-release-manifest.py checks the same boundary.
+
+It prints, for $GITHUB_OUTPUT:
+
+    image_source_commit=<commit>
+    artifact_name=release-image-publication-<commit>
+    run_id=<workflow run id>
+"""
 
 from __future__ import annotations
 
@@ -7,10 +20,13 @@ import argparse
 import json
 import os
 import re
+import runpy
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 
 class LookupError(ValueError):
@@ -18,6 +34,11 @@ class LookupError(ValueError):
 
 
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
+ROOT = Path(__file__).resolve().parents[1]
+SELECTOR = "scripts/affected-release-images.py"
+IMAGE_SELECTOR = runpy.run_path(str(ROOT / SELECTOR))
+# The walk gives up after this many commits without evidence.
+MAX_COMMITS = 200
 
 
 def request_json(url: str, token: str) -> dict:
@@ -36,13 +57,17 @@ def request_json(url: str, token: str) -> dict:
         raise LookupError(f"GitHub API request failed: {error}") from error
 
 
-def find_run(
+def artifact_name(commit: str) -> str:
+    return f"release-image-publication-{commit}"
+
+
+def trusted_runs(
     api_url: str,
     repository: str,
     token: str,
     artifact_name: str,
     source_commit: str,
-) -> int:
+) -> list[int]:
     if COMMIT.fullmatch(source_commit) is None:
         raise LookupError("source commit must be a full lowercase Git commit")
     query = urllib.parse.urlencode({"name": artifact_name, "per_page": 100})
@@ -68,20 +93,55 @@ def find_run(
             and (run.get("repository") or {}).get("full_name") == repository
         ):
             trusted.append(run_id)
-    if len(trusted) != 1:
-        raise LookupError(
-            f"expected one successful release-images run on main at {source_commit} "
-            f"for {artifact_name}; "
-            f"found {trusted}"
-        )
-    return trusted[0]
+    return trusted
+
+
+def git(*args: str, repo: Path = ROOT) -> str:
+    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise LookupError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def changes_images(commit: str, repo: Path = ROOT) -> bool:
+    """Report whether a commit changes an image build input or the image selector."""
+    parents = git("rev-list", "--parents", "-n", "1", commit, repo=repo).split()[1:]
+    if not parents:
+        return True
+    paths = git("diff", "--name-only", "--no-renames", parents[0], commit, repo=repo).splitlines()
+    return SELECTOR in paths or bool(IMAGE_SELECTOR["affected_images"](paths))
+
+
+def find_nearest(
+    api_url: str,
+    repository: str,
+    token: str,
+    release_commit: str,
+    repo: Path = ROOT,
+) -> tuple[str, int]:
+    """Return the image source commit and run of the evidence of a release commit."""
+    if COMMIT.fullmatch(release_commit) is None:
+        raise LookupError("the release commit must be a full lowercase Git commit")
+    commits = git("rev-list", "--first-parent", f"--max-count={MAX_COMMITS}", release_commit,
+                  repo=repo).split()
+    for commit in commits:
+        runs = trusted_runs(api_url, repository, token, artifact_name(commit), commit)
+        if len(runs) > 1:
+            raise LookupError(f"found more than one release-images run for {commit}: {runs}")
+        if runs:
+            return commit, runs[0]
+        if changes_images(commit, repo):
+            raise LookupError(
+                f"{commit} changes an image build input, and no successful release-images run "
+                "on main published its images; run release-images at or after it"
+            )
+    raise LookupError(f"no image publication in the last {MAX_COMMITS} commits of {release_commit}")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repository", required=True)
-    parser.add_argument("--artifact-name", required=True)
-    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--release-commit", required=True)
     parser.add_argument("--api-url", default=os.environ.get("GITHUB_API_URL", "https://api.github.com"))
     parser.add_argument("--token-env", default="GITHUB_TOKEN")
     args = parser.parse_args()
@@ -90,14 +150,15 @@ def main() -> int:
         print(f"find-image-publication-run: {args.token_env} is absent", file=sys.stderr)
         return 1
     try:
-        run_id = find_run(
-            args.api_url.rstrip("/"), args.repository, token,
-            args.artifact_name, args.source_commit,
+        commit, run_id = find_nearest(
+            args.api_url.rstrip("/"), args.repository, token, args.release_commit,
         )
     except LookupError as error:
         print(f"find-image-publication-run: {error}", file=sys.stderr)
         return 1
-    print(run_id)
+    print(f"image_source_commit={commit}")
+    print(f"artifact_name={artifact_name(commit)}")
+    print(f"run_id={run_id}")
     return 0
 
 
