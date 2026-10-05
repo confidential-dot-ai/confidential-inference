@@ -220,7 +220,7 @@ class ManifestTests(unittest.TestCase):
     def test_the_committed_spec_is_valid(self):
         MAN.read_spec(PRODUCTION)
         staging = MAN.read_spec(STAGING)
-        self.assertEqual(staging["version"], "v0.14.1-staging")
+        self.assertEqual(staging["version"], "v0.14.2-staging")
 
     def test_release_candidate_versions_are_refused(self):
         spec = MAN.read_spec(PRODUCTION)
@@ -315,7 +315,7 @@ class ManifestTests(unittest.TestCase):
                     release_source_commit,
                     publication_path,
                 )
-        self.assertEqual(manifest["release"], {"name": "v0.14.1-staging", "environment": "staging"})
+        self.assertEqual(manifest["release"], {"name": "v0.14.2-staging", "environment": "staging"})
         self.assertEqual(manifest["allowlist"]["path"], "release/staging/allowlist.json")
         self.assertEqual(manifest["source"]["commit"], release_source_commit)
         self.assertEqual(manifest["imagePublication"]["sourceCommit"], image_source_commit)

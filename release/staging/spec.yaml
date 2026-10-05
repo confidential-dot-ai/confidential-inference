@@ -5,7 +5,7 @@
 # or `imageSourceCommit` here only to move staging ahead of production; the
 # node manifest then belongs in this directory.
 
-version: v0.14.1-staging
+version: v0.14.2-staging
 
 publicHostnames:
   - staging.api.confidential.ai
