@@ -214,8 +214,15 @@ def verify_every_file(path: Path, metadata_name: str, inventory: dict[str, tuple
 
 
 def verify_index(path: Path) -> None:
+    """Check the shard index, or the one weight file of an unsharded model."""
+    index = path / "model.safetensors.index.json"
+    if not os.path.lexists(index):
+        single = path / "model.safetensors"
+        if single.is_symlink() or not single.is_file() or single.stat().st_size == 0:
+            raise ModelMountError("the model has no index and no single model.safetensors file")
+        return
     try:
-        value = json.loads((path / "model.safetensors.index.json").read_text(encoding="utf-8"))
+        value = json.loads(index.read_text(encoding="utf-8"))
         weight_map = value["weight_map"]
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
         raise ModelMountError("the model index is invalid") from error
