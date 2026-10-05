@@ -9,7 +9,7 @@ environment: staging
 
 attestationReceipts:
   evidenceBaseUrl: https://staging.api.confidential.ai
-  releaseId: v0.14.1-staging
+  releaseId: v0.14.2-staging
 
 inference:
   mode: simulator

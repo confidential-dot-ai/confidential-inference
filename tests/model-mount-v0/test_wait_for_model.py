@@ -33,29 +33,32 @@ class ModelMountGateTests(unittest.TestCase):
         revision: str = REVISION,
         target: Path | None = None,
         extra_files: dict[str, bytes] | None = None,
+        sharded: bool = True,
     ) -> dict[str, str]:
         model = self.model if target is None else target
         model.mkdir()
         files = {
             "config.json": b'{"model_type":"deepseek_v4"}\n',
             "tokenizer_config.json": b'{"tokenizer_class":"DeepseekTokenizer"}\n',
-            "model.safetensors.index.json": json.dumps(
-                {"weight_map": {"layer.weight": "model-00001-of-00001.safetensors"}},
-                sort_keys=True,
-            ).encode() + b"\n",
         }
+        weight = "model-00001-of-00001.safetensors" if sharded else "model.safetensors"
+        if sharded:
+            files["model.safetensors.index.json"] = json.dumps(
+                {"weight_map": {"layer.weight": weight}},
+                sort_keys=True,
+            ).encode() + b"\n"
         files.update(extra_files or {})
         for name, content in files.items():
             (model / name).parent.mkdir(parents=True, exist_ok=True)
             (model / name).write_bytes(content)
-        (model / "model-00001-of-00001.safetensors").write_bytes(b"weights")
+        (model / weight).write_bytes(b"weights")
         inventory = [
             {
                 "content_sha256": hashlib.sha256((model / name).read_bytes()).hexdigest(),
                 "path": name,
                 "size": (model / name).stat().st_size,
             }
-            for name in sorted([*files, "model-00001-of-00001.safetensors"])
+            for name in sorted([*files, weight])
         ]
         manifest = {
             "canonical_local_manifest_sha256": "1" * 64,
@@ -219,6 +222,33 @@ class ModelMountGateTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("missing shard", result.stderr)
 
+    def test_single_unsharded_weight_file_starts_the_server(self) -> None:
+        digests = self.create_model(sharded=False)
+        self.set_mount()
+        result = self.run_gate(digests)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("server-started\n", result.stdout)
+
+    def test_no_index_and_no_single_weight_file_fails_closed(self) -> None:
+        digests = self.create_model(sharded=False)
+        self.set_mount()
+        self.model.chmod(0o755)
+        (self.model / "model.safetensors").unlink()
+        self.model.chmod(0o555)
+        result = self.run_gate(digests)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("no index and no single model.safetensors file", result.stderr)
+        self.assertNotIn("server-started", result.stdout)
+
+    def test_invalid_index_fails_closed(self) -> None:
+        digests = self.create_model()
+        digests.pop("model.safetensors.index.json")
+        self.set_mount()
+        self.replace_file("model.safetensors.index.json", b"{}\n")
+        result = self.run_gate(digests)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("the model index is invalid", result.stderr)
+        self.assertNotIn("server-started", result.stdout)
 
     def replace_file(self, name: str, content: bytes) -> None:
         target = self.model / name
