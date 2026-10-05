@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import runpy
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -10,7 +9,6 @@ ROOT = Path(__file__).resolve().parents[2]
 MODULE = runpy.run_path(str(ROOT / "scripts/validate-release-tag.py"))
 ReleaseTagError = MODULE["ReleaseTagError"]
 parse_tag = MODULE["parse_tag"]
-read_spec_version = MODULE["read_spec_version"]
 
 
 class ReleaseTagTests(unittest.TestCase):
@@ -32,14 +30,6 @@ class ReleaseTagTests(unittest.TestCase):
         ):
             with self.subTest(tag=tag), self.assertRaises(ReleaseTagError):
                 parse_tag(tag)
-
-    def test_reads_the_spec_version(self) -> None:
-        self.assertEqual(read_spec_version(ROOT / "release/spec.yaml"), "v0.14.0")
-        with tempfile.NamedTemporaryFile("w", suffix=".yaml") as handle:
-            handle.write("c8s: {}\n")
-            handle.flush()
-            with self.assertRaises(ReleaseTagError):
-                read_spec_version(Path(handle.name))
 
 
 if __name__ == "__main__":

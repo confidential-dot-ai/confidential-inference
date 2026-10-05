@@ -2,10 +2,9 @@
 #
 # The one source of truth for what the next software release is. A person
 # writes this file. The release build reads it with the other files in this
-# directory. It holds no image digest of this repository: the build takes them
-# from the image publication evidence. See release/README.md.
-
-version: v0.14.0
+# directory. It holds no version and no image digest of this repository: the
+# build takes the version from the release tag and the digests from the image
+# publication evidence. See release/README.md.
 
 c8s:
   # The c8s release. It fixes the node image and its measurements.

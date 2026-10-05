@@ -1,4 +1,4 @@
-# Chart values for release v0.14.0.
+# Chart values of the production release.
 #
 # The base is c8s/candidate-values.yaml, the values of the cluster that
 # serves api.confidential.ai today (release v0.13.28-rc.2). This file changes
@@ -54,7 +54,7 @@ attestationReceipts:
   gpuEvidenceFlagEnabled: false
   legacyC8s615: false
   evidenceBaseUrl: https://api.confidential.ai   # changed: the production hostname
-  releaseId: v0.14.0                             # changed
+  # The release build sets releaseId to the release tag.
   # These three values reach the gateway through the gateway-release-identity
   # ConfigMap, not the allowlist. The deployment sets them in its own values.
   releaseBundleSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
