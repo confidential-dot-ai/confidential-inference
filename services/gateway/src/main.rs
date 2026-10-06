@@ -232,6 +232,7 @@ async fn main() -> Result<()> {
     let mut args = Args::parse();
     load_release_identity(&mut args)?;
     validate_args(&args)?;
+    tracing::info!("gateway configuration validated");
 
     let gateway_state = if args.state_enabled {
         let state_result = (|| -> Result<GatewayState> {
