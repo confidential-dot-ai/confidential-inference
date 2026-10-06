@@ -135,6 +135,32 @@ class BumpTests(unittest.TestCase):
             finally:
                 BUMP.PROTOCOLS = original
 
+    def test_the_staging_fixture_moves_only_with_the_staging_profile(self):
+        production, staging = BUMP.release_profiles.load()
+        with mock.patch.object(BUMP, "run") as run, mock.patch.object(BUMP.runpy, "run_path") as run_path:
+            BUMP.regenerate_staging_fixture(Path("c8s"), [production])
+        run.assert_not_called()
+        run_path.assert_not_called()
+
+    def test_the_staging_fixture_is_generated_with_the_c8s_cli_of_the_tag(self):
+        production, staging = BUMP.release_profiles.load()
+        binaries = []
+
+        def staging_allowlist(binary):
+            binaries.append(binary)
+            return b'{"schema": "c8s.allowlist/v1"}\n'
+
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory) / "staging-allowlist.json"
+            tests = {"staging_allowlist": staging_allowlist, "MAN": mock.Mock(), "STAGING_ALLOWLIST": fixture}
+            with mock.patch.object(BUMP, "run") as run, mock.patch.object(BUMP.runpy, "run_path", return_value=tests):
+                BUMP.regenerate_staging_fixture(Path("c8s"), [production, staging])
+            self.assertEqual(fixture.read_bytes(), b'{"schema": "c8s.allowlist/v1"}\n')
+        command = run.call_args.args[0]
+        self.assertEqual(command, ["go", "build", "-o", command[3], "./cmd/c8s"])
+        self.assertEqual(run.call_args.kwargs["cwd"], Path("c8s"))
+        self.assertEqual(binaries, [Path(command[3])])
+
 
 if __name__ == "__main__":
     unittest.main()

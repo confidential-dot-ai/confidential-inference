@@ -6,7 +6,8 @@ parts of the tools that decide the allowlist and the manifest content.
 The repository holds no digest of an image that it builds, so the tests
 render the chart with fixtures/release-values.yaml: the digests of the
 v0.14.0 images. fixtures/staging-allowlist.json is the staging allowlist that
-the pinned c8s CLI generates from those digests.
+the c8s CLI of the staging c8s pin generates from those digests;
+scripts/bump-c8s.py regenerates it with staging_allowlist().
 """
 
 from __future__ import annotations
@@ -69,9 +70,15 @@ def published_release_images() -> dict[str, str]:
     return dict(image.split("@", 1) for image in RELEASE_IMAGES.values())
 
 
-def build_staging(evidence: dict, base: dict | None = None, tag: str = "v0.14.2-staging") -> dict[str, bytes]:
-    """Build the staging release with the c8s CLI, crane, and the signature check replaced."""
+def build_staging(evidence: dict, base: dict | None = None, tag: str = "v0.14.2-staging",
+                  c8s: Path | None = None) -> dict[str, bytes]:
+    """Build the staging release with crane and the signature check replaced.
+
+    Without `c8s`, the fixture allowlist replaces the c8s CLI. With `c8s`, the
+    build generates the allowlist with that c8s CLI binary.
+    """
     generated = STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")
+    generate = MAN.ALLOWLIST_GENERATOR["generate"] if c8s else lambda *_args, **_kwargs: generated
     with tempfile.TemporaryDirectory() as temporary:
         evidence_path = Path(temporary) / "publication.json"
         evidence_path.write_text(json.dumps(evidence))
@@ -85,7 +92,7 @@ def build_staging(evidence: dict, base: dict | None = None, tag: str = "v0.14.2-
                 mock.patch.object(MAN.release_signature, "verify_release_signature"), \
                 mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"), \
                 mock.patch.dict(MAN.ALLOWLIST_GENERATOR, {
-                    "generate": lambda *_args, **_kwargs: generated,
+                    "generate": generate,
                     "image_config": REPOSITORY_CONFIGS.__getitem__,
                 }):
             return MAN.build(
@@ -95,9 +102,18 @@ def build_staging(evidence: dict, base: dict | None = None, tag: str = "v0.14.2-
                 "d" * 40,
                 evidence_path,
                 download_dir,
-                Path("c8s"),
+                c8s or Path("c8s"),
                 None,
             )
+
+
+def staging_allowlist(c8s: Path) -> bytes:
+    """Return the fixture allowlist as the c8s CLI binary `c8s` generates it.
+
+    scripts/bump-c8s.py writes it to fixtures/staging-allowlist.json when the
+    staging profile moves to another c8s release.
+    """
+    return build_staging(publication(published_release_images()), c8s=c8s)["allowlist.json"]
 
 
 def rendered_workers(profile) -> list[dict]:
@@ -344,6 +360,17 @@ class ManifestTests(unittest.TestCase):
             release_source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
             with self.assertRaisesRegex(MAN.ManifestError, "selector changed"):
                 MAN.verify_image_source_boundary(image_source, release_source, repo)
+
+    def test_the_staging_fixture_is_the_allowlist_that_the_given_c8s_cli_generates(self):
+        calls = []
+
+        def generate(_profile, c8s, *_args, **_kwargs):
+            calls.append(c8s)
+            return STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")
+
+        with mock.patch.dict(MAN.ALLOWLIST_GENERATOR, {"generate": generate}):
+            self.assertEqual(staging_allowlist(Path("/tmp/c8s")), STAGING_ALLOWLIST.read_bytes())
+        self.assertEqual(calls, [Path("/tmp/c8s")])
 
     def test_staging_manifest_uses_the_staging_profile(self):
         files = build_staging(publication(published_release_images()))
