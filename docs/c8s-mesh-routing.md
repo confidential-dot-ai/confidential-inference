@@ -11,6 +11,9 @@ kube-state-metrics Services headless. DNS then gives the pod address before
 the mesh redirect runs. A normal Service can change its virtual address to a
 pod address after that redirect. The C8s guard can reject that direct path.
 
+The router Service publishes its address during model startup. This lets the
+gateway reach the receipt sidecar before the router can serve completions.
+
 The mesh keeps its attested TLS hop between nodes. The application must not
 disable the C8s guards or expose the node attestation API to the network.
 Retain the Unix socket configuration for receipt sidecars.

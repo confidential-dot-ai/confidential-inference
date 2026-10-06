@@ -34,6 +34,8 @@ def main():
         key = ("Service", name)
         assert "clusterIP" not in before[key]["spec"]
         assert after[key]["spec"]["clusterIP"] == "None"
+    assert after[("Service", "sglang-router")]["spec"]["publishNotReadyAddresses"] is True
+    assert "publishNotReadyAddresses" not in before[("Service", "sglang-router")]["spec"]
     for key, item in before.items():
         if item["kind"] in ("Deployment", "StatefulSet", "DaemonSet"):
             assert item == after[key], f"Mesh routing changed pod definitions: {key}"

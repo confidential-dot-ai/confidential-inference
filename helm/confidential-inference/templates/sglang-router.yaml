@@ -10,6 +10,8 @@ spec:
   type: ClusterIP
   {{- if .Values.network.c8sMeshNodeCidrs }}
   clusterIP: None
+  # Receipt checks must reach the sidecar while model startup is in progress.
+  publishNotReadyAddresses: true
   {{- end }}
   selector:
     {{- include "confidential-inference.selector" (dict "root" . "component" "sglang-router") | nindent 4 }}
