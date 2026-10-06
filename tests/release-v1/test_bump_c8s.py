@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -134,6 +135,46 @@ class BumpTests(unittest.TestCase):
                     BUMP.share_protocol_manifest(repo, old, new, "v0.33.7")
             finally:
                 BUMP.PROTOCOLS = original
+
+    def protocol_bump(self, old_source: str, new_source: str, diff_out: Path | None = None) -> dict:
+        """Share the manifest of a commit with one that changes pkg/types/codes.go."""
+        with tempfile.TemporaryDirectory() as directory:
+            repo = git_repo(Path(directory))
+            old = commit(repo, {"server.go": "package cds\n", "pkg/types/codes.go": old_source})
+            new = commit(repo, {"pkg/types/codes.go": new_source})
+            protocols = Path(directory) / "protocols"
+            protocols.mkdir()
+            manifest = {"commit": old, "sharedWithCommits": [], "capturedFrom": {"routes": "server.go"},
+                        "capturedFromNote": "Captured."}
+            (protocols / f"{old}.json").write_text(json.dumps(manifest, indent=2) + "\n")
+            with mock.patch.object(BUMP, "PROTOCOLS", protocols):
+                BUMP.share_protocol_manifest(repo, old, new, "v0.36.0", diff_out)
+            result = json.loads((protocols / f"{old}.json").read_text())
+            self.assertEqual(result["sharedWithCommits"], [new])
+            return result
+
+    @unittest.skipIf(shutil.which("go") is None, "tools/go-strip-comments needs Go")
+    def test_a_change_only_in_comments_shares_the_manifest(self):
+        # c8s v0.36.0 changed two doc comments of pkg/types/error_codes.go.
+        source = 'package types\n\n// Codes of the c8s envelope.\nconst A = "a" // stable\n'
+        changed = 'package types\n\n// Codes of the C8s envelope.\nconst A = "a"   // kept\n'
+        manifest = self.protocol_bump(source, changed)
+        self.assertIn("only in Go comments", manifest["capturedFromNote"])
+
+    @unittest.skipIf(shutil.which("go") is None, "tools/go-strip-comments needs Go")
+    def test_a_code_change_needs_a_review(self):
+        source = 'package types\n\nconst A = "a"\n'
+        for changed in ('package types\n\nconst A = "b"\n',
+                        '//go:build linux\n\npackage types\n\nconst A = "a"\n'):
+            with self.assertRaisesRegex(BUMP.BumpError, "pkg/types/codes.go"):
+                self.protocol_bump(source, changed)
+            with tempfile.TemporaryDirectory() as directory:
+                diff_out = Path(directory) / "protocol.diff"
+                manifest = self.protocol_bump(source, changed, diff_out)
+                self.assertIn("+", diff_out.read_text())
+                self.assertIn("pkg/types/codes.go", diff_out.read_text())
+                self.assertIn("only after a person reviews that diff", manifest["capturedFromNote"])
+                self.assertNotIn("only in Go comments", manifest["capturedFromNote"])
 
     def test_the_staging_fixture_moves_only_with_the_staging_profile(self):
         production, staging = BUMP.release_profiles.load()

@@ -5,6 +5,7 @@ Usage:
 
     scripts/bump-c8s.py --tag v0.33.8 --c8s-repo ../c8s [--profile staging]
         [--confos-repo ../confidential-os-builder]
+        [--protocol-review --protocol-diff-out protocol.diff]
 
 --c8s-repo is a clean c8s checkout at the tag. Without --profile, the script
 moves every profile. With --profile, it moves only the named profiles: a
@@ -17,7 +18,11 @@ can move ahead of production. The script:
    only those values, then parses each file again and requires that nothing
    else changed;
 3. adds the source lock entry, and shares the attestation protocol manifest
-   when the protocol source files did not change;
+   when the protocol source files did not change, or changed only in Go
+   comments (tools/go-strip-comments). With --protocol-review it also shares
+   the manifest after another change, writes the diff to --protocol-diff-out,
+   and notes in the manifest that the pull request shows that diff for
+   review: merging the pull request is the review;
 4. adds the new node image to the NVIDIA CDI record when the pinned driver
    inputs did not change. The inputs are bin/confos-fetch-gpu at the
    confidential-os-builder ref that c8s pins in .github/build-pins.json. When
@@ -31,8 +36,8 @@ The release build generates the allowlist with a c8s CLI built from the
 pinned commit, so the bump does not write one. The test fixture names the
 c8s core image digests, so it moves with the staging pins.
 
-It stops when a step needs a person: changed protocol source files, changed
-NVIDIA driver inputs, a pin it cannot edit in place, or a failed check. Review
+It stops when a step needs a person: protocol source files changed in more
+than comments (without --protocol-review), changed NVIDIA driver inputs, a pin it cannot edit in place, or a failed check. Review
 the full diff before you commit. The image config diff is a release input.
 """
 
@@ -62,6 +67,7 @@ SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
 PROTOCOLS = ROOT / "contracts/c8s-attestation-protocols"
 CDI_DIR = ROOT / "release/inputs/cdi"
 CANONICAL_TOOL = ROOT / "tools/c8s-allowlist-canonical"
+STRIP_COMMENTS_TOOL = ROOT / "tools/go-strip-comments"
 STAGING = ROOT / "release/staging"
 RELEASE_TESTS = ROOT / "tests/release-v1/test_release_tools.py"
 NODE = runpy.run_path(str(ROOT / "scripts/fetch-node-manifest.py"))
@@ -276,7 +282,41 @@ def add_source_lock(c8s_repo: Path, old: dict[str, Any], new: dict[str, Any]) ->
     write_json(SOURCE_LOCK, lock)
 
 
-def share_protocol_manifest(c8s_repo: Path, old_commit: str, new_commit: str, tag: str) -> None:
+def only_comments_changed(c8s_repo: Path, old_commit: str, new_commit: str, sources: list[str]) -> bool:
+    """Whether the sources differ between the commits only in Go comments.
+
+    An added, deleted or renamed file, or a changed file that is not Go,
+    counts as a real change.
+    """
+    status = git(c8s_repo, "diff", "--name-status", "--no-renames", old_commit, new_commit, "--", *sources)
+    with tempfile.TemporaryDirectory() as directory:
+        tool = Path(directory) / "go-strip-comments"
+        run(["go", "build", "-o", str(tool), "."], cwd=STRIP_COMMENTS_TOOL, env=go_env())
+        for line in status.splitlines():
+            kind, name = line.split("\t", 1)
+            if kind != "M" or not name.endswith(".go"):
+                return False
+            stripped = []
+            for commit in (old_commit, new_commit):
+                result = subprocess.run([str(tool)], input=git_show(c8s_repo, commit, name),
+                                        capture_output=True, check=False)
+                if result.returncode:
+                    return False
+                stripped.append(result.stdout)
+            if stripped[0] != stripped[1]:
+                return False
+    return True
+
+
+def share_protocol_manifest(c8s_repo: Path, old_commit: str, new_commit: str, tag: str,
+                            diff_out: Path | None = None) -> None:
+    """Share the manifest of the old commit with the new one.
+
+    A change only in Go comments keeps the protocol, so it shares the
+    manifest. With diff_out, another change does not stop the bump: its diff
+    goes to diff_out, and the manifest notes that the pull request shows it
+    for review.
+    """
     for path in sorted(PROTOCOLS.glob("*.json")):
         manifest = json.loads(path.read_text(encoding="utf-8"))
         shared = manifest.get("sharedWithCommits", [])
@@ -286,14 +326,30 @@ def share_protocol_manifest(c8s_repo: Path, old_commit: str, new_commit: str, ta
             continue
         sources = list(manifest["capturedFrom"].values()) + list(PROTOCOL_TREES)
         changed = git(c8s_repo, "diff", "--name-only", old_commit, new_commit, "--", *sources)
-        if changed:
+        comments_only = bool(changed) and only_comments_changed(c8s_repo, old_commit, new_commit, sources)
+        if changed and not comments_only and diff_out is None:
             raise BumpError("the attestation protocol source files changed: " + ", ".join(changed.splitlines())
                             + ". Capture a new protocol manifest by hand.")
         manifest["sharedWithCommits"] = shared + [new_commit]
-        manifest["capturedFromNote"] += (
-            f" c8s {tag} commit {new_commit} is byte-identical to commit {old_commit} in "
-            + ", ".join(sources) + ", and therefore shares this manifest."
-        )
+        if comments_only:
+            manifest["capturedFromNote"] += (
+                f" c8s {tag} commit {new_commit} differs from commit {old_commit} in "
+                + ", ".join(sources) + " only in Go comments (tools/go-strip-comments), and therefore shares"
+                " this manifest."
+            )
+        elif changed:
+            diff_out.write_text(git(c8s_repo, "diff", old_commit, new_commit, "--", *sources) + "\n",
+                                encoding="utf-8")
+            manifest["capturedFromNote"] += (
+                f" c8s {tag} commit {new_commit} differs from commit {old_commit} in "
+                + ", ".join(changed.splitlines()) + ". It shares this manifest only after a person reviews"
+                " that diff in the pull request that adds it and merges it."
+            )
+        else:
+            manifest["capturedFromNote"] += (
+                f" c8s {tag} commit {new_commit} is byte-identical to commit {old_commit} in "
+                + ", ".join(sources) + ", and therefore shares this manifest."
+            )
         write_json(path, manifest)
         return
     raise BumpError(f"no attestation protocol manifest covers the old commit {old_commit}")
@@ -373,10 +429,16 @@ def main() -> int:
     parser.add_argument("--c8s-repo", required=True, type=Path, help="a clean c8s checkout at the tag")
     parser.add_argument("--profile", action="append", help="a profile to move (default: every profile)")
     parser.add_argument("--confos-repo", type=Path, help="a confidential-os-builder checkout")
+    parser.add_argument("--protocol-review", action="store_true",
+                        help="share the protocol manifest also when its source files changed, for review")
+    parser.add_argument("--protocol-diff-out", type=Path,
+                        help="with --protocol-review, the file for the diff of changed protocol source files")
     args = parser.parse_args()
     try:
         if not TAG.fullmatch(args.tag):
             raise BumpError("--tag must be vX.Y.Z")
+        if args.protocol_review != (args.protocol_diff_out is not None):
+            raise BumpError("--protocol-review and --protocol-diff-out go together")
         c8s_repo = args.c8s_repo.resolve()
         commit = git(c8s_repo, "rev-parse", f"{args.tag}^{{commit}}")
         if git(c8s_repo, "rev-parse", "HEAD") != commit or git(c8s_repo, "status", "--porcelain"):
@@ -401,7 +463,8 @@ def main() -> int:
         pin_profiles(moved, everyone, new)
         bump_module(old["release"], args.tag)
         add_source_lock(c8s_repo, old, new)
-        share_protocol_manifest(c8s_repo, old["sourceCommit"], commit, args.tag)
+        share_protocol_manifest(c8s_repo, old["sourceCommit"], commit, args.tag,
+                                args.protocol_diff_out.resolve() if args.protocol_review else None)
         extend_cdi_record(c8s_repo, args.confos_repo.resolve() if args.confos_repo else None, old, new)
 
         regenerate(moved)
