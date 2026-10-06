@@ -16,3 +16,22 @@ model:
   repository: hf-internal-testing/tiny-random-LlamaForCausalLM
   revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998
   byteManifestSha256: d39aa41f901cb2cb07087157bcdc9c8ec32b6bf1e82c5018df35eff8cad6522e
+
+c8s:
+  release: v0.34.2
+  sourceCommit: a4dd0defcd94bfa837ccd52fd11dbcb5ef16798e
+  nodeImage:
+    reference: ghcr.io/confidential-dot-ai/node-guest-base
+    tag: rke2-tdx-cdi-v0.34.2
+    digest: sha256:b8692c7d0f012097dbae2aea5615089381633405e1b67f30dfa2fdf3a5c596a7
+  coreImages:
+  - ghcr.io/confidential-dot-ai/c8s-operator@sha256:a0e49a50f8ffc40c0e3f8e1df9396f6a50bdfd493ac56af90e11b890f96bb2e0
+  - ghcr.io/confidential-dot-ai/cds@sha256:ecf4c7147fd6dc6e1e1e658712ee95cdd4d619d12038fc689005667d8e417a14
+  - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:a8358659e04b3cc72fc24e9dacad98a95fb60b31416ebe91b321a86799301a77
+  - ghcr.io/confidential-dot-ai/ratls-mesh@sha256:466424f47e06bf26a05e30703416f1c8e383d926f510f5c79e05bb06821be00f
+  - ghcr.io/confidential-dot-ai/volumed@sha256:977f5db3f70325185c6aa4cd4d546b2d90675150233f74a8be436e85c5223c26
+  - nginxinc/nginx-unprivileged@sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348
+  nodeManifestArtifact:
+    tag: rke2-tdx-v0.34.2
+    digest: sha256:7516eebe2c472c838e9dee78154269a7aa89dea518057dd3c9e2d0a1ac8b6f17
+    manifestJson: sha256:e0ca01015d4589a4aa353ec0d6886cba5deffe0c051aa0232e165a01f6e56dc3
