@@ -13,7 +13,7 @@ tools read the profile of a tag or a directory from it with
 `scripts/release_profiles.py`.
 
 `release/staging/` is the staging profile. It is a layer on top of this
-directory. Its `spec.yaml` replaces only the version and the public hostnames,
+directory. Its `spec.yaml` replaces only the model and the public hostnames,
 and Helm applies its `values.yaml` after `release/values.yaml`. Staging uses
 the CPU SGLang simulator and validates the encrypted model mount before the
 simulator starts. It has its own allowlist policy and accepted lint findings.
@@ -30,7 +30,7 @@ image digests. The release commit is the image source commit.
 
 | File | Written by | Contents |
 | --- | --- | --- |
-| `spec.yaml` | A person, or `bump-c8s.py` for `c8s` | The version, the c8s release with its node image and core images, the model identity, and the public hostnames. It is the one place that pins c8s |
+| `spec.yaml` | A person, or `bump-c8s.py` for `c8s` | The c8s release with its node image and core images, the model identity, and the public hostnames. It is the one place that pins c8s. It names no version: the tag is the version |
 | `values.yaml` | A person | The chart values of the release. Only release values, no deployment values. It names each repository image without a digest |
 | `allowlist-policy.json` | A person | The workloads and the inputs of the allowlist. The c8s pins come from `spec.yaml` |
 | `profiles.json` | A person | The release profiles and their layers |
@@ -49,7 +49,7 @@ the signature, the tag commit, and the image publication evidence:
 | --- | --- |
 | `release-bundle.json` | The release manifest. The workflow signs it. It must match `contracts/release-manifest.schema.json` |
 | `allowlist.json` | The exact c8s allowlist of the release, in canonical bytes. The manifest binds its SHA-256 as `allowlist.sha256`; `allowlist.path` names the profile, for example `release/staging/allowlist.json` |
-| `release-values.yaml` | The repository image digests as a Helm values file. Apply it after the profile values files. The manifest binds its SHA-256 as `releaseValues.sha256`; `releaseValues.path` names the profile, for example `release/staging/release-values.yaml`. Each image in it is also in the manifest `images` |
+| `release-values.yaml` | The repository image digests and `attestationReceipts.releaseId` (the tag) as a Helm values file. Apply it after the profile values files. The manifest binds its SHA-256 as `releaseValues.sha256`; `releaseValues.path` names the profile, for example `release/staging/release-values.yaml`. Each image in it is also in the manifest `images` |
 
 The build takes the image digests from two signed sources:
 
@@ -102,7 +102,8 @@ it.
    one publication artifact, `release-image-publication-<commit>`. When no
    image changed since the newest image run, skip this step.
 3. Tag the commit `vX.Y.Z` or `vX.Y.Z-staging`. The release workflow builds,
-   signs, and publishes the release.
+   signs, and publishes the release. The tag is the version, so no commit
+   changes a version. A staging tag needs no production tag.
 
 To build the release again from the tagged tree, give the same evidence and
 a c8s CLI built from the pinned c8s commit. The build downloads the base
@@ -110,7 +111,7 @@ release that the evidence names:
 
 ```sh
 python3 scripts/build-release-manifest.py \
-  --release release/staging \
+  --tag vX.Y.Z-staging \
   --source-commit "$(git rev-parse vX.Y.Z-staging^{commit})" \
   --image-publication image-publication-manifest.json \
   --c8s /path/to/pinned/c8s \
@@ -164,4 +165,9 @@ service network `10.53.0.0/16`, so the address is the same on every cluster.
 ## Versions
 
 A production release uses `vX.Y.Z`. A staging release uses `vX.Y.Z-staging`.
-A fix is a new patch version.
+A fix is a new patch version. The tag selects the profile
+(`release/profiles.json`), and the build takes the version from it: the
+manifest `release.name` and the chart value `attestationReceipts.releaseId`
+are the tag. Each profile is released on its own: `vX.Y.Z-staging` needs no
+`vX.Y.Z`, and the two numbers can differ. Tags never move, so a failed
+release uses the next patch number.

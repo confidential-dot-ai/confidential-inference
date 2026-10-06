@@ -1,8 +1,8 @@
 # Staging release profile
 
 This profile builds `vX.Y.Z-staging`. It is a layer on top of `release/`
-(`release/profiles.json`). `spec.yaml` sets the version, the public
-hostnames, and the model, and `values.yaml` sets the staging values. Every
+(`release/profiles.json`). The tag is the version. `spec.yaml` sets the
+public hostnames and the model, and `values.yaml` sets the staging values. Every
 other value, including the image names, the c8s release, and the node
 manifest, comes from `release/`. The release build adds the image digests.
 
@@ -32,7 +32,7 @@ The release build generates the exact allowlist and the manifest. See
 
 ```sh
 python3 scripts/build-release-manifest.py \
-  --release release/staging \
+  --tag vX.Y.Z-staging \
   --source-commit "$(git rev-parse HEAD)" \
   --image-publication /path/to/image-publication-manifest.json \
   --c8s /path/to/pinned/c8s \

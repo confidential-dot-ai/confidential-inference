@@ -14,6 +14,11 @@ The manifest states what the release is. The client verifies it. It lists:
 
 It holds no deployment value: no mesh CA, no operator key, no node name.
 
+The release tag is the version. The tag selects the profile
+(release/profiles.json), and the build sets the release name and the chart
+value attestationReceipts.releaseId to it. A release needs no commit that
+changes a version.
+
 The repository holds no digest of an image that it builds. The build takes
 each one from signed evidence:
 
@@ -38,8 +43,8 @@ The build writes three files to --output-dir:
 - allowlist.json: the c8s allowlist, generated with the pinned c8s CLI from
   the chart rendered with these digests. The manifest binds its SHA-256;
 - release-values.yaml: the Helm values file with the repository image
-  digests. Apply it after the profile values files. The manifest binds its
-  SHA-256 (releaseValues).
+  digests and the release ID. Apply it after the profile values files. The
+  manifest binds its SHA-256 (releaseValues).
 
 The release workflow builds them at the tag, signs the manifest, and attaches
 all three to the GitHub release. Anyone can build them again from the tagged
@@ -71,7 +76,6 @@ import release_profiles
 import release_signature
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE = ROOT / "release"
 CHART = ROOT / "helm/confidential-inference"
 SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
 SCHEMA = "confidential.ai/release-manifest/v1"
@@ -126,20 +130,15 @@ def read_spec(profile: release_profiles.Profile) -> dict[str, Any]:
         spec = release_profiles.read_spec(profile)
     except release_profiles.ProfileError as error:
         raise ManifestError(str(error)) from error
-    return validate_spec(spec, profile)
+    return validate_spec(spec)
 
 
-def validate_spec(spec: Any, profile: release_profiles.Profile) -> dict[str, Any]:
+def validate_spec(spec: Any) -> dict[str, Any]:
     require(isinstance(spec, dict), "the release specification is not a mapping")
     require(
-        set(spec) == {"version", "c8s", "model", "publicHostnames"},
-        "the release specification must hold exactly version, c8s, model, and publicHostnames",
+        set(spec) == {"c8s", "model", "publicHostnames"},
+        "the release specification must hold exactly c8s, model, and publicHostnames; the tag is the version",
     )
-    try:
-        version_profile = release_profiles.for_tag(str(spec["version"])).name
-    except release_profiles.ProfileError:
-        version_profile = None
-    require(version_profile == profile.name, f"version must be vX.Y.Z{profile.tag_suffix} in profile {profile.name}")
     c8s = spec["c8s"]
     require(isinstance(c8s, dict), "c8s must be a mapping")
     require(isinstance(c8s.get("release"), str) and C8S_VERSION.fullmatch(c8s["release"]) is not None,
@@ -554,7 +553,7 @@ def verify_image_source_boundary(
 
 
 def build(
-    release: Path,
+    tag: str,
     chart: Path,
     lock_path: Path,
     source_commit: str,
@@ -565,7 +564,7 @@ def build(
 ) -> dict[str, bytes]:
     """Return the release files by name: the manifest, the allowlist, and the values overlay."""
     try:
-        profile = release_profiles.for_directory(release)
+        profile = release_profiles.for_tag(tag)
     except release_profiles.ProfileError as error:
         raise ManifestError(str(error)) from error
     chart = chart.resolve()
@@ -578,7 +577,10 @@ def build(
     policy = read_allowlist_policy(profile.policy)
     values = release_profiles.read_values(profile)
     require(isinstance(values, dict) and bool(values), "the profile values are not a mapping")
-    overlay = {"images": release_images(values, publication, base)}
+    overlay = {
+        "images": release_images(values, publication, base),
+        "attestationReceipts": {"releaseId": tag},
+    }
     overlay_bytes = yaml.safe_dump(overlay, sort_keys=True).encode()
     values = release_profiles.merge_values(values, overlay)
     require_model_agreement(spec, values)
@@ -620,7 +622,7 @@ def build(
     manifest = {
         "schema": SCHEMA,
         "release": {
-            "name": spec["version"],
+            "name": tag,
             "environment": profile.environment,
         },
         "releaseTrust": {
@@ -682,7 +684,8 @@ def encode(manifest: dict[str, Any]) -> bytes:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--release", type=Path, default=RELEASE)
+    parser.add_argument("--tag", required=True,
+                        help="the release tag, vX.Y.Z or vX.Y.Z-staging; it selects the profile")
     parser.add_argument("--chart", type=Path, default=CHART)
     parser.add_argument("--source-lock", type=Path, default=SOURCE_LOCK)
     parser.add_argument("--source-commit", required=True,
@@ -701,7 +704,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         files = build(
-            args.release,
+            args.tag,
             args.chart,
             args.source_lock.resolve(),
             args.source_commit,

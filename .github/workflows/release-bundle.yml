@@ -182,11 +182,11 @@ jobs:
       - name: Build the release at the tag commit
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_DIRECTORY: ${{ needs.select-profile.outputs.directory }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           git rev-parse HEAD > dist/release-tag-commit.txt
           python3 scripts/build-release-manifest.py \
-            --release "$RELEASE_DIRECTORY" \
+            --tag "$RELEASE_TAG" \
             --source-commit "$(git rev-parse HEAD)" \
             --image-publication dist/image-publication-manifest.json \
             --c8s "$RUNNER_TEMP/bin/c8s" \

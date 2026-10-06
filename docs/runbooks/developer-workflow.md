@@ -48,8 +48,9 @@ interfaces remain compatible.
 
 Only `vX.Y.Z` and `vX.Y.Z-staging` are valid new release tags. The staging tag
 uses the reviewed simulator profile. A fix to either profile uses a new patch
-version. The tag must point to a commit on `main`. After publication, the tag
-must never move or be deleted.
+version. The tag is the version: no commit changes a version, and a staging
+tag needs no production tag. The tag must point to a commit on `main`. After
+publication, the tag must never move or be deleted.
 
 C8s, TEEriminator, and other release dependencies are exact release inputs. A
 dependency update enters a cluster only through a new Confidential Inference

@@ -69,7 +69,7 @@ def published_release_images() -> dict[str, str]:
     return dict(image.split("@", 1) for image in RELEASE_IMAGES.values())
 
 
-def build_staging(evidence: dict, base: dict | None = None) -> dict[str, bytes]:
+def build_staging(evidence: dict, base: dict | None = None, tag: str = "v0.14.2-staging") -> dict[str, bytes]:
     """Build the staging release with the c8s CLI, crane, and the signature check replaced."""
     generated = STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")
     with tempfile.TemporaryDirectory() as temporary:
@@ -89,7 +89,7 @@ def build_staging(evidence: dict, base: dict | None = None) -> dict[str, bytes]:
                     "image_config": REPOSITORY_CONFIGS.__getitem__,
                 }):
             return MAN.build(
-                ROOT / "release/staging",
+                tag,
                 ROOT / "helm/confidential-inference",
                 ROOT / "contracts/c8s-admission-source-lock.json",
                 "d" * 40,
@@ -275,15 +275,24 @@ class AcceptedFindingTests(unittest.TestCase):
 class ManifestTests(unittest.TestCase):
     def test_the_committed_spec_is_valid(self):
         MAN.read_spec(PRODUCTION)
-        staging = MAN.read_spec(STAGING)
-        self.assertEqual(staging["version"], "v0.14.2-staging")
+        MAN.read_spec(STAGING)
 
-    def test_release_candidate_versions_are_refused(self):
+    def test_the_spec_names_no_version_because_the_tag_is_the_version(self):
         spec = MAN.read_spec(PRODUCTION)
-        for version, profile in (("v0.14.0-rc.1", PRODUCTION), ("v0.14.0-staging", PRODUCTION),
-                                 ("v0.14.0", STAGING)):
-            with self.subTest(version=version), self.assertRaisesRegex(MAN.ManifestError, "version must be"):
-                MAN.validate_spec({**spec, "version": version}, profile)
+        with self.assertRaisesRegex(MAN.ManifestError, "the tag is the version"):
+            MAN.validate_spec({**spec, "version": "v0.14.0"})
+        for profile in PROFILES.load():
+            self.assertNotIn("releaseId", PROFILES.read_values(profile)["attestationReceipts"])
+
+    def test_the_tag_names_the_release_and_selects_the_profile(self):
+        files = build_staging(publication(published_release_images()), tag="v0.14.9-staging")
+        manifest = json.loads(files["release-bundle.json"])
+        self.assertEqual(manifest["release"], {"name": "v0.14.9-staging", "environment": "staging"})
+        self.assertEqual(yaml.safe_load(files["release-values.yaml"])["attestationReceipts"],
+                         {"releaseId": "v0.14.9-staging"})
+        for tag in ("v0.14.9-rc.1", "v0.14.9-staging.1", "staging"):
+            with self.subTest(tag=tag), self.assertRaisesRegex(MAN.ManifestError, "no release profile"):
+                build_staging(publication(published_release_images()), tag=tag)
 
     def test_image_source_boundary_allows_only_later_non_image_changes(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -351,7 +360,10 @@ class ManifestTests(unittest.TestCase):
         })
         self.assertEqual(manifest["source"]["commit"], "d" * 40)
         self.assertEqual(manifest["imagePublication"]["sourceCommit"], "b" * 40)
-        self.assertEqual(yaml.safe_load(files["release-values.yaml"]), {"images": RELEASE_IMAGES})
+        self.assertEqual(yaml.safe_load(files["release-values.yaml"]), {
+            "images": RELEASE_IMAGES,
+            "attestationReceipts": {"releaseId": "v0.14.2-staging"},
+        })
         for key, image in RELEASE_IMAGES.items():
             self.assertEqual(manifest["images"][key], image)
 
