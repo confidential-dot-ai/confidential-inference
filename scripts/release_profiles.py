@@ -82,6 +82,15 @@ class Profile:
         return self.directory / "allowlist.json"
 
     @property
+    def release_values(self) -> Path:
+        """The name that the release manifest gives the generated values overlay.
+
+        The release build generates it and publishes it as the release asset
+        release-values.yaml. It is not in the repository.
+        """
+        return self.directory / "release-values.yaml"
+
+    @property
     def spec_files(self) -> list[Path]:
         return [layer / "spec.yaml" for layer in self.layers if (layer / "spec.yaml").is_file()]
 

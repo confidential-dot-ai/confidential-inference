@@ -49,7 +49,7 @@ the signature, the tag commit, and the image publication evidence:
 | --- | --- |
 | `release-bundle.json` | The release manifest. The workflow signs it. It must match `contracts/release-manifest.schema.json` |
 | `allowlist.json` | The exact c8s allowlist of the release, in canonical bytes. The manifest binds its SHA-256 as `allowlist.sha256`; `allowlist.path` names the profile, for example `release/staging/allowlist.json` |
-| `release-values.yaml` | The repository image digests as a Helm values file. Apply it after the profile values files. Each image in it is also in the manifest `images` |
+| `release-values.yaml` | The repository image digests as a Helm values file. Apply it after the profile values files. The manifest binds its SHA-256 as `releaseValues.sha256`; `releaseValues.path` names the profile, for example `release/staging/release-values.yaml`. Each image in it is also in the manifest `images` |
 
 The build takes the image digests from two signed sources:
 
@@ -62,7 +62,10 @@ The build takes the image digests from two signed sources:
 2. The signed manifest of the base release of that image run, when its
    `base_ref` is a release tag. The image run publishes only the images that
    changed after its base, so every other image keeps the digest of the base
-   release. The build verifies the base signature with the trust policy in
+   release. The build reads `base_ref` from the evidence (`source.baseRef`)
+   and downloads `release-bundle.json` and `release-bundle.sigstore.json` of
+   that GitHub release itself; the caller does not give them. The
+   build verifies the base signature with the trust policy in
    `releases/trust/`, requires that the base manifest names the base tag and
    commit of the evidence, and requires that no build input of such an image
    changed since the base commit. A base release from the other profile is
@@ -76,8 +79,13 @@ that the chart renders.
 The build then renders the chart with these digests, reads the
 configuration of each repository image from the registry by digest, and
 generates the allowlist with the c8s CLI built from the pinned c8s commit. It
-binds the release source commit, the image publication evidence, and the
-allowlist digest into the manifest.
+binds the release source commit, the image publication evidence, the
+allowlist digest, and the `release-values.yaml` digest into the manifest. A
+consumer verifies each asset by its digest in the signed manifest.
+
+`releaseValues` is optional in the schema because releases built before it
+existed do not carry it, and they must still verify. The build always writes
+it.
 
 ## Order
 
@@ -96,16 +104,15 @@ allowlist digest into the manifest.
 3. Tag the commit `vX.Y.Z` or `vX.Y.Z-staging`. The release workflow builds,
    signs, and publishes the release.
 
-To build the release again from the tagged tree, give the same evidence, base
-release, and a c8s CLI built from the pinned c8s commit:
+To build the release again from the tagged tree, give the same evidence and
+a c8s CLI built from the pinned c8s commit. The build downloads the base
+release that the evidence names:
 
 ```sh
 python3 scripts/build-release-manifest.py \
   --release release/staging \
   --source-commit "$(git rev-parse vX.Y.Z-staging^{commit})" \
   --image-publication image-publication-manifest.json \
-  --base-release base/release-bundle.json \
-  --base-release-signature base/release-bundle.sigstore.json \
   --c8s /path/to/pinned/c8s \
   --output-dir /tmp/release \
   --check
@@ -113,8 +120,12 @@ python3 scripts/build-release-manifest.py \
 
 Without `--check`, it writes the files to `--output-dir`. With `--check`, each
 file there must equal a new build. The checked files are the release assets.
-Verifying the base release needs `cosign`; reading the image configuration
-needs `crane` with read access to the registry.
+The repository is public, so downloading the base release needs no token;
+the build sends `GH_TOKEN` to GitHub when it is set. `--download-dir` keeps
+the downloaded files, and the build uses files already there after the same
+signature and binding checks. Verifying the base release needs `cosign`;
+reading the image configuration needs `crane` with read access to the
+registry.
 
 ## Change the c8s release
 

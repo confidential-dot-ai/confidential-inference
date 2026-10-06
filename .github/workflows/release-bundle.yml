@@ -135,21 +135,10 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ steps.publication.outputs.run_id }}
 
-      # An image that did not change after the base release of the image run
-      # keeps the digest of the signed base release manifest.
-      - name: Download the signed base release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Check the image publication evidence
         run: |
           python3 scripts/image-publication-manifest.py check \
             dist/image-publication-manifest.json
-          base_ref="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"]["baseRef"])' \
-            dist/image-publication-manifest.json)"
-          if python3 scripts/release_profiles.py resolve --tag "$base_ref" >/dev/null 2>&1; then
-            mkdir -p base-release
-            gh release download "$base_ref" --repo "$GITHUB_REPOSITORY" --dir base-release \
-              --pattern release-bundle.json --pattern release-bundle.sigstore.json
-          fi
 
       - name: Read the pinned c8s source commit
         id: c8s
@@ -187,21 +176,19 @@ jobs:
           (cd c8s-source && go build -o "$RUNNER_TEMP/bin/c8s" ./cmd/c8s)
           (cd tools/c8s-allowlist-canonical && go build -o "$RUNNER_TEMP/bin/c8s-allowlist-canonical" .)
 
+      # An image that did not change after the base release of the image run
+      # keeps the digest of the signed base release manifest. The build reads
+      # the base from the evidence and downloads and verifies that release.
       - name: Build the release at the tag commit
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_DIRECTORY: ${{ needs.select-profile.outputs.directory }}
         run: |
           git rev-parse HEAD > dist/release-tag-commit.txt
-          base=()
-          if [[ -f base-release/release-bundle.json ]]; then
-            base=(--base-release base-release/release-bundle.json
-                  --base-release-signature base-release/release-bundle.sigstore.json)
-          fi
           python3 scripts/build-release-manifest.py \
             --release "$RELEASE_DIRECTORY" \
             --source-commit "$(git rev-parse HEAD)" \
             --image-publication dist/image-publication-manifest.json \
-            "${base[@]}" \
             --c8s "$RUNNER_TEMP/bin/c8s" \
             --canonical-tool "$RUNNER_TEMP/bin/c8s-allowlist-canonical" \
             --output-dir dist
@@ -286,7 +273,7 @@ jobs:
             --verify-tag \
             --target "$expected_commit" \
             --title "$RELEASE_TAG" \
-            --notes "Signed Confidential Inference release. The signed file is the release manifest built from release/ at the tag commit. It binds the allowlist by SHA-256 and names every image digest of release-values.yaml." \
+            --notes "Signed Confidential Inference release. The signed file is the release manifest built from release/ at the tag commit. It binds allowlist.json and release-values.yaml by SHA-256." \
             "dist/release-bundle.json#Release bundle" \
             "dist/release-bundle.sigstore.json#Sigstore verification bundle" \
             "dist/release-tag-commit.txt#Signed tag commit" \

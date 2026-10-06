@@ -35,8 +35,6 @@ python3 scripts/build-release-manifest.py \
   --release release/staging \
   --source-commit "$(git rev-parse HEAD)" \
   --image-publication /path/to/image-publication-manifest.json \
-  --base-release /path/to/base/release-bundle.json \
-  --base-release-signature /path/to/base/release-bundle.sigstore.json \
   --c8s /path/to/pinned/c8s \
   --output-dir /tmp/staging-release
 ```

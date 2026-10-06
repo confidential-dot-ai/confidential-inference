@@ -75,11 +75,11 @@ def build_staging(evidence: dict, base: dict | None = None) -> dict[str, bytes]:
     with tempfile.TemporaryDirectory() as temporary:
         evidence_path = Path(temporary) / "publication.json"
         evidence_path.write_text(json.dumps(evidence))
-        base_path = signature_path = None
+        download_dir = Path(temporary) / "base"
         if base is not None:
-            base_path = Path(temporary) / "base.json"
-            base_path.write_text(json.dumps(base))
-            signature_path = Path(temporary) / "base.sigstore.json"
+            download_dir.mkdir()
+            (download_dir / "release-bundle.json").write_text(json.dumps(base))
+            (download_dir / "release-bundle.sigstore.json").write_text("{}")
         with mock.patch.object(MAN, "verify_image_source_boundary"), \
                 mock.patch.object(MAN, "changed_paths", return_value=[]), \
                 mock.patch.object(MAN.release_signature, "verify_release_signature"), \
@@ -94,8 +94,7 @@ def build_staging(evidence: dict, base: dict | None = None) -> dict[str, bytes]:
                 ROOT / "contracts/c8s-admission-source-lock.json",
                 "d" * 40,
                 evidence_path,
-                base_path,
-                signature_path,
+                download_dir,
                 Path("c8s"),
                 None,
             )
@@ -346,6 +345,10 @@ class ManifestTests(unittest.TestCase):
             "sha256": MAN.sha256(STAGING_ALLOWLIST.read_bytes()),
         })
         self.assertEqual(files["allowlist.json"], STAGING_ALLOWLIST.read_bytes())
+        self.assertEqual(manifest["releaseValues"], {
+            "path": "release/staging/release-values.yaml",
+            "sha256": MAN.sha256(files["release-values.yaml"]),
+        })
         self.assertEqual(manifest["source"]["commit"], "d" * 40)
         self.assertEqual(manifest["imagePublication"]["sourceCommit"], "b" * 40)
         self.assertEqual(yaml.safe_load(files["release-values.yaml"]), {"images": RELEASE_IMAGES})
@@ -373,10 +376,36 @@ class ManifestTests(unittest.TestCase):
         ):
             with self.subTest(message=message), self.assertRaisesRegex(MAN.ManifestError, message):
                 self.base_images(evidence, value)
-        with self.assertRaisesRegex(MAN.ManifestError, "give its signed manifest"):
-            MAN.base_release_images(evidence, None, None)
-        with self.assertRaisesRegex(MAN.ManifestError, "is not a release"):
-            self.base_images(publication({}), base)
+        # A release built before releaseValues existed is still a valid base.
+        legacy = {key: value for key, value in base.items() if key != "releaseValues"}
+        self.assertTrue(self.base_images(evidence, legacy))
+
+    def test_the_build_downloads_the_base_release_that_the_evidence_names(self):
+        urls = []
+
+        def fetch(url):
+            urls.append(url)
+            return url.encode()
+
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(MAN, "fetch", side_effect=fetch):
+            directory = Path(temporary) / "base"
+            self.assertEqual(MAN.base_release_images(publication({}), directory), {})
+            self.assertEqual(urls, [])
+            paths = MAN.download_base_release("v0.14.1-staging", directory)
+            release = f"{REPOSITORY}/releases/download/v0.14.1-staging"
+            self.assertEqual(urls, [f"{release}/release-bundle.json", f"{release}/release-bundle.sigstore.json"])
+            self.assertEqual([path.read_text() for path in paths], urls)
+            MAN.download_base_release("v0.14.1-staging", directory)
+            self.assertEqual(len(urls), 2)
+
+    def test_the_download_sends_the_token_to_github_only(self):
+        with mock.patch.dict(MAN.os.environ, {"GH_TOKEN": "token"}), \
+                mock.patch.object(MAN.urllib.request, "urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = b"{}"
+            self.assertEqual(MAN.fetch(f"{REPOSITORY}/releases/download/v1.0.0/release-bundle.json"), b"{}")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.unredirected_hdrs, {"Authorization": "Bearer token"})
+        self.assertNotIn("Authorization", request.headers)
 
     def test_an_image_changed_after_the_base_needs_a_new_digest(self):
         base = json.loads(build_staging(publication(published_release_images()))["release-bundle.json"])
@@ -392,12 +421,17 @@ class ManifestTests(unittest.TestCase):
     @staticmethod
     def base_images(evidence: dict, base: dict, changed: list[str] | None = None) -> dict[str, str]:
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "base.json"
-            path.write_text(json.dumps(base))
+            directory = Path(temporary)
+            (directory / "release-bundle.json").write_text(json.dumps(base))
+            (directory / "release-bundle.sigstore.json").write_text("{}")
             with mock.patch.object(MAN, "changed_paths", return_value=changed or []), \
-                    mock.patch.object(MAN.release_signature, "verify_release_signature"), \
+                    mock.patch.object(MAN.release_signature, "verify_release_signature") as verify, \
                     mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"):
-                return MAN.base_release_images(evidence, path, path)
+                images = MAN.base_release_images(evidence, directory)
+                verify.assert_called_once_with(directory / "release-bundle.json",
+                                               directory / "release-bundle.sigstore.json",
+                                               Path("/usr/bin/cosign").resolve(), 60)
+                return images
 
     def test_release_values_take_repository_digests_only_from_evidence(self):
         gateway = "ghcr.io/confidential-dot-ai/confidential-inference/gateway"

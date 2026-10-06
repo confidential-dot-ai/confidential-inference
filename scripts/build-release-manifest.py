@@ -10,7 +10,7 @@ The manifest states what the release is. The client verifies it. It lists:
   lock entry for that commit;
 - the node image digest and its TDX measurements;
 - the model identity;
-- the SHA-256 of the generated allowlist.
+- the SHA-256 of the generated allowlist and of the generated values file.
 
 It holds no deployment value: no mesh CA, no operator key, no node name.
 
@@ -23,6 +23,14 @@ each one from signed evidence:
 - any other image: the signed manifest of that base release. The build
   verifies its signature and that no build input of the image changed since.
 
+The publication evidence names its base (source.baseRef). When the base is a
+release tag, the build downloads release-bundle.json and
+release-bundle.sigstore.json of that GitHub release itself. The repository
+is public, so it needs no token; the build sends GH_TOKEN when it is set.
+When the base is a commit, there is no base release. The caller does not
+choose. --download-dir keeps the downloaded files; the build uses the files
+already there, after the same checks.
+
 The build writes three files to --output-dir:
 
 - release-bundle.json: the manifest. It must match
@@ -30,7 +38,8 @@ The build writes three files to --output-dir:
 - allowlist.json: the c8s allowlist, generated with the pinned c8s CLI from
   the chart rendered with these digests. The manifest binds its SHA-256;
 - release-values.yaml: the Helm values file with the repository image
-  digests. Apply it after the profile values files.
+  digests. Apply it after the profile values files. The manifest binds its
+  SHA-256 (releaseValues).
 
 The release workflow builds them at the tag, signs the manifest, and attaches
 all three to the GitHub release. Anyone can build them again from the tagged
@@ -43,12 +52,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import runpy
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -382,28 +393,61 @@ def changed_paths(base: str, head: str, repo: Path = ROOT) -> list[str]:
     return changed.stdout.splitlines()
 
 
+BASE_RELEASE_FILES = ("release-bundle.json", "release-bundle.sigstore.json")
+MAX_BASE_RELEASE_FILE_BYTES = 16 * 1024 * 1024
+
+
+def fetch(url: str) -> bytes:
+    """Return the bytes at `url`. GH_TOKEN, when set, authenticates to GitHub only."""
+    request = urllib.request.Request(url)
+    if os.environ.get("GH_TOKEN"):
+        # An unredirected header is not sent to the asset host that GitHub redirects to.
+        request.add_unredirected_header("Authorization", f"Bearer {os.environ['GH_TOKEN']}")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read(MAX_BASE_RELEASE_FILE_BYTES + 1)
+    except OSError as error:
+        raise ManifestError(f"cannot download {url}: {error}") from error
+    require(len(data) <= MAX_BASE_RELEASE_FILE_BYTES, f"{url} is too large")
+    return data
+
+
+def download_base_release(tag: str, directory: Path) -> tuple[Path, Path]:
+    """Return the signed manifest and Sigstore bundle of release `tag` in `directory`.
+
+    The build downloads them from the GitHub release of this repository. The
+    repository is public, so it needs no token; it sends GH_TOKEN when it is
+    set. When both files are already in `directory`, it uses them. The
+    caller trusts neither file until it verifies the signature.
+    """
+    paths = tuple(directory / name for name in BASE_RELEASE_FILES)
+    if not all(path.is_file() for path in paths):
+        directory.mkdir(parents=True, exist_ok=True)
+        for path in paths:
+            path.write_bytes(fetch(f"{REPOSITORY}/releases/download/{tag}/{path.name}"))
+    return paths
+
+
 def base_release_images(
     publication: dict[str, Any],
-    base_path: Path | None,
-    signature_path: Path | None,
+    download_dir: Path,
     repo: Path = ROOT,
 ) -> dict[str, str]:
     """Return the repository image digests of the base release of the publication.
 
     The image run publishes only the images that changed after its base. When
-    the base is a release, every other image keeps the digest that the signed
-    manifest of that release names. The base manifest must carry a valid
-    release signature, name the base tag and commit of the publication, and
-    no build input of an image outside the publication may have changed since.
+    the base is a release tag (release_profiles.tag_pattern), every other
+    image keeps the digest that the signed manifest of that release names.
+    The build downloads that manifest and its Sigstore bundle into
+    `download_dir`. The manifest must carry a valid release signature, name
+    the base tag and commit of the publication, and no build input of an
+    image outside the publication may have changed since. When the base is a
+    commit, there is no base release.
     """
     source = publication["source"]
-    is_release = release_profiles.tag_pattern().fullmatch(source["baseRef"]) is not None
-    if base_path is None:
-        require(not is_release,
-                f"the image publication base {source['baseRef']} is a release; give its signed manifest")
+    if release_profiles.tag_pattern().fullmatch(source["baseRef"]) is None:
         return {}
-    require(is_release, f"the image publication base {source['baseRef']} is not a release")
-    require(signature_path is not None, "the base release needs its Sigstore bundle")
+    base_path, signature_path = download_base_release(source["baseRef"], download_dir)
     cosign = shutil.which("cosign")
     require(cosign is not None, "verifying the base release needs cosign")
     try:
@@ -515,8 +559,7 @@ def build(
     lock_path: Path,
     source_commit: str,
     publication_path: Path,
-    base_path: Path | None,
-    base_signature_path: Path | None,
+    download_dir: Path | None,
     c8s: Path,
     canonical_tool: Path | None,
 ) -> dict[str, bytes]:
@@ -530,7 +573,8 @@ def build(
     spec = read_spec(profile)
     publication_bytes, publication = read_publication(publication_path)
     verify_image_source_boundary(publication["source"]["commit"], source_commit)
-    base = base_release_images(publication, base_path, base_signature_path)
+    with tempfile.TemporaryDirectory(prefix="base-release-") as directory:
+        base = base_release_images(publication, download_dir or Path(directory))
     policy = read_allowlist_policy(profile.policy)
     values = release_profiles.read_values(profile)
     require(isinstance(values, dict) and bool(values), "the profile values are not a mapping")
@@ -610,6 +654,10 @@ def build(
             "path": allowlist_path.relative_to(ROOT).as_posix(),
             "sha256": sha256(allowlist_bytes),
         },
+        "releaseValues": {
+            "path": profile.release_values.relative_to(ROOT).as_posix(),
+            "sha256": sha256(overlay_bytes),
+        },
         "publicHostnames": spec["publicHostnames"],
     }
     validate_schema(manifest)
@@ -641,10 +689,9 @@ def main() -> int:
                         help="the commit of this repository that the release tag names")
     parser.add_argument("--image-publication", type=Path, required=True,
                         help="verified image publication manifest from the release-images workflow")
-    parser.add_argument("--base-release", type=Path,
-                        help="release-bundle.json of the base release of the image publication")
-    parser.add_argument("--base-release-signature", type=Path,
-                        help="release-bundle.sigstore.json of the base release")
+    parser.add_argument("--download-dir", type=Path,
+                        help="where the build keeps the signed base release that it downloads "
+                             "(default: a temporary directory); it uses the files already there")
     parser.add_argument("--c8s", type=Path, required=True,
                         help="the c8s CLI built from the pinned c8s source commit")
     parser.add_argument("--canonical-tool", type=Path,
@@ -659,8 +706,7 @@ def main() -> int:
             args.source_lock.resolve(),
             args.source_commit,
             args.image_publication.resolve(),
-            args.base_release.resolve() if args.base_release else None,
-            args.base_release_signature.resolve() if args.base_release_signature else None,
+            args.download_dir.resolve() if args.download_dir else None,
             args.c8s.resolve(),
             args.canonical_tool.resolve() if args.canonical_tool else None,
         )

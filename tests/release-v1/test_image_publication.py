@@ -89,7 +89,9 @@ class ImagePublicationTests(unittest.TestCase):
         self.assertIn("dist/image-publication-manifest.json#Image publication evidence", bundle)
         self.assertIn("dist/allowlist.json#c8s allowlist", bundle)
         self.assertIn("dist/release-values.yaml#Release image values", bundle)
-        self.assertIn("--base-release-signature base-release/release-bundle.sigstore.json", bundle)
+        self.assertNotIn("--base-release", bundle)
+        build = bundle[bundle.index("- name: Build the release at the tag commit"):]
+        self.assertIn("GH_TOKEN: ${{ github.token }}", build[:build.index("run: |")])
 
     def test_standard_images_publish_the_audited_archive(self):
         images = (ROOT / ".github/workflows/release-images.yml").read_text()
