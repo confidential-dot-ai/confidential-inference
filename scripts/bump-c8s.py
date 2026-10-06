@@ -23,10 +23,13 @@ can move ahead of production. The script:
    confidential-os-builder ref that c8s pins in .github/build-pins.json. When
    the ref changed, --confos-repo must be a confidential-os-builder checkout;
 5. fetches each node manifest and refreshes the image config;
-6. runs the release checks.
+6. when the staging profile moves, builds the c8s CLI from --c8s-repo and
+   regenerates the staging allowlist test fixture with it;
+7. runs the release checks.
 
 The release build generates the allowlist with a c8s CLI built from the
-pinned commit, so the bump does not write one.
+pinned commit, so the bump does not write one. The test fixture names the
+c8s core image digests, so it moves with the staging pins.
 
 It stops when a step needs a person: changed protocol source files, changed
 NVIDIA driver inputs, a pin it cannot edit in place, or a failed check. Review
@@ -45,6 +48,7 @@ import re
 import runpy
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +62,8 @@ SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
 PROTOCOLS = ROOT / "contracts/c8s-attestation-protocols"
 CDI_DIR = ROOT / "release/inputs/cdi"
 CANONICAL_TOOL = ROOT / "tools/c8s-allowlist-canonical"
+STAGING = ROOT / "release/staging"
+RELEASE_TESTS = ROOT / "tests/release-v1/test_release_tools.py"
 NODE = runpy.run_path(str(ROOT / "scripts/fetch-node-manifest.py"))
 REGISTRY = "ghcr.io/confidential-dot-ai/"
 C8S_MODULE = "github.com/confidential-dot-ai/c8s"
@@ -339,6 +345,21 @@ def regenerate(moved: list[release_profiles.Profile]) -> None:
     run([sys.executable, "scripts/generate-release-allowlist.py", "--refresh-image-config"], cwd=ROOT)
 
 
+def regenerate_staging_fixture(c8s_repo: Path, moved: list[release_profiles.Profile]) -> None:
+    """Generate the staging allowlist test fixture with the c8s CLI of the tag."""
+    if not any(profile.directory == STAGING for profile in moved):
+        return
+    tests = runpy.run_path(str(RELEASE_TESTS))
+    with tempfile.TemporaryDirectory(prefix="bump-c8s-") as directory:
+        binary = Path(directory) / "c8s"
+        run(["go", "build", "-o", str(binary), "./cmd/c8s"], cwd=c8s_repo, env=go_env())
+        try:
+            data = tests["staging_allowlist"](binary)
+        except tests["MAN"].ManifestError as error:
+            raise BumpError(f"cannot generate the staging allowlist fixture: {error}") from error
+    tests["STAGING_ALLOWLIST"].write_bytes(data)
+
+
 def check(c8s_repo: Path, commit: str) -> None:
     run([sys.executable, "scripts/verify-c8s-admission-source.py", "--repository", str(c8s_repo),
          "--commit", commit], cwd=ROOT)
@@ -384,6 +405,7 @@ def main() -> int:
         extend_cdi_record(c8s_repo, args.confos_repo.resolve() if args.confos_repo else None, old, new)
 
         regenerate(moved)
+        regenerate_staging_fixture(c8s_repo, moved)
         check(c8s_repo, commit)
     except (BumpError, release_profiles.ProfileError, NODE["FetchError"]) as error:
         print(f"bump-c8s: {error}", file=sys.stderr)
