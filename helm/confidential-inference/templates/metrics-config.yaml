@@ -193,11 +193,22 @@ data:
             regex: "^(api_key.*|authorization|prompt.*|response.*)$"
       {{- end }}
       {{- if .Values.kubeStateMetrics.enabled }}
+      # kube-state-metrics is a confidential workload. The c8s mesh guard drops
+      # a connection to it through its Service address, so scrape its pod.
       - job_name: kube-state-metrics
-        static_configs:
-          - targets: ["kube-state-metrics:{{ .Values.kubeStateMetrics.port }}"]
-            labels:
-              component: kube-state-metrics
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ .Release.Namespace | quote }}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: kube-state-metrics
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: $1:{{ .Values.kubeStateMetrics.port }}
+          - target_label: component
+            replacement: kube-state-metrics
         metric_relabel_configs:
           - action: labeldrop
             regex: "^(api_key.*|authorization|prompt.*|response.*)$"
