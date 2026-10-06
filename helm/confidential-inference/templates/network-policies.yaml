@@ -390,3 +390,26 @@ spec:
       ports:
         - {protocol: TCP, port: {{ .Values.attestationReceipts.metricsCollectorPort }}}
     {{- end }}
+
+{{- if .Values.network.c8sMeshNodeCidrs }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: workloads-to-c8s-mesh
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [gateway, sglang-router, inference-worker, metrics-collector, kube-state-metrics, log-collector]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.network.c8sMeshNodeCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 15001}
+{{- end }}

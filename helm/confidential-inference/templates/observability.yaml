@@ -130,6 +130,9 @@ metadata:
     app.kubernetes.io/component: metrics-collector
 spec:
   type: ClusterIP
+  {{- if .Values.network.c8sMeshNodeCidrs }}
+  clusterIP: None
+  {{- end }}
   selector:
     {{- include "confidential-inference.selector" (dict "root" . "component" "metrics-collector") | nindent 4 }}
   ports:

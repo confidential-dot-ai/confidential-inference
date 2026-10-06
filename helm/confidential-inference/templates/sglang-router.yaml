@@ -8,6 +8,9 @@ metadata:
     app.kubernetes.io/component: sglang-router
 spec:
   type: ClusterIP
+  {{- if .Values.network.c8sMeshNodeCidrs }}
+  clusterIP: None
+  {{- end }}
   selector:
     {{- include "confidential-inference.selector" (dict "root" . "component" "sglang-router") | nindent 4 }}
   ports:

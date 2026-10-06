@@ -319,6 +319,11 @@ kubeStateMetrics:
     memory: 128Mi
 
 network:
+  # The current C8s mesh redirects pod TCP traffic to node port 15001.
+  # Set only the inner node CIDRs for a deployment that uses this mesh.
+  # This also makes the router and collector Services headless, so their
+  # DNS records give pod addresses before the mesh redirect runs.
+  c8sMeshNodeCidrs: []
   adminMtlsCidrs:
     - 192.0.2.0/24
   clusterCidrs:

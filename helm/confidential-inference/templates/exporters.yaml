@@ -87,6 +87,9 @@ metadata:
     app.kubernetes.io/component: kube-state-metrics
 spec:
   type: ClusterIP
+  {{- if .Values.network.c8sMeshNodeCidrs }}
+  clusterIP: None
+  {{- end }}
   selector:
     {{- include "confidential-inference.selector" (dict "root" . "component" "kube-state-metrics") | nindent 4 }}
   ports:
