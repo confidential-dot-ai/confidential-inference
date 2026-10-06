@@ -23,6 +23,22 @@ def named(documents: list[dict], kind: str, name: str) -> dict:
     )
 
 
+def selects(selector: dict, labels: dict) -> bool:
+    if any(labels.get(key) != value for key, value in selector.get("matchLabels", {}).items()):
+        return False
+    for expression in selector.get("matchExpressions", []):
+        value = labels.get(expression["key"])
+        if expression["operator"] == "In" and value not in expression["values"]:
+            return False
+        if expression["operator"] == "NotIn" and value in expression["values"]:
+            return False
+        if expression["operator"] == "Exists" and expression["key"] not in labels:
+            return False
+        if expression["operator"] == "DoesNotExist" and expression["key"] in labels:
+            return False
+    return True
+
+
 class NetworkContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -117,6 +133,31 @@ class NetworkContractTests(unittest.TestCase):
                 for port in rule.get("ports", [])
             )
         )
+
+    def test_each_confidential_workload_can_reach_the_mesh(self) -> None:
+        # ratls-mesh DNATs every connection between confidential workloads to
+        # the node's mesh port before the CNI applies egress policy.
+        mesh_port = self.port("c8s-mesh-outbound")["cvmPort"]
+        policies = [item for item in self.documents if item["kind"] == "NetworkPolicy"]
+        workloads = [
+            item for item in self.documents
+            if item["kind"] in {"Deployment", "StatefulSet", "DaemonSet"}
+            and "confidential.ai/cw" in item["spec"]["template"]["metadata"].get("annotations", {})
+        ]
+        self.assertGreaterEqual(len(workloads), 5)
+        for workload in workloads:
+            labels = workload["spec"]["template"]["metadata"]["labels"]
+            allowed = any(
+                selects(policy["spec"]["podSelector"], labels)
+                and "Egress" in policy["spec"].get("policyTypes", [])
+                and any(
+                    "to" not in rule
+                    and any(port.get("port") == mesh_port for port in rule.get("ports", []))
+                    for rule in policy["spec"].get("egress", [])
+                )
+                for policy in policies
+            )
+            self.assertTrue(allowed, workload["metadata"]["name"])
 
     def test_application_limits_match_the_public_contract(self) -> None:
         expected = self.contract["publicProtection"]["application"]
