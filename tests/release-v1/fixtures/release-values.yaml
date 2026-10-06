@@ -1,0 +1,7 @@
+# The repository image digests of the v0.14.0 release (image run
+# 36908936973). The release build writes this file from the image publication
+# evidence. The tests render the chart with it.
+images:
+  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:1d6ba18732374a457ab89a2e7ca170b7d5a32f47ad85cdb7147a90cf20da6040
+  sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809
+  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809

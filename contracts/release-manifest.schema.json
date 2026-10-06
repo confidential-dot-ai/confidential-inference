@@ -149,6 +149,16 @@
         "sha256": {"$ref": "#/$defs/sha256Digest"}
       }
     },
+    "releaseValues": {
+      "description": "The release asset release-values.yaml: the Helm values file that the release build generates. Releases built before it existed do not carry it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"pattern": "^release(?:/staging)?/release-values\\.yaml$"},
+        "sha256": {"$ref": "#/$defs/sha256Digest"}
+      }
+    },
     "publicHostnames": {
       "type": "array",
       "minItems": 1,

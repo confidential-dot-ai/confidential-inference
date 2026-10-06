@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the release manifest, the file that the release signs.
+"""Build a release: the release manifest, which the release signs, and the files it binds.
 
 The manifest states what the release is. The client verifies it. It lists:
 
@@ -10,16 +10,41 @@ The manifest states what the release is. The client verifies it. It lists:
   lock entry for that commit;
 - the node image digest and its TDX measurements;
 - the model identity;
-- the SHA-256 of release/allowlist.json.
+- the SHA-256 of the generated allowlist and of the generated values file.
 
-It holds no deployment value: no mesh CA, no operator key, no node name. It
-names the source commit of the release tag, so it is not committed to the
-repository. The release workflow builds it at the tag, signs it, and attaches
-it to the GitHub release. Anyone can rebuild it from the tagged tree with
-`--source-commit <tag commit>` and compare the bytes.
+It holds no deployment value: no mesh CA, no operator key, no node name.
 
-The output must match contracts/release-manifest.schema.json.
-`--check` fails when an existing file differs from a new build.
+The repository holds no digest of an image that it builds. The build takes
+each one from signed evidence:
+
+- an image that changed after the base release of the image publication: the
+  publication evidence of the release-images run, which pushed the audited
+  digest;
+- any other image: the signed manifest of that base release. The build
+  verifies its signature and that no build input of the image changed since.
+
+The publication evidence names its base (source.baseRef). When the base is a
+release tag, the build downloads release-bundle.json and
+release-bundle.sigstore.json of that GitHub release itself. The repository
+is public, so it needs no token; the build sends GH_TOKEN when it is set.
+When the base is a commit, there is no base release. The caller does not
+choose. --download-dir keeps the downloaded files; the build uses the files
+already there, after the same checks.
+
+The build writes three files to --output-dir:
+
+- release-bundle.json: the manifest. It must match
+  contracts/release-manifest.schema.json;
+- allowlist.json: the c8s allowlist, generated with the pinned c8s CLI from
+  the chart rendered with these digests. The manifest binds its SHA-256;
+- release-values.yaml: the Helm values file with the repository image
+  digests. Apply it after the profile values files. The manifest binds its
+  SHA-256 (releaseValues).
+
+The release workflow builds them at the tag, signs the manifest, and attaches
+all three to the GitHub release. Anyone can build them again from the tagged
+tree with the same inputs and compare the bytes. `--check` fails when an
+existing file differs from a new build.
 """
 
 from __future__ import annotations
@@ -27,10 +52,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import runpy
+import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +68,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release_profiles
+import release_signature
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = ROOT / "release"
@@ -102,16 +132,14 @@ def read_spec(profile: release_profiles.Profile) -> dict[str, Any]:
 def validate_spec(spec: Any, profile: release_profiles.Profile) -> dict[str, Any]:
     require(isinstance(spec, dict), "the release specification is not a mapping")
     require(
-        set(spec) == {"version", "imageSourceCommit", "c8s", "model", "publicHostnames"},
-        "the release specification must hold exactly version, imageSourceCommit, c8s, model, and publicHostnames",
+        set(spec) == {"version", "c8s", "model", "publicHostnames"},
+        "the release specification must hold exactly version, c8s, model, and publicHostnames",
     )
     try:
         version_profile = release_profiles.for_tag(str(spec["version"])).name
     except release_profiles.ProfileError:
         version_profile = None
     require(version_profile == profile.name, f"version must be vX.Y.Z{profile.tag_suffix} in profile {profile.name}")
-    require(COMMIT.fullmatch(str(spec["imageSourceCommit"])) is not None,
-            "imageSourceCommit must be a full Git commit")
     c8s = spec["c8s"]
     require(isinstance(c8s, dict), "c8s must be a mapping")
     require(isinstance(c8s.get("release"), str) and C8S_VERSION.fullmatch(c8s["release"]) is not None,
@@ -143,12 +171,14 @@ def validate_spec(spec: Any, profile: release_profiles.Profile) -> dict[str, Any
     return spec
 
 
-def render_chart(chart: Path, profile: release_profiles.Profile, settings: dict[str, str]) -> list[dict[str, Any]]:
-    """Render the chart with the profile values files, in layer order."""
+def render_chart(
+    chart: Path, profile: release_profiles.Profile, settings: dict[str, str], overlay: Path,
+) -> list[dict[str, Any]]:
+    """Render the chart with the profile values files in layer order, then the overlay."""
     result = subprocess.run(
         ["helm", "template", settings["release"], str(chart),
          "--namespace", settings["namespace"], "--kube-version", settings["kubeVersion"],
-         *release_profiles.helm_values_args(profile)],
+         *release_profiles.helm_values_args(profile, overlay)],
         capture_output=True, text=True, check=False,
     )
     if result.returncode:
@@ -231,7 +261,7 @@ def require_allowlist_contract(
     expected_names |= {ALLOWLIST_GENERATOR["floor_entry"](image)[0] for image in core_images}
     workloads = allowlist.get("workloads")
     require(isinstance(workloads, dict) and set(workloads) == expected_names,
-            "release/allowlist.json entries differ from the profile allowlist policy")
+            "the allowlist entries differ from the profile allowlist policy")
     core_digests = {OCI.fullmatch(image).group(2) for image in core_images}
     injected = ALLOWLIST_GENERATOR["INJECTED_ENTRYPOINTS"]
     effective_process = ALLOWLIST_GENERATOR["effective_process"]
@@ -337,48 +367,167 @@ def image_names(values: dict[str, Any], images: list[str]) -> dict[str, str]:
     return dict(sorted(named.items()))
 
 
-def image_publication(
-    path: Path,
-    *,
-    source_commit: str,
-    release_images: dict[str, str],
-) -> dict[str, Any]:
-    """Validate publication evidence and bind it into the signed manifest."""
+def read_publication(path: Path) -> tuple[bytes, dict[str, Any]]:
     data = path.read_bytes()
     try:
         publication = PUBLICATION["validate"](json.loads(data))
-    except PUBLICATION["PublicationError"] as error:
+    except (PUBLICATION["PublicationError"], json.JSONDecodeError) as error:
         raise ManifestError(f"image publication: {error}") from error
-    require(publication["source"]["repository"] == REPOSITORY,
-            "image publication repository differs from the release repository")
-    require(publication["source"]["commit"] == source_commit,
-            "image publication source commit differs from imageSourceCommit")
-    deployed_by_repository = {
-        image.rsplit("@", 1)[0]: image
-        for image in release_images.values()
-    }
-    bound: dict[str, str] = {}
-    registered = {
-        f"ghcr.io/confidential-dot-ai/confidential-inference/{image.image}"
-        for image in IMAGE_SELECTOR["IMAGES"]
-    }
+    registered = {f"{release_profiles.REPOSITORY_IMAGES}{image.image}" for image in IMAGE_SELECTOR["IMAGES"]}
     for entry in publication["images"]:
-        name = entry["name"]
-        pushed = entry["digest"]
-        require(name in registered, f"published image is outside the release image registry: {name}")
-        deployed = deployed_by_repository.get(name)
-        if deployed is not None:
-            require(deployed == f"{name}@{pushed}",
-                    f"published image digest differs from the rendered release: {name}@{pushed}")
-        bound[name] = pushed
-    require(bool(bound), "image publication has no image")
+        require(entry["name"] in registered,
+                f"published image is outside the release image registry: {entry['name']}")
+    return data, publication
+
+
+def changed_paths(base: str, head: str, repo: Path = ROOT) -> list[str]:
+    """Return the paths that changed from base to head. Base must be an ancestor."""
+    ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", base, head],
+                              cwd=repo, capture_output=True, text=True)
+    require(ancestor.returncode == 0, f"{base} is not an ancestor of {head}")
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", "--no-renames", "--diff-filter=ACMRTD", base, head],
+        cwd=repo, capture_output=True, text=True,
+    )
+    require(changed.returncode == 0, f"cannot compare {base} and {head}")
+    return changed.stdout.splitlines()
+
+
+BASE_RELEASE_FILES = ("release-bundle.json", "release-bundle.sigstore.json")
+MAX_BASE_RELEASE_FILE_BYTES = 16 * 1024 * 1024
+
+
+def fetch(url: str) -> bytes:
+    """Return the bytes at `url`. GH_TOKEN, when set, authenticates to GitHub only."""
+    request = urllib.request.Request(url)
+    if os.environ.get("GH_TOKEN"):
+        # An unredirected header is not sent to the asset host that GitHub redirects to.
+        request.add_unredirected_header("Authorization", f"Bearer {os.environ['GH_TOKEN']}")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read(MAX_BASE_RELEASE_FILE_BYTES + 1)
+    except OSError as error:
+        raise ManifestError(f"cannot download {url}: {error}") from error
+    require(len(data) <= MAX_BASE_RELEASE_FILE_BYTES, f"{url} is too large")
+    return data
+
+
+def download_base_release(tag: str, directory: Path) -> tuple[Path, Path]:
+    """Return the signed manifest and Sigstore bundle of release `tag` in `directory`.
+
+    The build downloads them from the GitHub release of this repository. The
+    repository is public, so it needs no token; it sends GH_TOKEN when it is
+    set. When both files are already in `directory`, it uses them. The
+    caller trusts neither file until it verifies the signature.
+    """
+    paths = tuple(directory / name for name in BASE_RELEASE_FILES)
+    if not all(path.is_file() for path in paths):
+        directory.mkdir(parents=True, exist_ok=True)
+        for path in paths:
+            path.write_bytes(fetch(f"{REPOSITORY}/releases/download/{tag}/{path.name}"))
+    return paths
+
+
+def base_release_images(
+    publication: dict[str, Any],
+    download_dir: Path,
+    repo: Path = ROOT,
+) -> dict[str, str]:
+    """Return the repository image digests of the base release of the publication.
+
+    The image run publishes only the images that changed after its base. When
+    the base is a release tag (release_profiles.tag_pattern), every other
+    image keeps the digest that the signed manifest of that release names.
+    The build downloads that manifest and its Sigstore bundle into
+    `download_dir`. The manifest must carry a valid release signature, name
+    the base tag and commit of the publication, and no build input of an
+    image outside the publication may have changed since. When the base is a
+    commit, there is no base release.
+    """
+    source = publication["source"]
+    if release_profiles.tag_pattern().fullmatch(source["baseRef"]) is None:
+        return {}
+    base_path, signature_path = download_base_release(source["baseRef"], download_dir)
+    cosign = shutil.which("cosign")
+    require(cosign is not None, "verifying the base release needs cosign")
+    try:
+        release_signature.verify_release_signature(base_path, signature_path, Path(cosign).resolve(), 60)
+    except (OSError, release_signature.ReleaseSignatureError) as error:
+        raise ManifestError(f"the base release signature: {error}") from error
+    base = read_json(base_path)
+    validate_schema(base)
+    require(base["release"]["name"] == source["baseRef"],
+            "the base release manifest names a different release than the image publication base")
+    require(base["source"]["commit"] == source["baseRefCommit"],
+            "the base release source commit differs from the image publication base commit")
+    changed = changed_paths(source["baseRefCommit"], source["commit"], repo)
+    published = {entry["name"] for entry in publication["images"]}
+    unpublished = [image.image for image in IMAGE_SELECTOR["affected_images"](changed)
+                   if f"{release_profiles.REPOSITORY_IMAGES}{image.image}" not in published]
+    require(not unpublished,
+            "image build inputs changed after the base release, and the publication has no new digest: "
+            + ", ".join(unpublished))
+    images: dict[str, str] = {}
+    for image in base["images"].values():
+        name, digest = image.rsplit("@", 1)
+        if name.startswith(release_profiles.REPOSITORY_IMAGES):
+            images[name] = digest
+    return images
+
+
+def release_images(
+    values: dict[str, Any], publication: dict[str, Any], base: dict[str, str],
+) -> dict[str, str]:
+    """Give each repository image of the values its digest: published, else from the base release."""
+    published = {entry["name"]: entry["digest"] for entry in publication["images"]}
+    resolved: dict[str, str] = {}
+    for key, value in values.get("images", {}).items():
+        if not isinstance(value, str) or not value.startswith(release_profiles.REPOSITORY_IMAGES):
+            continue
+        require("@" not in value,
+                f"values.images.{key} pins a digest; the release takes it from the image publication")
+        digest = published.get(value) or base.get(value)
+        require(digest is not None, f"neither the image publication nor the base release names {value}")
+        resolved[key] = f"{value}@{digest}"
+    return dict(sorted(resolved.items()))
+
+
+def image_configs(images: list[str]) -> dict[str, Any]:
+    """Return the image configuration of every rendered image.
+
+    release/inputs/image-config.json records each image that this repository
+    does not build. A repository image is read from the registry by digest.
+    """
+    record = read_json(release_profiles.IMAGE_CONFIG)
+    require(isinstance(record, dict), "release image configuration is not a mapping")
+    require(not any(image.startswith(release_profiles.REPOSITORY_IMAGES) for image in record),
+            "release/inputs/image-config.json must not record a repository image")
+    for image in images:
+        if image not in record:
+            require(image.startswith(release_profiles.REPOSITORY_IMAGES),
+                    f"release/inputs/image-config.json has no record for {image}")
+            try:
+                record[image] = ALLOWLIST_GENERATOR["image_config"](image)
+            except ALLOWLIST_GENERATOR["GenerationError"] as error:
+                raise ManifestError(str(error)) from error
+    return record
+
+
+def publication_binding(
+    data: bytes, publication: dict[str, Any], release_images: dict[str, str],
+) -> dict[str, Any]:
+    """Bind the publication evidence into the signed manifest."""
+    for entry in publication["images"]:
+        deployed = [image for image in release_images.values() if image.rsplit("@", 1)[0] == entry["name"]]
+        require(all(image == f"{entry['name']}@{entry['digest']}" for image in deployed),
+                f"published image digest differs from the rendered release: {entry['name']}@{entry['digest']}")
     return {
         "artifact": "image-publication-manifest.json",
         "manifestSha256": sha256(data),
         "sourceCommit": publication["source"]["commit"],
         "baseRef": publication["source"]["baseRef"],
         "baseRefCommit": publication["source"]["baseRefCommit"],
-        "images": dict(sorted(bound.items())),
+        "images": {entry["name"]: entry["digest"] for entry in publication["images"]},
     }
 
 
@@ -387,25 +536,20 @@ def verify_image_source_boundary(
     release_source_commit: str,
     repo: Path = ROOT,
 ) -> None:
-    """Require a later pin-only release commit for the published images."""
-    ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", image_source_commit, release_source_commit],
-        cwd=repo, capture_output=True, text=True,
-    )
-    require(ancestor.returncode == 0,
-            "imageSourceCommit must be an ancestor of the release source commit")
-    changed = subprocess.run(
-        ["git", "diff", "--name-only", "--no-renames", "--diff-filter=ACMRTD",
-         image_source_commit, release_source_commit],
-        cwd=repo, capture_output=True, text=True,
-    )
-    require(changed.returncode == 0, "cannot compare image and release source commits")
-    changed_paths = changed.stdout.splitlines()
-    require("scripts/affected-release-images.py" not in changed_paths,
-            "the image selector changed after imageSourceCommit")
-    affected = IMAGE_SELECTOR["affected_images"](changed_paths)
+    """Require that no image build input changed from the image source to the release commit.
+
+    The release commit is the image source commit, or a later commit that
+    changes no image.
+    """
+    try:
+        paths = changed_paths(image_source_commit, release_source_commit, repo)
+    except ManifestError as error:
+        raise ManifestError(f"the image source commit must be an ancestor of the release commit: {error}") from error
+    require("scripts/affected-release-images.py" not in paths,
+            "the image selector changed after the image source commit")
+    affected = IMAGE_SELECTOR["affected_images"](paths)
     require(not affected,
-            "image build inputs changed after imageSourceCommit: "
+            "image build inputs changed after the image source commit: "
             + ", ".join(image.image for image in affected))
 
 
@@ -415,7 +559,11 @@ def build(
     lock_path: Path,
     source_commit: str,
     publication_path: Path,
-) -> dict[str, Any]:
+    download_dir: Path | None,
+    c8s: Path,
+    canonical_tool: Path | None,
+) -> dict[str, bytes]:
+    """Return the release files by name: the manifest, the allowlist, and the values overlay."""
     try:
         profile = release_profiles.for_directory(release)
     except release_profiles.ProfileError as error:
@@ -423,41 +571,52 @@ def build(
     chart = chart.resolve()
     require(COMMIT.fullmatch(source_commit) is not None, "--source-commit must be a full Git commit")
     spec = read_spec(profile)
-    verify_image_source_boundary(spec["imageSourceCommit"], source_commit)
+    publication_bytes, publication = read_publication(publication_path)
+    verify_image_source_boundary(publication["source"]["commit"], source_commit)
+    with tempfile.TemporaryDirectory(prefix="base-release-") as directory:
+        base = base_release_images(publication, download_dir or Path(directory))
     policy = read_allowlist_policy(profile.policy)
-    allowlist_path = profile.allowlist
-    require(allowlist_path.is_file(), f"{profile.relative(allowlist_path)} is absent; generate it first")
-    allowlist_bytes = allowlist_path.read_bytes()
-    allowlist = json.loads(allowlist_bytes)
-    require(allowlist.get("schema") == "c8s.allowlist/v1", "release/allowlist.json has the wrong schema")
     values = release_profiles.read_values(profile)
     require(isinstance(values, dict) and bool(values), "the profile values are not a mapping")
+    overlay = {"images": release_images(values, publication, base)}
+    overlay_bytes = yaml.safe_dump(overlay, sort_keys=True).encode()
+    values = release_profiles.merge_values(values, overlay)
     require_model_agreement(spec, values)
     require_c8s_agreement(spec, values)
-    image_configs = read_json(release_profiles.IMAGE_CONFIG)
-    require(isinstance(image_configs, dict), "release image configuration is not a mapping")
-    documents = render_chart(chart, profile, policy["chart"])
+    with tempfile.TemporaryDirectory(prefix="release-build-") as directory:
+        overlay_path = Path(directory) / "release-values.yaml"
+        overlay_path.write_bytes(overlay_bytes)
+        documents = render_chart(chart, profile, policy["chart"], overlay_path)
+        images = rendered_images(documents)
+        unresolved = [image for image in images if image.startswith(release_profiles.REPOSITORY_IMAGES)
+                      and image not in overlay["images"].values()]
+        require(not unresolved, f"rendered repository images without a published digest: {unresolved}")
+        configs = image_configs(images)
+        try:
+            allowlist_bytes = ALLOWLIST_GENERATOR["generate"](
+                profile, c8s, canonical_tool, overlay=overlay_path, image_env=configs,
+            ) + b"\n"
+        except ALLOWLIST_GENERATOR["GenerationError"] as error:
+            raise ManifestError(str(error)) from error
+    allowlist_path = profile.allowlist
+    allowlist = json.loads(allowlist_bytes)
+    require(allowlist.get("schema") == "c8s.allowlist/v1", "the allowlist has the wrong schema")
     require_model_files(spec, documents)
-    require_allowlist_contract(allowlist, policy, spec["c8s"]["coreImages"], documents, image_configs)
-    images = rendered_images(documents)
+    require_allowlist_contract(allowlist, policy, spec["c8s"]["coreImages"], documents, configs)
     allowlisted = {
         container["digest"]
         for entry in allowlist["workloads"].values()
         for container in entry.get("initContainers", []) + entry.get("containers", [])
     }
     missing = [image for image in images if OCI.fullmatch(image).group(2) not in allowlisted]
-    require(not missing, f"rendered images absent from release/allowlist.json: {missing}")
+    require(not missing, f"rendered images absent from the allowlist: {missing}")
     lock = source_lock_entry(read_json(lock_path), spec["c8s"]["sourceCommit"])
     require(lock.get("tag") == spec["c8s"]["release"], "the source lock tag differs from c8s.release")
     node_reference = f"{spec['c8s']['nodeImage']['reference']}@{spec['c8s']['nodeImage']['digest']}"
     require(lock["nodeImage"] == node_reference, "the source lock node image differs from c8s.nodeImage")
     node = node_measurements(release_profiles.node_manifest(profile), spec)
     named_images = image_names(values, images)
-    publication = image_publication(
-        publication_path,
-        source_commit=spec["imageSourceCommit"],
-        release_images=named_images,
-    )
+    publication = publication_binding(publication_bytes, publication, named_images)
     manifest = {
         "schema": SCHEMA,
         "release": {
@@ -495,10 +654,18 @@ def build(
             "path": allowlist_path.relative_to(ROOT).as_posix(),
             "sha256": sha256(allowlist_bytes),
         },
+        "releaseValues": {
+            "path": profile.release_values.relative_to(ROOT).as_posix(),
+            "sha256": sha256(overlay_bytes),
+        },
         "publicHostnames": spec["publicHostnames"],
     }
     validate_schema(manifest)
-    return manifest
+    return {
+        "release-bundle.json": encode(manifest),
+        "allowlist.json": allowlist_bytes,
+        "release-values.yaml": overlay_bytes,
+    }
 
 
 def validate_schema(manifest: dict[str, Any]) -> None:
@@ -514,7 +681,7 @@ def encode(manifest: dict[str, Any]) -> bytes:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--release", type=Path, default=RELEASE)
     parser.add_argument("--chart", type=Path, default=CHART)
     parser.add_argument("--source-lock", type=Path, default=SOURCE_LOCK)
@@ -522,27 +689,39 @@ def main() -> int:
                         help="the commit of this repository that the release tag names")
     parser.add_argument("--image-publication", type=Path, required=True,
                         help="verified image publication manifest from the release-images workflow")
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--download-dir", type=Path,
+                        help="where the build keeps the signed base release that it downloads "
+                             "(default: a temporary directory); it uses the files already there")
+    parser.add_argument("--c8s", type=Path, required=True,
+                        help="the c8s CLI built from the pinned c8s source commit")
+    parser.add_argument("--canonical-tool", type=Path,
+                        help="a built tools/c8s-allowlist-canonical binary")
+    parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     try:
-        data = encode(build(
+        files = build(
             args.release,
             args.chart,
             args.source_lock.resolve(),
             args.source_commit,
             args.image_publication.resolve(),
-        ))
-        output = args.output
-        if args.check:
-            require(output.is_file() and output.read_bytes() == data,
-                    f"{output} differs from a new build")
-        else:
-            output.write_bytes(data)
+            args.download_dir.resolve() if args.download_dir else None,
+            args.c8s.resolve(),
+            args.canonical_tool.resolve() if args.canonical_tool else None,
+        )
+        for name, data in files.items():
+            output = args.output_dir / name
+            if args.check:
+                require(output.is_file() and output.read_bytes() == data,
+                        f"{output} differs from a new build")
+            else:
+                args.output_dir.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(data)
     except (ManifestError, OSError, KeyError, json.JSONDecodeError) as error:
         print(f"build-release-manifest: {error}", file=sys.stderr)
         return 1
-    print(json.dumps({"manifest": str(args.output), "sha256": sha256(data)}))
+    print(json.dumps({name: sha256(data) for name, data in files.items()}, sort_keys=True))
     return 0
 
 

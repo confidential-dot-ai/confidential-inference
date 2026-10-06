@@ -2,6 +2,11 @@
 
 These tests use no network, no cluster, and no c8s binary. They cover the
 parts of the tools that decide the allowlist and the manifest content.
+
+The repository holds no digest of an image that it builds, so the tests
+render the chart with fixtures/release-values.yaml: the digests of the
+v0.14.0 images. fixtures/staging-allowlist.json is the staging allowlist that
+the pinned c8s CLI generates from those digests.
 """
 
 from __future__ import annotations
@@ -36,12 +41,63 @@ NODE = load("fetch_node_manifest", "scripts/fetch-node-manifest.py")
 PROFILES = sys.modules["release_profiles"]
 PRODUCTION = PROFILES.for_directory(ROOT / "release")
 STAGING = PROFILES.for_directory(ROOT / "release/staging")
+FIXTURES = ROOT / "tests/release-v1/fixtures"
+OVERLAY = FIXTURES / "release-values.yaml"
+STAGING_ALLOWLIST = FIXTURES / "staging-allowlist.json"
+REPOSITORY_CONFIGS = json.loads((FIXTURES / "repository-image-config.json").read_text())
+RELEASE_IMAGES = yaml.safe_load(OVERLAY.read_text())["images"]
+REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 
 
 @functools.cache
 def rendered(profile) -> list[dict]:
     """The chart rendered with the profile values and its policy settings. Do not change it."""
-    return MAN.render_chart(MAN.CHART, profile, MAN.read_allowlist_policy(profile.policy)["chart"])
+    return MAN.render_chart(MAN.CHART, profile, MAN.read_allowlist_policy(profile.policy)["chart"], OVERLAY)
+
+
+def publication(images: dict[str, str], *, commit: str = "b" * 40, base_ref: str = "v0.13.28-rc.2",
+                base_commit: str = "c" * 40) -> dict:
+    return {
+        "schema": "confidential.ai/image-publication-manifest/v2",
+        "source": {"repository": REPOSITORY, "commit": commit, "baseRef": base_ref, "baseRefCommit": base_commit},
+        "images": [{"name": name, "digest": digest} for name, digest in sorted(images.items())],
+    }
+
+
+def published_release_images() -> dict[str, str]:
+    """The fixture digests by repository, as the image publication names them."""
+    return dict(image.split("@", 1) for image in RELEASE_IMAGES.values())
+
+
+def build_staging(evidence: dict, base: dict | None = None) -> dict[str, bytes]:
+    """Build the staging release with the c8s CLI, crane, and the signature check replaced."""
+    generated = STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")
+    with tempfile.TemporaryDirectory() as temporary:
+        evidence_path = Path(temporary) / "publication.json"
+        evidence_path.write_text(json.dumps(evidence))
+        download_dir = Path(temporary) / "base"
+        if base is not None:
+            download_dir.mkdir()
+            (download_dir / "release-bundle.json").write_text(json.dumps(base))
+            (download_dir / "release-bundle.sigstore.json").write_text("{}")
+        with mock.patch.object(MAN, "verify_image_source_boundary"), \
+                mock.patch.object(MAN, "changed_paths", return_value=[]), \
+                mock.patch.object(MAN.release_signature, "verify_release_signature"), \
+                mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"), \
+                mock.patch.dict(MAN.ALLOWLIST_GENERATOR, {
+                    "generate": lambda *_args, **_kwargs: generated,
+                    "image_config": REPOSITORY_CONFIGS.__getitem__,
+                }):
+            return MAN.build(
+                ROOT / "release/staging",
+                ROOT / "helm/confidential-inference",
+                ROOT / "contracts/c8s-admission-source-lock.json",
+                "d" * 40,
+                evidence_path,
+                download_dir,
+                Path("c8s"),
+                None,
+            )
 
 
 def rendered_workers(profile) -> list[dict]:
@@ -281,44 +337,124 @@ class ManifestTests(unittest.TestCase):
                 MAN.verify_image_source_boundary(image_source, release_source, repo)
 
     def test_staging_manifest_uses_the_staging_profile(self):
-        values = PROFILES.read_values(STAGING)
-        image_source_commit = MAN.read_spec(STAGING)["imageSourceCommit"]
-        release_source_commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
-        ).strip()
-        records = {}
-        for value in values["images"].values():
-            if value.startswith("ghcr.io/confidential-dot-ai/confidential-inference/"):
-                name, digest = value.split("@", 1)
-                records[name] = digest
-        publication = {
-            "schema": "confidential.ai/image-publication-manifest/v2",
-            "source": {
-                "repository": "https://github.com/confidential-dot-ai/confidential-inference",
-                "commit": image_source_commit,
-                "baseRef": "v0.13.28-rc.2",
-                "baseRefCommit": "a54319a2ebb2ae51f161d7c2085bffcca02e082c",
-            },
-            "images": [
-                {"name": name, "digest": digest}
-                for name, digest in sorted(records.items())
-            ],
-        }
-        with tempfile.TemporaryDirectory() as temporary:
-            publication_path = Path(temporary) / "publication.json"
-            publication_path.write_text(json.dumps(publication))
-            with mock.patch.object(MAN, "verify_image_source_boundary"):
-                manifest = MAN.build(
-                    ROOT / "release/staging",
-                    ROOT / "helm/confidential-inference",
-                    ROOT / "contracts/c8s-admission-source-lock.json",
-                    release_source_commit,
-                    publication_path,
-                )
+        files = build_staging(publication(published_release_images()))
+        manifest = json.loads(files["release-bundle.json"])
         self.assertEqual(manifest["release"], {"name": "v0.14.2-staging", "environment": "staging"})
-        self.assertEqual(manifest["allowlist"]["path"], "release/staging/allowlist.json")
-        self.assertEqual(manifest["source"]["commit"], release_source_commit)
-        self.assertEqual(manifest["imagePublication"]["sourceCommit"], image_source_commit)
+        self.assertEqual(manifest["allowlist"], {
+            "path": "release/staging/allowlist.json",
+            "sha256": MAN.sha256(STAGING_ALLOWLIST.read_bytes()),
+        })
+        self.assertEqual(files["allowlist.json"], STAGING_ALLOWLIST.read_bytes())
+        self.assertEqual(manifest["releaseValues"], {
+            "path": "release/staging/release-values.yaml",
+            "sha256": MAN.sha256(files["release-values.yaml"]),
+        })
+        self.assertEqual(manifest["source"]["commit"], "d" * 40)
+        self.assertEqual(manifest["imagePublication"]["sourceCommit"], "b" * 40)
+        self.assertEqual(yaml.safe_load(files["release-values.yaml"]), {"images": RELEASE_IMAGES})
+        for key, image in RELEASE_IMAGES.items():
+            self.assertEqual(manifest["images"][key], image)
+
+    def test_an_unchanged_image_keeps_the_digest_of_the_signed_base_release(self):
+        sglang = "ghcr.io/confidential-dot-ai/confidential-inference/sglang"
+        base = json.loads(build_staging(publication(published_release_images()))["release-bundle.json"])
+        base["release"]["name"] = "v0.14.1-staging"
+        base["source"]["commit"] = "c" * 40
+        evidence = publication({sglang: published_release_images()[sglang]}, base_ref="v0.14.1-staging")
+        manifest = json.loads(build_staging(evidence, base)["release-bundle.json"])
+        self.assertEqual(manifest["images"]["gateway"], RELEASE_IMAGES["gateway"])
+        self.assertEqual(manifest["imagePublication"]["images"], {sglang: published_release_images()[sglang]})
+
+    def test_the_base_release_must_match_the_publication(self):
+        base = json.loads(build_staging(publication(published_release_images()))["release-bundle.json"])
+        base["release"]["name"] = "v0.14.1-staging"
+        base["source"]["commit"] = "c" * 40
+        evidence = publication({}, base_ref="v0.14.1-staging")
+        for value, message in (
+            ({**base, "release": {**base["release"], "name": "v0.14.0-staging"}}, "different release"),
+            ({**base, "source": {**base["source"], "commit": "e" * 40}}, "base commit"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(MAN.ManifestError, message):
+                self.base_images(evidence, value)
+        # A release built before releaseValues existed is still a valid base.
+        legacy = {key: value for key, value in base.items() if key != "releaseValues"}
+        self.assertTrue(self.base_images(evidence, legacy))
+
+    def test_the_build_downloads_the_base_release_that_the_evidence_names(self):
+        urls = []
+
+        def fetch(url):
+            urls.append(url)
+            return url.encode()
+
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(MAN, "fetch", side_effect=fetch):
+            directory = Path(temporary) / "base"
+            self.assertEqual(MAN.base_release_images(publication({}), directory), {})
+            self.assertEqual(urls, [])
+            paths = MAN.download_base_release("v0.14.1-staging", directory)
+            release = f"{REPOSITORY}/releases/download/v0.14.1-staging"
+            self.assertEqual(urls, [f"{release}/release-bundle.json", f"{release}/release-bundle.sigstore.json"])
+            self.assertEqual([path.read_text() for path in paths], urls)
+            MAN.download_base_release("v0.14.1-staging", directory)
+            self.assertEqual(len(urls), 2)
+
+    def test_the_download_sends_the_token_to_github_only(self):
+        with mock.patch.dict(MAN.os.environ, {"GH_TOKEN": "token"}), \
+                mock.patch.object(MAN.urllib.request, "urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = b"{}"
+            self.assertEqual(MAN.fetch(f"{REPOSITORY}/releases/download/v1.0.0/release-bundle.json"), b"{}")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.unredirected_hdrs, {"Authorization": "Bearer token"})
+        self.assertNotIn("Authorization", request.headers)
+
+    def test_an_image_changed_after_the_base_needs_a_new_digest(self):
+        base = json.loads(build_staging(publication(published_release_images()))["release-bundle.json"])
+        base["release"]["name"] = "v0.14.1-staging"
+        base["source"]["commit"] = "c" * 40
+        evidence = publication({}, base_ref="v0.14.1-staging")
+        with self.assertRaisesRegex(MAN.ManifestError, "no new digest: gateway"):
+            self.base_images(evidence, base, ["images/gateway/Dockerfile"])
+        images = self.base_images(evidence, base, ["docs/threat-model.md"])
+        self.assertEqual(images["ghcr.io/confidential-dot-ai/confidential-inference/gateway"],
+                         RELEASE_IMAGES["gateway"].split("@", 1)[1])
+
+    @staticmethod
+    def base_images(evidence: dict, base: dict, changed: list[str] | None = None) -> dict[str, str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "release-bundle.json").write_text(json.dumps(base))
+            (directory / "release-bundle.sigstore.json").write_text("{}")
+            with mock.patch.object(MAN, "changed_paths", return_value=changed or []), \
+                    mock.patch.object(MAN.release_signature, "verify_release_signature") as verify, \
+                    mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"):
+                images = MAN.base_release_images(evidence, directory)
+                verify.assert_called_once_with(directory / "release-bundle.json",
+                                               directory / "release-bundle.sigstore.json",
+                                               Path("/usr/bin/cosign").resolve(), 60)
+                return images
+
+    def test_release_values_take_repository_digests_only_from_evidence(self):
+        gateway = "ghcr.io/confidential-dot-ai/confidential-inference/gateway"
+        values = {"images": {"gateway": gateway, "other": "docker.io/library/busybox@sha256:" + "1" * 64}}
+        evidence = publication({gateway: "sha256:" + "2" * 64})
+        self.assertEqual(MAN.release_images(values, evidence, {}), {"gateway": f"{gateway}@sha256:{'2' * 64}"})
+        self.assertEqual(MAN.release_images(values, publication({}), {gateway: "sha256:" + "3" * 64}),
+                         {"gateway": f"{gateway}@sha256:{'3' * 64}"})
+        with self.assertRaisesRegex(MAN.ManifestError, "neither"):
+            MAN.release_images(values, publication({}), {})
+        pinned = {"images": {"gateway": f"{gateway}@sha256:{'4' * 64}"}}
+        with self.assertRaisesRegex(MAN.ManifestError, "pins a digest"):
+            MAN.release_images(pinned, evidence, {})
+
+    def test_the_repository_holds_no_digest_of_a_repository_image(self):
+        for profile in PROFILES.load():
+            for key, value in PROFILES.read_values(profile).get("images", {}).items():
+                if value.startswith(PROFILES.REPOSITORY_IMAGES):
+                    with self.subTest(profile=profile.name, key=key):
+                        self.assertNotIn("@", value)
+            self.assertFalse(profile.allowlist.exists())
+        configs = json.loads(PROFILES.IMAGE_CONFIG.read_text())
+        self.assertFalse([image for image in configs if image.startswith(PROFILES.REPOSITORY_IMAGES)])
 
     def test_staging_workers_verify_the_model_before_the_simulator(self):
         workers = rendered_workers(STAGING)
@@ -332,13 +468,13 @@ class ManifestTests(unittest.TestCase):
             self.assertIn("confidential.ai/c8s-volumes", pod["metadata"]["annotations"])
             self.assertEqual(container["resources"]["requests"]["memory"], "16Gi")
 
-        allowlist = json.loads((ROOT / "release/staging/allowlist.json").read_text())
+        allowlist = json.loads(STAGING_ALLOWLIST.read_text())
         zero_digest = "sha256:" + "0" * 64
         for name in ("inference-worker-0", "inference-worker-1"):
             policy = allowlist["workloads"][name]["containers"][0]
             self.assertEqual(policy["command"]["argv"], ["/usr/local/bin/wait-for-model"])
             self.assertIn("sglang_simulator.simulation.sglang.launch_server", policy["args"]["argv"])
-        self.assertNotIn(zero_digest, (ROOT / "release/staging/allowlist.json").read_text())
+        self.assertNotIn(zero_digest, STAGING_ALLOWLIST.read_text())
 
     def test_manifest_refuses_model_values_that_differ_from_the_spec(self):
         spec = MAN.read_spec(STAGING)
@@ -386,93 +522,33 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(arguments, expected)
 
     def test_manifest_refuses_publication_evidence_for_an_unrendered_digest(self):
-        publication = {
-            "schema": "confidential.ai/image-publication-manifest/v2",
-            "source": {
-                "repository": "https://github.com/confidential-dot-ai/confidential-inference",
-                "commit": "b" * 40,
-                "baseRef": "v0.13.28-rc.2",
-                "baseRefCommit": "c" * 40,
-            },
-            "images": [{
-                "name": "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
-                "digest": "sha256:" + "0" * 64,
-            }],
-        }
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "publication.json"
-            path.write_text(json.dumps(publication))
-            with self.assertRaisesRegex(MAN.ManifestError, "differs from the rendered release"):
-                MAN.image_publication(
-                    path,
-                    source_commit="b" * 40,
-                    release_images={
-                        "gateway": "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64,
-                    },
-                )
+        gateway = "ghcr.io/confidential-dot-ai/confidential-inference/gateway"
+        with self.assertRaisesRegex(MAN.ManifestError, "differs from the rendered release"):
+            MAN.publication_binding(b"{}", publication({gateway: "sha256:" + "0" * 64}),
+                                    {"gateway": f"{gateway}@sha256:{'1' * 64}"})
 
     def test_manifest_records_a_published_image_outside_the_application_chart(self):
-        publication = {
-            "schema": "confidential.ai/image-publication-manifest/v2",
-            "source": {
-                "repository": "https://github.com/confidential-dot-ai/confidential-inference",
-                "commit": "b" * 40,
-                "baseRef": "v0.13.28-rc.2",
-                "baseRefCommit": "c" * 40,
-            },
-            "images": [{
-                "name": "ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway",
-                "digest": "sha256:" + "2" * 64,
-            }],
-        }
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "publication.json"
-            path.write_text(json.dumps(publication))
-            result = MAN.image_publication(
-                path,
-                source_commit="b" * 40,
-                release_images={
-                    "gateway": "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64,
-                },
-            )
-        self.assertEqual(
-            result["images"]["ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway"],
-            "sha256:" + "2" * 64,
-        )
+        gateway = "ghcr.io/confidential-dot-ai/confidential-inference/gateway"
+        maintenance = "ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway"
+        result = MAN.publication_binding(b"{}", publication({maintenance: "sha256:" + "2" * 64}),
+                                         {"gateway": f"{gateway}@sha256:{'1' * 64}"})
+        self.assertEqual(result["images"][maintenance], "sha256:" + "2" * 64)
 
-    def test_manifest_refuses_publication_from_another_source_commit(self):
-        publication = {
-            "schema": "confidential.ai/image-publication-manifest/v2",
-            "source": {
-                "repository": "https://github.com/confidential-dot-ai/confidential-inference",
-                "commit": "a" * 40,
-                "baseRef": "v0.13.28-rc.2",
-                "baseRefCommit": "c" * 40,
-            },
-            "images": [{
-                "name": "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
-                "digest": "sha256:" + "1" * 64,
-            }],
-        }
+    def test_manifest_refuses_publication_outside_the_release_registry(self):
+        unknown = publication({"ghcr.io/confidential-dot-ai/confidential-inference/unknown": "sha256:" + "1" * 64})
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "publication.json"
-            path.write_text(json.dumps(publication))
-            with self.assertRaisesRegex(MAN.ManifestError, "source commit differs"):
-                MAN.image_publication(
-                    path,
-                    source_commit="b" * 40,
-                    release_images={
-                        "gateway": "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64,
-                    },
-                )
+            path.write_text(json.dumps(unknown))
+            with self.assertRaisesRegex(MAN.ManifestError, "outside the release image registry"):
+                MAN.read_publication(path)
 
     def test_staging_policy_uses_its_exact_render_and_allowlist_namespace(self):
         spec = MAN.read_spec(STAGING)
         policy = MAN.read_allowlist_policy(STAGING.policy)
         core = spec["c8s"]["coreImages"]
         documents = rendered(STAGING)
-        allowlist = json.loads(STAGING.allowlist.read_text())
-        configs = json.loads(PROFILES.IMAGE_CONFIG.read_text())
+        allowlist = json.loads(STAGING_ALLOWLIST.read_text())
+        configs = {**json.loads(PROFILES.IMAGE_CONFIG.read_text()), **REPOSITORY_CONFIGS}
         MAN.require_allowlist_contract(allowlist, policy, core, documents, configs)
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")

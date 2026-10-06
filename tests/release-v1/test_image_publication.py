@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -80,11 +81,17 @@ class ImagePublicationTests(unittest.TestCase):
         self.assertEqual(images.count("--pushed-digest"), 2)
         self.assertIn("name: release-image-publication-${{ github.sha }}", images)
         self.assertNotIn("inputs.release_version", images)
-        self.assertIn('artifact_name="release-image-publication-${image_source_commit}"', bundle)
-        self.assertIn("--source-commit \"$image_source_commit\"", bundle)
+        self.assertIn('--release-commit "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"', bundle)
         self.assertIn("scripts/find-image-publication-run.py", bundle)
+        self.assertIn("name: ${{ steps.publication.outputs.artifact_name }}", bundle)
+        self.assertIn("run-id: ${{ steps.publication.outputs.run_id }}", bundle)
         self.assertIn("--image-publication dist/image-publication-manifest.json", bundle)
         self.assertIn("dist/image-publication-manifest.json#Image publication evidence", bundle)
+        self.assertIn("dist/allowlist.json#c8s allowlist", bundle)
+        self.assertIn("dist/release-values.yaml#Release image values", bundle)
+        self.assertNotIn("--base-release", bundle)
+        build = bundle[bundle.index("- name: Build the release at the tag commit"):]
+        self.assertIn("GH_TOKEN: ${{ github.token }}", build[:build.index("run: |")])
 
     def test_standard_images_publish_the_audited_archive(self):
         images = (ROOT / ".github/workflows/release-images.yml").read_text()
@@ -101,97 +108,80 @@ class ImagePublicationTests(unittest.TestCase):
         jsonschema.Draft202012Validator.check_schema(schema)
 
 
+def run_response(runs: dict[int, str], artifacts: dict[str, list[int]]):
+    """A GitHub API stub: successful release-images runs on main by id and head commit."""
+    def response(url, _token):
+        if "actions/artifacts" in url:
+            name = url.split("name=", 1)[1].split("&", 1)[0]
+            return {"artifacts": [
+                {"name": name, "expired": False, "workflow_run": {"id": run_id}}
+                for run_id in artifacts.get(name, [])
+            ]}
+        run_id = int(url.rsplit("/", 1)[-1])
+        return {
+            "event": "workflow_dispatch",
+            "path": ".github/workflows/release-images.yml",
+            "conclusion": "success",
+            "head_branch": "main",
+            "head_sha": runs[run_id],
+            "repository": {"full_name": "confidential-dot-ai/confidential-inference"},
+        }
+    return response
+
+
 class PublicationRunLookupTests(unittest.TestCase):
-    def test_only_a_successful_release_workflow_on_main_is_accepted(self):
-        def response(url, _token):
-            if "actions/artifacts" in url:
-                return {"artifacts": [{
-                    "name": "release-image-publication-" + "b" * 40,
-                    "expired": False,
-                    "workflow_run": {"id": 73},
-                }]}
-            return {
-                "event": "workflow_dispatch",
-                "path": ".github/workflows/release-images.yml",
-                "conclusion": "success",
-                "head_branch": "main",
-                "head_sha": "b" * 40,
-                "repository": {"full_name": "confidential-dot-ai/confidential-inference"},
-            }
-        original = FINDER.request_json
-        FINDER.request_json = response
-        try:
-            self.assertEqual(FINDER.find_run(
-                "https://api.github.test",
-                "confidential-dot-ai/confidential-inference",
-                "token",
-                "release-image-publication-" + "b" * 40,
-                "b" * 40,
-            ), 73)
-        finally:
-            FINDER.request_json = original
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.repo = Path(self.temporary.name)
+        self.git("init", "-q")
+        self.git("config", "user.email", "test@example.com")
+        self.git("config", "user.name", "Test")
+        # image: changes the gateway; docs: changes no image.
+        self.image = self.commit("images/gateway/Dockerfile", "FROM scratch\n")
+        self.docs = self.commit("docs/notes.md", "notes\n")
+        self.head = self.commit("docs/notes.md", "more notes\n")
+        self.original = FINDER.request_json
+
+    def tearDown(self):
+        FINDER.request_json = self.original
+        self.temporary.cleanup()
+
+    def git(self, *args: str) -> str:
+        return subprocess.check_output(["git", *args], cwd=self.repo, text=True).strip()
+
+    def commit(self, path: str, text: str) -> str:
+        target = self.repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+        self.git("add", ".")
+        self.git("commit", "-qm", path)
+        return self.git("rev-parse", "HEAD")
+
+    def find(self, runs, artifacts):
+        FINDER.request_json = run_response(runs, artifacts)
+        return FINDER.find_nearest("https://api.github.test", "confidential-dot-ai/confidential-inference",
+                                   "token", self.head, self.repo)
+
+    def test_the_release_commit_uses_its_own_evidence(self):
+        name = FINDER.artifact_name(self.head)
+        self.assertEqual(self.find({73: self.head}, {name: [73]}), (self.head, 73))
+
+    def test_a_later_commit_without_image_changes_uses_the_earlier_evidence(self):
+        name = FINDER.artifact_name(self.image)
+        self.assertEqual(self.find({73: self.image}, {name: [73]}), (self.image, 73))
+
+    def test_the_walk_stops_at_an_image_change_without_evidence(self):
+        with self.assertRaisesRegex(FINDER.LookupError, "changes an image build input"):
+            self.find({}, {})
 
     def test_duplicate_publication_runs_fail_closed(self):
-        def response(url, _token):
-            if "actions/artifacts" in url:
-                return {"artifacts": [
-                    {"name": "release-image-publication-" + "b" * 40, "expired": False,
-                     "workflow_run": {"id": 73}},
-                    {"name": "release-image-publication-" + "b" * 40, "expired": False,
-                     "workflow_run": {"id": 74}},
-                ]}
-            return {
-                "event": "workflow_dispatch",
-                "path": ".github/workflows/release-images.yml",
-                "conclusion": "success",
-                "head_branch": "main",
-                "head_sha": "b" * 40,
-                "repository": {"full_name": "confidential-dot-ai/confidential-inference"},
-            }
-        original = FINDER.request_json
-        FINDER.request_json = response
-        try:
-            with self.assertRaisesRegex(FINDER.LookupError, "expected one"):
-                FINDER.find_run(
-                    "https://api.github.test",
-                    "confidential-dot-ai/confidential-inference",
-                    "token",
-                    "release-image-publication-" + "b" * 40,
-                    "b" * 40,
-                )
-        finally:
-            FINDER.request_json = original
+        name = FINDER.artifact_name(self.docs)
+        with self.assertRaisesRegex(FINDER.LookupError, "more than one"):
+            self.find({73: self.docs, 74: self.docs}, {name: [73, 74]})
 
-    def test_stale_same_version_run_is_ignored(self):
-        def response(url, _token):
-            if "actions/artifacts" in url:
-                return {"artifacts": [
-                    {"name": "release-image-publication-" + "b" * 40, "expired": False,
-                     "workflow_run": {"id": 72}},
-                    {"name": "release-image-publication-" + "b" * 40, "expired": False,
-                     "workflow_run": {"id": 73}},
-                ]}
-            run_id = int(url.rsplit("/", 1)[-1])
-            return {
-                "event": "workflow_dispatch",
-                "path": ".github/workflows/release-images.yml",
-                "conclusion": "success",
-                "head_branch": "main",
-                "head_sha": ("a" if run_id == 72 else "b") * 40,
-                "repository": {"full_name": "confidential-dot-ai/confidential-inference"},
-            }
-        original = FINDER.request_json
-        FINDER.request_json = response
-        try:
-            self.assertEqual(FINDER.find_run(
-                "https://api.github.test",
-                "confidential-dot-ai/confidential-inference",
-                "token",
-                "release-image-publication-" + "b" * 40,
-                "b" * 40,
-            ), 73)
-        finally:
-            FINDER.request_json = original
+    def test_a_run_at_another_commit_is_ignored(self):
+        name = FINDER.artifact_name(self.head)
+        self.assertEqual(self.find({72: self.docs, 73: self.head}, {name: [72, 73]}), (self.head, 73))
 
 
 if __name__ == "__main__":

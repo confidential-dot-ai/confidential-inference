@@ -11,15 +11,18 @@ The tools apply the layers in order:
   each value that it sets and keeps the other values.
 
 The last layer is the profile directory. It holds the files that belong to
-that profile only: allowlist-policy.json, accepted-lint-findings.json, and the
-generated allowlist.json. The node manifest is in the layer that sets `c8s`.
-The image configuration is shared by all profiles.
+that profile only: allowlist-policy.json and accepted-lint-findings.json. The
+node manifest is in the layer that sets `c8s`. The image configuration is
+shared by all profiles.
+
+The values name each repository image without a digest. The release build
+takes the digests from the image publication evidence and gives them to Helm
+as one more values file after the layers (`helm_values_args(overlay=...)`).
 
 Usage:
 
     scripts/release_profiles.py resolve --tag v0.14.0-staging
     scripts/release_profiles.py resolve --release release/staging --format github
-    scripts/release_profiles.py spec --tag v0.14.0-staging --key imageSourceCommit
 """
 
 from __future__ import annotations
@@ -36,6 +39,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = ROOT / "release/profiles.json"
 IMAGE_CONFIG = ROOT / "release/inputs/image-config.json"
+# The registry of the images that this repository builds. Release values name
+# these images without a digest; the release build adds the published digest.
+REPOSITORY_IMAGES = "ghcr.io/confidential-dot-ai/confidential-inference/"
 SCHEMA = "confidential.ai/release-profiles/v1"
 VERSION = r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 NAME = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -68,7 +74,21 @@ class Profile:
 
     @property
     def allowlist(self) -> Path:
+        """The name that the release manifest gives the generated allowlist.
+
+        The release build generates the allowlist and publishes it as the
+        release asset allowlist.json. It is not in the repository.
+        """
         return self.directory / "allowlist.json"
+
+    @property
+    def release_values(self) -> Path:
+        """The name that the release manifest gives the generated values overlay.
+
+        The release build generates it and publishes it as the release asset
+        release-values.yaml. It is not in the repository.
+        """
+        return self.directory / "release-values.yaml"
 
     @property
     def spec_files(self) -> list[Path]:
@@ -193,9 +213,10 @@ def read_values(profile: Profile) -> dict[str, Any]:
     return values
 
 
-def helm_values_args(profile: Profile) -> list[str]:
-    """Give helm each values file of the profile, in layer order."""
-    return [argument for path in profile.values_files for argument in ("--values", str(path))]
+def helm_values_args(profile: Profile, overlay: Path | None = None) -> list[str]:
+    """Give helm each values file of the profile in layer order, then the overlay."""
+    files = [*profile.values_files, *([overlay] if overlay is not None else [])]
+    return [argument for path in files for argument in ("--values", str(path))]
 
 
 def describe(profile: Profile) -> dict[str, Any]:
@@ -216,18 +237,9 @@ def main() -> int:
     target.add_argument("--tag")
     target.add_argument("--release", type=Path)
     resolve.add_argument("--format", choices=("json", "github"), default="json")
-    spec = subparsers.add_parser("spec", help="print one top-level value of the specification of a tag")
-    spec.add_argument("--tag", required=True)
-    spec.add_argument("--key", required=True)
     args = parser.parse_args()
     try:
         profile = for_tag(args.tag) if args.tag else for_directory(args.release)
-        if args.command == "spec":
-            value = read_spec(profile)
-            if args.key not in value:
-                raise ProfileError(f"the specification of {args.tag} has no {args.key}")
-            print(value[args.key] if isinstance(value[args.key], str) else json.dumps(value[args.key]))
-            return 0
     except ProfileError as error:
         print(f"release-profiles: {error}", file=sys.stderr)
         return 1

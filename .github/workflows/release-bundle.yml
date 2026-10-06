@@ -46,6 +46,7 @@ jobs:
       actions: read
       contents: read
       id-token: write
+      packages: read
     steps:
       - name: Check out the release tag
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -91,20 +92,39 @@ jobs:
           tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
           sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
 
+      - name: Install the pinned crane
+        run: |
+          curl -fsSL -o /tmp/crane.tar.gz \
+            https://github.com/google/go-containerregistry/releases/download/v0.21.6/go-containerregistry_Linux_x86_64.tar.gz
+          echo "7ebbdcd05b652345c1f5105f8475e518534b90d66f3bdb50017be63f426ea435  /tmp/crane.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf /tmp/crane.tar.gz -C /tmp crane
+          sudo install -m 0755 /tmp/crane /usr/local/bin/crane
+
+      # The allowlist needs the configuration of each repository image, which
+      # crane reads from the registry by digest.
+      - name: Log in to GHCR to read the image configuration
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Install the pinned Cosign verifier
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.2
+
+      # The release names the image publication of the nearest main commit at
+      # or before the tag commit. No image build input may change in between.
       - name: Find the image publication evidence
         id: publication
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          image_source_commit="$(python3 scripts/release_profiles.py spec --tag "$RELEASE_TAG" --key imageSourceCommit)"
-          artifact_name="release-image-publication-${image_source_commit}"
-          run_id="$(python3 scripts/find-image-publication-run.py \
+          python3 scripts/find-image-publication-run.py \
             --repository "$GITHUB_REPOSITORY" \
-            --artifact-name "$artifact_name" \
-            --source-commit "$image_source_commit")"
-          printf 'artifact_name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
-          printf 'run_id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
+            --release-commit "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Download the verified image publication evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -115,22 +135,63 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ steps.publication.outputs.run_id }}
 
-      - name: Build the release manifest at the tag commit
+      - name: Check the image publication evidence
         run: |
-          mkdir -p dist
           python3 scripts/image-publication-manifest.py check \
             dist/image-publication-manifest.json
+
+      - name: Read the pinned c8s source commit
+        id: c8s
+        env:
+          RELEASE_DIRECTORY: ${{ needs.select-profile.outputs.directory }}
+        run: |
+          python3 - "$RELEASE_DIRECTORY" >> "$GITHUB_OUTPUT" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          import release_profiles
+          profile = release_profiles.for_directory(Path(sys.argv[1]))
+          print("source_commit=" + release_profiles.read_spec(profile)["c8s"]["sourceCommit"])
+          PY
+
+      - name: Check out the pinned c8s source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: confidential-dot-ai/c8s
+          ref: ${{ steps.c8s.outputs.source_commit }}
+          path: c8s-source
+          persist-credentials: false
+
+      - name: Set up the Go toolchain of the pinned c8s
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: c8s-source/go.mod
+          cache: false
+
+      - name: Build the pinned c8s CLI and the canonical allowlist tool
+        env:
+          GOPRIVATE: github.com/confidential-dot-ai/*
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          (cd c8s-source && go build -o "$RUNNER_TEMP/bin/c8s" ./cmd/c8s)
+          (cd tools/c8s-allowlist-canonical && go build -o "$RUNNER_TEMP/bin/c8s-allowlist-canonical" .)
+
+      # An image that did not change after the base release of the image run
+      # keeps the digest of the signed base release manifest. The build reads
+      # the base from the evidence and downloads and verifies that release.
+      - name: Build the release at the tag commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_DIRECTORY: ${{ needs.select-profile.outputs.directory }}
+        run: |
           git rev-parse HEAD > dist/release-tag-commit.txt
           python3 scripts/build-release-manifest.py \
-            --release "${{ needs.select-profile.outputs.directory }}" \
+            --release "$RELEASE_DIRECTORY" \
             --source-commit "$(git rev-parse HEAD)" \
             --image-publication dist/image-publication-manifest.json \
-            --output dist/release-bundle.json
-
-      - name: Install the pinned Cosign verifier
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        with:
-          cosign-release: v3.1.2
+            --c8s "$RUNNER_TEMP/bin/c8s" \
+            --canonical-tool "$RUNNER_TEMP/bin/c8s-allowlist-canonical" \
+            --output-dir dist
 
       - name: Create the keyless Sigstore bundle
         run: |
@@ -154,6 +215,8 @@ jobs:
             dist/release-bundle.sigstore.json
             dist/release-tag-commit.txt
             dist/image-publication-manifest.json
+            dist/allowlist.json
+            dist/release-values.yaml
           if-no-files-found: error
           retention-days: 90
 
@@ -210,8 +273,10 @@ jobs:
             --verify-tag \
             --target "$expected_commit" \
             --title "$RELEASE_TAG" \
-            --notes "Signed Confidential Inference release. For vX.Y.Z tags the signed file is the release manifest built from release/ at the tag commit." \
+            --notes "Signed Confidential Inference release. The signed file is the release manifest built from release/ at the tag commit. It binds allowlist.json and release-values.yaml by SHA-256." \
             "dist/release-bundle.json#Release bundle" \
             "dist/release-bundle.sigstore.json#Sigstore verification bundle" \
             "dist/release-tag-commit.txt#Signed tag commit" \
-            "dist/image-publication-manifest.json#Image publication evidence"
+            "dist/image-publication-manifest.json#Image publication evidence" \
+            "dist/allowlist.json#c8s allowlist" \
+            "dist/release-values.yaml#Release image values"

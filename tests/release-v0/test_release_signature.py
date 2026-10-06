@@ -43,7 +43,7 @@ class ReleaseSignatureTests(unittest.TestCase):
         self.assertNotIn("-rc.", workflow)
         self.assertNotIn("--candidate-bundle", workflow)
         self.assertIn('release_profiles.py resolve --tag "$RELEASE_TAG"', workflow)
-        self.assertIn('--release "${{ needs.select-profile.outputs.directory }}"', workflow)
+        self.assertIn('--release "$RELEASE_DIRECTORY"', workflow)
         self.assertIn("scripts/build-release-manifest.py", workflow)
         self.assertIn('--source-commit "$(git rev-parse HEAD)"', workflow)
 
