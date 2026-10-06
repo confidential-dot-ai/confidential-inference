@@ -40,3 +40,6 @@ inference:
 metricsCollector:
   remoteWrite:
     enabled: false
+
+images:
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:a0e49a50f8ffc40c0e3f8e1df9396f6a50bdfd493ac56af90e11b890f96bb2e0
