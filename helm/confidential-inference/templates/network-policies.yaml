@@ -51,6 +51,11 @@ spec:
 ---
 # c8s injects certificate and secret clients into confidential workloads.
 # They must reach the c8s certificate service before the main containers start.
+# They must also reach the c8s mesh: ratls-mesh DNATs every TCP connection from
+# one confidential workload to another, on this node or another, to
+# nodeIP:15001 in PREROUTING, and the CNI applies this egress policy after the
+# DNAT. Without that port every pod-to-pod connection is dropped before the
+# mesh sees it.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -73,6 +78,10 @@ spec:
     # Cilium classifies node addresses as host identities, not CIDR peers.
     - ports:
         - {protocol: TCP, port: {{ .Values.attestationReceipts.attestationApiPort }}}
+    # The mesh listens on the node address, which Cilium also classifies as a
+    # host identity, so this rule names no peer either.
+    - ports:
+        - {protocol: TCP, port: 15001}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

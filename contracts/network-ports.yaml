@@ -29,6 +29,12 @@ ports:
     cvmPort: 8400
     direction: inbound
     access: gateway-and-host-operator
+  - name: c8s-mesh-outbound
+    scope: c8s-node
+    protocol: tcp
+    cvmPort: 15001
+    direction: inbound
+    access: confidential-workloads-on-the-node
   - name: c8s-credential-release
     scope: c8s-node
     protocol: tcp-ratls
