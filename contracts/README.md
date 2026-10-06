@@ -115,6 +115,13 @@ disagree with the gateway's own declared protocol constant and test fixture
 field set. It runs offline, from files already committed to this repo, in
 `.github/workflows/v0-validation.yml`.
 
+A manifest also covers the commits in its `sharedWithCommits`. `scripts/bump-c8s.py`
+adds a new c8s commit there when the captured source files did not change, or
+changed only in Go comments (`tools/go-strip-comments`). After another change it
+stops, or with `--protocol-review` it adds the commit and writes the source diff
+for the pull request: a person reviews that diff and merges the pull request, or
+captures a new manifest.
+
 Use `scripts/verify-public-attestation.py` for the complete public verification flow.
 
 The command fetches the HTTPS endpoint with a fresh nonce. It verifies the exact
