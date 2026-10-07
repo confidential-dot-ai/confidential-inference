@@ -7,6 +7,15 @@ that a successful release-images run on main published. The walk stops at a
 commit that changes an image build input: older evidence cannot hold the
 images of the release. build-release-manifest.py checks the same boundary.
 
+A commit can have more than one trusted run, for example a run by hand and
+a run by staging with another base. The lookup then fails, unless the
+annotated release tag names one of them with the trailer
+
+    Image-Publication-Run: <workflow run id>
+
+The trailer only selects among trusted runs: a named run must be a trusted
+run of the commit that the walk finds.
+
 It prints, for $GITHUB_OUTPUT:
 
     image_source_commit=<commit>
@@ -34,6 +43,7 @@ class LookupError(ValueError):
 
 
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
+RUN_TRAILER = re.compile(r"^Image-Publication-Run: *([0-9]+) *$", re.MULTILINE)
 ROOT = Path(__file__).resolve().parents[1]
 SELECTOR = "scripts/affected-release-images.py"
 IMAGE_SELECTOR = runpy.run_path(str(ROOT / SELECTOR))
@@ -96,6 +106,22 @@ def trusted_runs(
     return trusted
 
 
+def named_run(api_url: str, repository: str, token: str, tag: str) -> int | None:
+    """Return the run that the annotated tag names, or None."""
+    reference = request_json(
+        f"{api_url}/repos/{repository}/git/ref/tags/{urllib.parse.quote(tag, safe='')}", token,
+    ).get("object") or {}
+    if reference.get("type") != "tag":
+        return None
+    message = request_json(
+        f"{api_url}/repos/{repository}/git/tags/{reference.get('sha')}", token,
+    ).get("message", "")
+    matches = RUN_TRAILER.findall(message)
+    if len(matches) > 1:
+        raise LookupError(f"the {tag} tag names more than one image publication run")
+    return int(matches[0]) if matches else None
+
+
 def git(*args: str, repo: Path = ROOT) -> str:
     result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)
     if result.returncode:
@@ -118,16 +144,26 @@ def find_nearest(
     token: str,
     release_commit: str,
     repo: Path = ROOT,
+    selected_run: int | None = None,
 ) -> tuple[str, int]:
-    """Return the image source commit and run of the evidence of a release commit."""
+    """Return the image source commit and run of the evidence of a release commit.
+
+    With selected_run, the evidence must be that run.
+    """
     if COMMIT.fullmatch(release_commit) is None:
         raise LookupError("the release commit must be a full lowercase Git commit")
     commits = git("rev-list", "--first-parent", f"--max-count={MAX_COMMITS}", release_commit,
                   repo=repo).split()
     for commit in commits:
         runs = trusted_runs(api_url, repository, token, artifact_name(commit), commit)
+        if runs and selected_run is not None:
+            if selected_run not in runs:
+                raise LookupError(f"the tag names run {selected_run}, which is not a trusted "
+                                  f"release-images run of {commit}: {runs}")
+            return commit, selected_run
         if len(runs) > 1:
-            raise LookupError(f"found more than one release-images run for {commit}: {runs}")
+            raise LookupError(f"found more than one release-images run for {commit}: {runs}; "
+                              "name one in the release tag with Image-Publication-Run")
         if runs:
             return commit, runs[0]
         if changes_images(commit, repo):
@@ -142,6 +178,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--release-commit", required=True)
+    parser.add_argument("--tag", help="The release tag, whose annotation can name the run")
     parser.add_argument("--api-url", default=os.environ.get("GITHUB_API_URL", "https://api.github.com"))
     parser.add_argument("--token-env", default="GITHUB_TOKEN")
     args = parser.parse_args()
@@ -150,8 +187,10 @@ def main() -> int:
         print(f"find-image-publication-run: {args.token_env} is absent", file=sys.stderr)
         return 1
     try:
+        api_url = args.api_url.rstrip("/")
+        selected = named_run(api_url, args.repository, token, args.tag) if args.tag else None
         commit, run_id = find_nearest(
-            args.api_url.rstrip("/"), args.repository, token, args.release_commit,
+            api_url, args.repository, token, args.release_commit, selected_run=selected,
         )
     except LookupError as error:
         print(f"find-image-publication-run: {error}", file=sys.stderr)
