@@ -75,6 +75,12 @@ class ImagePublicationTests(unittest.TestCase):
         images = (ROOT / ".github/workflows/release-images.yml").read_text()
         bundle = (ROOT / ".github/workflows/release-bundle.yml").read_text()
         self.assertIn("needs: [select-images, reproducibility]\n", images)
+        self.assertIn("needs: [select-images, reproducibility-compare]\n", images)
+        # Each clean build has its own runner; the first upload is what publish pushes.
+        audit = images[images.index("  reproducibility:"):images.index("  reproducibility-compare:")]
+        self.assertEqual(audit.count("docker/build-push-action"), 1)
+        self.assertIn("if: inputs.publish && matrix.pass == 1", audit)
+        self.assertIn("standard_pass_matrix", audit)
         self.assertIn("needs: [select-images, reproducibility-sglang-compare]\n", images)
         self.assertIn("needs: [select-images, publish-standard, publish-sglang]\n", images)
         self.assertEqual(images.count("--reproducibility-digest"), 2)

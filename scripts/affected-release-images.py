@@ -140,6 +140,9 @@ def main() -> int:
     standard = [entry for entry in matrix if entry["image"] != "sglang"]
     print("matrix=" + json.dumps({"include": matrix}, separators=(",", ":")))
     print("standard_matrix=" + json.dumps({"include": standard}, separators=(",", ":")))
+    # One job per clean build: the audit builds each standard image twice.
+    passes = [{**entry, "pass": number} for entry in standard for number in (1, 2)]
+    print("standard_pass_matrix=" + json.dumps({"include": passes}, separators=(",", ":")))
     print("sglang=" + str(any(image.image == "sglang" for image in selected)).lower())
     print("names=" + ",".join(image.image for image in selected))
     print("standard_names=" + ",".join(entry["image"] for entry in standard))
