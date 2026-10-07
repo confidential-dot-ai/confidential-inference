@@ -205,3 +205,70 @@ class BumpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BetaCompatibilityTests(unittest.TestCase):
+    def test_beta_requires_staging_opt_in_before_network(self):
+        for extra in ([], ['--allow-beta'], ['--allow-beta', '--profile', 'production']):
+            with mock.patch('sys.argv', ['bump-c8s', '--tag', 'v0.37.0-beta.1', '--c8s-repo', '/unused', *extra]), mock.patch.object(BUMP.c8s_release, 'verify_c8s_tag') as verify:
+                self.assertEqual(BUMP.main(), 1)
+                verify.assert_not_called()
+
+    def test_renamed_mesh_uses_the_new_registry_repository(self):
+        old = {
+            'release': 'v0.36.2',
+            'coreImages': ['ghcr.io/confidential-dot-ai/ratls-mesh@sha256:' + '1' * 64],
+            'nodeImage': {'reference': BUMP.REGISTRY + 'node-guest-base', 'tag': 'rke2-tdx-cdi-v0.36.2'},
+            'nodeManifestArtifact': {'tag': 'rke2-tdx-v0.36.2'},
+        }
+        with mock.patch.object(BUMP, 'digest', return_value='sha256:' + '2' * 64) as digest, mock.patch.dict(BUMP.NODE, {'manifest_json_digest': lambda *_: 'sha256:' + '3' * 64}):
+            result = BUMP.new_c8s('v0.37.0-beta.1', 'a' * 40, old, renamed_mesh=True)
+        self.assertEqual(result['coreImages'], ['ghcr.io/confidential-dot-ai/armtls-mesh@sha256:' + '2' * 64])
+        self.assertIn(mock.call('ghcr.io/confidential-dot-ai/armtls-mesh:v0.37.0-beta.1'), digest.call_args_list)
+
+    def test_channel_identity_is_exact_and_beta_orders_below_stable(self):
+        release = BUMP.c8s_release
+        self.assertLess(release.version('v0.37.0-beta.1'), release.version('v0.37.0'))
+        self.assertEqual(release.signer('v0.37.0-beta.1', True), 'https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/beta')
+        with self.assertRaises(ValueError):
+            release.signer('v0.37.0-beta.1')
+
+    def test_signed_beta_requires_branch_prerelease_and_exact_statement(self):
+        tag, commit = 'v0.37.0-beta.1', 'a' * 40
+        release = BUMP.c8s_release
+        statement = {'repository': 'confidential-dot-ai/C8s', 'tag': tag, 'commit': commit}
+        calls = []
+
+        def run(argv, **kwargs):
+            import subprocess
+            calls.append(argv)
+            if argv[0] == 'cosign':
+                self.assertEqual(argv[argv.index('--certificate-identity') + 1], release.signer(tag, True))
+                value = ''
+            elif argv[1] == 'release':
+                directory = Path(argv[argv.index('--dir') + 1])
+                (directory / release.C8S_STATEMENT).write_text(json.dumps(statement))
+                (directory / release.C8S_BUNDLE).write_text('{}')
+                value = ''
+            else:
+                path = argv[2]
+                if '/git/ref/' in path:
+                    value = {'object': {'type': 'commit', 'sha': commit}}
+                elif '/commits/' in path:
+                    value = {'commit': {'verification': {'verified': True}}}
+                elif path.endswith('...beta'):
+                    value = {'status': 'ahead'}
+                elif path.endswith('...main'):
+                    value = {'status': 'diverged'}
+                elif '/releases/tags/' in path:
+                    value = {'prerelease': True, 'assets': [{'name': name} for name in (release.C8S_STATEMENT, release.C8S_BUNDLE)]}
+                else:
+                    raise AssertionError(argv)
+            return subprocess.CompletedProcess(argv, 0, value if isinstance(value, str) else json.dumps(value), '')
+
+        result = release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)
+        self.assertEqual(result['releaseSignature'], 'verified')
+        self.assertFalse(result['onMain'])
+        statement['commit'] = 'b' * 40
+        with self.assertRaisesRegex(release.ReleaseError, 'does not name'):
+            release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)
