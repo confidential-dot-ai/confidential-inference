@@ -57,6 +57,8 @@ struct Args {
     c8s_receipt_targets: String,
     #[arg(long, env = "GATEWAY_C8S_EVIDENCE_BASE_URL")]
     c8s_evidence_base_url: String,
+    #[arg(long, env = "GATEWAY_C8S_EVIDENCE_CONNECT_HOST")]
+    c8s_evidence_connect_host: Option<String>,
     #[arg(long, env = "GATEWAY_RELEASE_ID")]
     release_id: String,
     // The release manifest hash and the operator key hashes come from a
@@ -282,18 +284,21 @@ async fn main() -> Result<()> {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("build the internal inference client")?;
-    let attestation = C8sAttestationProvider::from_config(C8sAttestationConfig {
-        targets: &args.c8s_receipt_targets,
-        evidence_base_url: &args.c8s_evidence_base_url,
-        release_id: &args.release_id,
-        release_bundle_sha256: &args.release_bundle_sha256,
-        expected_operator_public_key_sha256: &args.expected_operator_public_key_sha256,
-        expected_operator_key_set_sha256: &args.expected_operator_key_set_sha256,
-        policy_mode: &args.c8s_policy_mode,
-        expected_static_allowlist_sha256: &args.expected_static_allowlist_sha256,
-        timeout: Duration::from_secs(args.attestation_timeout_seconds),
-        maximum_receipt_bytes: args.attestation_maximum_evidence_bytes,
-    })
+    let attestation = C8sAttestationProvider::from_config_with_connect_host(
+        C8sAttestationConfig {
+            targets: &args.c8s_receipt_targets,
+            evidence_base_url: &args.c8s_evidence_base_url,
+            release_id: &args.release_id,
+            release_bundle_sha256: &args.release_bundle_sha256,
+            expected_operator_public_key_sha256: &args.expected_operator_public_key_sha256,
+            expected_operator_key_set_sha256: &args.expected_operator_key_set_sha256,
+            policy_mode: &args.c8s_policy_mode,
+            expected_static_allowlist_sha256: &args.expected_static_allowlist_sha256,
+            timeout: Duration::from_secs(args.attestation_timeout_seconds),
+            maximum_receipt_bytes: args.attestation_maximum_evidence_bytes,
+        },
+        args.c8s_evidence_connect_host.as_deref(),
+    )
     .map_err(anyhow::Error::msg)
     .context("load the fail-closed attestation producer")?;
     let protection = protection_config(&args);
@@ -496,18 +501,21 @@ fn validate_args(args: &Args) -> Result<()> {
             "GATEWAY_C8S_ATTESTATION_PROTOCOL must be {PINNED_C8S_ATTESTATION_PROTOCOL}: this build speaks {C8S_ATTESTATION_PROTOCOL} and runs in lockstep with c8s {C8S_ATTESTATION_PROTOCOL_COMMIT}"
         );
     }
-    C8sAttestationProvider::from_config(C8sAttestationConfig {
-        targets: &args.c8s_receipt_targets,
-        evidence_base_url: &args.c8s_evidence_base_url,
-        release_id: &args.release_id,
-        release_bundle_sha256: &args.release_bundle_sha256,
-        expected_operator_public_key_sha256: &args.expected_operator_public_key_sha256,
-        expected_operator_key_set_sha256: &args.expected_operator_key_set_sha256,
-        policy_mode: &args.c8s_policy_mode,
-        expected_static_allowlist_sha256: &args.expected_static_allowlist_sha256,
-        timeout: Duration::from_secs(args.attestation_timeout_seconds),
-        maximum_receipt_bytes: args.attestation_maximum_evidence_bytes,
-    })
+    C8sAttestationProvider::from_config_with_connect_host(
+        C8sAttestationConfig {
+            targets: &args.c8s_receipt_targets,
+            evidence_base_url: &args.c8s_evidence_base_url,
+            release_id: &args.release_id,
+            release_bundle_sha256: &args.release_bundle_sha256,
+            expected_operator_public_key_sha256: &args.expected_operator_public_key_sha256,
+            expected_operator_key_set_sha256: &args.expected_operator_key_set_sha256,
+            policy_mode: &args.c8s_policy_mode,
+            expected_static_allowlist_sha256: &args.expected_static_allowlist_sha256,
+            timeout: Duration::from_secs(args.attestation_timeout_seconds),
+            maximum_receipt_bytes: args.attestation_maximum_evidence_bytes,
+        },
+        args.c8s_evidence_connect_host.as_deref(),
+    )
     .map_err(anyhow::Error::msg)
     .context("validate the c8s receipt targets")?;
     Ok(())
@@ -644,6 +652,7 @@ mod tests {
             model: "deepseek-ai/DeepSeek-V4-Flash-0731".to_owned(),
             c8s_receipt_targets: "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804".to_owned(),
             c8s_evidence_base_url: "https://api.example.test".to_owned(),
+            c8s_evidence_connect_host: None,
             release_id: "test-release".to_owned(),
             release_identity_file: None,
             release_bundle_sha256: format!("sha256:{}", "1".repeat(64)),

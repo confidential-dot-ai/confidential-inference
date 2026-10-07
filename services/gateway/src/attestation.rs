@@ -1,6 +1,6 @@
 //! The fail-closed c8s evidence collector.
 
-use std::{io::Cursor, time::Duration};
+use std::{io::Cursor, sync::Arc, time::Duration};
 
 use crate::{AttestationError, AttestationProvider};
 use base64::Engine as _;
@@ -178,6 +178,17 @@ impl C8sAttestationProvider {
     ///
     /// This function rejects missing, duplicate, or malformed inputs.
     pub fn from_config(config: C8sAttestationConfig<'_>) -> Result<Self, String> {
+        Self::from_config_with_connect_host(config, None)
+    }
+
+    /// Use a separate connection address without changing the TLS identity.
+    ///
+    /// # Errors
+    /// Rejects invalid connection hosts and invalid attestation inputs.
+    pub fn from_config_with_connect_host(
+        config: C8sAttestationConfig<'_>,
+        connect_host: Option<&str>,
+    ) -> Result<Self, String> {
         if config.timeout.is_zero() || config.timeout > Duration::from_secs(120) {
             return Err("the c8s receipt timeout is invalid".to_owned());
         }
@@ -222,6 +233,9 @@ impl C8sAttestationProvider {
             .connect_timeout(config.timeout.min(Duration::from_secs(10)))
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none());
+        if let Some(connect_host) = connect_host {
+            client_builder = evidence_connection(client_builder, &evidence_base_url, connect_host)?;
+        }
         for cert in mesh_ca_certificates()? {
             client_builder = client_builder.add_root_certificate(cert);
         }
@@ -553,6 +567,44 @@ fn gpu_evidence(receipts: &[Value]) -> Value {
     })
 }
 
+struct EvidenceResolver {
+    evidence_host: String,
+    connect_host: String,
+}
+
+fn evidence_connection(
+    builder: reqwest::ClientBuilder,
+    url: &Url,
+    connect_host: &str,
+) -> Result<reqwest::ClientBuilder, String> {
+    let connect_host = url::Host::parse(connect_host)
+        .map_err(|_| "the c8s evidence connection host is invalid".to_owned())?;
+    let connect_host = match connect_host {
+        url::Host::Domain(name) => name,
+        url::Host::Ipv4(address) => address.to_string(),
+        url::Host::Ipv6(address) => address.to_string(),
+    };
+    Ok(builder.no_proxy().dns_resolver(Arc::new(EvidenceResolver {
+        evidence_host: url.host_str().unwrap_or_default().to_owned(),
+        connect_host,
+    })))
+}
+
+impl reqwest::dns::Resolve for EvidenceResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = if name.as_str() == self.evidence_host {
+            self.connect_host.clone()
+        } else {
+            name.as_str().to_owned()
+        };
+        Box::pin(async move {
+            let addresses = tokio::net::lookup_host((host.as_str(), 0)).await?;
+            let addresses: Vec<_> = addresses.collect();
+            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
 fn require_success(response: &reqwest::Response, step: &str) -> Result<(), AttestationError> {
     let status = response.status().as_u16();
     if response.status().is_success() {
@@ -736,6 +788,76 @@ fn parse_evidence_base_url(value: &str) -> Result<Url, String> {
         return Err("the c8s evidence URL is unsafe".to_owned());
     }
     Ok(url)
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn local_connection_keeps_public_tls_name_and_rejects_wrong_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let certificate = rcgen::generate_simple_self_signed(vec!["api.example.test".to_owned()])?;
+        let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+            certificate.cert.pem().into_bytes(),
+            certificate.signing_key.serialize_pem().into_bytes(),
+        )
+        .await?;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let handle = axum_server::Handle::new();
+        let shutdown = handle.clone();
+        let app = axum::Router::new().route(
+            "/v1/discovery",
+            axum::routing::get(|headers: axum::http::HeaderMap| async move {
+                headers
+                    .get("host")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_owned()
+            }),
+        );
+        let task = tokio::spawn(async move {
+            axum_server::from_tcp_rustls(listener, tls)
+                .handle(handle)
+                .serve(app.into_make_service())
+                .await
+        });
+        let trust = reqwest::Certificate::from_der(certificate.cert.der())?;
+        let url = Url::parse(&format!(
+            "https://api.example.test:{}/v1/discovery",
+            address.port()
+        ))?;
+        let client = evidence_connection(
+            reqwest::Client::builder().add_root_certificate(trust.clone()),
+            &url,
+            "127.0.0.1",
+        )?
+        .build()?;
+        let response = client.get(url.clone()).send().await?;
+        assert_eq!(
+            response.text().await?,
+            format!("api.example.test:{}", address.port())
+        );
+
+        let wrong = Url::parse(&format!(
+            "https://wrong.example.test:{}/v1/discovery",
+            address.port()
+        ))?;
+        let client = evidence_connection(
+            reqwest::Client::builder().add_root_certificate(trust),
+            &wrong,
+            "127.0.0.1",
+        )?
+        .build()?;
+        assert!(
+            client.get(wrong).send().await.is_err(),
+            "wrong TLS name must fail"
+        );
+        shutdown.shutdown();
+        task.await??;
+        Ok(())
+    }
 }
 
 fn validate_discovery(value: &Value) -> Result<(), AttestationError> {

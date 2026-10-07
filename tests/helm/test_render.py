@@ -80,6 +80,25 @@ def main() -> None:
     )
     gateway_env = {item["name"]: item["value"] for item in gateway_container["env"]}
     assert gateway_env["GATEWAY_ENDPOINT_DRAIN_SECONDS"] == "35"
+    assert "GATEWAY_C8S_EVIDENCE_CONNECT_HOST" not in gateway_env
+    local_evidence_documents = [
+        item for item in yaml.safe_load_all(helm(
+            "template", "example", str(CHART), *NEUTRAL_MODE,
+            "--set", "attestationReceipts.evidenceBaseUrl=https://api.example.test",
+            "--set", "attestationReceipts.evidenceConnectHost=c8s-router.c8s-system.svc.cluster.local",
+        )) if item
+    ]
+    local_gateway = next(
+        item for item in local_evidence_documents
+        if item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway"
+    )
+    local_gateway_container = next(
+        item for item in local_gateway["spec"]["template"]["spec"]["containers"]
+        if item["name"] == "gateway"
+    )
+    local_gateway_env = {item["name"]: item["value"] for item in local_gateway_container["env"]}
+    assert local_gateway_env["GATEWAY_C8S_EVIDENCE_BASE_URL"] == "https://api.example.test"
+    assert local_gateway_env["GATEWAY_C8S_EVIDENCE_CONNECT_HOST"] == "c8s-router.c8s-system.svc.cluster.local"
     # The release identity reaches the gateway through a mounted ConfigMap,
     # not environment variables, so the allowlist can pin the environment.
     assert "GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256" not in gateway_env
