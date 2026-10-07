@@ -350,9 +350,38 @@ class ReleaseManifestVerifierTests(unittest.TestCase):
                 operator_public_key=key_path, expected_operator_key_sha256="sha256:" + "0" * 64,
             ))
 
-    def test_operator_pin_must_match_the_response(self):
-        with self.assertRaisesRegex(self.module.VerificationError, "response operator key differs"):
+    def test_operator_pin_requires_the_operator_key(self):
+        with self.assertRaisesRegex(self.module.VerificationError, "requires --operator-public-key"):
             self.run_verify(self.args(expected_operator_key_sha256="sha256:" + "0" * 64))
+        self.assertFalse(self.run_verify()["operatorKey"]["pinned"])
+
+    def test_release_environment_must_match_the_requested_one(self):
+        self.manifest["release"] = {"name": "v0.14.0-staging", "environment": "staging"}
+        self.write_manifest()
+        self.response = self.build_response()
+        self.response["release"]["id"] = "v0.14.0-staging"
+        for overrides in (
+            {"deployment_target": "production"},
+            {"deployment_target": "staging", "release_environment": "production"},
+        ):
+            with self.assertRaisesRegex(self.module.VerificationError, "release environment differs"):
+                self.run_verify(self.args(**overrides))
+        self.manifest["publicHostnames"] = ["staging.api.confidential.ai"]
+        self.write_manifest()
+        self.response = self.build_response()
+        self.response["release"]["id"] = "v0.14.0-staging"
+        result = self.run_verify(self.args(
+            deployment_target="staging", endpoint="https://staging.api.confidential.ai/attestation",
+        ))
+        self.assertEqual(result["releaseEnvironment"], "staging")
+        self.assertEqual(result["deploymentTarget"], "staging")
+
+    def test_endpoint_hostname_must_be_named_by_the_release(self):
+        result = self.run_verify()
+        self.assertEqual(result["releaseEnvironment"], "production")
+        self.assertEqual(result["deploymentTarget"], "production")
+        with self.assertRaisesRegex(self.module.VerificationError, "does not name the endpoint hostname"):
+            self.run_verify(self.args(endpoint="https://staging.api.confidential.ai/attestation"))
 
     def test_partial_or_unpinned_c8s_verdicts_fail_closed(self):
         for override, message in (
