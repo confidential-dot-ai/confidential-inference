@@ -49,6 +49,7 @@ jobs:
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
       standard_matrix: ${{ steps.select.outputs.standard_matrix }}
+      standard_pass_matrix: ${{ steps.select.outputs.standard_pass_matrix }}
       sglang: ${{ steps.select.outputs.sglang }}
       names: ${{ steps.select.outputs.names }}
       standard_names: ${{ steps.select.outputs.standard_names }}
@@ -110,6 +111,9 @@ jobs:
           printf "### Image source %s\n\nBase: \`%s\`\n\nAffected images: \`%s\`\n" \
             "$GITHUB_SHA" "$BASE_REF" "${AFFECTED_IMAGES:-none}" >> "$GITHUB_STEP_SUMMARY"
 
+  # Each clean build of a standard image gets its own runner, as the sglang
+  # builds below do. One job that built twice in sequence took twice as long
+  # (run 37609914612: 128 s + 128 s for the gateway).
   reproducibility:
     if: >-
       inputs.rebuild_audit &&
@@ -119,7 +123,7 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.select-images.outputs.standard_matrix) }}
+      matrix: ${{ fromJSON(needs.select-images.outputs.standard_pass_matrix) }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -131,80 +135,98 @@ jobs:
           test -f "${{ matrix.dockerfile }}"
           printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
-      - name: Choose an OCI output directory
-        id: oci-dir
+      - name: Set up an isolated builder
+        id: builder
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          name: release-${{ matrix.pass }}-${{ github.run_id }}-${{ matrix.image }}
+          driver: docker-container
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+
+      - name: Run a clean build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          builder: ${{ steps.builder.outputs.name }}
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
+          platforms: linux/amd64
+          no-cache: true
+          push: false
+          outputs: type=oci,dest=/tmp/${{ matrix.image }}-${{ matrix.pass }}.tar,rewrite-timestamp=true
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=sha-${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Record the platform manifest
         run: |
-          dir=/tmp
-          printf 'dir=%s\n' "$dir" >> "$GITHUB_OUTPUT"
+          python3 scripts/verify-reproducible-oci.py \
+            /tmp/${{ matrix.image }}-${{ matrix.pass }}.tar \
+            --platform linux/amd64 \
+            --revision "${{ github.sha }}" \
+            --source-date-epoch "${{ steps.source.outputs.epoch }}" \
+            --record /tmp/${{ matrix.image }}-${{ matrix.pass }}.record.json
+          digest=$(python3 -c "import json;print(json.load(open('/tmp/${{ matrix.image }}-${{ matrix.pass }}.record.json'))['digest'])")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
 
-      - name: Set up the first isolated builder
-        id: first-builder
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: Save the recorded manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-first-${{ github.run_id }}-${{ matrix.image }}
-          driver: docker-container
-          version: ${{ env.BUILDX_VERSION }}
-          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+          name: release-record-${{ matrix.image }}-${{ matrix.pass }}
+          path: /tmp/${{ matrix.image }}-${{ matrix.pass }}.record.json
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Run the first clean build
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+      # The publish job pushes these audited bytes. It does not build again.
+      - name: Save the audited OCI archive for publication
+        if: inputs.publish && matrix.pass == 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          builder: ${{ steps.first-builder.outputs.name }}
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          build-args: |
-            SOURCE_REVISION=${{ github.sha }}
-            SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
-          platforms: linux/amd64
-          no-cache: true
-          push: false
-          outputs: type=oci,dest=${{ steps.oci-dir.outputs.dir }}/${{ matrix.image }}-first.tar,rewrite-timestamp=true
-          labels: |
-            org.opencontainers.image.title=${{ matrix.title }}
-            org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=sha-${{ github.sha }}
-          provenance: false
-          sbom: false
+          name: release-oci-${{ matrix.image }}
+          path: /tmp/${{ matrix.image }}-1.tar
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
-      - name: Set up the second isolated builder
-        id: second-builder
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
-        with:
-          name: release-second-${{ github.run_id }}-${{ matrix.image }}
-          driver: docker-container
-          version: ${{ env.BUILDX_VERSION }}
-          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+  reproducibility-compare:
+    if: >-
+      inputs.rebuild_audit &&
+      needs.select-images.outputs.standard_names != ''
+    needs: [select-images, reproducibility]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select-images.outputs.standard_matrix) }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Run the second clean build
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+      - name: Download the first recorded manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          builder: ${{ steps.second-builder.outputs.name }}
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          build-args: |
-            SOURCE_REVISION=${{ github.sha }}
-            SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
-          platforms: linux/amd64
-          no-cache: true
-          push: false
-          outputs: type=oci,dest=${{ steps.oci-dir.outputs.dir }}/${{ matrix.image }}-second.tar,rewrite-timestamp=true
-          labels: |
-            org.opencontainers.image.title=${{ matrix.title }}
-            org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=sha-${{ github.sha }}
-          provenance: false
-          sbom: false
+          name: release-record-${{ matrix.image }}-1
+          path: /tmp/record-1
+
+      - name: Download the second recorded manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-record-${{ matrix.image }}-2
+          path: /tmp/record-2
 
       - name: Prove equal platform manifests
         run: |
           digest=$(python3 scripts/verify-reproducible-oci.py \
-            ${{ steps.oci-dir.outputs.dir }}/${{ matrix.image }}-first.tar \
-            ${{ steps.oci-dir.outputs.dir }}/${{ matrix.image }}-second.tar \
-            --platform linux/amd64 \
-            --revision "${{ github.sha }}" \
-            --source-date-epoch "${{ steps.source.outputs.epoch }}" | awk '{print $NF}')
+            --compare-records \
+            /tmp/record-1/${{ matrix.image }}-1.record.json \
+            /tmp/record-2/${{ matrix.image }}-2.record.json | awk '{print $NF}')
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           printf '%s\n' "$digest" > /tmp/${{ matrix.image }}.platform-digest
 
@@ -215,17 +237,6 @@ jobs:
           path: /tmp/${{ matrix.image }}.platform-digest
           if-no-files-found: error
           retention-days: 1
-
-      # The publish job pushes these audited bytes. It does not build again.
-      - name: Save the audited OCI archive for publication
-        if: inputs.publish
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-oci-${{ matrix.image }}
-          path: ${{ steps.oci-dir.outputs.dir }}/${{ matrix.image }}-first.tar
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
 
   # The sglang image is ~20 GB. Building it clean twice in one job, even
   # after relocating Docker's data root and the OCI output to /mnt, still
@@ -414,8 +425,8 @@ jobs:
       inputs.publish &&
       needs.select-images.result == 'success' &&
       needs.select-images.outputs.standard_names != '' &&
-      needs.reproducibility.result == 'success'
-    needs: [select-images, reproducibility]
+      needs.reproducibility-compare.result == 'success'
+    needs: [select-images, reproducibility-compare]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: ghcr-production

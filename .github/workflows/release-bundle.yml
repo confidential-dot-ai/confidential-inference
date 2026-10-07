@@ -170,6 +170,21 @@ jobs:
           go-version-file: c8s-source/go.mod
           cache: false
 
+      # The build from a cold cache took 108 s of each signing run. A run on
+      # a tag can restore only caches of main, and warm-c8s-go-cache.yml
+      # saves them there with this key, after a reviewed merge. The caches
+      # of main are written only by workflows that run reviewed main code.
+      # Release apply in the internal repository rebuilds every release
+      # asset with a SHA-256-pinned c8s CLI and refuses a byte mismatch, so
+      # a cache that changed the build fails closed.
+      - name: Restore the Go caches of the pinned c8s
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: c8s-go-${{ runner.os }}-${{ steps.c8s.outputs.source_commit }}-${{ hashFiles('c8s-source/go.sum', 'tools/c8s-allowlist-canonical/go.sum') }}
+
       - name: Build the pinned c8s CLI and the canonical allowlist tool
         env:
           GOPRIVATE: github.com/confidential-dot-ai/*
