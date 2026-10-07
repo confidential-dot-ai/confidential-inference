@@ -81,7 +81,7 @@ class ImagePublicationTests(unittest.TestCase):
         self.assertEqual(images.count("--pushed-digest"), 2)
         self.assertIn("name: release-image-publication-${{ github.sha }}", images)
         self.assertNotIn("inputs.release_version", images)
-        self.assertIn('--release-commit "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"', bundle)
+        self.assertIn('--release-commit "$(git rev-parse HEAD)" \\\n            --tag "$RELEASE_TAG" >> "$GITHUB_OUTPUT"', bundle)
         self.assertIn("scripts/find-image-publication-run.py", bundle)
         self.assertIn("name: ${{ steps.publication.outputs.artifact_name }}", bundle)
         self.assertIn("run-id: ${{ steps.publication.outputs.run_id }}", bundle)
@@ -108,9 +108,16 @@ class ImagePublicationTests(unittest.TestCase):
         jsonschema.Draft202012Validator.check_schema(schema)
 
 
-def run_response(runs: dict[int, str], artifacts: dict[str, list[int]]):
-    """A GitHub API stub: successful release-images runs on main by id and head commit."""
+def run_response(runs: dict[int, str], artifacts: dict[str, list[int]], tag_message: str | None = None):
+    """A GitHub API stub: successful release-images runs on main by id and head commit.
+
+    With tag_message, the release tag is annotated with that message.
+    """
     def response(url, _token):
+        if "/git/ref/tags/" in url:
+            return {"object": {"type": "tag" if tag_message is not None else "commit", "sha": "1" * 40}}
+        if "/git/tags/" in url:
+            return {"message": tag_message}
         if "actions/artifacts" in url:
             name = url.split("name=", 1)[1].split("&", 1)[0]
             return {"artifacts": [
@@ -178,6 +185,36 @@ class PublicationRunLookupTests(unittest.TestCase):
         name = FINDER.artifact_name(self.docs)
         with self.assertRaisesRegex(FINDER.LookupError, "more than one"):
             self.find({73: self.docs, 74: self.docs}, {name: [73, 74]})
+
+    def named(self, runs, artifacts, message):
+        FINDER.request_json = run_response(runs, artifacts, message)
+        api, repository = "https://api.github.test", "confidential-dot-ai/confidential-inference"
+        selected = FINDER.named_run(api, repository, "token", "v0.14.6-staging")
+        return FINDER.find_nearest(api, repository, "token", self.head, self.repo, selected_run=selected)
+
+    def test_the_tag_selects_one_of_duplicate_runs(self):
+        # Staging run 37609539592: a run by hand and a staging run of one
+        # commit, with other bases.
+        name = FINDER.artifact_name(self.docs)
+        message = "Release v0.14.6-staging\n\nImage-Publication-Run: 74\n"
+        self.assertEqual(self.named({73: self.docs, 74: self.docs}, {name: [73, 74]}, message), (self.docs, 74))
+
+    def test_the_tag_cannot_name_an_untrusted_run(self):
+        name = FINDER.artifact_name(self.docs)
+        for runs, artifacts in (({73: self.docs, 74: self.docs}, {name: [73, 74]}),
+                                ({73: self.docs, 75: self.image}, {name: [73, 75]})):
+            with self.subTest(runs=runs), self.assertRaisesRegex(FINDER.LookupError, "not a trusted"):
+                self.named(runs, artifacts, "Release\n\nImage-Publication-Run: 75\n")
+
+    def test_a_tag_without_the_trailer_keeps_duplicates_closed(self):
+        name = FINDER.artifact_name(self.docs)
+        for message in ("Release v0.14.6-staging", None):
+            with self.subTest(message=message), self.assertRaisesRegex(FINDER.LookupError, "more than one"):
+                self.named({73: self.docs, 74: self.docs}, {name: [73, 74]}, message)
+
+    def test_a_tag_that_names_two_runs_is_refused(self):
+        with self.assertRaisesRegex(FINDER.LookupError, "more than one image publication run"):
+            self.named({}, {}, "Release\n\nImage-Publication-Run: 73\nImage-Publication-Run: 74\n")
 
     def test_a_run_at_another_commit_is_ignored(self):
         name = FINDER.artifact_name(self.head)
