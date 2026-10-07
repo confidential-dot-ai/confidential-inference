@@ -62,9 +62,10 @@ struct Args {
     #[arg(long, env = "GATEWAY_RELEASE_ID")]
     release_id: String,
     // The release manifest hash and the operator key hashes come from a
-    // mounted file, not the environment. The c8s allowlist pins every
-    // environment variable exactly, and the manifest holds the allowlist's
-    // hash, so a pinned manifest hash would depend on itself.
+    // mounted file, not the environment. A release-generated allowlist pins
+    // every environment variable exactly, and the manifest holds the
+    // allowlist's hash, so a pinned manifest hash would depend on itself.
+    // The committed allowlists under c8s/allowlists/ leave env unpinned.
     #[arg(long, env = "GATEWAY_RELEASE_IDENTITY_FILE")]
     release_identity_file: Option<PathBuf>,
     #[arg(long, env = "GATEWAY_RELEASE_BUNDLE_SHA256", default_value = "")]
