@@ -51,6 +51,8 @@ attestationReceipts:
   # This URL must be the c8s tls-lb front door. The gateway reads only c8s
   # discovery and allowlist evidence from it.
   evidenceBaseUrl: https://api.example.invalid
+  # Connect to this cluster's router. Keep evidenceBaseUrl as the TLS name.
+  evidenceConnectHost: ""
   # c8s serves GET /operator-keys on CDS, not on the public front door. Leave
   # this empty to read the operator key set from evidenceBaseUrl, which is the
   # behaviour every environment had before this value existed. Set it to the
