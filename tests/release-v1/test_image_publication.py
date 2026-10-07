@@ -187,6 +187,13 @@ class PublicationRunLookupTests(unittest.TestCase):
         with self.assertRaisesRegex(FINDER.LookupError, "changes an image build input"):
             self.find({}, {})
 
+    def test_a_selector_change_alone_keeps_the_earlier_evidence(self):
+        selector = self.commit("scripts/affected-release-images.py", "# changed\n")
+        name = FINDER.artifact_name(self.image)
+        FINDER.request_json = run_response({73: self.image}, {name: [73]})
+        self.assertEqual(FINDER.find_nearest("https://api.github.test", "confidential-dot-ai/confidential-inference",
+                                             "token", selector, self.repo), (self.image, 73))
+
     def test_duplicate_publication_runs_fail_closed(self):
         name = FINDER.artifact_name(self.docs)
         with self.assertRaisesRegex(FINDER.LookupError, "more than one"):

@@ -6,6 +6,8 @@ first-parent ancestor of the release commit, the commit itself included,
 that a successful release-images run on main published. The walk stops at a
 commit that changes an image build input: older evidence cannot hold the
 images of the release. build-release-manifest.py checks the same boundary.
+The selector of the release commit decides what an input is, so a change of
+the selector alone is no boundary.
 
 A commit can have more than one trusted run, for example a run by hand and
 a run by staging with another base. The lookup then fails, unless the
@@ -130,12 +132,12 @@ def git(*args: str, repo: Path = ROOT) -> str:
 
 
 def changes_images(commit: str, repo: Path = ROOT) -> bool:
-    """Report whether a commit changes an image build input or the image selector."""
+    """Report whether a commit changes an image build input, as the release commit's selector sees it."""
     parents = git("rev-list", "--parents", "-n", "1", commit, repo=repo).split()[1:]
     if not parents:
         return True
     paths = git("diff", "--name-only", "--no-renames", parents[0], commit, repo=repo).splitlines()
-    return SELECTOR in paths or bool(IMAGE_SELECTOR["affected_images"](paths))
+    return bool(IMAGE_SELECTOR["affected_images"](paths))
 
 
 def find_nearest(
