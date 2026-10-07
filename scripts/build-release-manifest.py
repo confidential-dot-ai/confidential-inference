@@ -538,14 +538,15 @@ def verify_image_source_boundary(
     """Require that no image build input changed from the image source to the release commit.
 
     The release commit is the image source commit, or a later commit that
-    changes no image.
+    changes no image. The selector of the release commit decides what an
+    image input is, here and for the base-to-source check of the build, so
+    a change of the selector itself needs no new images: the whole diff from
+    the base release to the release commit is re-read with the new selector.
     """
     try:
         paths = changed_paths(image_source_commit, release_source_commit, repo)
     except ManifestError as error:
         raise ManifestError(f"the image source commit must be an ancestor of the release commit: {error}") from error
-    require("scripts/affected-release-images.py" not in paths,
-            "the image selector changed after the image source commit")
     affected = IMAGE_SELECTOR["affected_images"](paths)
     require(not affected,
             "image build inputs changed after the image source commit: "
