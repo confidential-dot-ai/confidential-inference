@@ -41,6 +41,9 @@ pub struct GatewayMetrics {
 
 #[derive(Default)]
 struct MetricsState {
+    attestation_responses: BTreeMap<u16, u64>,
+    attestation_duration: Histogram,
+    attestation_events: BTreeMap<&'static str, u64>,
     requests: BTreeMap<RequestLabels, u64>,
     rejections: BTreeMap<RejectionLabels, u64>,
     upstream_reachable: bool,
@@ -171,6 +174,21 @@ impl GatewayMetrics {
             environment: environment.into(),
             state: Mutex::new(MetricsState::default()),
         }
+    }
+
+    /// Record metadata responses without client or policy labels.
+    pub fn record_attestation_response(&self, status: u16, seconds: f64) {
+        let mut state = recover_lock(&self.state);
+        *state.attestation_responses.entry(status).or_default() += 1;
+        state.attestation_duration.observe(seconds);
+    }
+
+    /// Record a fixed metadata cache or refresh outcome.
+    pub fn record_attestation_event(&self, event: &'static str) {
+        *recover_lock(&self.state)
+            .attestation_events
+            .entry(event)
+            .or_default() += 1;
     }
 
     /// Every authenticated inference request is counted once, after a status
@@ -453,6 +471,49 @@ impl MetricsSource for GatewayMetrics {
     fn render_prometheus(&self) -> String {
         let state = recover_lock(&self.state);
         let mut output = String::new();
+        render_header(
+            &mut output,
+            "gateway_attestation_responses_total",
+            "Metadata responses",
+            "counter",
+        );
+        for (status, count) in &state.attestation_responses {
+            render_sample(
+                &mut output,
+                "gateway_attestation_responses_total",
+                &[("status", &status.to_string())],
+                &self.environment,
+                *count,
+            );
+        }
+        render_header(
+            &mut output,
+            "gateway_attestation_events_total",
+            "Metadata cache and refresh outcomes",
+            "counter",
+        );
+        for (event, count) in &state.attestation_events {
+            render_sample(
+                &mut output,
+                "gateway_attestation_events_total",
+                &[("event", event)],
+                &self.environment,
+                *count,
+            );
+        }
+        render_header(
+            &mut output,
+            "gateway_attestation_duration",
+            "Metadata response time in seconds",
+            "histogram",
+        );
+        render_histogram(
+            &mut output,
+            "gateway_attestation_duration",
+            &[],
+            &state.attestation_duration,
+            &self.environment,
+        );
         render_header(
             &mut output,
             "gen_ai_server_time_to_first_token",

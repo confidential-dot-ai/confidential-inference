@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 3,
+  "release": {
+    "id": "test-release",
+    "url": "https://github.com/confidential-dot-ai/confidential-inference/releases/tag/v1.0.0",
+    "bundleSha256": "sha256:a4d451ec23463726f72c43d64c710968f6b602cd653b4de8adee1b556240a829"
+  },
+  "c8s": {
+    "activeAllowlist": {
+      "document": {
+        "schema": "c8s.allowlist/v1",
+        "workloads": {}
+      },
+      "sha256": "sha256:bcd475104a873a42ffaaed1aca9434981ce857adba97ebec4adc9e74e4d852f4",
+      "url": "https://candidate.api.confidential.ai/allowlist"
+    },
+    "discovery": {
+      "attestation": {
+        "evidence": {
+          "quote": "test-quote"
+        },
+        "platform": "tdx"
+      },
+      "cds_tls": {
+        "certificate_pem": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n",
+        "certificate_sha256": "sha256:a5e1d6b68eeeb753d516906ffb7f2b43c5249b4ed164c799e38f1a8eb0a2c888"
+      },
+      "generated_at": "2026-09-17T09:55:54Z",
+      "public_tls": {
+        "hostname": "staging.api.confidential.ai",
+        "mode": "webpki"
+      },
+      "version": "v1"
+    },
+    "operatorKeys": []
+  }
+}

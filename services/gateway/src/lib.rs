@@ -27,6 +27,7 @@ use uuid::Uuid;
 pub mod admin_auth;
 pub mod api_keys;
 pub mod attestation;
+pub mod attestation_metadata;
 pub mod key_registry;
 pub mod metrics;
 pub mod protection;
@@ -142,6 +143,10 @@ struct AppState {
 
 #[async_trait::async_trait]
 pub trait AttestationProvider: Send + Sync + 'static {
+    /// Legacy evidence needs a caller nonce; policy metadata does not.
+    fn requires_nonce(&self) -> bool {
+        true
+    }
     /// Create evidence for one caller nonce.
     ///
     /// # Errors
@@ -150,7 +155,7 @@ pub trait AttestationProvider: Send + Sync + 'static {
     async fn response(&self, nonce: &[u8; 32]) -> Result<Value, AttestationError>;
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum AttestationError {
     /// The producer could not reach or read an upstream evidence source. The
     /// string names the step that failed and carries no evidence bytes.
@@ -681,6 +686,29 @@ async fn attestation_response(
         state.metrics.record_rejection("attestation_capacity");
         return protection::overload("attestation_capacity");
     };
+    if !state.attestation_provider.requires_nonce() {
+        let started = Instant::now();
+        let result = state.attestation_provider.response(&[0; 32]).await;
+        let status = if result.is_ok() { 200 } else { 503 };
+        state
+            .metrics
+            .record_attestation_response(status, started.elapsed().as_secs_f64());
+        return if let Ok(document) = result {
+            let mut response = Json(document).into_response();
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("no-store, max-age=0"),
+            );
+            response
+        } else {
+            let mut response =
+                client_error(StatusCode::SERVICE_UNAVAILABLE, "attestation_unavailable");
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            response
+        };
+    }
     let header_values = headers.get_all("x-attestation-nonce");
     if header_values.iter().count() > 1 {
         return client_error(StatusCode::BAD_REQUEST, "ambiguous_nonce");
@@ -941,6 +969,48 @@ mod tests {
 
     fn authorization() -> (&'static str, &'static str) {
         ("authorization", "Bearer accepted")
+    }
+
+    #[tokio::test]
+    async fn metadata_attestation_needs_no_key_nonce_or_live_inference_upstream() {
+        struct Metadata;
+        #[async_trait::async_trait]
+        impl AttestationProvider for Metadata {
+            fn requires_nonce(&self) -> bool {
+                false
+            }
+            async fn response(&self, _: &[u8; 32]) -> Result<Value, AttestationError> {
+                Ok(json!({"schemaVersion": 3, "c8s": {"operatorKeys": []}}))
+            }
+        }
+        // The configured inference address has no listener. Attestation must
+        // still work, even when inference readiness is false.
+        for path in ["/attestation", "/v1/attestation"] {
+            let availability = GatewayAvailability::default();
+            availability.set_available(false);
+            let response = app_with_attestation(availability, Arc::new(Metadata))
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap_or_else(|error| panic!("{error:?}")),
+                )
+                .await
+                .unwrap_or_else(|error| panic!("{error:?}"));
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "no-store, max-age=0"
+            );
+            let body = to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap_or_else(|error| panic!("{error:?}"));
+            let document: Value =
+                serde_json::from_slice(&body).unwrap_or_else(|error| panic!("{error:?}"));
+            assert_eq!(document["schemaVersion"], 3);
+            assert!(document.get("nonce").is_none());
+            assert!(document.get("receipts").is_none());
+        }
     }
 
     #[tokio::test]

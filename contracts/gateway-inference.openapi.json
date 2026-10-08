@@ -41,7 +41,7 @@
     {"name": "health", "description": "Liveness and readiness."},
     {"name": "models", "description": "The advertised model catalog."},
     {"name": "inference", "description": "OpenAI-compatible chat and legacy completions."},
-    {"name": "attestation", "description": "Nonce-bound c8s evidence, produced by the gateway process."},
+    {"name": "attestation", "description": "Public release and C8s policy metadata. No API key is required."},
     {"name": "tls-lb-static", "description": "Paths that the c8s tls-lb nginx process serves directly. Nginx never forwards these to the gateway process."}
   ],
   "paths": {
@@ -248,18 +248,11 @@
       "get": {
         "operationId": "getAttestationCanonical",
         "tags": ["attestation"],
-        "summary": "Fetch nonce-bound c8s evidence (canonical path)",
-        "description": "Same handler and behavior as `/v1/attestation` (services/gateway/src/lib.rs routes both paths to `attestation_response`).",
-        "parameters": [
-          {"$ref": "#/components/parameters/AttestationNonceQuery"},
-          {"$ref": "#/components/parameters/AttestationNonceHeader"}
-        ],
+        "summary": "Read release and C8s policy metadata",
+        "description": "Version 3 needs no API key or nonce. It returns release metadata, the active CDS allowlist, native C8s discovery, and operator public keys read over an attested CDS connection. It does not contact inference workers or SGLang Router. Version 2 can remain in service during a gateway update. Clients verify their inference connection separately.",
         "responses": {
           "200": {"$ref": "#/components/responses/AttestationOk"},
-          "400": {"$ref": "#/components/responses/AttestationBadNonce"},
-          "409": {"$ref": "#/components/responses/AttestationNonceRejected"},
           "429": {"$ref": "#/components/responses/AttestationCapacity"},
-          "502": {"$ref": "#/components/responses/AttestationInvalid"},
           "503": {"$ref": "#/components/responses/AttestationUnavailable"}
         }
       }
@@ -268,18 +261,11 @@
       "get": {
         "operationId": "getAttestation",
         "tags": ["attestation"],
-        "summary": "Fetch nonce-bound c8s evidence",
-        "description": "The caller supplies one fresh, canonical, unpadded base64url-encoded 32-byte nonce, either as the `nonce` query parameter or as the `X-Attestation-Nonce` header, never both (services/gateway/ATTESTATION.md; services/gateway/src/lib.rs, `attestation_response`). The response carries raw evidence for independent, offline verification with `scripts/verify-public-attestation.py`. It proves launch or admission only; see contracts/workload-attestation.schema.json for the full response shape.",
-        "parameters": [
-          {"$ref": "#/components/parameters/AttestationNonceQuery"},
-          {"$ref": "#/components/parameters/AttestationNonceHeader"}
-        ],
+        "summary": "Read release and C8s policy metadata",
+        "description": "Version 3 needs no API key or nonce. It returns release metadata, the active CDS allowlist, native C8s discovery, and operator public keys read over an attested CDS connection. It does not contact inference workers or SGLang Router. Version 2 can remain in service during a gateway update. Clients verify their inference connection separately.",
         "responses": {
           "200": {"$ref": "#/components/responses/AttestationOk"},
-          "400": {"$ref": "#/components/responses/AttestationBadNonce"},
-          "409": {"$ref": "#/components/responses/AttestationNonceRejected"},
           "429": {"$ref": "#/components/responses/AttestationCapacity"},
-          "502": {"$ref": "#/components/responses/AttestationInvalid"},
           "503": {"$ref": "#/components/responses/AttestationUnavailable"}
         }
       }
@@ -733,7 +719,7 @@
         }
       },
       "AttestationOk": {
-        "description": "One raw c8s evidence response, bound to the supplied nonce. The gateway sets `Cache-Control: no-store, max-age=0`. This response proves launch or admission only; it does not prove liveness. The full shape is contracts/workload-attestation.schema.json.",
+        "description": "Public policy metadata. The gateway sets Cache-Control: no-store, max-age=0. The internal cache has a short lifetime and never returns expired data after a failed refresh. The complete response schema accepts versions 2 and 3 during gateway replacement.",
         "headers": {
           "Cache-Control": {"schema": {"const": "no-store, max-age=0"}}
         },
