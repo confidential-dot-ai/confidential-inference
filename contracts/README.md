@@ -112,8 +112,8 @@ lock entry it reads the matching manifest under
 table and the `AttestationBundle`/receipt field names at that c8s commit,
 captured read-only from the `c8s` source) and fails the build if those fields
 disagree with the gateway's own declared protocol constant and test fixture
-field set. It runs offline, from files already committed to this repo, in
-`.github/workflows/v0-validation.yml`.
+field set. It runs offline, from files already committed to this repo, from
+`scripts/bump-c8s.py` after each c8s bump.
 
 A manifest also covers the commits in its `sharedWithCommits`. `scripts/bump-c8s.py`
 adds a new c8s commit there when the captured source files did not change, or
