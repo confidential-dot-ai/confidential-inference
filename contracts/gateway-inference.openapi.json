@@ -721,7 +721,8 @@
       "AttestationOk": {
         "description": "Public policy metadata. The gateway sets Cache-Control: no-store, max-age=0. The internal cache has a short lifetime and never returns expired data after a failed refresh. The complete response schema accepts versions 2 and 3 during gateway replacement.",
         "headers": {
-          "Cache-Control": {"schema": {"const": "no-store, max-age=0"}}
+          "Cache-Control": {"schema": {"const": "no-store, max-age=0"}},
+          "X-Confidential-Gateway": {"description": "Optional gateway slot identifier for rollout checks. It is not an attestation proof.", "schema": {"type": "string", "maxLength": 63}}
         },
         "content": {
           "application/json": {

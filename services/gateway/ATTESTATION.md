@@ -18,6 +18,11 @@ The schema also accepts version 2 during gateway replacement.
 | `c8s.discovery` | Native C8s discovery, passed through unchanged. |
 | `c8s.operatorKeys` | Active operator public keys, in PEM format. |
 
+When `GATEWAY_INSTANCE_ID` is set, public responses include the
+`X-Confidential-Gateway` header. The rollout monitor uses it to identify the
+answering gateway. It is an operational identifier, not an attestation proof.
+It adds no fields to the JSON response.
+
 There are no workload receipts, GPU fields, nonce, worker list, or separate
 front-door evidence fields. The handler does not contact inference workers,
 SGLang Router, or monitoring pods.

@@ -85,6 +85,8 @@ struct Args {
     attestation_cache_seconds: u64,
     #[arg(long, env = "GATEWAY_RELEASE_URL")]
     release_url: Option<String>,
+    #[arg(long, env = "GATEWAY_INSTANCE_ID")]
+    gateway_instance_id: Option<String>,
     // The release manifest hash and the operator key hashes come from a
     // mounted file, not the environment. The c8s allowlist pins every
     // environment variable exactly, and the manifest holds the allowlist's
@@ -333,6 +335,7 @@ async fn main() -> Result<()> {
         attestation,
         http,
     );
+    let public = with_instance_header(public, args.gateway_instance_id.as_deref())?;
     let admin_certificate =
         read_bounded(&args.admin_signer_certificate_file, MAX_CERTIFICATE_BYTES)
             .context("read the admin request signer certificate")?;
@@ -443,6 +446,34 @@ fn protection_config(args: &Args) -> ProtectionConfig {
 
 /// The only value `GATEWAY_C8S_ATTESTATION_PROTOCOL` accepts.
 const PINNED_C8S_ATTESTATION_PROTOCOL: &str = "v1-xwing";
+
+fn with_instance_header(app: axum::Router, identity: Option<&str>) -> Result<axum::Router> {
+    let Some(identity) = identity else {
+        return Ok(app);
+    };
+    if identity.is_empty()
+        || identity.len() > 63
+        || identity.starts_with('-')
+        || identity.ends_with('-')
+        || !identity
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        bail!("GATEWAY_INSTANCE_ID must be a DNS label");
+    }
+    let header: axum::http::HeaderValue = identity.parse()?;
+    Ok(app.layer(middleware::map_response(
+        move |mut response: axum::response::Response| {
+            let header = header.clone();
+            async move {
+                response
+                    .headers_mut()
+                    .insert("x-confidential-gateway", header);
+                response
+            }
+        },
+    )))
+}
 
 fn validate_metadata_identity(args: &Args) -> Result<()> {
     for (name, digest) in [
@@ -795,6 +826,31 @@ mod tests {
         assert!(validate_args(&value).is_err());
     }
 
+    #[tokio::test]
+    async fn instance_header_identifies_the_slot_without_changing_the_body() -> Result<()> {
+        use tower::ServiceExt as _;
+        let app =
+            axum::Router::new().route("/attestation", axum::routing::get(|| async { "metadata" }));
+        let app = with_instance_header(app, Some("gateway-new"))?;
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/attestation")
+                    .header("x-confidential-gateway", "caller-controlled")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.headers()["x-confidential-gateway"], "gateway-new");
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 1024).await?,
+            "metadata"
+        );
+        for bad in ["", "-bad", "bad-", "a\r\nb", "Uppercase"] {
+            assert!(with_instance_header(axum::Router::new(), Some(bad)).is_err());
+        }
+        Ok(())
+    }
+
     fn args() -> Args {
         Args {
             listen: "0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()),
@@ -810,6 +866,7 @@ mod tests {
             c8s_verifier: PathBuf::from("/usr/local/bin/c8s"),
             attestation_cache_seconds: 10,
             release_url: None,
+            gateway_instance_id: None,
             c8s_receipt_targets: "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804".to_owned(),
             c8s_evidence_base_url: "https://api.example.test".to_owned(),
             c8s_evidence_connect_host: None,
