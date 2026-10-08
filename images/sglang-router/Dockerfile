@@ -4,7 +4,7 @@ ARG SOURCE_REVISION
 ARG SOURCE_DATE_EPOCH
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-dev python3-venv clang protobuf-compiler \
+    python3 python3-dev python3-venv clang protobuf-compiler libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/build \
     && /opt/build/bin/pip install maturin==1.9.6
@@ -43,7 +43,8 @@ RUN python3 -m pip install --no-cache-dir --require-hashes -r /router-requiremen
 LABEL ai.confidential.build.source-date-epoch="${SOURCE_DATE_EPOCH}"
 COPY --from=build /out /router-wheels
 RUN python3 -m pip install --no-deps --force-reinstall /router-wheels/*.whl \
-    && rm -rf /router-wheels
+    && rm -rf /router-wheels \
+    && python3 -c 'import sglang_router.sglang_router_rs'
 USER 1001:1001
 EXPOSE 30000 29000
 ENTRYPOINT ["python3", "-m", "sglang_router.launch_router"]
