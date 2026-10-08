@@ -114,6 +114,10 @@ jobs:
           python3 -m unittest tests/release-v1/test_release_tag.py
           python3 -m unittest tests/release-v1/test_affected_release_images.py
           python3 -m unittest discover -s tests/release-v1 -p 'test_*.py'
+          python3 -m unittest discover -s tests/attestation-v0 -p test_attestation_metadata.py
+          python3 -m unittest discover -s tests/attestation-v0 -p test_verify_release_manifest.py
+          python3 -m unittest discover -s tests/contracts -p test_contracts.py -k WorkloadAttestationFixtureTests
+          python3 -m unittest discover -s tests/contracts -p test_contracts.py -k GatewayInferenceContractTests
 
       - name: Set up Helm
         if: steps.changes.outputs.helm_app == 'true' || steps.changes.outputs.helm_maintenance == 'true'
