@@ -459,13 +459,13 @@ jobs:
       - name: Prove the archive holds the audited digest
         run: |
           python3 scripts/verify-reproducible-oci.py \
-            /tmp/audited/${{ matrix.image }}-first.tar \
+            /tmp/audited/${{ matrix.image }}-1.tar \
             --platform linux/amd64 \
             --revision "${{ github.sha }}" \
             --source-date-epoch "${{ steps.source.outputs.epoch }}" \
             --expected-digest "$(tr -d '\n' < /tmp/verified-digest/${{ matrix.image }}.platform-digest)"
           mkdir -p /tmp/layout
-          tar -xf /tmp/audited/${{ matrix.image }}-first.tar -C /tmp/layout
+          tar -xf /tmp/audited/${{ matrix.image }}-1.tar -C /tmp/layout
 
       - name: Install the pinned crane
         run: |
