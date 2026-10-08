@@ -506,14 +506,9 @@ mod tests {
 
     #[test]
     fn keys_must_match_the_set_read_by_the_attested_verifier() {
-        let signing = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let mut der =
-            hex::decode("302a300506032b6570032100").unwrap_or_else(|error| panic!("{error:?}"));
-        der.extend_from_slice(signing.verifying_key().as_bytes());
-        let pem = format!(
-            "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
-            base64::engine::general_purpose::STANDARD.encode(&der)
-        );
+        let key = rcgen::KeyPair::generate().unwrap_or_else(|error| panic!("{error:?}"));
+        let der = rcgen::PublicKeyData::subject_public_key_info(&key);
+        let pem = key.public_key_pem();
         let fingerprint = format!("{:x}", Sha256::digest(&der));
         assert_eq!(
             operator_keys(pem.as_bytes(), &json!({"operator_keys": [fingerprint]}))

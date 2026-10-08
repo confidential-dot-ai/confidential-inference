@@ -2,7 +2,7 @@
   "schemaVersion": 3,
   "release": {
     "id": "test-release",
-    "url": "https://github.com/confidential-dot-ai/confidential-inference/releases/tag/v1.0.0",
+    "url": "https://github.com/confidential-dot-ai/confidential-inference/releases/tag/test-release",
     "bundleSha256": "sha256:a4d451ec23463726f72c43d64c710968f6b602cd653b4de8adee1b556240a829"
   },
   "c8s": {
@@ -12,7 +12,7 @@
         "workloads": {}
       },
       "sha256": "sha256:bcd475104a873a42ffaaed1aca9434981ce857adba97ebec4adc9e74e4d852f4",
-      "url": "https://candidate.api.confidential.ai/allowlist"
+      "url": "https://api.example.test/allowlist"
     },
     "discovery": {
       "attestation": {

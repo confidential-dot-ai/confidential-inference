@@ -69,6 +69,19 @@ duration, cache hits, refresh results, and failure cooldowns. Rejections use the
 existing rejection counters. No client keys or policy bytes are metric labels.
 These controls limit gateway load. They do not prevent network saturation.
 
+## Metadata verification
+
+Use `scripts/verify-public-attestation.py --metadata-only` with the trusted
+release and exact policy bytes to check version 3 metadata. The tool verifies
+the release signature and compares the reported release and policy with the
+held inputs. Operator-key pins are optional client inputs.
+
+The output reports `metadataMatchesTrustedInputs: true` and
+`connectionVerified: false`. A metadata match is not proof of an inference
+connection. Use TEErminator for that separate check. The tool refuses version
+3 in its old receipt-verification mode. It does not report a missing receipt
+as a successful cryptographic verification.
+
 ## Version 2 overlap
 
 The contract retains version 2 for checks against an old gateway during an

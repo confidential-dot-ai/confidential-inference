@@ -7,7 +7,6 @@ use axum::{
     extract::{Request, State},
     response::Response,
 };
-use base64::Engine as _;
 use confidential_gateway::attestation_metadata::{CdsMetadataSource, MetadataSource as _};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -189,13 +188,9 @@ fn write_verifier(
 }
 
 fn operator_key() -> Result<(String, String), Box<dyn std::error::Error>> {
-    let key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
-    let mut der = hex::decode("302a300506032b6570032100")?;
-    der.extend_from_slice(key.verifying_key().as_bytes());
-    let keys = format!(
-        "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
-        base64::engine::general_purpose::STANDARD.encode(&der)
-    );
+    let key = rcgen::KeyPair::generate()?;
+    let der = rcgen::PublicKeyData::subject_public_key_info(&key);
+    let keys = key.public_key_pem();
     let fingerprint = format!("{:x}", Sha256::digest(&der));
     Ok((keys, fingerprint))
 }
