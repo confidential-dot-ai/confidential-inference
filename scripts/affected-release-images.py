@@ -86,7 +86,7 @@ IMAGES = (
         "images/sglang-router/Dockerfile",
         "Confidential Inference SGLang Router",
         ("images/sglang-router/Dockerfile", "images/sglang-router/source.lock", "images/sglang-router/patches/**",
-         "images/sglang-router/requirements.in", "images/sglang-router/requirements.lock"),
+         "images/sglang-router/requirements.in", "images/sglang-router/requirements.lock", "images/sglang-router/Cargo.lock"),
     ),
     Image(
         "metrics-collector",

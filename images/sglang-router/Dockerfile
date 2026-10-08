@@ -20,6 +20,8 @@ RUN python3 -c 'import json,hashlib,pathlib; d=json.load(open("/inputs/source.lo
     && test "$(git rev-parse HEAD)" = "${router_commit}" \
     && git apply --check /inputs/patches/worker-withdrawal.patch \
     && git apply /inputs/patches/worker-withdrawal.patch
+COPY Cargo.lock /src/sgl-model-gateway/Cargo.lock
+RUN python3 -c 'import json,hashlib,pathlib; d=json.load(open("/inputs/source.lock")); assert hashlib.sha256(pathlib.Path("/src/sgl-model-gateway/Cargo.lock").read_bytes()).hexdigest()==d["cargoLockSha256"]'
 ENV RUSTFLAGS="--remap-path-prefix=/src=/usr/src/sglang"
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/sgl-model-gateway/target,sharing=locked \
