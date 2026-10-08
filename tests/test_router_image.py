@@ -76,7 +76,8 @@ class RouterImageTests(unittest.TestCase):
             self.addCleanup(server.release.set)
             threading.Thread(target=server.serve_forever, daemon=True).start()
             workers.append(server)
-        route_dir = tempfile.TemporaryDirectory(prefix='ci-router-model-routes-')
+        route_dir = tempfile.TemporaryDirectory(prefix='ci-router-model-routes-',
+                                                dir=os.environ.get('ROUTER_TEST_TMPDIR'))
         self.addCleanup(route_dir.cleanup)
         os.chmod(route_dir.name, 0o755)
         route_path = Path(route_dir.name) / 'routes.json'
@@ -94,14 +95,15 @@ class RouterImageTests(unittest.TestCase):
         write_routes(0, [])
         port = free_port()
         urls = ['http://127.0.0.1:' + str(w.server_port) for w in workers]
-        subprocess.run(['docker', 'run', '-d', '--name', name, '--network', 'host',
+        launch = subprocess.run(['docker', 'run', '-d', '--name', name, '--network', 'host',
                         '--mount', 'type=bind,src=' + route_dir.name + ',dst=/model-routes,readonly',
                         '-e', 'CI_ROUTER_MODEL_ROUTES_FILE=/model-routes/routes.json',
                         os.environ['ROUTER_TEST_IMAGE'], '--host', '127.0.0.1',
                         '--port', str(port), '--prometheus-host', '127.0.0.1',
                         '--prometheus-port', str(free_port()),
                         '--policy', 'round_robin', '--enable-igw', '--disable-retries',
-                        '--worker-startup-timeout-secs', '20'], check=True, capture_output=True)
+                        '--worker-startup-timeout-secs', '20'], capture_output=True)
+        self.assertEqual(launch.returncode, 0, launch.stderr.decode())
 
         def request(method, path, body=None):
             connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)

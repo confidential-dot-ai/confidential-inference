@@ -25,6 +25,9 @@ ROUTER_TEST_IMAGE=<image-at-immutable-digest> \
   python3 -m unittest discover -s tests -p test_router_image.py
 ```
 
+If the Docker daemon uses a different temporary directory, set
+`ROUTER_TEST_TMPDIR` to a directory shared by the test process and daemon.
+
 The test runs a local router and two fake HTTP workers. It checks model
 selection, withdrawal, an open stream's drain count, registration fencing,
 and recovery. It does not replace the candidate live rehearsal.
