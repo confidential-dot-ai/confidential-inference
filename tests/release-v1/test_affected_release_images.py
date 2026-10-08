@@ -26,6 +26,10 @@ class AffectedReleaseImagesTests(unittest.TestCase):
         self.assertEqual(names(["images/gateway/Dockerfile"]), ["gateway"])
         self.assertEqual(names(["images/sglang/Dockerfile"]), ["sglang"])
 
+    def test_router_patch_and_source_pin_do_not_select_workers(self) -> None:
+        self.assertEqual(names(['images/sglang-router/patches/worker-withdrawal.patch',
+                                'images/sglang-router/source.lock']), ['sglang-router'])
+
     def test_shared_rust_input_selects_both_rust_images(self) -> None:
         self.assertEqual(
             names(["Cargo.lock"]),
