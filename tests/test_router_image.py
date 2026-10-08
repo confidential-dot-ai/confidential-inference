@@ -131,7 +131,9 @@ class RouterImageTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(evidence['active_requests'], 1)
         self.assertNotEqual(request('POST', '/v1/completions', payload)[0], 200)
-        self.assertEqual(request('POST', '/v1/completions', other)[0], 200)
+        status, result = request('POST', '/v1/completions', other)
+        self.assertEqual(status, 200)
+        self.assertEqual(result['model'], 'model-new')
         self.assertNotEqual(request('POST', '/v1/completions', {**payload, 'model': 'unknown'})[0], 200)
         self.assertEqual(request('DELETE', drain)[0], 409, 'Do not clear the fence with a live stream.')
         # A queued management registration must not defeat the withdrawal fence.
@@ -145,7 +147,9 @@ class RouterImageTests(unittest.TestCase):
         self.assertEqual(request('DELETE', drain)[0], 204)
         self.assertEqual(request('POST', '/workers', {'url': urls[0]})[0], 202)
         wait_for(lambda: request('GET', '/workers')[1]['total'] == 2)
-        self.assertEqual(request('POST', '/v1/completions', payload)[0], 200)
+        status, result = request('POST', '/v1/completions', payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(result['model'], 'model-old')
 
 
 if __name__ == '__main__':
