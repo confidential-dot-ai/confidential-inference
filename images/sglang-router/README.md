@@ -75,3 +75,17 @@ configuration; the mount policy does not attest to the file's contents.
 The built-image test checks mixed groups, request model rewriting, rejected
 route changes, an open stream across a route change, and restart recovery.
 These local checks do not replace the candidate worker/model rehearsal.
+
+For a reviewed local development build that has passed the image test, publish
+with a Docker registry login in tmpfs:
+
+```sh
+python3 images/sglang-router/publish.py --image <local-image> \
+  --receipt /protected/path/router-publication.json
+```
+
+The script checks the image platform and source label. It checks that the
+build inputs still match that commit. It records publication time and the
+repository digest. This is a development artifact, not a signed release.
+Candidate deployment still requires the separate router update script and
+its full manifest audit.
