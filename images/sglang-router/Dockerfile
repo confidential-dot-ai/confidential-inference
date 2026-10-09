@@ -44,9 +44,12 @@ COPY requirements.lock /router-requirements.lock
 RUN python3 -m pip install --no-cache-dir --require-hashes -r /router-requirements.lock
 LABEL ai.confidential.build.source-date-epoch="${SOURCE_DATE_EPOCH}"
 COPY --from=build /out /router-wheels
-RUN python3 -m pip install --no-compile --no-deps --force-reinstall /router-wheels/*.whl \
+# No pip cache: with one, pip writes its self-check state with the wall-clock
+# time under /root/.cache/pip. No bytecode: a .pyc records the mtime of its
+# source at import time, which is the install time.
+RUN python3 -m pip install --no-cache-dir --disable-pip-version-check --no-compile --no-deps --force-reinstall /router-wheels/*.whl \
     && rm -rf /router-wheels \
-    && python3 -c 'import sglang_router.sglang_router_rs'
+    && python3 -B -c 'import sglang_router.sglang_router_rs'
 USER 1001:1001
 EXPOSE 30000 29000
 ENTRYPOINT ["python3", "-m", "sglang_router.launch_router"]
