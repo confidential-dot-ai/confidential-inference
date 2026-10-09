@@ -32,6 +32,10 @@ model:
 """
 
 
+# Long enough for git to see the renamed file as a rename after a one-line change.
+TLS_SOURCE = "package ratls\n\n" + "".join(f"func F{index}() {{}}\n" for index in range(20))
+
+
 def git_repo(directory: Path) -> Path:
     repo = directory / "c8s"
     repo.mkdir()
@@ -175,6 +179,42 @@ class BumpTests(unittest.TestCase):
                 self.assertIn("pkg/types/codes.go", diff_out.read_text())
                 self.assertIn("only after a person reviews that diff", manifest["capturedFromNote"])
                 self.assertNotIn("only in Go comments", manifest["capturedFromNote"])
+
+    def source_lock_bump(self, change) -> dict:
+        """Add the lock entry of a commit that applies change() to the pinned tree."""
+        with tempfile.TemporaryDirectory() as directory:
+            repo = git_repo(Path(directory))
+            old = commit(repo, {"pkg/ratls/tls.go": TLS_SOURCE, "cmd/cds/main.go": "package main\n"})
+            change(repo)
+            new = commit(repo, {})
+            lock_path = Path(directory) / "lock.json"
+            entry = {"commit": old, "tag": "v0.33.4", "nodeImage": "node@sha256:" + "1" * 64,
+                     "c8sOperatorImage": "op@sha256:" + "2" * 64,
+                     "files": {"pkg/ratls/tls.go": "sha256:" + "3" * 64, "cmd/cds/main.go": "sha256:" + "4" * 64}}
+            lock_path.write_text(json.dumps({"commits": [entry]}, indent=2) + "\n")
+            core = ["ghcr.io/confidential-dot-ai/c8s-operator@sha256:" + "5" * 64]
+            node = {"reference": "ghcr.io/confidential-dot-ai/node-guest-base", "digest": "sha256:" + "6" * 64}
+            with mock.patch.object(BUMP, "SOURCE_LOCK", lock_path):
+                BUMP.add_source_lock(repo, {"sourceCommit": old},
+                                     {"sourceCommit": new, "release": "v0.33.7", "nodeImage": node, "coreImages": core})
+            added = json.loads(lock_path.read_text())["commits"][1]
+            self.assertEqual(added["commit"], new)
+            return added
+
+    def test_a_renamed_pinned_file_keeps_its_pin_under_the_new_name(self):
+        def rename(repo: Path) -> None:
+            (repo / "pkg/armtls").mkdir()
+            (repo / "pkg/ratls/tls.go").rename(repo / "pkg/armtls/tls.go")
+            (repo / "pkg/armtls/tls.go").write_text(TLS_SOURCE.replace("ratls", "armtls", 1))
+        added = self.source_lock_bump(rename)
+        self.assertEqual(list(added["files"]), ["pkg/armtls/tls.go", "cmd/cds/main.go"])
+        self.assertEqual(added["files"]["pkg/armtls/tls.go"],
+                         BUMP.sha256_bytes(TLS_SOURCE.replace("ratls", "armtls", 1).encode()))
+        self.assertEqual(added["files"]["cmd/cds/main.go"], BUMP.sha256_bytes(b"package main\n"))
+
+    def test_a_deleted_pinned_file_stops_the_bump(self):
+        with self.assertRaisesRegex(BUMP.BumpError, "pkg/ratls/tls.go are gone"):
+            self.source_lock_bump(lambda repo: (repo / "pkg/ratls/tls.go").unlink())
 
     def test_the_staging_fixture_moves_only_with_the_staging_profile(self):
         production, staging = BUMP.release_profiles.load()

@@ -37,7 +37,7 @@ pinned commit, so the bump does not write one. The test fixture names the
 c8s core image digests, so it moves with the staging pins.
 
 It stops when a step needs a person: protocol source files changed in more
-than comments (without --protocol-review), changed NVIDIA driver inputs, a pin it cannot edit in place, or a failed check. Review
+than comments (without --protocol-review), changed NVIDIA driver inputs, a pin it cannot edit in place, a deleted pinned source file, or a failed check. Review
 the full diff before you commit. The image config diff is a release input.
 """
 
@@ -279,10 +279,34 @@ def add_source_lock(c8s_repo: Path, old: dict[str, Any], new: dict[str, Any]) ->
         "nodeImage": f"{new['nodeImage']['reference']}@{new['nodeImage']['digest']}",
         "c8sOperatorImage": operator_image(new),
     })
-    for name in entry["files"]:
-        entry["files"][name] = sha256_bytes(git_show(c8s_repo, new["sourceCommit"], name))
+    names = pinned_names(c8s_repo, old["sourceCommit"], new["sourceCommit"], list(entry["files"]))
+    entry["files"] = {names[name]: sha256_bytes(git_show(c8s_repo, new["sourceCommit"], names[name]))
+                      for name in entry["files"]}
     lock["commits"].append(entry)
     write_json(SOURCE_LOCK, lock)
+
+
+def pinned_names(c8s_repo: Path, old_commit: str, new_commit: str, names: list[str]) -> dict[str, str]:
+    """Map each pinned source file to its name at the new commit.
+
+    A rename keeps the pin under the new name. A deleted pinned file, or two
+    pins that end up at one file, stop the bump: the lock then needs a person.
+    """
+    moved: dict[str, str] = {}
+    gone: list[str] = []
+    for line in git(c8s_repo, "diff", "--name-status", "-M", old_commit, new_commit).splitlines():
+        fields = line.split("\t")
+        if fields[0].startswith("R") and fields[1] in names:
+            moved[fields[1]] = fields[2]
+        elif fields[0] == "D" and fields[1] in names:
+            gone.append(fields[1])
+    if gone:
+        raise BumpError(f"the pinned c8s source files {', '.join(sorted(gone))} are gone at {new_commit};"
+                        " edit the source lock by hand")
+    result = {name: moved.get(name, name) for name in names}
+    if len(set(result.values())) != len(names):
+        raise BumpError("two pinned c8s source files end up at one file; edit the source lock by hand")
+    return result
 
 
 def only_comments_changed(c8s_repo: Path, old_commit: str, new_commit: str, sources: list[str]) -> bool:
