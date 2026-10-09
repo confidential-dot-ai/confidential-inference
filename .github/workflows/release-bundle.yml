@@ -234,6 +234,8 @@ jobs:
             dist/image-publication-manifest.json
             dist/allowlist.json
             dist/release-values.yaml
+            dist/profile-values-*.yaml
+            dist/*.tgz
           if-no-files-found: error
           retention-days: 90
 
@@ -243,12 +245,49 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      # The chart package goes to GHCR from here, not from the signing job.
+      packages: write
     steps:
       - name: Download the verified release artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: signed-release-${{ github.ref_name }}
           path: dist
+
+      - name: Install the pinned Helm
+        run: |
+          curl -fsSL -o /tmp/helm.tar.gz \
+            https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz
+          echo "a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c1ef29c259  /tmp/helm.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
+          sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+
+      # The signed manifest binds the package by its SHA-256. A staging release
+      # pushes its package; every release then pulls the package at the
+      # reference and proves it is the signed one, so a production release
+      # finds its staging package there.
+      - name: Push the chart package and prove the reference holds the signed one
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          reference="$(jq -r .chart.reference dist/release-bundle.json)"
+          expected="$(jq -r .chart.archiveSha256 dist/release-bundle.json)"
+          digest() { echo "sha256:$(sha256sum "$1" | cut -d' ' -f1)"; }
+          printf '%s' "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          archives=(dist/*.tgz)
+          if [ -e "${archives[0]}" ]; then
+            test "${#archives[@]}" -eq 1
+            test "$(digest "${archives[0]}")" = "$expected" \
+              || { echo "The chart package differs from the signed manifest." >&2; exit 1; }
+            helm push "${archives[0]}" "oci://${reference%/*}"
+          fi
+          mkdir "$RUNNER_TEMP/pulled"
+          helm pull "oci://${reference%:*}" --version "${reference##*:}" --destination "$RUNNER_TEMP/pulled"
+          pulled=("$RUNNER_TEMP"/pulled/*.tgz)
+          test "$(digest "${pulled[0]}")" = "$expected" \
+            || { echo "The chart at $reference is not the signed package." >&2; exit 1; }
 
       - name: Publish new GitHub Release assets
         env:
@@ -285,15 +324,21 @@ jobs:
             echo "The release tag changed during publication. Refusing publication." >&2
             exit 1
           fi
+          # A production release has no package of its own (it binds the
+          # staging one), so the package is attached only when present.
+          shopt -s nullglob
+          extra_assets=(dist/profile-values-*.yaml dist/*.tgz)
+          shopt -u nullglob
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --target "$expected_commit" \
             --title "$RELEASE_TAG" \
-            --notes "Signed Confidential Inference release. The signed file is the release manifest built from release/ at the tag commit. It binds allowlist.json and release-values.yaml by SHA-256." \
+            --notes "Signed Confidential Inference release. The signed file is the release manifest built from release/ at the tag commit. It binds allowlist.json, release-values.yaml, the profile values files and the chart package by SHA-256." \
             "dist/release-bundle.json#Release bundle" \
             "dist/release-bundle.sigstore.json#Sigstore verification bundle" \
             "dist/release-tag-commit.txt#Signed tag commit" \
             "dist/image-publication-manifest.json#Image publication evidence" \
             "dist/allowlist.json#c8s allowlist" \
-            "dist/release-values.yaml#Release image values"
+            "dist/release-values.yaml#Release image values" \
+            "${extra_assets[@]}"

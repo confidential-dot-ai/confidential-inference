@@ -44,7 +44,18 @@ The build writes three files to --output-dir:
   the chart rendered with these digests. The manifest binds its SHA-256;
 - release-values.yaml: the Helm values file with the repository image
   digests and the release ID. Apply it after the profile values files. The
-  manifest binds its SHA-256 (releaseValues).
+  manifest binds its SHA-256 (releaseValues);
+- <chart>-<X.Y.Z>.tgz, for a staging release: the chart package, version
+  X.Y.Z (the tag without v and -staging). The manifest binds its SHA-256
+  (chart.archiveSha256) and the OCI reference the publish job pushes it to
+  (chart.reference). A production release of the same commit packages
+  nothing: it binds the package of its staging release, so production
+  promotes what staging verified. The build writes the archive itself with
+  fixed metadata (not helm package, whose output carries file times), so a
+  rebuild gives the same bytes, as for every other release file.
+
+The manifest also binds each profile values file (profileValues), which the
+release publishes as assets, so a deploy needs no checkout to apply them.
 
 The release workflow builds them at the tag, signs the manifest, and attaches
 all three to the GitHub release. Anyone can build them again from the tagged
@@ -55,7 +66,9 @@ existing file differs from a new build.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
+import io
 import json
 import os
 import re
@@ -63,6 +76,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.request
 from pathlib import Path
@@ -330,6 +344,61 @@ def chart_identity(chart: Path) -> dict[str, str]:
     return {"name": meta["name"], "version": str(meta["version"]), "treeSha256": "sha256:" + digest.hexdigest()}
 
 
+CHART_REPOSITORY = "ghcr.io/confidential-dot-ai/confidential-inference/charts"
+# The profile whose release packages the chart. The other profile's release of
+# the same source commit binds that package (staging_chart_binding).
+PACKAGING_PROFILE = "staging"
+
+
+def chart_version(tag: str, profile: release_profiles.Profile) -> str:
+    """The package version: the tag without `v` and without the profile suffix.
+
+    One package per source commit: vX.Y.Z-staging and vX.Y.Z share version
+    X.Y.Z. The tag has the form release_profiles.for_tag accepted.
+    """
+    require(release_profiles.for_tag(tag).name == profile.name, f"tag {tag} does not fit profile {profile.name}")
+    return tag[1:len(tag) - len(profile.tag_suffix)]
+
+
+def chart_reference(name: str, version: str) -> str:
+    """The OCI reference of the chart package, by version. The archive digest identifies its bytes."""
+    return f"{CHART_REPOSITORY}/{name}:{version}"
+
+
+def chart_metadata(chart_yaml: bytes, version: str) -> bytes:
+    """Chart.yaml of the package: the chart's file with its version line set to `version`.
+
+    A text substitution, not a YAML dump, so the bytes depend on the tagged file alone.
+    """
+    text = chart_yaml.decode()
+    lines = [line for line in text.splitlines(keepends=True) if re.match(r"^version:", line)]
+    require(len(lines) == 1, "Chart.yaml must set version once at the top level")
+    return text.replace(lines[0], f"version: {version}\n", 1).encode()
+
+
+def package_chart(chart: Path, name: str, version: str) -> bytes:
+    """The chart package `<name>-<version>.tgz` of the tree at `chart`.
+
+    The package is a function of the tagged tree and the version alone: entries
+    in sorted path order with TarInfo's fixed metadata (mode 0644, uid and gid
+    0, mtime 0, no names), gzip without a name or time. helm package rewrites
+    Chart.yaml and records file times, so its archive is not reproducible; this
+    one is, so the local build and the signed release have the same bytes, as
+    every other release file does. Helm reads it like any chart archive.
+    """
+    files = {p.relative_to(chart).as_posix(): p.read_bytes() for p in chart.rglob("*") if p.is_file()}
+    require("Chart.yaml" in files, "the chart has no Chart.yaml")
+    files["Chart.yaml"] = chart_metadata(files["Chart.yaml"], version)
+    out = io.BytesIO()
+    with gzip.GzipFile(fileobj=out, mode="wb", mtime=0) as gz, \
+            tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for path in sorted(files):
+            info = tarfile.TarInfo(f"{name}/{path}")
+            info.size = len(files[path])
+            tar.addfile(info, io.BytesIO(files[path]))
+    return out.getvalue()
+
+
 def source_lock_entry(lock: dict[str, Any], commit: str) -> dict[str, Any]:
     entries = [lock, *lock.get("commits", [])]
     matches = [entry for entry in entries if entry.get("commit") == commit]
@@ -427,6 +496,27 @@ def download_base_release(tag: str, directory: Path) -> tuple[Path, Path]:
     return paths
 
 
+def signed_release(tag: str, directory: Path, what: str) -> dict[str, Any]:
+    """Return the manifest of release `tag` after verifying its signature.
+
+    The build downloads the manifest and its Sigstore bundle into `directory`
+    (download_base_release), requires a valid release signature, and requires
+    the manifest to be of the schema and to name `tag`. `what` names the
+    release in errors.
+    """
+    manifest_path, signature_path = download_base_release(tag, directory)
+    cosign = shutil.which("cosign")
+    require(cosign is not None, f"verifying {what} needs cosign")
+    try:
+        release_signature.verify_release_signature(manifest_path, signature_path, Path(cosign).resolve(), 60)
+    except (OSError, release_signature.ReleaseSignatureError) as error:
+        raise ManifestError(f"{what} signature: {error}") from error
+    manifest = read_json(manifest_path)
+    validate_schema(manifest)
+    require(manifest["release"]["name"] == tag, f"the manifest of {what} {tag} names a different release")
+    return manifest
+
+
 def base_release_images(
     publication: dict[str, Any],
     download_dir: Path,
@@ -446,17 +536,7 @@ def base_release_images(
     source = publication["source"]
     if release_profiles.tag_pattern().fullmatch(source["baseRef"]) is None:
         return {}
-    base_path, signature_path = download_base_release(source["baseRef"], download_dir)
-    cosign = shutil.which("cosign")
-    require(cosign is not None, "verifying the base release needs cosign")
-    try:
-        release_signature.verify_release_signature(base_path, signature_path, Path(cosign).resolve(), 60)
-    except (OSError, release_signature.ReleaseSignatureError) as error:
-        raise ManifestError(f"the base release signature: {error}") from error
-    base = read_json(base_path)
-    validate_schema(base)
-    require(base["release"]["name"] == source["baseRef"],
-            "the base release manifest names a different release than the image publication base")
+    base = signed_release(source["baseRef"], download_dir, "the base release")
     require(base["source"]["commit"] == source["baseRefCommit"],
             "the base release source commit differs from the image publication base commit")
     changed = changed_paths(source["baseRefCommit"], source["commit"], repo)
@@ -563,12 +643,15 @@ def build(
     c8s: Path,
     canonical_tool: Path | None,
 ) -> dict[str, bytes]:
-    """Return the release files by name: the manifest, the allowlist, and the values overlay."""
+    """Return the release files by name: the manifest, the allowlist, the values overlay, the
+    profile values files under their asset names and, for a staging release, the chart package."""
     try:
         profile = release_profiles.for_tag(tag)
     except release_profiles.ProfileError as error:
         raise ManifestError(str(error)) from error
     chart = chart.resolve()
+    identity = chart_identity(chart)
+    version = chart_version(tag, profile)
     require(COMMIT.fullmatch(source_commit) is not None, "--source-commit must be a full Git commit")
     spec = read_spec(profile)
     publication_bytes, publication = read_publication(publication_path)
@@ -620,6 +703,19 @@ def build(
     node = node_measurements(release_profiles.node_manifest(profile), spec)
     named_images = image_names(values, images)
     publication = publication_binding(publication_bytes, publication, named_images)
+    files: dict[str, bytes] = {}
+    if profile.name == PACKAGING_PROFILE:
+        archive = package_chart(chart, identity["name"], version)
+        files[f"{identity['name']}-{version}.tgz"] = archive
+        chart_binding = {"archiveSha256": sha256(archive), "reference": chart_reference(identity["name"], version)}
+    else:
+        with tempfile.TemporaryDirectory(prefix="staging-release-") as directory:
+            chart_binding = staging_chart_binding(tag, source_commit, identity["treeSha256"], download_dir or Path(directory))
+    profile_values = []
+    for path in profile.values_files:
+        asset = profile_values_asset(profile.relative(path))
+        files[asset] = path.read_bytes()
+        profile_values.append({"path": profile.relative(path), "sha256": sha256(files[asset]), "asset": asset})
     manifest = {
         "schema": SCHEMA,
         "release": {
@@ -635,9 +731,10 @@ def build(
         "imagePublication": publication,
         "images": named_images,
         "chart": {
-            "name": chart_identity(chart)["name"],
-            "version": chart_identity(chart)["version"],
-            "sha256": chart_identity(chart)["treeSha256"],
+            "name": identity["name"],
+            "version": identity["version"],
+            "sha256": identity["treeSha256"],
+            **chart_binding,
         },
         "c8s": {"release": spec["c8s"]["release"], "sourceCommit": spec["c8s"]["sourceCommit"]},
         # The SHA-256 of release/node-manifest.json, the c8s manifest.json that
@@ -661,6 +758,7 @@ def build(
             "path": profile.release_values.relative_to(ROOT).as_posix(),
             "sha256": sha256(overlay_bytes),
         },
+        "profileValues": profile_values,
         "publicHostnames": spec["publicHostnames"],
     }
     validate_schema(manifest)
@@ -668,7 +766,34 @@ def build(
         "release-bundle.json": encode(manifest),
         "allowlist.json": allowlist_bytes,
         "release-values.yaml": overlay_bytes,
+        **files,
     }
+
+
+def profile_values_asset(path: str) -> str:
+    """The release asset name of a profile values file: its repository path with / as -."""
+    return "profile-values-" + path.replace("/", "-")
+
+
+def staging_chart_binding(tag: str, source_commit: str, tree_sha256: str, download_dir: Path) -> dict[str, str]:
+    """Return the chart package that the signed staging release of this source commit binds.
+
+    A production release packages nothing: it promotes the package that
+    staging verified. The build downloads the staging manifest and its
+    Sigstore bundle like a base release, verifies the signature, and requires
+    the same source commit and chart tree.
+    """
+    packaging = next(p for p in release_profiles.load() if p.name == PACKAGING_PROFILE)
+    staging_tag = tag + packaging.tag_suffix
+    try:
+        staging = signed_release(staging_tag, download_dir / "staging-release", "the staging release")
+    except ManifestError as error:
+        raise ManifestError(f"{staging_tag}, the staging release of this commit, is needed for the chart package: {error}") from error
+    require(staging["source"]["commit"] == source_commit, f"{staging_tag} is not a release of source commit {source_commit}")
+    require(staging["chart"]["sha256"] == tree_sha256, f"{staging_tag} packaged another chart tree")
+    require("archiveSha256" in staging["chart"] and "reference" in staging["chart"],
+            f"{staging_tag} binds no chart package; the staging release predates the package. Release it again first.")
+    return {"archiveSha256": staging["chart"]["archiveSha256"], "reference": staging["chart"]["reference"]}
 
 
 def validate_schema(manifest: dict[str, Any]) -> None:
@@ -701,7 +826,8 @@ def main() -> int:
     parser.add_argument("--canonical-tool", type=Path,
                         help="a built tools/c8s-allowlist-canonical binary")
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--check", action="store_true",
+                        help="fail when a file in --output-dir differs from a new build")
     args = parser.parse_args()
     try:
         files = build(

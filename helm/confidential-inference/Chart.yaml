@@ -4,3 +4,6 @@ description: The v0 confidential inference stack
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+# GHCR links the chart package to this repository through this source.
+sources:
+  - https://github.com/confidential-dot-ai/confidential-inference
