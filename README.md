@@ -120,6 +120,7 @@ check.
 
 See `docs/threat-model.md` for the full trust boundary, the residual risks,
 and the known gaps under remediation.
+See [`docs/client-verification.md`](docs/client-verification.md) for the full client verification flow.
 
 ## Verify one live attestation
 
