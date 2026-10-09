@@ -96,6 +96,13 @@ IMAGES = (
         ("images/metrics-collector/Dockerfile",),
     ),
     Image(
+        "log-collector",
+        "images/log-collector",
+        "images/log-collector/Dockerfile",
+        "Confidential Inference log collector",
+        ("images/log-collector/Dockerfile", "images/log-collector/config.alloy"),
+    ),
+    Image(
         "kube-state-metrics",
         "images/kube-state-metrics",
         "images/kube-state-metrics/Dockerfile",

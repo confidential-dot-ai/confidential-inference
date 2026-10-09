@@ -31,6 +31,10 @@ class AffectedReleaseImagesTests(unittest.TestCase):
                                 'images/sglang-router/source.lock',
                                 'images/sglang-router/canonicalize_wheel.py']), ['sglang-router'])
 
+    def test_log_pipeline_selects_only_log_collector(self) -> None:
+        self.assertEqual(names(["images/log-collector/config.alloy"]), ["log-collector"])
+        self.assertEqual(names(["images/log-collector/Dockerfile"]), ["log-collector"])
+
     def test_shared_rust_input_selects_both_rust_images(self) -> None:
         self.assertEqual(
             names(["Cargo.lock"]),
