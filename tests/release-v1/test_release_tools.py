@@ -15,6 +15,7 @@ from __future__ import annotations
 import functools
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -650,6 +651,36 @@ class ManifestTests(unittest.TestCase):
             self.assertNotIn(forbidden, properties)
         self.assertFalse(schema["additionalProperties"])
         jsonschema.Draft202012Validator.check_schema(schema)
+
+
+class ChartArchiveTests(unittest.TestCase):
+    def test_the_package_version_is_the_tag_without_v_and_suffix(self):
+        self.assertEqual(MAN.chart_version("v0.14.12-staging", STAGING), "0.14.12")
+        self.assertEqual(MAN.chart_version("v0.14.12", PRODUCTION), "0.14.12")
+        with self.assertRaisesRegex(MAN.ManifestError, "profile"):
+            MAN.chart_version("v0.14.12", STAGING)
+        self.assertEqual(MAN.chart_reference("confidential-inference", "0.14.12"),
+                         "ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference:0.14.12")
+
+    def test_the_package_holds_the_tagged_chart_with_the_release_version(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = MAN.package_chart(MAN.CHART, "0.14.12", Path(temporary))
+            self.assertEqual(archive.name, "confidential-inference-0.14.12.tgz")
+            MAN.verify_archive_content(archive, MAN.CHART, "0.14.12")
+            with self.assertRaisesRegex(MAN.ManifestError, "version"):
+                MAN.verify_archive_content(archive, MAN.CHART, "0.14.13")
+
+    def test_a_changed_template_fails_the_content_check(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            copy = Path(temporary) / "chart"
+            shutil.copytree(MAN.CHART, copy)
+            archive = MAN.package_chart(copy, "0.14.12", Path(temporary))
+            (copy / "templates/gateway.yaml").write_text("changed: true\n")
+            with self.assertRaisesRegex(MAN.ManifestError, "templates/gateway.yaml"):
+                MAN.verify_archive_content(archive, copy, "0.14.12")
+            (copy / "templates/extra.yaml").write_text("extra: true\n")
+            with self.assertRaisesRegex(MAN.ManifestError, "templates/extra.yaml"):
+                MAN.verify_archive_content(archive, copy, "0.14.12")
 
 
 if __name__ == "__main__":

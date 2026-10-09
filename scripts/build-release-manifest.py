@@ -63,6 +63,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.request
 from pathlib import Path
@@ -328,6 +329,71 @@ def chart_identity(chart: Path) -> dict[str, str]:
         data = path.read_bytes()
         digest.update(relative.encode() + b"\0" + str(len(data)).encode() + b"\0" + data)
     return {"name": meta["name"], "version": str(meta["version"]), "treeSha256": "sha256:" + digest.hexdigest()}
+
+
+CHART_REPOSITORY = "ghcr.io/confidential-dot-ai/confidential-inference/charts"
+VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+
+
+def chart_version(tag: str, profile: release_profiles.Profile) -> str:
+    """The package version: the tag without `v` and without the profile suffix.
+
+    One package per source commit: vX.Y.Z-staging and vX.Y.Z share version
+    X.Y.Z, and the production release binds the package the staging release
+    built (staging_chart_binding).
+    """
+    suffix = profile.tag_suffix
+    require(tag.startswith("v") and (not suffix or tag.endswith(suffix)),
+            f"tag {tag} does not fit profile {profile.name}")
+    version = tag[1:len(tag) - len(suffix)] if suffix else tag[1:]
+    require(VERSION.fullmatch(version) is not None, f"tag {tag} is not vX.Y.Z{suffix}")
+    return version
+
+
+def chart_reference(name: str, version: str) -> str:
+    """The OCI reference of the chart package, by version. The archive digest identifies its bytes."""
+    return f"{CHART_REPOSITORY}/{name}:{version}"
+
+
+def package_chart(chart: Path, version: str, directory: Path) -> Path:
+    """Package `chart` as `version` into `directory` with the helm on PATH."""
+    result = subprocess.run(
+        ["helm", "package", str(chart), "--version", version, "--destination", str(directory)],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        raise ManifestError(f"helm package failed: {result.stderr.strip()}")
+    archive = directory / f"{chart_identity(chart)['name']}-{version}.tgz"
+    require(archive.is_file(), f"helm package wrote no {archive.name}")
+    return archive
+
+
+def verify_archive_content(archive: Path, chart: Path, version: str) -> None:
+    """Require that the archive holds the chart tree, with only the version of Chart.yaml changed.
+
+    helm package rewrites Chart.yaml and the archive bytes carry mtimes, so the
+    archive is evidence like an image digest: this compares its content with
+    the tagged tree instead of its bytes.
+    """
+    name = chart_identity(chart)["name"]
+    expected = {p.relative_to(chart).as_posix(): p.read_bytes() for p in chart.rglob("*") if p.is_file()}
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            members = {m.name: m for m in tar.getmembers() if m.isfile()}
+            require(all(m.startswith(f"{name}/") for m in members), "the archive holds files outside the chart")
+            actual = {m[len(name) + 1:]: tar.extractfile(members[m]).read() for m in members}
+    except (tarfile.TarError, OSError) as error:
+        raise ManifestError(f"cannot read the chart archive: {error}") from error
+    missing = sorted(set(expected) - set(actual))
+    extra = sorted(set(actual) - set(expected))
+    require(not missing and not extra, f"archive files differ from the chart: missing {missing}, extra {extra}")
+    for path in sorted(expected):
+        if path == "Chart.yaml":
+            want = {**yaml.safe_load(expected[path]), "version": version}
+            require(yaml.safe_load(actual[path]) == want,
+                    f"Chart.yaml in the archive differs from the chart at version {version}")
+        else:
+            require(actual[path] == expected[path], f"{path} in the archive differs from the chart")
 
 
 def source_lock_entry(lock: dict[str, Any], commit: str) -> dict[str, Any]:
