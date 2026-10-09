@@ -42,4 +42,4 @@ metricsCollector:
     enabled: false
 
 images:
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:9a99aacb8a1c06b306a5d78e21278c7abd9887527dd43bf4de5b7b2dc2210691
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:30813293206a3a82b3b2cb7e70907ff10fce676206f3739465959d72a641df03
