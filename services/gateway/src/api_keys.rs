@@ -970,11 +970,22 @@ impl GatewayState {
             KeyRegistryMode::Registry => {
                 scan_registry_keys(&database, &verifier, revoked).map(|id| (id, "registry"))
             }
-            KeyRegistryMode::Dual => scan_api_keys(&database, &verifier, revoked)
-                .map(|id| (id, "local"))
-                .or_else(|| {
-                    scan_registry_keys(&database, &verifier, revoked).map(|id| (id, "registry"))
-                }),
+            KeyRegistryMode::Dual => {
+                // A revocation recorded in either table wins over an active
+                // row in the other: the same key lives in both tables after
+                // a registry import.
+                if !revoked
+                    && (scan_api_keys(&database, &verifier, true).is_some()
+                        || scan_registry_keys(&database, &verifier, true).is_some())
+                {
+                    return None;
+                }
+                scan_api_keys(&database, &verifier, revoked)
+                    .map(|id| (id, "local"))
+                    .or_else(|| {
+                        scan_registry_keys(&database, &verifier, revoked).map(|id| (id, "registry"))
+                    })
+            }
         }
     }
 
@@ -2845,5 +2856,79 @@ mod tests {
         )
         .unwrap_or_else(|_| unreachable!());
         assert_eq!(import_result["imported"], 1);
+    }
+
+    #[test]
+    fn dual_mode_rejects_a_key_revoked_in_either_table() {
+        let pepper = vec![7_u8; 32];
+        let state = GatewayState::in_memory(pepper.clone())
+            .unwrap_or_else(|_| unreachable!())
+            .with_mode(KeyRegistryMode::Dual)
+            .with_environment("integration-staging");
+        let (_, plaintext, metadata, key_hash) = state
+            .create(&request(), "create-request-0010")
+            .unwrap_or_else(|_| unreachable!());
+        let fingerprint = pepper_fingerprint(&pepper);
+        let snapshot = |revision: i64, revoked: bool| -> SnapshotPush {
+            let revoked_at = revoked.then_some("2026-09-18T11:00:00Z");
+            let revoked_by = revoked.then_some("operator@confidential.ai");
+            serde_json::from_value(serde_json::json!({
+                "schemaVersion": crate::key_registry::SNAPSHOT_SCHEMA,
+                "environment": "integration-staging",
+                "revision": revision,
+                "generatedAt": "2026-09-18T10:00:00Z",
+                "pepperFingerprint": fingerprint,
+                "keys": [{
+                    "id": metadata.id,
+                    "name": "example",
+                    "owner": "unknown",
+                    "prefix": metadata.prefix,
+                    "keyHash": key_hash,
+                    "pepperFingerprint": fingerprint,
+                    "tags": ["example"],
+                    "rateLimit": null,
+                    "createdAt": "2026-09-18T09:00:00Z",
+                    "createdBy": "operator@confidential.ai",
+                    "revokedAt": revoked_at,
+                    "revokedBy": revoked_by,
+                    "version": 1,
+                }],
+            }))
+            .unwrap_or_else(|_| unreachable!())
+        };
+
+        state
+            .push_registry_snapshot(&snapshot(1, false))
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            state.verify_with_source(&plaintext),
+            Some((metadata.id.clone(), "local"))
+        );
+
+        // Revoked in the registry, still active locally.
+        state
+            .push_registry_snapshot(&snapshot(2, true))
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(state.verify_with_source(&plaintext), None);
+        assert_eq!(state.verify_revoked(&plaintext), Some(metadata.id.clone()));
+
+        // Active in the registry again, revoked locally.
+        state
+            .push_registry_snapshot(&snapshot(3, false))
+            .unwrap_or_else(|_| unreachable!());
+        let audit = AuditContext {
+            actor: "operator".to_owned(),
+            reason: "access ended".to_owned(),
+        };
+        state
+            .revoke(
+                &metadata.id,
+                &audit,
+                "revoke-request-0010",
+                metadata.version,
+            )
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(state.verify_with_source(&plaintext), None);
+        assert_eq!(state.verify_revoked(&plaintext), Some(metadata.id));
     }
 }
