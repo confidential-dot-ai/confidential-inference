@@ -30,6 +30,7 @@ pub mod attestation;
 pub mod attestation_metadata;
 pub mod key_registry;
 pub mod metrics;
+mod model_response;
 pub mod protection;
 
 use metrics::GatewayMetrics;
@@ -434,6 +435,12 @@ async fn proxy_inference(
         .as_ref()
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.starts_with("text/event-stream"));
+    let rewrite_model = status.is_success()
+        && (is_event_stream
+            || content_type
+                .as_ref()
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("application/json")));
     let retry_after = safe_retry_after(upstream.headers());
     let idle_timeout = state.config.protection.stream_idle_timeout;
     let metrics = Arc::clone(&state.metrics);
@@ -446,6 +453,7 @@ async fn proxy_inference(
         let mut stream_metrics = StreamMetrics::default();
         let mut json_metrics = Vec::new();
         let mut json_metrics_overflow = false;
+        let mut model_response = model_response::ModelResponse::new(metric_model.clone(), is_event_stream);
         loop {
             match tokio::time::timeout(idle_timeout, upstream_stream.next()).await {
                 Ok(Some(Ok(chunk))) => {
@@ -465,13 +473,30 @@ async fn proxy_inference(
                             json_metrics_overflow = true;
                         }
                     }
-                    yield Ok::<_, std::io::Error>(chunk)
+                    if rewrite_model {
+                        match model_response.push(&chunk) {
+                            Ok(output) if !output.is_empty() => yield Ok::<_, std::io::Error>(axum::body::Bytes::from(output)),
+                            Ok(_) => {},
+                            Err(error) => { yield Err(error); break; }
+                        }
+                    } else {
+                        yield Ok::<_, std::io::Error>(chunk);
+                    }
                 },
                 Ok(Some(Err(_))) => {
                     yield Err(std::io::Error::other("upstream response failed"));
                     break;
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    if rewrite_model {
+                        match model_response.finish() {
+                            Ok(output) if !output.is_empty() => yield Ok(axum::body::Bytes::from(output)),
+                            Ok(_) => {},
+                            Err(error) => yield Err(error),
+                        }
+                    }
+                    break;
+                },
                 Err(_) => {
                     yield Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "upstream stream timed out"));
                     break;
