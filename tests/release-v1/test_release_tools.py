@@ -12,8 +12,10 @@ scripts/bump-c8s.py regenerates it with staging_allowlist().
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import importlib.util
+import io
 import json
 import shutil
 import subprocess
@@ -72,46 +74,54 @@ def published_release_images() -> dict[str, str]:
     return dict(image.split("@", 1) for image in RELEASE_IMAGES.values())
 
 
-def build_staging(evidence: dict, base: dict | None = None, tag: str = "v0.14.2-staging",
-                  c8s: Path | None = None, chart_archive: Path | None = None) -> dict[str, bytes]:
-    """Build the staging release with crane and the signature check replaced.
+def write_release(directory: Path, manifest: dict) -> None:
+    """Put a release manifest and an empty Sigstore bundle where the build downloads them."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "release-bundle.json").write_text(json.dumps(manifest))
+    (directory / "release-bundle.sigstore.json").write_text("{}")
 
-    Without `c8s`, the fixture allowlist replaces the c8s CLI. With `c8s`, the
-    build generates the allowlist with that c8s CLI binary.
-    """
+
+def build_release(tag: str, evidence: dict, download_dir: Path | None, generate, *patches,
+                  c8s: Path | None = None) -> dict[str, bytes]:
+    """Build a release with crane and the signature check replaced, plus `patches`."""
+    with tempfile.TemporaryDirectory() as temporary, contextlib.ExitStack() as stack:
+        evidence_path = Path(temporary) / "publication.json"
+        evidence_path.write_text(json.dumps(evidence))
+        for patch in patches:
+            stack.enter_context(patch)
+        stack.enter_context(mock.patch.object(MAN, "verify_image_source_boundary"))
+        stack.enter_context(mock.patch.object(MAN, "changed_paths", return_value=[]))
+        stack.enter_context(mock.patch.object(MAN.release_signature, "verify_release_signature"))
+        stack.enter_context(mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"))
+        stack.enter_context(mock.patch.dict(MAN.ALLOWLIST_GENERATOR, {
+            "generate": generate, "image_config": REPOSITORY_CONFIGS.__getitem__,
+        }))
+        return MAN.build(
+            tag,
+            ROOT / "helm/confidential-inference",
+            ROOT / "contracts/c8s-admission-source-lock.json",
+            "d" * 40,
+            evidence_path,
+            download_dir or Path(temporary) / "downloads",
+            c8s or Path("c8s"),
+            None,
+        )
+
+
+def build_staging(evidence: dict, base: dict | None = None, tag: str = "v0.14.2-staging",
+                  c8s: Path | None = None) -> dict[str, bytes]:
+    """Build the staging release. Without `c8s`, the fixture allowlist replaces the c8s CLI."""
     generated = STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")
     generate = MAN.ALLOWLIST_GENERATOR["generate"] if c8s else lambda *_args, **_kwargs: generated
     with tempfile.TemporaryDirectory() as temporary:
-        evidence_path = Path(temporary) / "publication.json"
-        evidence_path.write_text(json.dumps(evidence))
         download_dir = Path(temporary) / "base"
         if base is not None:
-            download_dir.mkdir()
-            (download_dir / "release-bundle.json").write_text(json.dumps(base))
-            (download_dir / "release-bundle.sigstore.json").write_text("{}")
-        with mock.patch.object(MAN, "verify_image_source_boundary"), \
-                mock.patch.object(MAN, "changed_paths", return_value=[]), \
-                mock.patch.object(MAN.release_signature, "verify_release_signature"), \
-                mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"), \
-                mock.patch.dict(MAN.ALLOWLIST_GENERATOR, {
-                    "generate": generate,
-                    "image_config": REPOSITORY_CONFIGS.__getitem__,
-                }):
-            return MAN.build(
-                tag,
-                ROOT / "helm/confidential-inference",
-                ROOT / "contracts/c8s-admission-source-lock.json",
-                "d" * 40,
-                evidence_path,
-                download_dir,
-                c8s or Path("c8s"),
-                None,
-                chart_archive,
-            )
+            write_release(download_dir, base)
+        return build_release(tag, evidence, download_dir, generate, c8s=c8s)
 
 
 def build_production(evidence: dict, download_dir: Path, tag: str = "v0.14.2") -> dict[str, bytes]:
-    """Build the production release with the fixture allowlist and the signature check replaced.
+    """Build the production release with the fixture allowlist.
 
     The fixture allowlist is the staging one. The production values pin another
     c8s operator image, so the stub adds its digest; the allowlist contract and
@@ -121,31 +131,9 @@ def build_production(evidence: dict, download_dir: Path, tag: str = "v0.14.2") -
     operator = PROFILES.read_values(PRODUCTION)["images"]["c8sOperator"].rsplit("@", 1)[1]
     allowlist["workloads"]["production-operator"] = {"containers": [{"digest": operator}]}
     generated = json.dumps(allowlist).encode()
-    with tempfile.TemporaryDirectory() as temporary:
-        evidence_path = Path(temporary) / "publication.json"
-        evidence_path.write_text(json.dumps(evidence))
-        # The fixture allowlist is the staging one; the production allowlist
-        # contract and model files are not what these tests check.
-        with mock.patch.object(MAN, "verify_image_source_boundary"), \
-                mock.patch.object(MAN, "changed_paths", return_value=[]), \
-                mock.patch.object(MAN, "require_allowlist_contract"), \
-                mock.patch.object(MAN, "require_model_files"), \
-                mock.patch.object(MAN.release_signature, "verify_release_signature"), \
-                mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"), \
-                mock.patch.dict(MAN.ALLOWLIST_GENERATOR, {
-                    "generate": lambda *_args, **_kwargs: generated,
-                    "image_config": REPOSITORY_CONFIGS.__getitem__,
-                }):
-            return MAN.build(
-                tag,
-                ROOT / "helm/confidential-inference",
-                ROOT / "contracts/c8s-admission-source-lock.json",
-                "d" * 40,
-                evidence_path,
-                download_dir,
-                Path("c8s"),
-                None,
-            )
+    return build_release(tag, evidence, download_dir, lambda *_args, **_kwargs: generated,
+                         mock.patch.object(MAN, "require_allowlist_contract"),
+                         mock.patch.object(MAN, "require_model_files"))
 
 
 def staging_allowlist(c8s: Path) -> bytes:
@@ -461,14 +449,11 @@ class ManifestTests(unittest.TestCase):
              "asset": "profile-values-release-staging-values.yaml"},
         ])
 
-    def test_a_check_build_takes_the_existing_archive(self):
-        first = build_staging(publication(published_release_images()))
-        with tempfile.TemporaryDirectory() as temporary:
-            archive = Path(temporary) / "confidential-inference-0.14.2.tgz"
-            archive.write_bytes(first["confidential-inference-0.14.2.tgz"])
-            again = build_staging(publication(published_release_images()), chart_archive=archive)
-        self.assertEqual(again["release-bundle.json"], first["release-bundle.json"])
-        self.assertEqual(again["confidential-inference-0.14.2.tgz"], first["confidential-inference-0.14.2.tgz"])
+    def test_the_release_files_carry_the_profile_values_under_their_asset_names(self):
+        files = build_staging(publication(published_release_images()))
+        self.assertEqual(files["profile-values-release-values.yaml"], (ROOT / "release/values.yaml").read_bytes())
+        self.assertEqual(files["profile-values-release-staging-values.yaml"],
+                         (ROOT / "release/staging/values.yaml").read_bytes())
 
     def test_a_production_release_binds_the_staging_package(self):
         staging = json.loads(build_staging(publication(published_release_images()))["release-bundle.json"])
@@ -476,20 +461,18 @@ class ManifestTests(unittest.TestCase):
                 mock.patch.object(MAN.release_signature, "verify_release_signature"), \
                 mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"):
             directory = Path(temporary)
-            (directory / "staging-release").mkdir()
-            (directory / "staging-release" / "release-bundle.json").write_text(json.dumps(staging))
-            (directory / "staging-release" / "release-bundle.sigstore.json").write_text("{}")
+            write_release(directory / "staging-release", staging)
             binding = MAN.staging_chart_binding("v0.14.2", "d" * 40, staging["chart"]["sha256"], directory)
             self.assertEqual(binding, {"archiveSha256": staging["chart"]["archiveSha256"],
                                        "reference": staging["chart"]["reference"]})
             for bad, message in ((("v0.14.2", "e" * 40, staging["chart"]["sha256"]), "commit"),
                                  (("v0.14.2", "d" * 40, "sha256:" + "0" * 64), "chart tree"),
-                                 (("v0.14.3", "d" * 40, staging["chart"]["sha256"]), "another release")):
+                                 (("v0.14.3", "d" * 40, staging["chart"]["sha256"]), "different release")):
                 with self.subTest(message=message), self.assertRaisesRegex(MAN.ManifestError, message):
                     MAN.staging_chart_binding(*bad, directory)
             legacy = {**staging, "chart": {k: v for k, v in staging["chart"].items()
                                            if k not in ("archiveSha256", "reference")}}
-            (directory / "staging-release" / "release-bundle.json").write_text(json.dumps(legacy))
+            write_release(directory / "staging-release", legacy)
             with self.assertRaisesRegex(MAN.ManifestError, "no chart package"):
                 MAN.staging_chart_binding("v0.14.2", "d" * 40, staging["chart"]["sha256"], directory)
 
@@ -499,9 +482,7 @@ class ManifestTests(unittest.TestCase):
         staging["release"]["name"] = "v0.14.2-staging"
         with tempfile.TemporaryDirectory() as temporary:
             download = Path(temporary) / "downloads"
-            (download / "staging-release").mkdir(parents=True)
-            (download / "staging-release" / "release-bundle.json").write_text(json.dumps(staging))
-            (download / "staging-release" / "release-bundle.sigstore.json").write_text("{}")
+            write_release(download / "staging-release", staging)
             files = build_production(publication(published_release_images()), download)
         manifest = json.loads(files["release-bundle.json"])
         self.assertEqual(manifest["release"], {"name": "v0.14.2", "environment": "production"})
@@ -583,8 +564,7 @@ class ManifestTests(unittest.TestCase):
     def base_images(evidence: dict, base: dict, changed: list[str] | None = None) -> dict[str, str]:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            (directory / "release-bundle.json").write_text(json.dumps(base))
-            (directory / "release-bundle.sigstore.json").write_text("{}")
+            write_release(directory, base)
             with mock.patch.object(MAN, "changed_paths", return_value=changed or []), \
                     mock.patch.object(MAN.release_signature, "verify_release_signature") as verify, \
                     mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"):
@@ -774,41 +754,34 @@ class ChartArchiveTests(unittest.TestCase):
                          "ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference:0.14.12")
 
     def test_the_package_is_the_tagged_chart_at_the_release_version_and_reproducible(self):
+        first = MAN.package_chart(MAN.CHART, "confidential-inference", "0.14.12")
+        self.assertEqual(first, MAN.package_chart(MAN.CHART, "confidential-inference", "0.14.12"))
+        self.assertNotEqual(first, MAN.package_chart(MAN.CHART, "confidential-inference", "0.14.13"))
+        with tarfile.open(fileobj=io.BytesIO(first)) as tar:
+            names = sorted(tar.getnames())
+            chart_yaml = yaml.safe_load(tar.extractfile("confidential-inference/Chart.yaml").read())
+            self.assertTrue(all(m.mtime == 0 and m.uid == 0 and m.mode == 0o644 for m in tar.getmembers()))
+        self.assertEqual(names, sorted(f"confidential-inference/{p.relative_to(MAN.CHART).as_posix()}"
+                                       for p in MAN.CHART.rglob("*") if p.is_file()))
+        self.assertEqual(chart_yaml["version"], "0.14.12")
+        self.assertEqual(chart_yaml["name"], "confidential-inference")
+
+    def test_a_changed_template_changes_the_package(self):
         with tempfile.TemporaryDirectory() as temporary:
-            (Path(temporary) / "a").mkdir()
-            first = MAN.package_chart(MAN.CHART, "0.14.12", Path(temporary) / "a")
-            self.assertEqual(first.name, "confidential-inference-0.14.12.tgz")
-            (Path(temporary) / "b").mkdir()
-            second = MAN.package_chart(MAN.CHART, "0.14.12", Path(temporary) / "b")
-            self.assertEqual(first.read_bytes(), second.read_bytes())
-            MAN.verify_archive_content(first, MAN.CHART, "0.14.12")
-            with self.assertRaisesRegex(MAN.ManifestError, "0.14.13"):
-                MAN.verify_archive_content(first, MAN.CHART, "0.14.13")
-            with tarfile.open(first) as tar:
-                names = sorted(tar.getnames())
-                chart_yaml = yaml.safe_load(tar.extractfile("confidential-inference/Chart.yaml").read())
-                self.assertTrue(all(m.mtime == 0 and m.uid == 0 and m.mode == 0o644 for m in tar.getmembers()))
-            self.assertEqual(names, sorted(f"confidential-inference/{p.relative_to(MAN.CHART).as_posix()}"
-                                           for p in MAN.CHART.rglob("*") if p.is_file()))
-            self.assertEqual(chart_yaml["version"], "0.14.12")
-            self.assertEqual(chart_yaml["name"], "confidential-inference")
+            copy = Path(temporary) / "chart"
+            shutil.copytree(MAN.CHART, copy)
+            before = MAN.package_chart(copy, "confidential-inference", "0.14.12")
+            (copy / "templates/gateway.yaml").write_text("changed: true\n")
+            self.assertNotEqual(before, MAN.package_chart(copy, "confidential-inference", "0.14.12"))
 
     def test_helm_reads_the_package(self):
         if shutil.which("helm") is None:
             self.skipTest("helm is not on PATH")
         with tempfile.TemporaryDirectory() as temporary:
-            archive = MAN.package_chart(MAN.CHART, "0.14.12", Path(temporary))
+            archive = Path(temporary) / "confidential-inference-0.14.12.tgz"
+            archive.write_bytes(MAN.package_chart(MAN.CHART, "confidential-inference", "0.14.12"))
             shown = subprocess.run(["helm", "show", "chart", str(archive)], capture_output=True, text=True, check=True)
             self.assertEqual(yaml.safe_load(shown.stdout)["version"], "0.14.12")
-
-    def test_a_changed_template_fails_the_content_check(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            copy = Path(temporary) / "chart"
-            shutil.copytree(MAN.CHART, copy)
-            archive = MAN.package_chart(copy, "0.14.12", Path(temporary))
-            (copy / "templates/gateway.yaml").write_text("changed: true\n")
-            with self.assertRaisesRegex(MAN.ManifestError, "differs from the package"):
-                MAN.verify_archive_content(archive, copy, "0.14.12")
 
 if __name__ == "__main__":
     unittest.main()

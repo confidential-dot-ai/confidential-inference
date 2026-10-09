@@ -21,7 +21,6 @@ jobs:
       contents: read
     outputs:
       directory: ${{ steps.profile.outputs.directory }}
-      environment: ${{ steps.profile.outputs.environment }}
       signing_environment: ${{ steps.profile.outputs.signing_environment }}
     steps:
       - name: Check out the release tag
@@ -224,17 +223,6 @@ jobs:
             --signature-bundle dist/release-bundle.sigstore.json \
             --cosign "$(command -v cosign)"
 
-      # The manifest binds each profile values file by digest and names its
-      # asset; the deploy applies the assets, not a checkout.
-      - name: Copy the profile values files next to the manifest
-        run: |
-          python3 - <<'EOF'
-          import json, pathlib, shutil
-          manifest = json.loads(pathlib.Path("dist/release-bundle.json").read_text())
-          for entry in manifest["profileValues"]:
-              shutil.copyfile(entry["path"], pathlib.Path("dist") / entry["asset"])
-          EOF
-
       - name: Save the immutable workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -247,22 +235,12 @@ jobs:
             dist/allowlist.json
             dist/release-values.yaml
             dist/profile-values-*.yaml
-          if-no-files-found: error
-          retention-days: 90
-
-      # Only a staging release packages the chart (one package per source
-      # commit); a production release binds the staging package.
-      - name: Save the chart package of a staging release
-        if: needs.select-profile.outputs.environment == 'staging'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: chart-package-${{ github.ref_name }}
-          path: dist/*.tgz
+            dist/*.tgz
           if-no-files-found: error
           retention-days: 90
 
   publish-release:
-    needs: [select-profile, sign-release-bundle]
+    needs: sign-release-bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -276,13 +254,6 @@ jobs:
           name: signed-release-${{ github.ref_name }}
           path: dist
 
-      - name: Download the chart package of a staging release
-        if: needs.select-profile.outputs.environment == 'staging'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: chart-package-${{ github.ref_name }}
-          path: dist
-
       - name: Install the pinned Helm
         run: |
           curl -fsSL -o /tmp/helm.tar.gz \
@@ -292,44 +263,31 @@ jobs:
           tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
           sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
 
-      - name: Install the pinned crane
-        run: |
-          curl -fsSL -o /tmp/crane.tar.gz \
-            https://github.com/google/go-containerregistry/releases/download/v0.21.6/go-containerregistry_Linux_x86_64.tar.gz
-          echo "7ebbdcd05b652345c1f5105f8475e518534b90d66f3bdb50017be63f426ea435  /tmp/crane.tar.gz" \
-            | sha256sum --check --strict
-          tar -xzf /tmp/crane.tar.gz -C /tmp crane
-          sudo install -m 0755 /tmp/crane /usr/local/bin/crane
-
-      # The signed manifest binds the package by its SHA-256, which is the
-      # digest of the chart layer in the registry. A staging release pushes
-      # its package; every release then proves the package at the reference
-      # is the signed one, so a production release finds its staging package.
+      # The signed manifest binds the package by its SHA-256. A staging release
+      # pushes its package; every release then pulls the package at the
+      # reference and proves it is the signed one, so a production release
+      # finds its staging package there.
       - name: Push the chart package and prove the reference holds the signed one
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -o pipefail
-          python3 - <<'EOF' > "$RUNNER_TEMP/chart.env"
-          import json, pathlib
-          chart = json.loads(pathlib.Path("dist/release-bundle.json").read_text())["chart"]
-          print(f"CHART_REFERENCE={chart['reference']}")
-          print(f"CHART_ARCHIVE_SHA256={chart['archiveSha256']}")
-          EOF
-          . "$RUNNER_TEMP/chart.env"
+          reference="$(jq -r .chart.reference dist/release-bundle.json)"
+          expected="$(jq -r .chart.archiveSha256 dist/release-bundle.json)"
+          digest() { echo "sha256:$(sha256sum "$1" | cut -d' ' -f1)"; }
+          printf '%s' "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           archives=(dist/*.tgz)
           if [ -e "${archives[0]}" ]; then
             test "${#archives[@]}" -eq 1
-            test "sha256:$(sha256sum "${archives[0]}" | cut -d' ' -f1)" = "$CHART_ARCHIVE_SHA256" \
+            test "$(digest "${archives[0]}")" = "$expected" \
               || { echo "The chart package differs from the signed manifest." >&2; exit 1; }
-            printf '%s' "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-            helm push "${archives[0]}" "oci://${CHART_REFERENCE%/*}"
+            helm push "${archives[0]}" "oci://${reference%/*}"
           fi
-          printf '%s' "$GITHUB_TOKEN" | crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          layer="$(crane manifest "$CHART_REFERENCE" \
-            | python3 -c 'import json, sys; m = json.load(sys.stdin); print(m["layers"][0]["digest"])')"
-          test "$layer" = "$CHART_ARCHIVE_SHA256" \
-            || { echo "The chart at $CHART_REFERENCE is not the signed package ($layer)." >&2; exit 1; }
+          mkdir "$RUNNER_TEMP/pulled"
+          helm pull "oci://${reference%:*}" --version "${reference##*:}" --destination "$RUNNER_TEMP/pulled"
+          pulled=("$RUNNER_TEMP"/pulled/*.tgz)
+          test "$(digest "${pulled[0]}")" = "$expected" \
+            || { echo "The chart at $reference is not the signed package." >&2; exit 1; }
 
       - name: Publish new GitHub Release assets
         env:
