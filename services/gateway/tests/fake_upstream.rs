@@ -285,3 +285,81 @@ async fn gateway_does_not_forward_request_bodies_on_upstream_redirects() {
         let _ = capture_stop.send(());
     }
 }
+
+#[tokio::test]
+async fn gateway_preserves_public_model_for_both_completion_routes_and_streams() {
+    async fn backend(Json(request): Json<Value>) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        assert_eq!(request["model"], "deepseek");
+        let result = json!({"id":"same", "model":"internal-version", "choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":2}});
+        if request["stream"] == true {
+            let event = format!("data: {result}\n\ndata: [DONE]\n\n");
+            let chunks: Vec<_> = event
+                .as_bytes()
+                .chunks(3)
+                .map(|chunk| Ok::<_, std::io::Error>(Bytes::copy_from_slice(chunk)))
+                .collect();
+            (
+                [(header::CONTENT_TYPE, "text/event-stream")],
+                Body::from_stream(futures_util::stream::iter(chunks)),
+            )
+                .into_response()
+        } else {
+            Json(result).into_response()
+        }
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    let address = listener.local_addr().unwrap_or_else(|_| unreachable!());
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new()
+                .route("/v1/chat/completions", post(backend))
+                .route("/v1/completions", post(backend)),
+        )
+        .await
+    });
+    for route in ["/v1/chat/completions", "/v1/completions"] {
+        for stream in [false, true] {
+            let response = app(address)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(route)
+                        .header("authorization", "Bearer accepted")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({"model":"deepseek","stream":stream}).to_string(),
+                        ))
+                        .unwrap_or_else(|_| unreachable!()),
+                )
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            assert_eq!(response.status(), 200);
+            let bytes = axum::body::to_bytes(response.into_body(), 8192)
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            let text = std::str::from_utf8(&bytes).unwrap_or_else(|_| unreachable!());
+            assert!(!text.contains("internal-version"));
+            let json_bytes = if stream {
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .unwrap_or_else(|| unreachable!())
+                    .as_bytes()
+            } else {
+                &bytes
+            };
+            let value: Value =
+                serde_json::from_slice(json_bytes).unwrap_or_else(|_| unreachable!());
+            assert_eq!(value["model"], "deepseek");
+            assert_eq!(value["choices"][0]["message"]["content"], "ok");
+            assert_eq!(value["usage"]["prompt_tokens"], 11);
+            if stream {
+                assert!(text.ends_with("data: [DONE]\n\n"));
+            }
+        }
+    }
+    server.abort();
+}
