@@ -13,6 +13,12 @@ Build from this directory. Supply `SOURCE_REVISION` and `SOURCE_DATE_EPOCH`
 from the public repository commit. Publish and deploy by immutable digest.
 The candidate router rehearsal must pass before this image is ready for use.
 
+The build sorts wheel archive entries without changing file contents, RECORD,
+permissions, or source timestamps. Installation skips Python bytecode
+compilation; Python can compile it at runtime. The release still requires two
+clean builds with equal complete image digests. Archive sorting does not
+permit different binaries or dependency contents.
+
 Set `--enable-igw` explicitly for model-aware routing. Without this flag,
 upstream regular mode ignores the request's model when it selects a worker.
 In IGW mode, add workers through discovery or `POST /workers`; do not rely
