@@ -1,0 +1,665 @@
+diff --git a/sgl-model-gateway/src/core/worker.rs b/sgl-model-gateway/src/core/worker.rs
+index 32dd777bc..30929ac42 100644
+--- a/sgl-model-gateway/src/core/worker.rs
++++ b/sgl-model-gateway/src/core/worker.rs
+@@ -1145,6 +1145,7 @@ impl Worker for DPAwareWorker {
+ /// which is essential for streaming responses where the function returns
+ /// immediately but the stream continues in the background.
+ pub struct WorkerLoadGuard {
++    request_counter: Option<Arc<AtomicUsize>>,
+     worker: Arc<dyn Worker>,
+     routing_key: Option<String>,
+ }
+@@ -1162,14 +1163,28 @@ impl WorkerLoadGuard {
+         }
+ 
+         Self {
++            request_counter: None,
+             worker,
+             routing_key,
+         }
+     }
++    pub fn with_request_counter(
++        worker: Arc<dyn Worker>,
++        headers: Option<&http::HeaderMap>,
++        counter: Arc<AtomicUsize>,
++    ) -> Self {
++        counter.fetch_add(1, Ordering::AcqRel);
++        let mut guard = Self::new(worker, headers);
++        guard.request_counter = Some(counter);
++        guard
++    }
+ }
+ 
+ impl Drop for WorkerLoadGuard {
+     fn drop(&mut self) {
++        if let Some(counter) = &self.request_counter {
++            counter.fetch_sub(1, Ordering::AcqRel);
++        }
+         self.worker.decrement_load();
+         if let Some(ref key) = self.routing_key {
+             self.worker.worker_routing_key_load().decrement(key);
+diff --git a/sgl-model-gateway/src/core/worker_registry.rs b/sgl-model-gateway/src/core/worker_registry.rs
+index c23dd8719..e57ce9fba 100644
+--- a/sgl-model-gateway/src/core/worker_registry.rs
++++ b/sgl-model-gateway/src/core/worker_registry.rs
+@@ -11,7 +11,13 @@
+ //! The ring is rebuilt only when workers are added/removed, not per-request.
+ //! Uses virtual nodes (150 per worker) for even distribution and blake3 for stable hashing.
+ 
+-use std::sync::{Arc, RwLock};
++use std::{
++    collections::HashMap,
++    sync::{
++        atomic::{AtomicUsize, Ordering},
++        Arc, Mutex, RwLock,
++    },
++};
+ 
+ use dashmap::DashMap;
+ use smg_mesh::OptionalMeshSyncManager;
+@@ -178,6 +184,9 @@ type ModelIndex = Arc<DashMap<String, Arc<[Arc<dyn Worker>]>>>;
+ /// Worker registry with model-based indexing
+ #[derive(Debug)]
+ pub struct WorkerRegistry {
++    /// Admission fences and response counters retained through withdrawal.
++    request_counts: DashMap<String, Arc<AtomicUsize>>,
++    maintenance: Mutex<HashMap<String, (WorkerId, Arc<dyn Worker>)>>,
+     /// All workers indexed by ID
+     workers: Arc<DashMap<WorkerId, Arc<dyn Worker>>>,
+ 
+@@ -207,6 +216,8 @@ impl WorkerRegistry {
+     /// Create a new worker registry
+     pub fn new() -> Self {
+         Self {
++            request_counts: DashMap::new(),
++            maintenance: Mutex::new(HashMap::new()),
+             workers: Arc::new(DashMap::new()),
+             model_index: Arc::new(DashMap::new()),
+             hash_rings: Arc::new(DashMap::new()),
+@@ -240,6 +251,10 @@ impl WorkerRegistry {
+ 
+     /// Register a new worker
+     pub fn register(&self, worker: Arc<dyn Worker>) -> WorkerId {
++        let maintenance = self.maintenance.lock().unwrap();
++        if let Some((id, _)) = maintenance.get(worker.url()) {
++            return id.clone();
++        }
+         let worker_id = if let Some(existing_id) = self.url_to_id.get(worker.url()) {
+             // Worker with this URL already exists, update it
+             existing_id.clone()
+@@ -247,6 +262,12 @@ impl WorkerRegistry {
+             WorkerId::new()
+         };
+ 
++        // Replace all indexes for an existing URL. Otherwise an old Arc can
++        // remain selectable after a metadata update and fail admission forever.
++        if self.workers.contains_key(&worker_id) {
++            self.remove(&worker_id);
++        }
++
+         // Store worker
+         self.workers.insert(worker_id.clone(), worker.clone());
+ 
+@@ -296,6 +317,95 @@ impl WorkerRegistry {
+         worker_id
+     }
+ 
++    pub fn is_draining_url(&self, url: &str) -> bool {
++        self.maintenance.lock().unwrap().contains_key(url)
++    }
++
++    pub fn begin_drain(&self, id: &WorkerId) -> Option<(String, usize)> {
++        let mut maintenance = self.maintenance.lock().unwrap();
++        if let Some((url, (_, worker))) = maintenance.iter().find(|(_, (key, _))| key == id) {
++            return Some((
++                url.clone(),
++                self.request_counts
++                    .get(worker.url())
++                    .map(|count| count.load(Ordering::Acquire))
++                    .unwrap_or(0),
++            ));
++        }
++        let worker = self.get(id)?;
++        // The admission fence currently covers regular HTTP generation only.
++        if worker.worker_type() != &WorkerType::Regular
++            || worker.connection_mode() != &ConnectionMode::Http
++        {
++            return None;
++        }
++        let url = worker.url().to_string();
++        maintenance.insert(url.clone(), (id.clone(), worker.clone()));
++        self.remove(id);
++        Some((
++            url,
++            self.request_counts
++                .get(worker.url())
++                .map(|count| count.load(Ordering::Acquire))
++                .unwrap_or(0),
++        ))
++    }
++    pub fn drain_status(&self, id: &WorkerId) -> Option<(String, usize)> {
++        self.maintenance
++            .lock()
++            .unwrap()
++            .iter()
++            .find(|(_, (key, _))| key == id)
++            .map(|(url, (_, worker))| {
++                (
++                    url.clone(),
++                    self.request_counts
++                        .get(worker.url())
++                        .map(|count| count.load(Ordering::Acquire))
++                        .unwrap_or(0),
++                )
++            })
++    }
++    pub fn finish_drain(&self, id: &WorkerId) -> bool {
++        let mut maintenance = self.maintenance.lock().unwrap();
++        let url = maintenance
++            .iter()
++            .find(|(_, (key, worker))| {
++                key == id
++                    && self
++                        .request_counts
++                        .get(worker.url())
++                        .map(|count| count.load(Ordering::Acquire))
++                        .unwrap_or(0)
++                        == 0
++            })
++            .map(|(url, _)| url.clone());
++        url.map(|url| maintenance.remove(&url).is_some())
++            .unwrap_or(false)
++    }
++    pub fn admit_http_request(
++        &self,
++        worker: Arc<dyn Worker>,
++        headers: Option<&http::HeaderMap>,
++    ) -> Option<crate::core::WorkerLoadGuard> {
++        let maintenance = self.maintenance.lock().unwrap();
++        if maintenance.contains_key(worker.url())
++            || !self
++                .get_by_url(worker.url())
++                .is_some_and(|current| Arc::ptr_eq(&current, &worker))
++        {
++            return None;
++        }
++        let count = self
++            .request_counts
++            .entry(worker.url().to_string())
++            .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
++            .clone();
++        Some(crate::core::WorkerLoadGuard::with_request_counter(
++            worker, headers, count,
++        ))
++    }
++
+     /// Reserve (or retrieve) a stable UUID for a worker URL.
+     /// Uses atomic entry API to avoid race conditions between check and insert.
+     pub fn reserve_id_for_url(&self, url: &str) -> WorkerId {
+@@ -586,7 +696,11 @@ impl WorkerRegistry {
+             if worker.is_healthy() {
+                 healthy_count += 1;
+             }
+-            total_load += worker.load();
++            total_load += self
++                .request_counts
++                .get(worker.url())
++                .map(|count| count.load(Ordering::Acquire))
++                .unwrap_or(0);
+ 
+             match worker.worker_type() {
+                 WorkerType::Regular => regular_count += 1,
+@@ -734,6 +848,119 @@ mod tests {
+     use super::*;
+     use crate::core::{circuit_breaker::CircuitBreakerConfig, BasicWorkerBuilder};
+ 
++    #[test]
++    fn test_drain_keeps_other_model_workers_and_never_falls_back() {
++        let registry = WorkerRegistry::new();
++        let old: Arc<dyn Worker> = Arc::new(
++            BasicWorkerBuilder::new("http://old:30000")
++                .labels(HashMap::from([("model_id".into(), "model-old".into())]))
++                .build(),
++        );
++        let new: Arc<dyn Worker> = Arc::new(
++            BasicWorkerBuilder::new("http://new:30000")
++                .labels(HashMap::from([("model_id".into(), "model-new".into())]))
++                .build(),
++        );
++        let old_id = registry.register(old);
++        registry.register(new);
++        registry.begin_drain(&old_id).unwrap();
++        assert!(registry
++            .get_workers_filtered(Some("model-old"), None, None, None, false)
++            .is_empty());
++        let workers = registry.get_workers_filtered(Some("model-new"), None, None, None, false);
++        assert_eq!(workers.len(), 1);
++        assert_eq!(workers[0].url(), "http://new:30000");
++        assert!(registry
++            .get_workers_filtered(Some("unknown-model"), None, None, None, false)
++            .is_empty());
++    }
++
++    #[test]
++    fn test_admission_and_drain_share_a_fence() {
++        let registry = Arc::new(WorkerRegistry::new());
++        let worker: Arc<dyn Worker> =
++            Arc::new(BasicWorkerBuilder::new("http://race:30000").build());
++        let id = registry.register(worker.clone());
++        let barrier = Arc::new(std::sync::Barrier::new(17));
++        let threads: Vec<_> = (0..16)
++            .map(|_| {
++                let registry = registry.clone();
++                let worker = worker.clone();
++                let barrier = barrier.clone();
++                std::thread::spawn(move || {
++                    barrier.wait();
++                    registry.admit_http_request(worker, None)
++                })
++            })
++            .collect();
++        barrier.wait();
++        registry.begin_drain(&id).unwrap();
++        let guards: Vec<_> = threads
++            .into_iter()
++            .filter_map(|thread| thread.join().unwrap())
++            .collect();
++        assert_eq!(registry.drain_status(&id).unwrap().1, guards.len());
++        assert!(registry.admit_http_request(worker.clone(), None).is_none());
++        drop(guards);
++        assert_eq!(registry.drain_status(&id).unwrap().1, 0);
++        assert!(registry.finish_drain(&id));
++        // An old selection cannot be admitted even after the URL fence is cleared.
++        assert!(registry.admit_http_request(worker, None).is_none());
++    }
++
++    #[test]
++    fn test_drain_fences_selection_and_queued_registration() {
++        let registry = WorkerRegistry::new();
++        let worker: Arc<dyn Worker> =
++            Arc::new(BasicWorkerBuilder::new("http://drain:30000").build());
++        let id = registry.register(worker.clone());
++        let guard = registry.admit_http_request(worker.clone(), None).unwrap();
++        assert_eq!(
++            registry.begin_drain(&id),
++            Some(("http://drain:30000".into(), 1))
++        );
++        assert!(registry.get(&id).is_none());
++        assert!(registry.admit_http_request(worker.clone(), None).is_none());
++        assert!(!registry.finish_drain(&id));
++        assert_eq!(
++            registry.register(Arc::new(
++                BasicWorkerBuilder::new("http://drain:30000").build()
++            )),
++            id
++        );
++        assert!(registry.get_by_url("http://drain:30000").is_none());
++        assert_eq!(registry.begin_drain(&id).unwrap().1, 1);
++        drop(guard);
++        assert_eq!(registry.drain_status(&id).unwrap().1, 0);
++        assert!(registry.finish_drain(&id));
++        assert!(registry.drain_status(&id).is_none());
++    }
++
++    #[test]
++    fn test_drain_counts_all_response_bodies_across_worker_instances() {
++        let registry = WorkerRegistry::new();
++        let old: Arc<dyn Worker> = Arc::new(BasicWorkerBuilder::new("http://drain:30000").build());
++        let id = registry.register(old.clone());
++        let guard = registry.admit_http_request(old, None).unwrap();
++        let replacement: Arc<dyn Worker> =
++            Arc::new(BasicWorkerBuilder::new("http://drain:30000").build());
++        registry.register(replacement);
++        assert_eq!(registry.get_all().len(), 1);
++        assert_eq!(
++            registry.get_by_model(crate::core::UNKNOWN_MODEL_ID).len(),
++            1
++        );
++        let response = crate::core::AttachedBody::wrap_response(
++            axum::response::Response::new(axum::body::Body::from("pending body")),
++            guard,
++        );
++        assert_eq!(registry.begin_drain(&id).unwrap().1, 1);
++        assert!(!registry.finish_drain(&id));
++        drop(response);
++        assert_eq!(registry.drain_status(&id).unwrap().1, 0);
++        assert!(registry.finish_drain(&id));
++    }
++
+     #[test]
+     fn test_worker_registry() {
+         let registry = WorkerRegistry::new();
+diff --git a/sgl-model-gateway/src/main.rs b/sgl-model-gateway/src/main.rs
+index b389bdad1..743d0f98d 100644
+--- a/sgl-model-gateway/src/main.rs
++++ b/sgl-model-gateway/src/main.rs
+@@ -1278,3 +1278,45 @@ Provide --worker-urls or PD flags as usual.",
+     }
+     Ok(())
+ }
++
++#[cfg(test)]
++mod maintenance_cli_tests {
++    use super::*;
++
++    #[test]
++    fn maintenance_chart_flags_parse_and_keep_both_selectors() {
++        let cli = Cli::try_parse_from([
++            "sgl-model-gateway",
++            "--service-discovery",
++            "--service-discovery-namespace=confidential-inference",
++            "--service-discovery-port=30000",
++            "--selector=app.kubernetes.io/component=inference-worker",
++            "--selector=confidential.ai/traffic-eligible=true",
++            "--enable-igw",
++            "--policy=cache_aware",
++            "--cache-threshold=0.3",
++            "--balance-abs-threshold=64",
++            "--balance-rel-threshold=1.5",
++            "--eviction-interval=60",
++            "--max-tree-size=67108864",
++            "--health-check-endpoint=/health",
++            "--worker-startup-timeout-secs=3600",
++            "--host=0.0.0.0",
++            "--port=30000",
++            "--prometheus-host=0.0.0.0",
++            "--prometheus-port=29000",
++        ])
++        .unwrap();
++        assert!(cli.router_args.enable_igw);
++        let selectors = CliArgs::parse_selector(&cli.router_args.selector);
++        assert_eq!(
++            selectors.get("confidential.ai/traffic-eligible").unwrap(),
++            "true"
++        );
++        assert_eq!(
++            selectors.get("app.kubernetes.io/component").unwrap(),
++            "inference-worker"
++        );
++        assert_eq!(cli.router_args.eviction_interval, 60);
++    }
++}
+diff --git a/sgl-model-gateway/src/routers/http/router.rs b/sgl-model-gateway/src/routers/http/router.rs
+index 029c9d1a0..5042fd3d1 100644
+--- a/sgl-model-gateway/src/routers/http/router.rs
++++ b/sgl-model-gateway/src/routers/http/router.rs
+@@ -279,28 +279,29 @@ impl Router {
+         is_stream: bool,
+         text: &str,
+     ) -> Response {
+-        let worker = match self
+-            .select_worker_for_model(model_id, Some(text), headers)
+-            .await
+-        {
+-            Some(w) => w,
+-            None => {
+-                return error::service_unavailable(
+-                    "no_available_workers",
+-                    "No available workers (all circuits open or unhealthy)",
+-                );
++        // Admission shares the withdrawal lock. A selection made before the
++        // fence must retry rather than send a request after withdrawal.
++        let (worker, load_guard) = loop {
++            let worker = match self
++                .select_worker_for_model(model_id, Some(text), headers)
++                .await
++            {
++                Some(worker) => worker,
++                None => {
++                    return error::service_unavailable(
++                        "no_available_workers",
++                        "No available workers",
++                    )
++                }
++            };
++            if let Some(guard) = self
++                .worker_registry
++                .admit_http_request(worker.clone(), headers)
++            {
++                break (worker, Some(guard));
+             }
+         };
+ 
+-        let policy = match model_id {
+-            Some(model) => self.policy_registry.get_policy_or_default(model),
+-            None => self.policy_registry.get_default_policy(),
+-        };
+-
+-        let load_guard = ["cache_aware", "manual"]
+-            .contains(&policy.name())
+-            .then(|| WorkerLoadGuard::new(worker.clone(), headers));
+-
+         // Note: Using borrowed reference avoids heap allocation
+         events::RequestSentEvent { url: worker.url() }.emit();
+         let mut headers_with_trace = headers.cloned().unwrap_or_default();
+@@ -608,8 +609,11 @@ impl Router {
+                 }
+             };
+ 
+-            // load_guard dropped here automatically after response body is read
+-            response
++            // Keep admission counted until the client response body is released.
++            match load_guard {
++                Some(guard) => AttachedBody::wrap_response(response, guard),
++                None => response,
++            }
+         } else {
+             // Preserve headers for streaming response
+             let mut response_headers = header_utils::preserve_response_headers(res.headers());
+@@ -856,6 +860,70 @@ mod tests {
+     use super::*;
+     use crate::core::BasicWorkerBuilder;
+ 
++    #[tokio::test]
++    async fn test_withdrawal_preserves_an_open_http_response_stream() {
++        use futures::StreamExt;
++        let (sender, receiver) =
++            tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
++        let receiver = Arc::new(std::sync::Mutex::new(Some(receiver)));
++        let backend = axum::Router::new().route(
++            "/v1/completions",
++            axum::routing::post(move || {
++                let receiver = receiver.lock().unwrap().take().unwrap();
++                async move {
++                    Response::new(Body::from_stream(
++                        tokio_stream::wrappers::ReceiverStream::new(receiver),
++                    ))
++                }
++            }),
++        );
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let url = format!("http://{}", listener.local_addr().unwrap());
++        let server = tokio::spawn(async move {
++            axum::serve(listener, backend).await.unwrap();
++        });
++        let router = create_test_regular_router();
++        for (id, _) in router.worker_registry.get_all_with_ids() {
++            router.worker_registry.remove(&id);
++        }
++        let worker: Arc<dyn Worker> = Arc::new(BasicWorkerBuilder::new(&url).build());
++        let id = router.worker_registry.register(worker);
++        let request: CompletionRequest = serde_json::from_value(serde_json::json!({
++            "model": "test-model", "prompt": "test", "stream": true, "max_tokens": 2
++        }))
++        .unwrap();
++        sender
++            .send(Ok(bytes::Bytes::from_static(b"data: first\n\n")))
++            .await
++            .unwrap();
++        let response = router
++            .route_typed_request_once(None, &request, "/v1/completions", None, true, "test")
++            .await;
++        assert_eq!(response.status(), StatusCode::OK);
++        assert_eq!(router.worker_registry.begin_drain(&id).unwrap().1, 1);
++        assert!(!router.worker_registry.finish_drain(&id));
++        let mut stream = response.into_body().into_data_stream();
++        assert_eq!(
++            stream.next().await.unwrap().unwrap(),
++            bytes::Bytes::from_static(b"data: first\n\n")
++        );
++        sender
++            .send(Ok(bytes::Bytes::from_static(b"data: second\n\n")))
++            .await
++            .unwrap();
++        assert_eq!(
++            stream.next().await.unwrap().unwrap(),
++            bytes::Bytes::from_static(b"data: second\n\n")
++        );
++        assert_eq!(router.worker_registry.drain_status(&id).unwrap().1, 1);
++        drop(sender);
++        assert!(stream.next().await.is_none());
++        drop(stream);
++        assert_eq!(router.worker_registry.drain_status(&id).unwrap().1, 0);
++        assert!(router.worker_registry.finish_drain(&id));
++        server.abort();
++    }
++
+     fn create_test_regular_router() -> Router {
+         // Create registries
+         let worker_registry = Arc::new(WorkerRegistry::new());
+diff --git a/sgl-model-gateway/src/server.rs b/sgl-model-gateway/src/server.rs
+index 99af905a3..69aa9b79b 100644
+--- a/sgl-model-gateway/src/server.rs
++++ b/sgl-model-gateway/src/server.rs
+@@ -434,6 +434,32 @@ async fn get_worker(
+     }
+ }
+ 
++async fn drain_worker(State(state): State<Arc<AppState>>, Path(raw): Path<String>) -> Response {
++    let id = crate::core::worker_registry::WorkerId::from_string(raw);
++    match state.context.worker_registry.begin_drain(&id) {
++        Some((url, active)) => Json(json!({"worker_id": id.as_str(), "url": url, "draining": true, "active_requests": active})).into_response(),
++        None => StatusCode::NOT_FOUND.into_response(),
++    }
++}
++async fn drain_worker_status(
++    State(state): State<Arc<AppState>>,
++    Path(raw): Path<String>,
++) -> Response {
++    let id = crate::core::worker_registry::WorkerId::from_string(raw);
++    match state.context.worker_registry.drain_status(&id) {
++        Some((url, active)) => Json(json!({"worker_id": id.as_str(), "url": url, "draining": true, "active_requests": active})).into_response(),
++        None => StatusCode::NOT_FOUND.into_response(),
++    }
++}
++async fn resume_worker(State(state): State<Arc<AppState>>, Path(raw): Path<String>) -> Response {
++    let id = crate::core::worker_registry::WorkerId::from_string(raw);
++    if state.context.worker_registry.finish_drain(&id) {
++        StatusCode::NO_CONTENT.into_response()
++    } else {
++        StatusCode::CONFLICT.into_response()
++    }
++}
++
+ async fn delete_worker(
+     State(state): State<Arc<AppState>>,
+     Path(worker_id_raw): Path<String>,
+@@ -631,6 +657,12 @@ pub fn build_app(
+ 
+     // Build worker routes
+     let worker_routes = Router::new()
++        .route(
++            "/workers/{worker_id}/drain",
++            post(drain_worker)
++                .get(drain_worker_status)
++                .delete(resume_worker),
++        )
+         .route("/workers", post(create_worker).get(list_workers_rest))
+         .route(
+             "/workers/{worker_id}",
+diff --git a/sgl-model-gateway/src/service_discovery.rs b/sgl-model-gateway/src/service_discovery.rs
+index 3ff23bf55..e88b56b0c 100644
+--- a/sgl-model-gateway/src/service_discovery.rs
++++ b/sgl-model-gateway/src/service_discovery.rs
+@@ -419,6 +419,16 @@ pub async fn start_service_discovery(
+     Ok(handle)
+ }
+ 
++// A relabeled Pod or replacement ordinal can have the same name, IP, and
++// readiness as the tracked Pod. Registry absence must trigger registration.
++fn should_reconcile_worker(
++    tracked: bool,
++    url: &str,
++    registry: &crate::core::WorkerRegistry,
++) -> bool {
++    !registry.is_draining_url(url) && (!tracked || registry.get_by_url(url).is_none())
++}
++
+ async fn handle_pod_event(
+     pod_info: &PodInfo,
+     tracked_pods: Arc<Mutex<HashSet<PodInfo>>>,
+@@ -439,12 +449,13 @@ async fn handle_pod_event(
+                 }
+             };
+ 
+-            if tracker.contains(pod_info) {
+-                (false, tracker.len())
+-            } else {
+-                tracker.insert(pod_info.clone());
+-                (true, tracker.len())
+-            }
++            let should_add = should_reconcile_worker(
++                tracker.contains(pod_info),
++                &worker_url,
++                &app_context.worker_registry,
++            );
++            tracker.insert(pod_info.clone());
++            (should_add, tracker.len())
+         };
+ 
+         if should_add {
+@@ -761,6 +772,53 @@ mod tests {
+ 
+     use super::*;
+ 
++    #[test]
++    fn test_tracked_worker_rejoins_with_the_same_url_after_withdrawal() {
++        let registry = crate::core::WorkerRegistry::new();
++        let url = "http://1.2.3.4:30000";
++        let id = registry.register(Arc::new(crate::core::BasicWorkerBuilder::new(url).build()));
++        assert!(!should_reconcile_worker(true, url, &registry));
++        registry.begin_drain(&id).unwrap();
++        assert!(!should_reconcile_worker(true, url, &registry));
++        assert!(!should_reconcile_worker(false, url, &registry));
++        assert!(registry.finish_drain(&id));
++        assert!(should_reconcile_worker(true, url, &registry));
++        registry.register(Arc::new(crate::core::BasicWorkerBuilder::new(url).build()));
++        assert!(!should_reconcile_worker(true, url, &registry));
++    }
++
++    #[test]
++    fn test_new_discovery_instance_excludes_traffic_ineligible_pod() {
++        let mut pod = create_k8s_pod(
++            Some("worker-0"),
++            Some("1.2.3.4"),
++            Some("Running"),
++            Some("True"),
++            None,
++        );
++        let selector = HashMap::from([
++            (
++                "app.kubernetes.io/component".into(),
++                "inference-worker".into(),
++            ),
++            ("confidential.ai/traffic-eligible".into(), "true".into()),
++        ]);
++        pod.metadata.labels = Some(std::collections::BTreeMap::from([
++            (
++                "app.kubernetes.io/component".into(),
++                "inference-worker".into(),
++            ),
++            ("confidential.ai/traffic-eligible".into(), "false".into()),
++        ]));
++        assert!(!PodInfo::matches_selector(&pod, &selector));
++        pod.metadata
++            .labels
++            .as_mut()
++            .unwrap()
++            .insert("confidential.ai/traffic-eligible".into(), "true".into());
++        assert!(PodInfo::matches_selector(&pod, &selector));
++    }
++
+     fn create_k8s_pod(
+         name: Option<&str>,
+         ip: Option<&str>,

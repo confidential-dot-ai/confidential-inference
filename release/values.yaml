@@ -34,6 +34,7 @@ images:
   gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang
+  sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang-router
   metricsCollector: docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a

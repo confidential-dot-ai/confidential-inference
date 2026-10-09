@@ -53,7 +53,7 @@ struct Args {
     allow_direct_inference_url: bool,
     #[arg(long, env = "GATEWAY_MODEL")]
     model: String,
-    #[arg(long, env = "GATEWAY_C8S_RECEIPT_TARGETS")]
+    #[arg(long, env = "GATEWAY_C8S_RECEIPT_TARGETS", default_value = "")]
     c8s_receipt_targets: String,
     #[arg(long, env = "GATEWAY_C8S_EVIDENCE_BASE_URL")]
     c8s_evidence_base_url: String,
@@ -61,6 +61,32 @@ struct Args {
     c8s_evidence_connect_host: Option<String>,
     #[arg(long, env = "GATEWAY_RELEASE_ID")]
     release_id: String,
+    #[arg(long, env = "GATEWAY_C8S_CDS_URL")]
+    cds_url: Option<String>,
+    #[arg(long, env = "GATEWAY_C8S_IMAGE_POLICY")]
+    cds_image_policy: Option<PathBuf>,
+    #[arg(long, env = "GATEWAY_C8S_IMAGE_POLICY_SHA256", default_value = "")]
+    cds_image_policy_sha256: String,
+    #[arg(long, env = "GATEWAY_C8S_SERVED_IMAGE_POLICY")]
+    cds_served_image_policy: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256",
+        default_value = ""
+    )]
+    cds_served_image_policy_sha256: String,
+    #[arg(
+        long,
+        env = "GATEWAY_C8S_VERIFIER",
+        default_value = "/usr/local/bin/c8s"
+    )]
+    c8s_verifier: PathBuf,
+    #[arg(long, env = "GATEWAY_ATTESTATION_CACHE_SECONDS", default_value_t = 10)]
+    attestation_cache_seconds: u64,
+    #[arg(long, env = "GATEWAY_RELEASE_URL")]
+    release_url: Option<String>,
+    #[arg(long, env = "GATEWAY_INSTANCE_ID")]
+    gateway_instance_id: Option<String>,
     // The release manifest hash and the operator key hashes come from a
     // mounted file, not the environment. The c8s allowlist pins every
     // environment variable exactly, and the manifest holds the allowlist's
@@ -284,23 +310,12 @@ async fn main() -> Result<()> {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("build the internal inference client")?;
-    let attestation = C8sAttestationProvider::from_config_with_connect_host(
-        C8sAttestationConfig {
-            targets: &args.c8s_receipt_targets,
-            evidence_base_url: &args.c8s_evidence_base_url,
-            release_id: &args.release_id,
-            release_bundle_sha256: &args.release_bundle_sha256,
-            expected_operator_public_key_sha256: &args.expected_operator_public_key_sha256,
-            expected_operator_key_set_sha256: &args.expected_operator_key_set_sha256,
-            policy_mode: &args.c8s_policy_mode,
-            expected_static_allowlist_sha256: &args.expected_static_allowlist_sha256,
-            timeout: Duration::from_secs(args.attestation_timeout_seconds),
-            maximum_receipt_bytes: args.attestation_maximum_evidence_bytes,
-        },
-        args.c8s_evidence_connect_host.as_deref(),
-    )
-    .map_err(anyhow::Error::msg)
-    .context("load the fail-closed attestation producer")?;
+    let attestation: Arc<dyn confidential_gateway::AttestationProvider> = if args.cds_url.is_some()
+    {
+        metadata_provider(&args, metrics.clone())?
+    } else {
+        bail!("GATEWAY_C8S_CDS_URL is required for policy metadata")
+    };
     let protection = protection_config(&args);
     let inference_model_id = args.model;
     let catalog_model_ids = vec![inference_model_id.clone()];
@@ -317,9 +332,10 @@ async fn main() -> Result<()> {
         Arc::new(TracingAuditSink),
         metrics.clone(),
         availability,
-        Arc::new(attestation),
+        attestation,
         http,
     );
+    let public = with_instance_header(public, args.gateway_instance_id.as_deref())?;
     let admin_certificate =
         read_bounded(&args.admin_signer_certificate_file, MAX_CERTIFICATE_BYTES)
             .context("read the admin request signer certificate")?;
@@ -431,6 +447,155 @@ fn protection_config(args: &Args) -> ProtectionConfig {
 /// The only value `GATEWAY_C8S_ATTESTATION_PROTOCOL` accepts.
 const PINNED_C8S_ATTESTATION_PROTOCOL: &str = "v1-xwing";
 
+fn with_instance_header(app: axum::Router, identity: Option<&str>) -> Result<axum::Router> {
+    let Some(identity) = identity else {
+        return Ok(app);
+    };
+    if identity.is_empty()
+        || identity.len() > 63
+        || identity.starts_with('-')
+        || identity.ends_with('-')
+        || !identity
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        bail!("GATEWAY_INSTANCE_ID must be a DNS label");
+    }
+    let header: axum::http::HeaderValue = identity.parse()?;
+    Ok(app.layer(middleware::map_response(
+        move |mut response: axum::response::Response| {
+            let header = header.clone();
+            async move {
+                response
+                    .headers_mut()
+                    .insert("x-confidential-gateway", header);
+                response
+            }
+        },
+    )))
+}
+
+fn validate_metadata_identity(args: &Args) -> Result<()> {
+    for (name, digest) in [
+        (
+            "GATEWAY_C8S_IMAGE_POLICY_SHA256",
+            &args.cds_image_policy_sha256,
+        ),
+        (
+            "GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256",
+            &args.cds_served_image_policy_sha256,
+        ),
+        ("release bundle digest", &args.release_bundle_sha256),
+    ] {
+        if digest.len() != 71
+            || !digest.starts_with("sha256:")
+            || !digest[7..]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            bail!("{name} must be a lowercase SHA-256 digest");
+        }
+    }
+    if args.release_id.is_empty()
+        || args.release_id.len() > 128
+        || !args
+            .release_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        || !args.release_id.as_bytes()[0].is_ascii_alphanumeric()
+    {
+        bail!("release identifier is invalid");
+    }
+    Ok(())
+}
+
+fn metadata_provider(
+    args: &Args,
+    metrics: Arc<GatewayMetrics>,
+) -> Result<Arc<dyn confidential_gateway::AttestationProvider>> {
+    use confidential_gateway::attestation::{
+        evidence_connection, mesh_ca_certificates, parse_evidence_base_url,
+    };
+    use confidential_gateway::attestation_metadata::{CdsMetadataSource, MetadataProvider};
+    validate_metadata_identity(args)?;
+    let timeout = Duration::from_secs(args.attestation_timeout_seconds);
+    let base = parse_evidence_base_url(&args.c8s_evidence_base_url).map_err(anyhow::Error::msg)?;
+    let cds_url = url::Url::parse(
+        args.cds_url
+            .as_deref()
+            .context("GATEWAY_C8S_CDS_URL is required")?,
+    )?;
+    if cds_url.scheme() != "https"
+        || cds_url.host_str().is_none()
+        || !cds_url.username().is_empty()
+        || cds_url.password().is_some()
+        || cds_url.query().is_some()
+        || cds_url.fragment().is_some()
+        || cds_url.path() != "/"
+    {
+        bail!("CDS URL must be an HTTPS origin without credentials");
+    }
+    let mut client = reqwest::Client::builder()
+        .timeout(timeout)
+        .connect_timeout(timeout.min(Duration::from_secs(10)))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(host) = &args.c8s_evidence_connect_host {
+        client = evidence_connection(client, &base, host).map_err(anyhow::Error::msg)?;
+    }
+    for cert in mesh_ca_certificates().map_err(anyhow::Error::msg)? {
+        client = client.add_root_certificate(cert);
+    }
+    let release_url = url::Url::parse(args.release_url.as_deref().unwrap_or(&format!(
+        "https://github.com/confidential-dot-ai/confidential-inference/releases/tag/{}",
+        args.release_id
+    )))?;
+    if release_url.scheme() != "https"
+        || release_url.host_str() != Some("github.com")
+        || !release_url.username().is_empty()
+        || release_url.password().is_some()
+        || release_url.query().is_some()
+        || release_url.fragment().is_some()
+        || release_url.port().is_some()
+        || !release_url
+            .path()
+            .starts_with("/confidential-dot-ai/confidential-inference/")
+    {
+        bail!("release URL must point to the public GitHub release");
+    }
+    let source = CdsMetadataSource {
+        cds_url,
+        discovery_url: base.join("v1/discovery")?,
+        allowlist_url: base.join("allowlist")?,
+        release_id: args.release_id.clone(),
+        release_url,
+        bundle_sha256: args.release_bundle_sha256.clone(),
+        verifier: args.c8s_verifier.clone(),
+        image_policy: args
+            .cds_image_policy
+            .clone()
+            .context("GATEWAY_C8S_IMAGE_POLICY is required")?,
+        image_policy_sha256: args.cds_image_policy_sha256.clone(),
+        served_image_policy: args
+            .cds_served_image_policy
+            .clone()
+            .context("GATEWAY_C8S_SERVED_IMAGE_POLICY is required")?,
+        served_image_policy_sha256: args.cds_served_image_policy_sha256.clone(),
+        timeout,
+        maximum_bytes: args.attestation_maximum_evidence_bytes,
+        discovery_client: client.build()?,
+    };
+    Ok(Arc::new(
+        MetadataProvider::new(
+            Arc::new(source),
+            Duration::from_secs(args.attestation_cache_seconds),
+            timeout,
+            args.attestation_maximum_evidence_bytes,
+            metrics,
+        )
+        .map_err(anyhow::Error::msg)?,
+    ))
+}
+
 fn validate_args(args: &Args) -> Result<()> {
     if args.environment.is_empty()
         || args.environment.len() > 63
@@ -495,6 +660,10 @@ fn validate_args(args: &Args) -> Result<()> {
     }
     if args.model.is_empty() || args.model.len() > 256 {
         bail!("GATEWAY_MODEL must identify one configured model");
+    }
+    if args.cds_url.is_some() {
+        metadata_provider(args, Arc::new(GatewayMetrics::new("validation")))?;
+        return Ok(());
     }
     if args.c8s_attestation_protocol != PINNED_C8S_ATTESTATION_PROTOCOL {
         bail!(
@@ -643,6 +812,45 @@ fn wait_for_bounded_file(path: &Path, limit: usize, timeout: Duration) -> Result
 mod tests {
     use super::*;
 
+    #[test]
+    fn metadata_configuration_does_not_require_receipt_targets() {
+        let mut value = args();
+        value.cds_url = Some("https://cds.c8s-system.svc.cluster.local:8443".into());
+        value.cds_image_policy = Some(PathBuf::from("/mnt/c8s-data/image-policy/policy.json"));
+        value.cds_image_policy_sha256 = format!("sha256:{}", "0".repeat(64));
+        value.cds_served_image_policy = value.cds_image_policy.clone();
+        value.cds_served_image_policy_sha256 = value.cds_image_policy_sha256.clone();
+        value.c8s_receipt_targets.clear();
+        assert!(validate_args(&value).is_ok());
+        value.cds_image_policy_sha256 = "untrusted".into();
+        assert!(validate_args(&value).is_err());
+    }
+
+    #[tokio::test]
+    async fn instance_header_identifies_the_slot_without_changing_the_body() -> Result<()> {
+        use tower::ServiceExt as _;
+        let app =
+            axum::Router::new().route("/attestation", axum::routing::get(|| async { "metadata" }));
+        let app = with_instance_header(app, Some("gateway-new"))?;
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/attestation")
+                    .header("x-confidential-gateway", "caller-controlled")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.headers()["x-confidential-gateway"], "gateway-new");
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 1024).await?,
+            "metadata"
+        );
+        for bad in ["", "-bad", "bad-", "a\r\nb", "Uppercase"] {
+            assert!(with_instance_header(axum::Router::new(), Some(bad)).is_err());
+        }
+        Ok(())
+    }
+
     fn args() -> Args {
         Args {
             listen: "0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()),
@@ -650,6 +858,15 @@ mod tests {
             inference_url: INFERENCE_UPSTREAM_URL.to_owned(),
             allow_direct_inference_url: false,
             model: "deepseek-ai/DeepSeek-V4-Flash-0731".to_owned(),
+            cds_url: None,
+            cds_image_policy: None,
+            cds_image_policy_sha256: String::new(),
+            cds_served_image_policy: None,
+            cds_served_image_policy_sha256: String::new(),
+            c8s_verifier: PathBuf::from("/usr/local/bin/c8s"),
+            attestation_cache_seconds: 10,
+            release_url: None,
+            gateway_instance_id: None,
             c8s_receipt_targets: "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804".to_owned(),
             c8s_evidence_base_url: "https://api.example.test".to_owned(),
             c8s_evidence_connect_host: None,

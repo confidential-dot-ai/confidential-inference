@@ -1,7 +1,7 @@
-# The repository image digests of the v0.14.0 release (image run
-# 36908936973). The release build writes this file from the image publication
-# evidence. The tests render the chart with it.
+# The gateway and worker pins are from v0.14.0. The separate router pin
+# is the candidate development artifact at public commit 84af1a06.
 images:
   gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:1d6ba18732374a457ab89a2e7ca170b7d5a32f47ad85cdb7147a90cf20da6040
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809
+  sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang-router@sha256:7440bead8020d969b5ebe69c0689ba894edb2d2fd2a406bb16d346a86770918f

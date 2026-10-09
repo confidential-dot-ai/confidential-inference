@@ -119,6 +119,14 @@ def b64url_decode(value: str, label: str) -> bytes:
 
 def validate_schema(value: Any, schema_path: Path, label: str) -> None:
     schema = read_json(schema_path, f"{label} schema")
+    if schema_path == RESPONSE_SCHEMA and isinstance(value, dict):
+        version = value.get("schemaVersion")
+        selected = {2: "responseV2", 3: "responseV3"}.get(version) if isinstance(version, int) else None
+        definitions = schema.get("$defs", {})
+        if selected in definitions:
+            # Use the declared format. Keep field-level errors during overlap
+            # instead of one general error from a large oneOf response.
+            schema = {**definitions[selected], "$defs": definitions}
     try:
         jsonschema.Draft202012Validator(
             schema,
@@ -1603,6 +1611,50 @@ def verify_manifest_receipt(
     }
 
 
+def verify_policy_metadata(
+    response: dict[str, Any], args: argparse.Namespace, release_id: str,
+    release_digest: str, allowlist_bytes: bytes, allowlist: dict[str, Any],
+) -> dict[str, Any]:
+    """Compare metadata with trusted inputs. This does not verify a connection."""
+    if not getattr(args, "metadata_only", False):
+        raise VerificationError(
+            "version 3 contains policy metadata, not workload receipts; use --metadata-only "
+            "to compare trusted inputs and verify the inference connection with TEErminator"
+        )
+    expected_url = "https://github.com/confidential-dot-ai/confidential-inference/releases/tag/" + release_id
+    if response["release"] != {"id": release_id, "url": expected_url, "bundleSha256": release_digest}:
+        raise VerificationError("the metadata release identity differs from the signed release")
+    active = response["c8s"]["activeAllowlist"]
+    if active["sha256"] != sha256(allowlist_bytes) or active["document"] != allowlist:
+        raise VerificationError("the metadata policy differs from the trusted exact bytes")
+    keys = response["c8s"]["operatorKeys"]
+    reported_members: set[str] = set()
+    if keys:
+        try:
+            pem = "".join(keys).encode("ascii")
+        except UnicodeEncodeError as error:
+            raise VerificationError("the reported operator keys are not ASCII PEM") from error
+        _, _, reported_members = canonical_operator_key_set(pem, "reported operator keys")
+    if args.operator_public_key is not None:
+        _, _, expected_members = operator_key_set_from_path(args.operator_public_key)
+        if reported_members != expected_members:
+            raise VerificationError("the reported operator key set differs from the held keys")
+    if args.expected_operator_key_sha256 is not None:
+        expected = "sha256:" + digest_bytes(args.expected_operator_key_sha256, "expected operator key").hex()
+        if expected not in reported_members:
+            raise VerificationError("the expected operator key is absent from the reported set")
+    return {
+        "schema": "confidential-inference.public-policy-metadata-check/v1",
+        "metadataMatchesTrustedInputs": True,
+        "connectionVerified": False,
+        "responseSchemaVersion": 3,
+        "release": release_id,
+        "releaseBundleSha256": release_digest,
+        "allowlistSha256": sha256(allowlist_bytes),
+        "operatorKeysReported": len(keys),
+    }
+
+
 def verify_manifest_release(
     args: argparse.Namespace, release_bytes: bytes, manifest: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1642,6 +1694,9 @@ def verify_manifest_release(
         operator_digest = operator_digest or expected_operator
     response, _public_spki, public_leaf_der_sha256, public_leaf_der = fetch_response(args)
     validate_schema(response, RESPONSE_SCHEMA, "public attestation response")
+    if response.get("schemaVersion") == 3:
+        return verify_policy_metadata(response, args, manifest["release"]["name"],
+                                      release_digest, allowlist_bytes, allowlist)
     if response["nonce"] != args.nonce:
         raise VerificationError("the public response nonce differs from the request")
     if response["release"] != {
@@ -1737,6 +1792,10 @@ def verify_manifest_release(
 def verify(args: argparse.Namespace) -> dict[str, Any]:
     if args.timeout_seconds < 1 or args.verifier_timeout_seconds < 1:
         raise VerificationError("the timeout must be positive")
+    if args.nonce is None:
+        if not getattr(args, "metadata_only", False):
+            raise VerificationError("receipt verification requires --nonce")
+        args.nonce = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
     validate_nonce(args.nonce)
     release_bytes = read_bytes(
         args.trusted_bundle,
@@ -1848,6 +1907,9 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     release_digest = sha256(release_bytes)
     response, public_spki, public_leaf_der_sha256, public_leaf_der = fetch_response(args)
     validate_schema(response, RESPONSE_SCHEMA, "public attestation response")
+    if response.get("schemaVersion") == 3:
+        return verify_policy_metadata(response, args, release["release"]["name"],
+                                      release_digest, allowlist_bytes, allowlist)
     required_c8s_flags: set[str] = set(source_lock_entry.get("requiredVerifierFlags", []))
     if (
         args.policy_mode == "operator"
@@ -2043,7 +2105,9 @@ def parser() -> argparse.ArgumentParser:
         description="Fetch and verify the public v0 TDX receipt set. This command does not verify liveness."
     )
     result.add_argument("--endpoint", required=True)
-    result.add_argument("--nonce", required=True)
+    result.add_argument("--nonce", help="required for version 2 receipt verification")
+    result.add_argument("--metadata-only", action="store_true",
+                        help="compare version 3 metadata with trusted inputs; this does not verify the inference connection")
     result.add_argument("--trusted-bundle", required=True, type=Path)
     result.add_argument("--release-signature-bundle", required=True, type=Path)
     result.add_argument("--cosign", required=True, type=Path)

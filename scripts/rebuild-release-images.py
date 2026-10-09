@@ -27,6 +27,7 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 IMAGE_TITLES = {
     "gateway": "Confidential Inference gateway",
     "sglang": "Confidential Inference SGLang",
+    "sglang-router": "Confidential Inference SGLang Router",
     "maintenance-gateway": "Confidential Inference maintenance gateway",
     "metrics-collector": "Confidential Inference metrics collector",
     "kube-state-metrics": "Confidential Inference kube-state metrics",

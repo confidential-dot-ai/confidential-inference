@@ -1,0 +1,5 @@
+setproctitle
+aiohttp
+orjson
+uvicorn
+fastapi
