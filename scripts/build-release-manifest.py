@@ -428,8 +428,16 @@ def node_measurements(path: Path, spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def image_names(values: dict[str, Any], images: list[str]) -> dict[str, str]:
-    """Name each rendered image by its key in the values `images` map."""
-    named = {key: value for key, value in values.get("images", {}).items() if value in images}
+    """Name rendered images and registered product artifacts in the values map.
+
+    A private deployment can install a collector separately from this chart.
+    Its image still needs a signed release pin and verified publication evidence.
+    """
+    registered = {f"{release_profiles.REPOSITORY_IMAGES}{image.image}"
+                  for image in IMAGE_SELECTOR["IMAGES"]}
+    named = {key: value for key, value in values.get("images", {}).items()
+             if value in images or (isinstance(value, str) and OCI.fullmatch(value)
+                                    and value.rsplit("@", 1)[0] in registered)}
     unnamed = sorted(set(images) - set(named.values()))
     require(not unnamed, f"rendered images with no name in values.images: {unnamed}")
     return dict(sorted(named.items()))

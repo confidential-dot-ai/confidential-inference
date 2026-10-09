@@ -30,6 +30,7 @@ IMAGE_TITLES = {
     "sglang-router": "Confidential Inference SGLang Router",
     "maintenance-gateway": "Confidential Inference maintenance gateway",
     "metrics-collector": "Confidential Inference metrics collector",
+    "log-collector": "Confidential Inference log collector",
     "kube-state-metrics": "Confidential Inference kube-state metrics",
 }
 

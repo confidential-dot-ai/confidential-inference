@@ -683,6 +683,14 @@ class ManifestTests(unittest.TestCase):
                                          {"gateway": f"{gateway}@sha256:{'1' * 64}"})
         self.assertEqual(result["images"][maintenance], "sha256:" + "2" * 64)
 
+    def test_manifest_names_separately_installed_registered_image(self):
+        gateway = "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64
+        collector = "ghcr.io/confidential-dot-ai/confidential-inference/log-collector@sha256:" + "2" * 64
+        self.assertEqual(MAN.image_names({"images": {"gateway": gateway, "logCollector": collector}},
+                                        [gateway]), {"gateway": gateway, "logCollector": collector})
+        with self.assertRaisesRegex(MAN.ManifestError, "rendered images with no name"):
+            MAN.image_names({"images": {"logCollector": collector}}, [gateway])
+
     def test_manifest_refuses_publication_outside_the_release_registry(self):
         unknown = publication({"ghcr.io/confidential-dot-ai/confidential-inference/unknown": "sha256:" + "1" * 64})
         with tempfile.TemporaryDirectory() as temporary:
