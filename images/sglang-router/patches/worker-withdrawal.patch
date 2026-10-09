@@ -1236,3 +1236,29 @@ index 3ff23bf5..e88b56b0 100644
      fn create_k8s_pod(
          name: Option<&str>,
          ip: Option<&str>,
+diff --git a/sgl-model-gateway/build.rs b/sgl-model-gateway/build.rs
+--- a/sgl-model-gateway/build.rs
++++ b/sgl-model-gateway/build.rs
+@@ -13,6 +13,7 @@
+ fn main() -> Result<(), Box<dyn std::error::Error>> {
+     // Rebuild triggers
+     println!("cargo:rerun-if-changed=Cargo.toml");
++    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+
+     // Set version info environment variables
+     let version = read_cargo_version().unwrap_or_else(|_| DEFAULT_VERSION.to_string());
+@@ -21,10 +22,10 @@
+
+     set_env!("PROJECT_NAME", DEFAULT_PROJECT_NAME);
+     set_env!("VERSION", version);
+-    set_env!(
+-        "BUILD_TIME",
+-        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+-    );
++    let epoch = std::env::var("SOURCE_DATE_EPOCH")?.parse::<i64>()?;
++    let build_time = chrono::DateTime::from_timestamp(epoch, 0)
++        .ok_or("SOURCE_DATE_EPOCH is outside the supported range")?;
++    set_env!("BUILD_TIME", build_time.format("%Y-%m-%d %H:%M:%S UTC"));
+     set_env!(
+         "BUILD_MODE",
+         if profile == "release" {

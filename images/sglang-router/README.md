@@ -13,6 +13,8 @@ Build from this directory. Supply `SOURCE_REVISION` and `SOURCE_DATE_EPOCH`
 from the public repository commit. Publish and deploy by immutable digest.
 The candidate router rehearsal must pass before this image is ready for use.
 
+The upstream build-time field uses `SOURCE_DATE_EPOCH`, the fixed timestamp
+of the public source commit. A missing or invalid timestamp stops the build.
 The build sorts wheel archive entries without changing file contents, RECORD,
 permissions, or source timestamps. Installation skips Python bytecode
 compilation; Python can compile it at runtime. The release still requires two
