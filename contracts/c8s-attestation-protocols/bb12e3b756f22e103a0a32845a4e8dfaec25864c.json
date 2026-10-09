@@ -1,0 +1,91 @@
+{
+  "schema": "confidential-inference.c8s-attestation-protocol-manifest/v1",
+  "commit": "bb12e3b756f22e103a0a32845a4e8dfaec25864c",
+  "attestationProtocol": "c8s/attest-pq/v1+xwing",
+  "capturedFrom": {
+    "cdsattestRoutes": "internal/cmds/cdsattest/server.go",
+    "bundleTypes": "pkg/types/verify.go",
+    "cdsAllowlistRoutes": "internal/cmds/cds/routes.go"
+  },
+  "cdsattestRoutes": [
+    {
+      "method": "POST",
+      "path": "/.well-known/c8s/attest-pq"
+    },
+    {
+      "method": "GET",
+      "path": "/.well-known/c8s/attest-pq",
+      "note": "Returns400; use client-first POST."
+    },
+    {
+      "method": "GET",
+      "path": "/.well-known/c8s/attest-lb"
+    },
+    {
+      "method": "POST",
+      "path": "/.well-known/c8s/tunnel"
+    }
+  ],
+  "attestPqRequest": {
+    "method": "POST",
+    "bodyFields": [
+      "nonce",
+      "xwing_ek"
+    ]
+  },
+  "attestationBundleFields": [
+    "version",
+    "platform",
+    "generation",
+    "nonce",
+    "evidence",
+    "cds_cert_pem",
+    "front_door_mode",
+    "xwing_ek",
+    "xwing_ct",
+    "session_id",
+    "identity_proof",
+    "serving_leaf_sha256"
+  ],
+  "identityProofFields": [
+    "algorithm",
+    "leaf_sha256",
+    "mesh_ca_sha256",
+    "signature"
+  ],
+  "cdsRoutes": [
+    {
+      "method": "GET",
+      "path": "/allowlist"
+    },
+    {
+      "method": "PUT",
+      "path": "/allowlist"
+    },
+    {
+      "method": "PUT",
+      "path": "/allowlist/workloads/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/allowlist/workloads/{name}"
+    },
+    {
+      "method": "GET",
+      "path": "/ca"
+    },
+    {
+      "method": "GET",
+      "path": "/operator-keys"
+    },
+    {
+      "method": "GET",
+      "path": "/measurements"
+    }
+  ],
+  "allowlistDocumentTopLevelFields": [
+    "schema",
+    "workloads"
+  ],
+  "capturedFromNote": "Read from the exact signed C8s v0.37.0-beta.1 source. The response version identifies each endpoint binding. Legacy handshake and attestation routes are absent. Native clients verify armTLS certificates; these routes describe the separate browser protocol."
+}

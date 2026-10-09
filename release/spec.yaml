@@ -8,28 +8,28 @@
 
 c8s:
   # The c8s release. It fixes the node image and its measurements.
-  release: v0.33.7
-  sourceCommit: fd905adaec03b618eb9cce0ba99341dee2623234
+  release: v0.37.0-beta.1
+  sourceCommit: bb12e3b756f22e103a0a32845a4e8dfaec25864c
   nodeImage:
     reference: ghcr.io/confidential-dot-ai/node-guest-base
-    tag: rke2-tdx-cdi-v0.33.7
-    digest: sha256:1c8a672c5017f6709e36f5a4ab74790a00d02be726b093589f13b69b8671cf46
+    tag: rke2-tdx-cdi-v0.37.0-beta.1
+    digest: sha256:b6652fccc2b7e658ac163a37bc8487bb407a9d1f70caa5cf99ad84095d0261f7
   # The c8s core images. The allowlist gives each one an unrestricted entry,
   # as the c8s bootstrap seed does.
   coreImages:
-    - ghcr.io/confidential-dot-ai/c8s-operator@sha256:f0ea51f52efcf7fecdbdec00fffb8585e026a0f7d78276e79f3ee52cf0aa8a5a
-    - ghcr.io/confidential-dot-ai/cds@sha256:2216259e47eff27eba7d0e35c3aef3e4e749d68d5da7e4efb2a5a02ddc985606
-    - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:305e1a18c7c8573b384728b1e1c1069579330ad18c1091a7469b18f52246e754
-    - ghcr.io/confidential-dot-ai/ratls-mesh@sha256:cbcf4c68c2d72fc01d1dc0cd9ddef0311f2db073d1cea2d4486645d1c5044b95
-    - ghcr.io/confidential-dot-ai/volumed@sha256:c4a3e581e9e6063c98448a4455bbfdc11efc0d63c2596fd12cf87ac20f46acf0
+    - ghcr.io/confidential-dot-ai/c8s-operator@sha256:0b86d0541d101e259e7879706bc68acf32fd084603b6180577bc53bdc99a796c
+    - ghcr.io/confidential-dot-ai/cds@sha256:14810c74d6db537168eb930ff7e5f741aea742dce8d0e9f8c102b7b200dedac9
+    - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:02e714538ed1e312b6f55e1ab5014b9fc535ae209b781ddff65c13eac4d0e4b9
+    - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:5d272d2ea6cee5443298a5c24e09c1c787b92a5fa0d649d10937c20e76d2536c
+    - ghcr.io/confidential-dot-ai/volumed@sha256:e23bcdab72dbc9ccb023e67898bfbdcd96c607533ac716d729026d5c9c5a7a03
     - nginxinc/nginx-unprivileged@sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348
   # The artifact that c8s publishes with the node image. It holds the TDX
   # measurements MRTD, RTMR1, and RTMR2.
   nodeManifestArtifact:
-    tag: rke2-tdx-v0.33.7
-    digest: sha256:fc81bdd46c7441064188e3090fe77188593edcaa918318f7fc0547f8f332e459
+    tag: rke2-tdx-v0.37.0-beta.1
+    digest: sha256:4e0b2b33304ef8980d3bad4169f40ff9f386f9a02a9b9c6defe638e30bd8e1e6
     # The SHA-256 of the manifest.json layer, which is node-manifest.json.
-    manifestJson: sha256:bf2364e9104890d8f755e2aaf124985535f3013a99e3904ce50cdf4d6d1b276e
+    manifestJson: sha256:8f107bb5f4324e76e7b51722b3c02b417109551a3d0ed1aeb25d0ae606d2b7e4
 
 model:
   repository: deepseek-ai/DeepSeek-V4-Flash-0731

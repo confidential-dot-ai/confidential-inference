@@ -136,6 +136,10 @@ Use one command to move every profile to a new c8s tag:
 scripts/bump-c8s.py --tag vX.Y.Z --c8s-repo <clean c8s checkout at the tag>
 ```
 
+For a signed beta, select the profile explicitly and use `--allow-beta`.
+Production can use a beta when the deployment calls for it. The signature
+check still requires the exact beta workflow and source commit.
+
 It needs `crane`, Go, and read access to the c8s Go module. It changes the c8s
 pins, the source lock, the node manifests, and the image config, and then
 runs the release checks. The next release build generates the allowlist with

@@ -11,7 +11,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:9a99aacb8a1c06b306a5d78e21278c7abd9887527dd43bf4de5b7b2dc2210691": {
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:0b86d0541d101e259e7879706bc68acf32fd084603b6180577bc53bdc99a796c": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
@@ -21,7 +21,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f0ea51f52efcf7fecdbdec00fffb8585e026a0f7d78276e79f3ee52cf0aa8a5a": {
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:9a99aacb8a1c06b306a5d78e21278c7abd9887527dd43bf4de5b7b2dc2210691": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
