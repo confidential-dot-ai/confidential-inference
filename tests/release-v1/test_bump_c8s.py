@@ -208,11 +208,16 @@ if __name__ == "__main__":
 
 
 class BetaCompatibilityTests(unittest.TestCase):
-    def test_beta_requires_staging_opt_in_before_network(self):
-        for extra in ([], ['--allow-beta'], ['--allow-beta', '--profile', 'production']):
+    def test_beta_requires_explicit_profile_and_opt_in_before_network(self):
+        for extra in ([], ['--allow-beta'], ['--profile', 'production']):
             with mock.patch('sys.argv', ['bump-c8s', '--tag', 'v0.37.0-beta.1', '--c8s-repo', '/unused', *extra]), mock.patch.object(BUMP.c8s_release, 'verify_c8s_tag') as verify:
                 self.assertEqual(BUMP.main(), 1)
                 verify.assert_not_called()
+
+    def test_explicit_production_beta_still_requires_signature_verification(self):
+        with mock.patch('sys.argv', ['bump-c8s', '--tag', 'v0.37.0-beta.1', '--c8s-repo', '/unused', '--allow-beta', '--profile', 'production']), mock.patch.object(BUMP.c8s_release, 'verify_c8s_tag', side_effect=BUMP.c8s_release.ReleaseError('invalid signature')) as verify:
+            self.assertEqual(BUMP.main(), 1)
+            verify.assert_called_once_with('v0.37.0-beta.1', allow_beta=True)
 
     def test_renamed_mesh_uses_the_new_registry_repository(self):
         old = {

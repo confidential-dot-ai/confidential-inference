@@ -428,7 +428,7 @@ def check(c8s_repo: Path, commit: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--allow-beta", action="store_true", help="permit beta only for the staging profile")
+    parser.add_argument("--allow-beta", action="store_true", help="permit a signed beta for explicitly named profiles")
     parser.add_argument("--tag", required=True, help="the c8s release tag, for example v0.33.8")
     parser.add_argument("--c8s-repo", required=True, type=Path, help="a clean c8s checkout at the tag")
     parser.add_argument("--profile", action="append", help="a profile to move (default: every profile)")
@@ -441,8 +441,8 @@ def main() -> int:
     try:
         if not TAG.fullmatch(args.tag):
             raise BumpError("--tag must be vX.Y.Z or vX.Y.Z-beta.N")
-        if "-beta." in args.tag and (not args.allow_beta or args.profile != ["staging"]):
-            raise BumpError("beta requires --allow-beta --profile staging; production cannot use beta")
+        if "-beta." in args.tag and (not args.allow_beta or not args.profile):
+            raise BumpError("beta requires --allow-beta and an explicit --profile")
         if args.protocol_review != (args.protocol_diff_out is not None):
             raise BumpError("--protocol-review and --protocol-diff-out go together")
         verified = c8s_release.verify_c8s_tag(args.tag, allow_beta=True) if "-beta." in args.tag else None
