@@ -52,7 +52,10 @@ version. The tag is the version: no commit changes a version, and a staging
 tag needs no production tag. The tag must point to a commit on `main`. After
 publication, the tag must never move or be deleted.
 
-C8s, TEEriminator, and other release dependencies are exact release inputs. A
+C8s, TEEriminator, and other release dependencies are exact release inputs.
+A production release can pin a C8s beta version. It must bind the exact
+source commit, node image, measurements, and core image digests. The normal
+release verification checks still apply. A
 dependency update enters a cluster only through a new Confidential Inference
 release. Classify its version change by its effect on clients, verifiers, and
 operators, not by the dependency's own version number.

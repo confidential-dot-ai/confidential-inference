@@ -23,10 +23,6 @@
     "allowlist",
     "publicHostnames"
   ],
-  "allOf": [{
-    "if": {"properties": {"release": {"properties": {"environment": {"const": "production"}}}}},
-    "then": {"properties": {"c8s": {"properties": {"release": {"pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"}}}}}
-  }],
   "properties": {
     "schema": {"const": "confidential.ai/release-manifest/v1"},
     "release": {
