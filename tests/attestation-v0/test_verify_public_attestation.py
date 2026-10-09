@@ -187,6 +187,7 @@ expected = {
     "--certificate-github-workflow-ref": "refs/tags/" + name,
     "--certificate-github-workflow-name": "Signed release bundle",
     "--certificate-github-workflow-trigger": "push",
+    "--certificate-github-workflow-sha": release["source"]["commit"],
 }
 if any(value(flag) != expected_value for flag, expected_value in expected.items()):
     raise SystemExit(1)

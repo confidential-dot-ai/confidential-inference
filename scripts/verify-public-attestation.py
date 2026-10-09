@@ -1660,6 +1660,14 @@ def verify_manifest_release(
 ) -> dict[str, Any]:
     """Verify a public endpoint against a signed release manifest (v1)."""
     validate_schema(manifest, MANIFEST_SCHEMA, "release manifest")
+    expected_release_environment = args.release_environment or args.deployment_target
+    if manifest["release"]["environment"] != expected_release_environment:
+        raise VerificationError(
+            "the release environment differs from the requested release environment"
+        )
+    endpoint_host = urlsplit(args.endpoint).hostname
+    if endpoint_host not in manifest["publicHostnames"]:
+        raise VerificationError("the signed release does not name the endpoint hostname")
     try:
         signature = verify_release_signature(
             args.trusted_bundle, args.release_signature_bundle, args.cosign,
@@ -1693,12 +1701,17 @@ def verify_manifest_release(
     if args.operator_public_key is not None:
         operator_digest = public_key_digest(args.operator_public_key)
     if args.expected_operator_key_sha256 is not None:
+        # Only c8s can bind a key to RTMR3, and it needs the key itself; a
+        # digest alone has nothing attested to compare against.
+        if operator_digest is None:
+            raise VerificationError(
+                "--expected-operator-key-sha256 requires --operator-public-key"
+            )
         expected_operator = "sha256:" + digest_bytes(
             args.expected_operator_key_sha256, "expected operator key"
         ).hex()
-        if operator_digest is not None and operator_digest != expected_operator:
+        if operator_digest != expected_operator:
             raise VerificationError("the held operator public key differs from the pinned digest")
-        operator_digest = operator_digest or expected_operator
     response, _public_spki, public_leaf_der_sha256, public_leaf_der = fetch_response(args)
     validate_schema(response, RESPONSE_SCHEMA, "public attestation response")
     if response.get("schemaVersion") == 3:
@@ -1782,6 +1795,8 @@ def verify_manifest_release(
         "endpoint": urlsplit(args.endpoint)._replace(query="", fragment="").geturl(),
         "nonceSha256": sha256(b64url_decode(args.nonce, "nonce")),
         "release": manifest["release"]["name"],
+        "releaseEnvironment": manifest["release"]["environment"],
+        "deploymentTarget": args.deployment_target,
         "releaseManifestSha256": release_digest,
         "releaseSignatureVerified": True,
         "c8sVersion": version,
@@ -2150,7 +2165,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--expected-operator-key-sha256",
         help=(
-            "optional pin of one deployment's operator key (SHA-256 of the SPKI DER). "
+            "optional pin of one deployment's operator key (SHA-256 of the SPKI DER); "
+            "it must match --operator-public-key, which c8s pins to RTMR3. "
             "The v0.14.0 release does not name an operator key"
         ),
     )
