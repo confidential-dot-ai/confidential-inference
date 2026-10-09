@@ -467,7 +467,7 @@ def main() -> int:
         if any(value != olds[0] for value in olds):
             raise BumpError("the moved profiles pin different c8s releases; move them one at a time")
         old = olds[0]
-        renamed = "armtls-mesh-image" in git(c8s_repo, "grep", "-e", "armtls-mesh-image", "-e", "ratls-mesh-image", args.tag, "--", "internal")
+        renamed = "armtls-mesh-image" in git(c8s_repo, "grep", "-e", "armtls-mesh-image", "-e", "ratls-mesh-image", args.tag, "--", "cmd", "internal")
         new = new_c8s(args.tag, commit, old, renamed_mesh=renamed)
 
         pin_profiles(moved, everyone, new)
