@@ -61,6 +61,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release_profiles
+import c8s_release
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
@@ -73,7 +74,7 @@ RELEASE_TESTS = ROOT / "tests/release-v1/test_release_tools.py"
 NODE = runpy.run_path(str(ROOT / "scripts/fetch-node-manifest.py"))
 REGISTRY = "ghcr.io/confidential-dot-ai/"
 C8S_MODULE = "github.com/confidential-dot-ai/c8s"
-TAG = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-beta\.([1-9][0-9]*))?$")
 # The c8s file that pins the confidential-os-builder ref of the node image, and
 # the confidential-os-builder script that pins the NVIDIA driver and toolkit.
 BUILD_PINS = ".github/build-pins.json"
@@ -140,7 +141,7 @@ def operator_image(c8s: dict[str, Any]) -> str:
     return next(image for image in c8s["coreImages"] if image.partition("@")[0] == f"{REGISTRY}c8s-operator")
 
 
-def new_c8s(tag: str, commit: str, old: dict[str, Any]) -> dict[str, Any]:
+def new_c8s(tag: str, commit: str, old: dict[str, Any], renamed_mesh: bool = False) -> dict[str, Any]:
     """Return the c8s mapping of the tag in the shape of the old one."""
     old_tag = old["release"]
     node, artifact = old["nodeImage"], old["nodeManifestArtifact"]
@@ -151,6 +152,8 @@ def new_c8s(tag: str, commit: str, old: dict[str, Any]) -> dict[str, Any]:
     core = []
     for image in old["coreImages"]:
         name = image.partition("@")[0]
+        if renamed_mesh and name == REGISTRY + "ratls-mesh":
+            name = REGISTRY + "armtls-mesh"
         core.append(f"{name}@{digest(f'{name}:{tag}')}" if name.startswith(REGISTRY) else image)
     value = copy.deepcopy(old)
     value.update({
@@ -425,6 +428,7 @@ def check(c8s_repo: Path, commit: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--allow-beta", action="store_true", help="permit beta only for the staging profile")
     parser.add_argument("--tag", required=True, help="the c8s release tag, for example v0.33.8")
     parser.add_argument("--c8s-repo", required=True, type=Path, help="a clean c8s checkout at the tag")
     parser.add_argument("--profile", action="append", help="a profile to move (default: every profile)")
@@ -436,11 +440,16 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if not TAG.fullmatch(args.tag):
-            raise BumpError("--tag must be vX.Y.Z")
+            raise BumpError("--tag must be vX.Y.Z or vX.Y.Z-beta.N")
+        if "-beta." in args.tag and (not args.allow_beta or args.profile != ["staging"]):
+            raise BumpError("beta requires --allow-beta --profile staging; production cannot use beta")
         if args.protocol_review != (args.protocol_diff_out is not None):
             raise BumpError("--protocol-review and --protocol-diff-out go together")
+        verified = c8s_release.verify_c8s_tag(args.tag, allow_beta=True) if "-beta." in args.tag else None
         c8s_repo = args.c8s_repo.resolve()
         commit = git(c8s_repo, "rev-parse", f"{args.tag}^{{commit}}")
+        if verified is not None and verified["commit"] != commit:
+            raise BumpError("the verified release commit differs from the local tag")
         if git(c8s_repo, "rev-parse", "HEAD") != commit or git(c8s_repo, "status", "--porcelain"):
             raise BumpError(f"--c8s-repo must be a clean checkout at {args.tag}")
         if git(ROOT, "status", "--porcelain"):
@@ -458,7 +467,8 @@ def main() -> int:
         if any(value != olds[0] for value in olds):
             raise BumpError("the moved profiles pin different c8s releases; move them one at a time")
         old = olds[0]
-        new = new_c8s(args.tag, commit, old)
+        renamed = "armtls-mesh-image" in git(c8s_repo, "grep", "-e", "armtls-mesh-image", "-e", "ratls-mesh-image", args.tag, "--", "internal")
+        new = new_c8s(args.tag, commit, old, renamed_mesh=renamed)
 
         pin_profiles(moved, everyone, new)
         bump_module(old["release"], args.tag)
@@ -470,7 +480,7 @@ def main() -> int:
         regenerate(moved)
         regenerate_staging_fixture(c8s_repo, moved)
         check(c8s_repo, commit)
-    except (BumpError, release_profiles.ProfileError, NODE["FetchError"]) as error:
+    except (BumpError, c8s_release.ReleaseError, release_profiles.ProfileError, NODE["FetchError"]) as error:
         print(f"bump-c8s: {error}", file=sys.stderr)
         return 1
     print(json.dumps({"tag": args.tag, "profiles": [profile.name for profile in moved], "c8s": new}, indent=2))
