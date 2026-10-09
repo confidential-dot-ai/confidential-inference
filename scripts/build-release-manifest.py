@@ -44,7 +44,17 @@ The build writes three files to --output-dir:
   the chart rendered with these digests. The manifest binds its SHA-256;
 - release-values.yaml: the Helm values file with the repository image
   digests and the release ID. Apply it after the profile values files. The
-  manifest binds its SHA-256 (releaseValues).
+  manifest binds its SHA-256 (releaseValues);
+- <chart>-<X.Y.Z>.tgz, for a staging release: the chart package, version
+  X.Y.Z (the tag without v and -staging). The manifest binds its SHA-256
+  (chart.archiveSha256) and the OCI reference the publish job pushes it to
+  (chart.reference). A production release of the same commit packages
+  nothing: it binds the package of its staging release, so production
+  promotes what staging verified. helm package rewrites Chart.yaml and the
+  archive bytes carry mtimes, so a rebuild checks the archive by content.
+
+The manifest also binds each profile values file (profileValues), which the
+release publishes as assets, so a deploy needs no checkout to apply them.
 
 The release workflow builds them at the tag, signs the manifest, and attaches
 all three to the GitHub release. Anyone can build them again from the tagged
@@ -628,13 +638,18 @@ def build(
     download_dir: Path | None,
     c8s: Path,
     canonical_tool: Path | None,
+    chart_archive: Path | None = None,
 ) -> dict[str, bytes]:
-    """Return the release files by name: the manifest, the allowlist, and the values overlay."""
+    """Return the release files by name: the manifest, the allowlist, the values overlay and, for a
+    staging release, the chart package. `chart_archive` is an existing package to check and bind
+    instead of packaging again (--check, and the deploy's verification of a published release)."""
     try:
         profile = release_profiles.for_tag(tag)
     except release_profiles.ProfileError as error:
         raise ManifestError(str(error)) from error
     chart = chart.resolve()
+    identity = chart_identity(chart)
+    version = chart_version(tag, profile)
     require(COMMIT.fullmatch(source_commit) is not None, "--source-commit must be a full Git commit")
     spec = read_spec(profile)
     publication_bytes, publication = read_publication(publication_path)
@@ -686,6 +701,26 @@ def build(
     node = node_measurements(release_profiles.node_manifest(profile), spec)
     named_images = image_names(values, images)
     publication = publication_binding(publication_bytes, publication, named_images)
+    archive_bytes: bytes | None = None
+    if profile.tag_suffix:
+        # The staging release packages the chart of this commit.
+        with tempfile.TemporaryDirectory(prefix="chart-package-") as directory:
+            archive = chart_archive or package_chart(chart, version, Path(directory))
+            verify_archive_content(archive, chart, version)
+            archive_bytes = archive.read_bytes()
+        chart_binding = {"archiveSha256": sha256(archive_bytes), "reference": chart_reference(identity["name"], version)}
+    else:
+        # The production release binds the package the staging release of this commit built.
+        with tempfile.TemporaryDirectory(prefix="staging-release-") as directory:
+            chart_binding = staging_chart_binding(tag, source_commit, identity["treeSha256"], download_dir or Path(directory))
+    profile_values = [
+        {
+            "path": profile.relative(path),
+            "sha256": sha256(path.read_bytes()),
+            "asset": profile_values_asset(profile.relative(path)),
+        }
+        for path in profile.values_files
+    ]
     manifest = {
         "schema": SCHEMA,
         "release": {
@@ -701,9 +736,10 @@ def build(
         "imagePublication": publication,
         "images": named_images,
         "chart": {
-            "name": chart_identity(chart)["name"],
-            "version": chart_identity(chart)["version"],
-            "sha256": chart_identity(chart)["treeSha256"],
+            "name": identity["name"],
+            "version": identity["version"],
+            "sha256": identity["treeSha256"],
+            **chart_binding,
         },
         "c8s": {"release": spec["c8s"]["release"], "sourceCommit": spec["c8s"]["sourceCommit"]},
         # The SHA-256 of release/node-manifest.json, the c8s manifest.json that
@@ -727,14 +763,49 @@ def build(
             "path": profile.release_values.relative_to(ROOT).as_posix(),
             "sha256": sha256(overlay_bytes),
         },
+        "profileValues": profile_values,
         "publicHostnames": spec["publicHostnames"],
     }
     validate_schema(manifest)
-    return {
+    files = {
         "release-bundle.json": encode(manifest),
         "allowlist.json": allowlist_bytes,
         "release-values.yaml": overlay_bytes,
     }
+    if archive_bytes is not None:
+        files[f"{identity['name']}-{version}.tgz"] = archive_bytes
+    return files
+
+
+def profile_values_asset(path: str) -> str:
+    """The release asset name of a profile values file: its repository path with / as -."""
+    return "profile-values-" + path.replace("/", "-")
+
+
+def staging_chart_binding(tag: str, source_commit: str, tree_sha256: str, download_dir: Path) -> dict[str, str]:
+    """Return the chart package that the signed staging release of this source commit binds.
+
+    A production release packages nothing: it promotes the package that
+    staging verified. The build downloads the staging manifest and its
+    Sigstore bundle like a base release, verifies the signature, and requires
+    the same source commit and chart tree.
+    """
+    staging_tag = f"{tag}-staging"
+    manifest_path, signature_path = download_base_release(staging_tag, download_dir)
+    cosign = shutil.which("cosign")
+    require(cosign is not None, "verifying the staging release needs cosign")
+    try:
+        release_signature.verify_release_signature(manifest_path, signature_path, Path(cosign).resolve(), 60)
+    except (OSError, release_signature.ReleaseSignatureError) as error:
+        raise ManifestError(f"the staging release signature: {error}") from error
+    staging = read_json(manifest_path)
+    validate_schema(staging)
+    require(staging["release"]["name"] == staging_tag, f"the manifest of {staging_tag} names another release")
+    require(staging["source"]["commit"] == source_commit, f"{staging_tag} is not a release of source commit {source_commit}")
+    require(staging["chart"]["sha256"] == tree_sha256, f"{staging_tag} packaged another chart tree")
+    require("archiveSha256" in staging["chart"] and "reference" in staging["chart"],
+            f"{staging_tag} binds no chart package; the staging release predates the package. Release it again first.")
+    return {"archiveSha256": staging["chart"]["archiveSha256"], "reference": staging["chart"]["reference"]}
 
 
 def validate_schema(manifest: dict[str, Any]) -> None:
@@ -766,9 +837,18 @@ def main() -> int:
                         help="the c8s CLI built from the pinned c8s source commit")
     parser.add_argument("--canonical-tool", type=Path,
                         help="a built tools/c8s-allowlist-canonical binary")
+    parser.add_argument("--chart-archive", type=Path,
+                        help="an existing chart package to check against the tagged tree and bind, instead of "
+                             "packaging (default with --check: the one .tgz in --output-dir)")
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--check", action="store_true",
+                        help="fail when a file in --output-dir differs from a new build; the chart package is "
+                             "checked by content and digest, not by bytes")
     args = parser.parse_args()
+    chart_archive = args.chart_archive
+    if chart_archive is None and args.check and args.output_dir.is_dir():
+        archives = sorted(args.output_dir.glob("*.tgz"))
+        chart_archive = archives[0] if len(archives) == 1 else None
     try:
         files = build(
             args.tag,
@@ -779,6 +859,7 @@ def main() -> int:
             args.download_dir.resolve() if args.download_dir else None,
             args.c8s.resolve(),
             args.canonical_tool.resolve() if args.canonical_tool else None,
+            chart_archive.resolve() if chart_archive else None,
         )
         for name, data in files.items():
             output = args.output_dir / name

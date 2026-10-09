@@ -72,7 +72,7 @@ def published_release_images() -> dict[str, str]:
 
 
 def build_staging(evidence: dict, base: dict | None = None, tag: str = "v0.14.2-staging",
-                  c8s: Path | None = None) -> dict[str, bytes]:
+                  c8s: Path | None = None, chart_archive: Path | None = None) -> dict[str, bytes]:
     """Build the staging release with crane and the signature check replaced.
 
     Without `c8s`, the fixture allowlist replaces the c8s CLI. With `c8s`, the
@@ -105,6 +105,7 @@ def build_staging(evidence: dict, base: dict | None = None, tag: str = "v0.14.2-
                 download_dir,
                 c8s or Path("c8s"),
                 None,
+                chart_archive,
             )
 
 
@@ -404,6 +405,53 @@ class ManifestTests(unittest.TestCase):
         })
         for key, image in RELEASE_IMAGES.items():
             self.assertEqual(manifest["images"][key], image)
+
+    def test_the_staging_manifest_binds_the_package_and_the_profile_values(self):
+        files = build_staging(publication(published_release_images()))
+        manifest = json.loads(files["release-bundle.json"])
+        archive = files["confidential-inference-0.14.2.tgz"]
+        self.assertEqual(manifest["chart"]["archiveSha256"], MAN.sha256(archive))
+        self.assertEqual(manifest["chart"]["reference"],
+                         "ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference:0.14.2")
+        self.assertEqual(manifest["chart"]["version"], yaml.safe_load((MAN.CHART / "Chart.yaml").read_text())["version"])
+        self.assertEqual(manifest["profileValues"], [
+            {"path": "release/values.yaml", "sha256": MAN.sha256((ROOT / "release/values.yaml").read_bytes()),
+             "asset": "profile-values-release-values.yaml"},
+            {"path": "release/staging/values.yaml",
+             "sha256": MAN.sha256((ROOT / "release/staging/values.yaml").read_bytes()),
+             "asset": "profile-values-release-staging-values.yaml"},
+        ])
+
+    def test_a_check_build_takes_the_existing_archive(self):
+        first = build_staging(publication(published_release_images()))
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "confidential-inference-0.14.2.tgz"
+            archive.write_bytes(first["confidential-inference-0.14.2.tgz"])
+            again = build_staging(publication(published_release_images()), chart_archive=archive)
+        self.assertEqual(again["release-bundle.json"], first["release-bundle.json"])
+        self.assertEqual(again["confidential-inference-0.14.2.tgz"], first["confidential-inference-0.14.2.tgz"])
+
+    def test_a_production_release_binds_the_staging_package(self):
+        staging = json.loads(build_staging(publication(published_release_images()))["release-bundle.json"])
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(MAN.release_signature, "verify_release_signature"), \
+                mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"):
+            directory = Path(temporary)
+            (directory / "release-bundle.json").write_text(json.dumps(staging))
+            (directory / "release-bundle.sigstore.json").write_text("{}")
+            binding = MAN.staging_chart_binding("v0.14.2", "d" * 40, staging["chart"]["sha256"], directory)
+            self.assertEqual(binding, {"archiveSha256": staging["chart"]["archiveSha256"],
+                                       "reference": staging["chart"]["reference"]})
+            for bad, message in ((("v0.14.2", "e" * 40, staging["chart"]["sha256"]), "commit"),
+                                 (("v0.14.2", "d" * 40, "sha256:" + "0" * 64), "chart tree"),
+                                 (("v0.14.3", "d" * 40, staging["chart"]["sha256"]), "another release")):
+                with self.subTest(message=message), self.assertRaisesRegex(MAN.ManifestError, message):
+                    MAN.staging_chart_binding(*bad, directory)
+            legacy = {**staging, "chart": {k: v for k, v in staging["chart"].items()
+                                           if k not in ("archiveSha256", "reference")}}
+            (directory / "release-bundle.json").write_text(json.dumps(legacy))
+            with self.assertRaisesRegex(MAN.ManifestError, "no chart package"):
+                MAN.staging_chart_binding("v0.14.2", "d" * 40, staging["chart"]["sha256"], directory)
 
     def test_an_unchanged_image_keeps_the_digest_of_the_signed_base_release(self):
         sglang = "ghcr.io/confidential-dot-ai/confidential-inference/sglang"
