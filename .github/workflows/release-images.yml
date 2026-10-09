@@ -32,9 +32,9 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: release-images-${{ github.ref }}
-  cancel-in-progress: true
+# Do not use a concurrency group here. Each dispatch must finish its own
+# build and audit. A shared group can cancel a running or pending request
+# when staging or another release dispatches a build at main.
 
 env:
   REGISTRY: ghcr.io

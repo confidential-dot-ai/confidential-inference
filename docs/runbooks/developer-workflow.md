@@ -57,6 +57,23 @@ dependency update enters a cluster only through a new Confidential Inference
 release. Classify its version change by its effect on clients, verifiers, and
 operators, not by the dependency's own version number.
 
+### Image build requests
+
+`Release images` builds the exact public `main` commit selected by a dispatch.
+Staging and production release tools can request these builds. A request does
+not deploy a cluster, and it does not require a staging deployment first.
+
+Each request runs independently. Do not add a shared workflow or job
+concurrency group. GitHub can cancel a running request with
+`cancel-in-progress: true`. A shared group with that option set to `false`
+can still replace an older pending request. Staging must not stop a public
+`main` build in either state.
+
+Each audit uses isolated runners. Builder names include the run ID. Keep the
+clean rebuild audit, digest checks, and publication evidence. If several
+successful runs publish evidence for the same source commit, select one
+explicitly with `Image-Publication-Run` in the release tag annotation.
+
 ## 4. Repository boundary
 
 Keep product software, workload definitions, public contracts, build inputs,

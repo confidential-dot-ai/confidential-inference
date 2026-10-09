@@ -99,6 +99,16 @@ class ImagePublicationTests(unittest.TestCase):
         build = bundle[bundle.index("- name: Build the release at the tag commit"):]
         self.assertIn("GH_TOKEN: ${{ github.token }}", build[:build.index("run: |")])
 
+    def test_build_requests_have_no_shared_cancellation_or_pending_slot(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT / ".github/workflows/release-images.yml").read_text())
+        # A shared group with cancel-in-progress false still replaces pending
+        # runs. Every dispatch, including one from staging, must be independent.
+        self.assertNotIn("concurrency", workflow)
+        for name, job in workflow["jobs"].items():
+            self.assertNotIn("concurrency", job, name)
+        self.assertIn("github.run_id", workflow["jobs"]["reproducibility"]["steps"][2]["with"]["name"])
+
     def test_standard_images_publish_the_audited_archive(self):
         images = (ROOT / ".github/workflows/release-images.yml").read_text()
         standard = images[images.index("  publish-standard:"):images.index("  publish-sglang:")]
