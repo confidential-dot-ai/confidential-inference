@@ -289,6 +289,14 @@ class AcceptedFindingTests(unittest.TestCase):
 
 
 class ManifestTests(unittest.TestCase):
+    def test_signed_beta_version_is_a_valid_release_input(self):
+        spec = MAN.read_spec(PRODUCTION)
+        for version in ('v0.37.0-beta.1', 'v0.37.0'):
+            MAN.validate_spec({**spec, 'c8s': {**spec['c8s'], 'release': version}})
+        for version in ('v0.37.0-beta.0', 'v0.37.0-beta.01', 'v0.37.0-rc.1'):
+            with self.assertRaisesRegex(MAN.ManifestError, 'c8s.release'):
+                MAN.validate_spec({**spec, 'c8s': {**spec['c8s'], 'release': version}})
+
     def test_the_committed_spec_is_valid(self):
         MAN.read_spec(PRODUCTION)
         MAN.read_spec(STAGING)

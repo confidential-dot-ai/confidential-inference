@@ -41,7 +41,7 @@ images:
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
   # changed: the c8s operator image. It must be one of the spec.yaml
   # c8s.coreImages, which scripts/bump-c8s.py moves together.
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:f0ea51f52efcf7fecdbdec00fffb8585e026a0f7d78276e79f3ee52cf0aa8a5a
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:0b86d0541d101e259e7879706bc68acf32fd084603b6180577bc53bdc99a796c
 
 namedWorkloadProxy:
   enabled: false
