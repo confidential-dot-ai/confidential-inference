@@ -168,3 +168,127 @@ async fn key_and_queue_capacity_fail_with_a_bounded_retry() {
     assert!(state.inference_permits("key-a").await.is_err());
     assert!(state.inference_permits("key-b").await.is_err());
 }
+
+struct HeldMetadata {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl AttestationProvider for HeldMetadata {
+    fn requires_nonce(&self) -> bool {
+        false
+    }
+
+    async fn response(&self, _: &[u8; 32]) -> Result<Value, AttestationError> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        Ok(json!({"schemaVersion": 3}))
+    }
+}
+
+async fn metadata_app(config: ProtectionConfig, provider: Arc<HeldMetadata>) -> Router {
+    router(
+        GatewayConfig {
+            catalog_model_ids: vec!["deepseek".to_owned()],
+            inference_model_ids: vec!["deepseek".to_owned()],
+            upstream_base_url: start_upstream().await,
+            maximum_body_bytes: 1_024,
+            upstream_timeout: Duration::from_secs(2),
+            protection: config,
+        },
+        Arc::new(Keys),
+        Arc::new(Audit),
+        Arc::new(GatewayMetrics::new("test")),
+        GatewayAvailability::default(),
+        provider,
+        reqwest::Client::new(),
+    )
+}
+
+#[tokio::test]
+async fn public_metadata_overload_keeps_inference_available_and_releases_the_slot() {
+    let provider = Arc::new(HeldMetadata {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let app = metadata_app(
+        ProtectionConfig {
+            attestation_concurrency: 1,
+            requests_per_address_per_second: 10_000,
+            ..ProtectionConfig::default()
+        },
+        provider.clone(),
+    )
+    .await;
+    let service = app.clone();
+    let active = tokio::spawn(async move {
+        service
+            .oneshot(request("/attestation".to_owned(), None))
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), provider.entered.notified())
+        .await
+        .unwrap_or_else(|_| panic!("metadata request did not enter its provider"));
+    let rejected = app
+        .clone()
+        .oneshot(request("/v1/attestation".to_owned(), None))
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(rejected.headers()[header::RETRY_AFTER], "1");
+    let valid = app
+        .clone()
+        .oneshot(request("/v1/chat/completions".to_owned(), Some("valid-a")))
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    assert_eq!(valid.status(), StatusCode::OK);
+    provider.release.notify_one();
+    assert_eq!(
+        active
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .unwrap_or_else(|_| unreachable!())
+            .status(),
+        StatusCode::OK
+    );
+    provider.release.notify_one();
+    let next = app
+        .oneshot(request("/attestation".to_owned(), None))
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    assert_eq!(next.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn public_metadata_without_key_or_nonce_uses_the_address_rate_limit() {
+    let provider = Arc::new(HeldMetadata {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let app = metadata_app(
+        ProtectionConfig {
+            requests_per_address_per_second: 1,
+            ..ProtectionConfig::default()
+        },
+        provider.clone(),
+    )
+    .await;
+    provider.release.notify_one();
+    let first = app
+        .clone()
+        .oneshot(request("/attestation".to_owned(), None))
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    assert_eq!(first.status(), StatusCode::OK);
+    let second = app
+        .oneshot(request("/attestation".to_owned(), None))
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(second.headers()[header::RETRY_AFTER], "1");
+    let bytes = to_bytes(second.into_body(), 1_024)
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    assert!(String::from_utf8_lossy(&bytes).contains("address_rate_limited"));
+}

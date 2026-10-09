@@ -1,3 +1,6 @@
+import importlib.util
+import io
+from unittest.mock import patch
 import http.server
 import json
 import os
@@ -30,7 +33,7 @@ def load_server(sequence: list[list[dict]]) -> http.server.HTTPServer:
                 return
             index = min(state["calls"], len(sequence) - 1)
             state["calls"] += 1
-            body = json.dumps(sequence[index]).encode()
+            body = json.dumps({"version": "0.5.18", "loads": sequence[index]}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -42,6 +45,26 @@ def load_server(sequence: list[list[dict]]) -> http.server.HTTPServer:
 
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
     return server
+
+
+class LoadResponseTests(unittest.TestCase):
+    def test_real_envelope_and_legacy_records_preserve_request_counts(self):
+        spec = importlib.util.spec_from_file_location("model_gate", SCRIPT)
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+        busy = [{"num_running_reqs": 2, "num_waiting_reqs": 1},
+                {"num_running_reqs": 0, "num_waiting_reqs": 4}]
+        cases = [({"version": "0.5.18", "loads": busy}, 7), (busy, 7),
+                 ({"loads": [{"num_running_reqs": 0, "num_waiting_reqs": 0}]}, 0)]
+        malformed = [{}, {"loads": []}, {"loads": None}, [],
+                     {"loads": [{"num_running_reqs": 0}]},
+                     {"loads": [{"num_running_reqs": -1, "num_waiting_reqs": 0}]},
+                     {"loads": [{"num_running_reqs": True, "num_waiting_reqs": 0}]}]
+        cases += [(value, None) for value in malformed]
+        for payload, expected in cases:
+            with self.subTest(payload=payload), patch.object(gate.urllib.request, "urlopen",
+                    return_value=io.BytesIO(json.dumps(payload).encode())):
+                self.assertEqual(expected, gate.pending_requests(30000))
 
 
 class StderrReader:
