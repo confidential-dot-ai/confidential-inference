@@ -1675,8 +1675,15 @@ def verify_manifest_release(
     source_lock_bytes = read_bytes(args.c8s_source_lock, "c8s source lock")
     allowlist_bytes = read_bytes(args.allowlist, "allowlist", MAX_ALLOWLIST_BYTES)
     allowlist = read_json(args.allowlist, "allowlist", MAX_ALLOWLIST_BYTES)
+    release_allowlist_path = getattr(args, "release_allowlist", None)
+    if release_allowlist_path is not None and not getattr(args, "metadata_only", False):
+        raise VerificationError("--release-allowlist requires --metadata-only")
+    release_allowlist_bytes = (
+        read_bytes(release_allowlist_path, "signed release allowlist", MAX_ALLOWLIST_BYTES)
+        if release_allowlist_path is not None else allowlist_bytes
+    )
     validate_manifest_inputs(
-        manifest, node_manifest_bytes, node_manifest, source_lock_bytes, allowlist_bytes,
+        manifest, node_manifest_bytes, node_manifest, source_lock_bytes, release_allowlist_bytes,
     )
     version = verify_c8s_version(
         args.c8s, manifest["c8s"]["sourceCommit"], args.verifier_timeout_seconds,
@@ -1695,8 +1702,14 @@ def verify_manifest_release(
     response, _public_spki, public_leaf_der_sha256, public_leaf_der = fetch_response(args)
     validate_schema(response, RESPONSE_SCHEMA, "public attestation response")
     if response.get("schemaVersion") == 3:
-        return verify_policy_metadata(response, args, manifest["release"]["name"],
-                                      release_digest, allowlist_bytes, allowlist)
+        result = verify_policy_metadata(response, args, manifest["release"]["name"],
+                                        release_digest, allowlist_bytes, allowlist)
+        if release_allowlist_path is not None:
+            result["releaseAllowlistSha256"] = sha256(release_allowlist_bytes)
+            result["policyTrustSource"] = "separately-reviewed-exact-allowlist"
+        return result
+    if release_allowlist_path is not None:
+        raise VerificationError("--release-allowlist requires a version 3 metadata response")
     if response["nonce"] != args.nonce:
         raise VerificationError("the public response nonce differs from the request")
     if response["release"] != {
@@ -1809,6 +1822,8 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     )
     if is_manifest_release(release):
         return verify_manifest_release(args, release_bytes, release)
+    if getattr(args, "release_allowlist", None) is not None:
+        raise VerificationError("--release-allowlist requires a signed release manifest")
     if args.node_source_lock is None or args.mesh_ca is None:
         raise VerificationError(
             "a release bundle older than v0.14.0 requires --node-source-lock and --mesh-ca"
@@ -2118,6 +2133,10 @@ def parser() -> argparse.ArgumentParser:
         default=ROOT / "contracts/c8s-admission-source-lock.json",
     )
     result.add_argument("--allowlist", required=True, type=Path)
+    result.add_argument(
+        "--release-allowlist", type=Path,
+        help="with --metadata-only, verify this signed release asset separately from the reviewed live policy in --allowlist",
+    )
     result.add_argument("--allowlist-history", type=Path)
     result.add_argument(
         "--operator-public-key", type=Path,

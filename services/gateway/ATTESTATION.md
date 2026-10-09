@@ -31,6 +31,15 @@ This response helps a client select and review its policy. It does not replace
 verification of the inference connection. The client must pin the reviewed
 policy and verify that connection with TEErminator or the native C8s verifier.
 
+For a dynamic deployment, the reviewed live policy can differ from the initial
+policy in the signed software release. Use `--metadata-only --release-allowlist`
+with the signed release's `allowlist.json`. Give the separately reviewed live
+policy to `--allowlist`. The verifier still checks the release signature, node
+measurements, source lock, and signed initial policy. It checks the live
+response against the exact reviewed live policy bytes. It does not claim that
+the release signature covers later policy changes. Without this explicit
+option, the live policy must equal the signed initial policy.
+
 ## CDS verification
 
 `GATEWAY_C8S_CDS_URL` selects the CDS HTTPS origin.
