@@ -14,6 +14,13 @@ helm template example helm/confidential-inference \
   --values /path/to/environment-values.yaml
 ```
 
+A release publishes this chart as a package,
+`ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference:X.Y.Z`,
+built once by the staging release of a source commit and bound by digest in
+the signed release manifest (`chart.archiveSha256`), together with the
+profile values files as release assets (`release/README.md`, "The release
+build"). An installer that verifies those digests needs no checkout.
+
 The gateway uses one internal HTTP service behind c8s TLS-LB. Public inference
 requests and signed admin requests use that same entry path. The gateway reads
 its API-key pepper from c8s application-secret memory. It stores API-key state

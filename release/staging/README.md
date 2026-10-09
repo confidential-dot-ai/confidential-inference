@@ -25,7 +25,21 @@ helm template confidential-inference helm/confidential-inference \
 ```
 
 `scripts/release_profiles.py resolve --release release/staging` prints the
-values files in order.
+values files in order. The release publishes both files as assets
+(`profile-values-release-values.yaml`, `profile-values-release-staging-values.yaml`)
+and the chart as a package, so the same render needs no checkout:
+
+```sh
+helm pull oci://ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference \
+  --version X.Y.Z
+helm template confidential-inference confidential-inference-X.Y.Z.tgz \
+  --values profile-values-release-values.yaml \
+  --values profile-values-release-staging-values.yaml \
+  --values release-values.yaml
+```
+
+Check each asset against the signed manifest first: the package SHA-256 is
+`chart.archiveSha256`, each values file is in `profileValues`.
 
 The release build generates the exact allowlist and the manifest. See
 `release/README.md` for the command that builds the release again:
