@@ -28,7 +28,7 @@ def main():
     subprocess.run(['git', '-C', str(ROOT), 'cat-file', '-e', source + '^{commit}'], check=True)
     subprocess.run(['git', '-C', str(ROOT), 'diff', '--quiet', source, '--',
                     'images/sglang-router/Dockerfile', 'images/sglang-router/source.lock',
-                    'images/sglang-router/Cargo.lock', 'images/sglang-router/requirements.lock',
+                    'images/sglang-router/canonicalize_wheel.py', 'images/sglang-router/Cargo.lock', 'images/sglang-router/requirements.lock',
                     'images/sglang-router/patches'], check=True)
     reference = json.loads((RECIPE / 'source.lock').read_text())['deploymentImage']['reference']
     if reference != 'ghcr.io/confidential-dot-ai/confidential-inference/sglang-router':

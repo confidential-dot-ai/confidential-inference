@@ -22,11 +22,13 @@ RUN python3 -c 'import json,hashlib,pathlib; d=json.load(open("/inputs/source.lo
     && git apply /inputs/patches/worker-withdrawal.patch
 COPY Cargo.lock /src/sgl-model-gateway/Cargo.lock
 RUN python3 -c 'import json,hashlib,pathlib; d=json.load(open("/inputs/source.lock")); assert hashlib.sha256(pathlib.Path("/src/sgl-model-gateway/Cargo.lock").read_bytes()).hexdigest()==d["cargoLockSha256"]'
+COPY canonicalize_wheel.py /inputs/canonicalize_wheel.py
 ENV RUSTFLAGS="--remap-path-prefix=/src=/usr/src/sglang"
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/sgl-model-gateway/target,sharing=locked \
     /opt/build/bin/maturin build --locked --release --features vendored-openssl \
-    --manifest-path sgl-model-gateway/bindings/python/Cargo.toml --out /out
+    --manifest-path sgl-model-gateway/bindings/python/Cargo.toml --out /out \
+    && python3 /inputs/canonicalize_wheel.py /out/*.whl
 
 FROM docker.io/library/python@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
 ARG SOURCE_REVISION
@@ -42,7 +44,7 @@ COPY requirements.lock /router-requirements.lock
 RUN python3 -m pip install --no-cache-dir --require-hashes -r /router-requirements.lock
 LABEL ai.confidential.build.source-date-epoch="${SOURCE_DATE_EPOCH}"
 COPY --from=build /out /router-wheels
-RUN python3 -m pip install --no-deps --force-reinstall /router-wheels/*.whl \
+RUN python3 -m pip install --no-compile --no-deps --force-reinstall /router-wheels/*.whl \
     && rm -rf /router-wheels \
     && python3 -c 'import sglang_router.sglang_router_rs'
 USER 1001:1001
