@@ -50,8 +50,9 @@ The build writes three files to --output-dir:
   (chart.archiveSha256) and the OCI reference the publish job pushes it to
   (chart.reference). A production release of the same commit packages
   nothing: it binds the package of its staging release, so production
-  promotes what staging verified. helm package rewrites Chart.yaml and the
-  archive bytes carry mtimes, so a rebuild checks the archive by content.
+  promotes what staging verified. The build writes the archive itself with
+  fixed metadata (not helm package, whose output carries file times), so a
+  rebuild gives the same bytes, as for every other release file.
 
 The manifest also binds each profile values file (profileValues), which the
 release publishes as assets, so a deploy needs no checkout to apply them.
@@ -65,7 +66,9 @@ existing file differs from a new build.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
+import io
 import json
 import os
 import re
@@ -365,45 +368,51 @@ def chart_reference(name: str, version: str) -> str:
     return f"{CHART_REPOSITORY}/{name}:{version}"
 
 
+def chart_metadata(chart: Path, version: str) -> bytes:
+    """Chart.yaml of the package: the chart's file with its version line set to `version`.
+
+    A text substitution, not a YAML dump, so the bytes depend on the tagged file alone.
+    """
+    text = (chart / "Chart.yaml").read_text()
+    lines = [line for line in text.splitlines(keepends=True) if re.match(r"^version:", line)]
+    require(len(lines) == 1, "Chart.yaml must set version once at the top level")
+    return text.replace(lines[0], f"version: {version}\n", 1).encode()
+
+
 def package_chart(chart: Path, version: str, directory: Path) -> Path:
-    """Package `chart` as `version` into `directory` with the helm on PATH."""
-    result = subprocess.run(
-        ["helm", "package", str(chart), "--version", version, "--destination", str(directory)],
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode != 0:
-        raise ManifestError(f"helm package failed: {result.stderr.strip()}")
-    archive = directory / f"{chart_identity(chart)['name']}-{version}.tgz"
-    require(archive.is_file(), f"helm package wrote no {archive.name}")
+    """Write the chart package `<name>-<version>.tgz` into `directory` and return its path.
+
+    The package is a function of the tagged tree and the version alone: entries
+    in sorted path order, mode 0644, uid and gid 0, mtime 0, gzip without a
+    name or time. helm package rewrites Chart.yaml and records file times, so
+    its archive is not reproducible; this one is, so the local build and the
+    signed release have the same bytes, as every other release file does.
+    Helm reads it like any chart archive.
+    """
+    name = chart_identity(chart)["name"]
+    files = {p.relative_to(chart).as_posix(): p.read_bytes() for p in chart.rglob("*") if p.is_file()}
+    require("Chart.yaml" in files, "the chart has no Chart.yaml")
+    files["Chart.yaml"] = chart_metadata(chart, version)
+    archive = directory / f"{name}-{version}.tgz"
+    with archive.open("wb") as out, gzip.GzipFile(fileobj=out, mode="wb", mtime=0) as gz, \
+            tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for path in sorted(files):
+            info = tarfile.TarInfo(f"{name}/{path}")
+            info.size = len(files[path])
+            info.mode = 0o644
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            info.mtime = 0
+            tar.addfile(info, io.BytesIO(files[path]))
     return archive
 
 
 def verify_archive_content(archive: Path, chart: Path, version: str) -> None:
-    """Require that the archive holds the chart tree, with only the version of Chart.yaml changed.
-
-    helm package rewrites Chart.yaml and the archive bytes carry mtimes, so the
-    archive is evidence like an image digest: this compares its content with
-    the tagged tree instead of its bytes.
-    """
-    name = chart_identity(chart)["name"]
-    expected = {p.relative_to(chart).as_posix(): p.read_bytes() for p in chart.rglob("*") if p.is_file()}
-    try:
-        with tarfile.open(archive, "r:gz") as tar:
-            members = {m.name: m for m in tar.getmembers() if m.isfile()}
-            require(all(m.startswith(f"{name}/") for m in members), "the archive holds files outside the chart")
-            actual = {m[len(name) + 1:]: tar.extractfile(members[m]).read() for m in members}
-    except (tarfile.TarError, OSError) as error:
-        raise ManifestError(f"cannot read the chart archive: {error}") from error
-    missing = sorted(set(expected) - set(actual))
-    extra = sorted(set(actual) - set(expected))
-    require(not missing and not extra, f"archive files differ from the chart: missing {missing}, extra {extra}")
-    for path in sorted(expected):
-        if path == "Chart.yaml":
-            want = {**yaml.safe_load(expected[path]), "version": version}
-            require(yaml.safe_load(actual[path]) == want,
-                    f"Chart.yaml in the archive differs from the chart at version {version}")
-        else:
-            require(actual[path] == expected[path], f"{path} in the archive differs from the chart")
+    """Require that `archive` is the package of `chart` at `version`, byte for byte."""
+    with tempfile.TemporaryDirectory(prefix="chart-check-") as directory:
+        expected = package_chart(chart, version, Path(directory)).read_bytes()
+    require(archive.read_bytes() == expected,
+            f"{archive.name} differs from the package of the chart at version {version}")
 
 
 def source_lock_entry(lock: dict[str, Any], commit: str) -> dict[str, Any]:
@@ -791,7 +800,10 @@ def staging_chart_binding(tag: str, source_commit: str, tree_sha256: str, downlo
     the same source commit and chart tree.
     """
     staging_tag = f"{tag}-staging"
-    manifest_path, signature_path = download_base_release(staging_tag, download_dir)
+    try:
+        manifest_path, signature_path = download_base_release(staging_tag, download_dir / "staging-release")
+    except ManifestError as error:
+        raise ManifestError(f"{staging_tag}, the staging release of this commit, is needed for the chart package: {error}") from error
     cosign = shutil.which("cosign")
     require(cosign is not None, "verifying the staging release needs cosign")
     try:
@@ -842,8 +854,7 @@ def main() -> int:
                              "packaging (default with --check: the one .tgz in --output-dir)")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--check", action="store_true",
-                        help="fail when a file in --output-dir differs from a new build; the chart package is "
-                             "checked by content and digest, not by bytes")
+                        help="fail when a file in --output-dir differs from a new build")
     args = parser.parse_args()
     chart_archive = args.chart_archive
     if chart_archive is None and args.check and args.output_dir.is_dir():

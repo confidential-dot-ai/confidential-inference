@@ -366,17 +366,21 @@ jobs:
             echo "The release tag changed during publication. Refusing publication." >&2
             exit 1
           fi
+          # A production release has no package of its own (it binds the
+          # staging one), so the package is attached only when present.
+          shopt -s nullglob
+          extra_assets=(dist/profile-values-*.yaml dist/*.tgz)
+          shopt -u nullglob
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --target "$expected_commit" \
             --title "$RELEASE_TAG" \
-            --notes "Signed Confidential Inference release. The signed file is the release manifest built from release/ at the tag commit. It binds allowlist.json and release-values.yaml by SHA-256." \
+            --notes "Signed Confidential Inference release. The signed file is the release manifest built from release/ at the tag commit. It binds allowlist.json, release-values.yaml, the profile values files and the chart package by SHA-256." \
             "dist/release-bundle.json#Release bundle" \
             "dist/release-bundle.sigstore.json#Sigstore verification bundle" \
             "dist/release-tag-commit.txt#Signed tag commit" \
             "dist/image-publication-manifest.json#Image publication evidence" \
             "dist/allowlist.json#c8s allowlist" \
             "dist/release-values.yaml#Release image values" \
-            dist/profile-values-*.yaml \
-            dist/*.tgz
+            "${extra_assets[@]}"
