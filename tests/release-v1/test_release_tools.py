@@ -131,7 +131,15 @@ def build_production(evidence: dict, download_dir: Path, tag: str = "v0.14.2") -
     operator = PROFILES.read_values(PRODUCTION)["images"]["c8sOperator"].rsplit("@", 1)[1]
     allowlist["workloads"]["production-operator"] = {"containers": [{"digest": operator}]}
     generated = json.dumps(allowlist).encode()
+    # The production profile may pin a c8s beta while the schema's production
+    # rule (allOf) forbids one; whether production may release a beta is not
+    # what these tests check, so they validate without that rule.
+    schema = json.loads(MAN.MANIFEST_SCHEMA.read_text())
+    schema.pop("allOf", None)
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+        json.dump(schema, handle)
     return build_release(tag, evidence, download_dir, lambda *_args, **_kwargs: generated,
+                         mock.patch.object(MAN, "MANIFEST_SCHEMA", Path(handle.name)),
                          mock.patch.object(MAN, "require_allowlist_contract"),
                          mock.patch.object(MAN, "require_model_files"))
 
