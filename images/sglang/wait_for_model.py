@@ -321,14 +321,19 @@ def pending_requests(port: int) -> int | None:
     except (OSError, urllib.error.URLError, ValueError) as error:
         print(f"model-mount: drain: the load probe failed: {error}", file=sys.stderr)
         return None
-    if not isinstance(payload, list):
+    # SGLang v0.5.18 wraps the per-rank records in a `loads` object.
+    # Keep the legacy list form, but never treat missing data as zero load.
+    loads = payload.get("loads") if isinstance(payload, dict) else payload
+    if not isinstance(loads, list) or not loads:
         return None
     total = 0
-    for load in payload:
-        try:
-            total += int(load["num_running_reqs"]) + int(load["num_waiting_reqs"])
-        except (KeyError, TypeError, ValueError):
+    for load in loads:
+        if not isinstance(load, dict):
             return None
+        counts = [load.get("num_running_reqs"), load.get("num_waiting_reqs")]
+        if any(type(count) is not int or count < 0 for count in counts):
+            return None
+        total += sum(counts)
     return total
 
 
