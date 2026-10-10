@@ -4,7 +4,10 @@
 `release-manifest.schema.json` defines the signed release manifest of v0.14.0
 and later, which `scripts/build-release-manifest.py` builds from `release/`.
 
-`workload-attestation.schema.json` defines the gateway response with one receipt for each real c8s workload pod.
+`workload-attestation.schema.json` defines version 3 release and policy metadata
+and retains version 2 receipt envelopes for old deployments. Version 3 needs
+no nonce or API key and has no workload receipts. Read
+[client verification](../docs/verification.md) for metadata and connection checks.
 
 `environment-spec.schema.json` defines the shape of one confidential inference deployment environment, including its confidential-compute boot images, network settings, and GPU count.
 
@@ -30,6 +33,13 @@ candidate (`152d583`), and conf-inference-prod (`2ef376a8`) carry compatible
 `requiredVerifierFlags`, and `scripts/verify-public-attestation.py` picks
 its branch from that field, never from a hard-coded environment name, so
 no environment needs its own copy of this entry's shape.
+
+## Historical version 2 receipt verification
+
+The following protocol, placeholder-key, and receipt-set descriptions apply to
+version 2. Version 3 instead returns keys obtained by the gateway over a
+verified CDS connection. Do not apply these historical requirements to the
+current metadata response.
 
 ### The two c8s attestation protocols
 
@@ -131,13 +141,15 @@ The command requires the trusted release bundle and its trusted OCI digest.
 
 It also requires the node manifest, operator public key, held mesh CA, and environment.
 
-The command checks Intel TDX collateral through c8s `attestation-go`. It does not claim workload liveness.
+Do not infer online collateral verification from the use of `attestation-go`.
+The caller must enable those checks. For the current customer path, configure
+TEErminator with an explicit `--tdx-tcb-status` policy.
 
 Kettle provenance remains optional. Add it only when a release produces a Kettle statement.
 
 ## Public inference gateway
 
-`gateway-inference.openapi.json` defines the real public API of the Rust gateway. It covers health, the model catalog, the OpenAI-compatible chat and completions routes, and the nonce-bound attestation routes, plus the static paths that the tls-lb nginx process serves without the gateway.
+`gateway-inference.openapi.json` defines the real public API of the Rust gateway. It covers health, the model catalog, the OpenAI-compatible chat and completions routes, and versioned attestation metadata routes, plus the static paths that the tls-lb nginx process serves without the gateway.
 
 ## Admin gateway
 

@@ -1,4 +1,11 @@
-# c8s policy and verification data
+# Historical c8s policy and verification data
+
+These files preserve the old per-environment release process. They are not
+current production configuration. Current releases use [../release/README.md](../release/README.md).
+For the active endpoint, use [../docs/verification.md](../docs/verification.md).
+The static-mode statements below apply only to those historical inputs.
+
+## Historical generation procedure
 
 This directory contains the public c8s input schema and the canonical
 allowlists that are needed to verify published workload receipts.
@@ -38,7 +45,7 @@ private deployment must select one public Git commit, one file path, and the
 file's canonical SHA-256 digest. It must not keep an editable copy. This rule
 keeps deployment and public verification on the same policy bytes.
 
-Production uses c8s static policy mode. The final allowlist is baked into the
+The historical production profile used c8s static policy mode. The final allowlist is baked into the
 measured node image. CDS seals the same policy digest into its mesh CA. The
 running policy cannot change through an operator request. A policy update needs
 a new public allowlist and a new measured node image.

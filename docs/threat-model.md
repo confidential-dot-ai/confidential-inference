@@ -1,203 +1,118 @@
 # Threat model
 
-Some file references in this document describe the historical v0 release
-format under `releases/production/`. Use the signed GitHub Release assets and
-`contracts/release-manifest.schema.json` for the current public release
-contract. The historical references remain for old receipt verification.
+This document describes the current version 3 discovery and client-verification
+contract. For exact commands, read [verification.md](verification.md).
+Historical files under `releases/production/`, `c8s/`, and the old node profile
+do not describe the current serving cluster.
 
-This document states who and what this deployment trusts, what a verified
-attestation proves, and the residual risks and known gaps. Every claim below
-cites the file it comes from. Read `README.md` and
-`scripts/verify-public-attestation.py` for the exact verification steps.
+## Request path and trust boundary
 
-## 1. System summary and request path
+Public TLS terminates inside the measured confidential environment. C8s's
+`attest-lb` proof binds the exact public TLS certificate to accepted node
+measurements and the mesh identity. The gateway authenticates API keys and
+forwards inference to the router and workers. It does not forward the API key
+to the inference engine.
 
-A client sends a request to the public HTTPS endpoint. The c8s tls-lb nginx
-process terminates public TLS inside the TEE and forwards plain HTTP to the
-Rust gateway over the cluster network (`services/gateway/src/main.rs`).
-The gateway checks the bearer
-API key and request limits, then proxies the request through the c8s
-workload-proxy loopback to the sglang-router workload
-(`services/gateway/src/main.rs`, `INFERENCE_UPSTREAM_URL`). The router sends
-the request to one of the sglang inference workers.
+Trust the CPU and GPU hardware security mechanisms, their vendor attestation
+chains, the accepted measured node image, and the software and policies that
+you review. Host management and Kubernetes declarations are not proof of
+approved execution. Measured admission and connection controls must enforce
+those declarations.
 
-- The inference engine is SGLang v0.5.18, at commit `71de97b264b0` of
-  `github.com/sgl-project/sglang`, with confidential-compute patches
-  (`images/sglang/source.lock`).
-- The served model is `deepseek-ai/DeepSeek-V4-Flash-0731`
-  (`releases/production/release-bundle.json`). This is the exact repository
-  and revision the production release pins; use this name, not a
-  generic "DeepSeek-V4-Flash" label.
-- Inference workers request NVIDIA Blackwell GPUs and carry
-  confidential-computing GPU evidence flags
-  (`releases/production/release-bundle.json`, `gpu.architectures: ["BLACKWELL"]`,
-  `--nvidia-gpu-evidence`).
-- Every cluster node boots as an Intel TDX confidential virtual machine from
-  one measured ConfOS image (`images/control-plane-node/README.md`,
-  `README.md`, "What attestation proves").
-- Production c8s runs in static policy mode: the allowlist is baked into the
-  measured node image, and c8s has no operator key that can change it
-  (`services/gateway/ATTESTATION.md`; `c8s/README.md`).
+Release-signing and policy-update authority remain part of the review.
+A signature identifies an authorized release; it does not prove that its code
+has no defects or that every signed future release is acceptable to you.
 
-## 2. Trust boundary
+## Discovery and connection verification
 
-**Untrusted:**
+`/attestation` is public and needs no API key or nonce. Version 3 returns release
+and permitted-workload metadata, native C8s discovery, and operator public keys.
+The gateway verifies CDS and pins its TLS certificate before it reads policy
+and keys. See [gateway attestation](../services/gateway/ATTESTATION.md).
 
-- The host operator and the bare-metal or cloud provider.
-- The Kubernetes control plane and etcd
-  (`images/control-plane-node/README.md`: "c8s treats the Kubernetes control
-  plane as untrusted").
-- Confidential AI staff, in their operator capacity.
+Metadata is not a connection proof or a complete running-workload inventory.
+TEErminator separately obtains fresh C8s evidence. With the full image tuple,
+exact reviewed allowlist, workload, and TLS name configured, it rejects a
+connection that does not meet those pins before forwarding application data.
+The internal request path must remain protected by the reviewed C8s and
+application controls. Front-door verification alone is not a receipt from
+every serving worker.
 
-**Trusted:**
+## Policy and configuration protection
 
-- Intel TDX and its attestation chain.
-- NVIDIA GPU attestation through NRAS, as verified by the c8s and
-  attestation-rs verifiers.
-- The measured ConfOS node image (`images/control-plane-node/README.md`).
-- The Sigstore-signed release bundle (`releases/README.md`, "Trust limits").
-- The c8s verifier at a pinned commit
-  (`contracts/c8s-admission-source-lock.json`, which lists one entry per
-  trusted c8s commit; a release naming any other c8s commit fails closed).
+Production retains an operator-managed allowlist and Kubernetes update rights.
+It does not promise an immutable static policy, zero RTMR3, or zero API writes.
+Clients can reject that authority model, or approve and pin a policy.
 
-## 3. What a verified attestation proves, and does not prove
+Application policies constrain image digests, commands, arguments, environment,
+mounts, and secret grants. C8s checks the final launch specification and uses
+admitted inventory when issuing workload identity. The release source lock
+pins that implementation. Review core entries too: an application restriction
+does not make an unrestricted core entry restrictive.
 
-A successful `/attestation` verification proves that the responding nodes
-started in Intel TDX confidential virtual machines, that the measured ConfOS
-image matches the approved node manifest, that c8s admitted each reported
-container image and command, that each image digest is in the signed c8s
-allowlist, and that the response is bound to the caller's nonce
-(`README.md`, "What attestation proves").
+The active policy can contain multiple release definitions during an update.
+It can differ from the signed initial allowlist. The client must review that
+live policy separately; a release signature does not cover later operator
+changes. Keep your approved bytes until you explicitly accept an update.
 
-It proves launch or admission only. It does not prove that a workload is
-still running, that requests route to it, what is mounted into it, its
-environment variables, or that the model is in active use
-(`services/gateway/ATTESTATION.md`: "The response proves launch or admission
-facts. It does not prove current liveness, request routing, mounts,
-environment values, or model use."). Use `/health` to check that the service
-runs now (`README.md`, "What attestation proves").
+A workload certificate records a policy decision at issuance. A new connection
+proof does not establish that CDS has not changed the policy since issuance.
+TEErminator caches verdicts and checks certificate identity and expiry. Do not
+claim immediate disconnection of every stream after a policy update.
 
-## 4. Assets
+Launch restrictions do not disable runtime logging or model-administration
+APIs by themselves. Review those application routes and their access controls
+in the exact approved worker source.
 
-- **Prompts and completions.** Carried through the RA-TLS mesh from the
-  gateway to the sglang workers.
-- **API keys.** The gateway stores a peppered hash, not the plaintext key.
-  The pepper lives in CDS memory and reaches the gateway as a released secret
-  (`services/gateway/src/main.rs`, `GATEWAY_API_KEY_PEPPER_FILE`;
-  `c8s` `docs/secrets.md`, at commit `079aeb48`, describes this release path).
-- **The key registry snapshot.** The admin virtual machine holds the key
-  record and pushes the complete snapshot to each gateway through the
-  signed admin channel (`PUT /admin/v1/api-keys/snapshot`). The snapshot
-  carries one peppered hash per key. It carries no plaintext key and no
-  pepper. The gateway refuses a revision lower than the one it holds, so
-  the control plane cannot roll the key set back. The control plane can
-  still remove a key. That is a denial of service, not a loss of
-  confidentiality, and the threat model already treats the host as
-  untrusted.
-- **Model weights.** DeepSeek-V4-Flash-0731 is a public model. It is served
-  from a dm-verity-verified, dm-crypt-encrypted volume
-  (`releases/production/release-bundle.json`, `model.dmVerityRoot` and
-  `model.mountVerification`).
-- **The mesh CA and leaf keys.** Generated inside CDS and never leave the
-  measured process (`c8s` `docs/static-allowlist.md`, at commit `079aeb48`).
+## Hardware and storage
 
-## 5. Residual risks and limits
+The node measurements identify the firmware, kernel, boot configuration, and
+verified root filesystem. Pin MRTD, RTMR1, and RTMR2 together; MRTD alone does
+not identify the full TDX guest image.
 
-- **Pod egress on the inference path is mesh-routed, not plaintext, to
-  non-mesh hosts.** c8s redirects TCP from a non-root workload into the mesh
-  proxy. That redirect fails for a non-mesh destination (`c8s/README.md`,
-  "Known gaps and open items": "Root workloads are intercepted but cannot
-  egress to non-mesh peers... Run workloads as non-root so legitimate
-  traffic is mesh-routed."). The gateway, the sglang router, and the
-  inference workers all run as non-root
-  (`helm/confidential-inference/templates/gateway.yaml`,
-  `helm/confidential-inference/templates/inference-workers.yaml`,
-  `runAsNonRoot: true`). So the inference path has no plaintext egress to a
-  host outside the mesh.
-- **CDS is a singleton that holds keys only in memory.** A CDS restart
-  mints a new mesh CA and empties the whole secret store; every released
-  secret and volume key is gone, and dependent workloads must be rolled
-  (`c8s/README.md`, "Known gaps and open items": "CDS is a singleton...
-  Secrets and volume keys live only in CDS memory... a CDS restart destroys
-  every secret and volume key").
-- **The static allowlist changes only with a new measured node image.**
-  Static mode bakes the allowlist into the node image and disables every
-  allowlist mutation route; a policy change requires a new sealed image
-  (`c8s/README.md`; `c8s` `docs/static-allowlist.md`, at commit `079aeb48`).
-- **RTMR0 is not pinnable.** The c8s verifier documents this directly: on
-  TDX, `RTMR[0]` cannot be pinned by the verifier's `--rtmr` flag (c8s
-  `internal/cmds/verify/verify.go`, flag help for `--rtmr`, at commit
-  `079aeb48`).
-- **c8s v0.26.5 enforces GPU attestation as a measured boot gate.** The node
-  image checks confidential-computing mode and nonce-bound evidence for every
-  passed-through NVIDIA GPU. RKE2 requires this systemd unit. A failure powers
-  off the node, so a GPU workload cannot join or run after a failed check. The
-  verdict stays inside the node and raw NVIDIA evidence does not reach the
-  relying party. The offline verifier checks the measured node image and
-  reports this enforcement mode. The source lock pins the gate script, its
-  systemd unit, and the preset that enables the dependency
-  (`contracts/c8s-admission-source-lock.json`, c8s commit `152d583`).
-- **The tls-lb-to-gateway hop is plain HTTP inside the cluster network.**
-  Public TLS terminates at tls-lb, inside the TEE; the hop to the gateway
-  process is HTTP, gated by the c8s allowlist and carried over the mesh
-  network (`services/gateway/src/main.rs`, `GATEWAY_LISTEN`).
-- **The allowlist gates image digest and argv, not environment variables or
-  mounts.** c8s enforces each container's image digest and command-line
-  arguments; the rest of the pod spec, including environment variables and
-  bind mounts, is not gated the same way (`c8s/README.md`, "Known gaps and
-  open items": "The image allowlist gates digest and command line, not the
-  rest of the pod spec... bind-mount destinations and env variable names are
-  enforceable in the guest; capabilities and the remaining pod-spec fields
-  are not.").
+The accepted GPU node image uses a measured confidential-computing boot gate.
+Every passed-through GPU must satisfy that gate before RKE2 starts. Failure
+blocks node admission and powers off the node. This is the supported GPU
+verification contract, not a public raw-GPU-evidence collection.
 
-## 6. Known gaps under remediation
+Current C8s node storage uses encrypted scratch state with a per-boot key held
+inside the guest, and encrypted application volumes supplied through CDS.
+The historical plain control-plane state disk is not a current production
+requirement. For a selected release, review its exact node image and storage
+implementation. Encryption alone does not imply authenticated disk contents;
+model integrity uses the release's verified model-volume checks.
 
-### The c8s operator key
+Hardware memory protection excludes host reads of guest and GPU memory. It
+does not stop approved application code from deliberately exposing data.
+TLS and the internal mesh protect transport; peer selection and application
+egress policy remain security-sensitive configuration.
 
-Production runs c8s in static policy mode, so the operator key cannot change
-the allowlist (`services/gateway/ATTESTATION.md`). The offline verifier still
-pins RTMR3 to the hash of the published operator public key in this mode,
-proving the node launched bound to that key and no other
-(`scripts/verify-public-attestation.py`, `policy_verifier_flags`). The key
-still authorizes two things it is not restricted from: it can write secrets
-into CDS (c8s
-`docs/secrets.md`, at commit `079aeb48`: "these keys still authorize this
-secret write route" in static mode), and it can request a cluster-admin
-kubeconfig from the c8s credential-release service, which issues a
-certificate in the `system:masters` group (c8s
-`internal/cmds/credrelease/run.go`, at commit `079aeb48`: "v1:
-O=system:masters, CN=operator (cluster-admin)").
+## Operator keys and client policy
 
-The Kubernetes control plane is not part of the trust boundary
-(`images/control-plane-node/README.md`: "c8s treats the Kubernetes control
-plane as untrusted"). So on node-as-CVM, a holder of the cluster-admin
-credential can exec into a pod inside the TEE. That holder can then read the
-workload's memory. The operator key is held in Infisical. An engineer uses
-the key only at deploy time.
+`c8s.operatorKeys` reports actual CDS public update keys. It is not a proof of
+exclusive private-key custody. The gateway obtains the list through verified
+CDS access. An independently accessible direct CDS check is a separate
+integration; do not treat the gateway's public `/operator-keys` route as CDS.
 
-Removal of the operator key from production is planned. After removal, RTMR3
-will be pinned to zero. RTMR3 is the register that the operator-key and
-workload chain extends (c8s `internal/cmds/verify/verify.go`, flag help for
-`--rtmr`: "RTMR[3] is the operator-key/workload chain extended inside
-whatever image the host booted"). A pinned zero RTMR3 will prove that no
-credential-release path was armed at boot.
+A release-signing key, CDS policy-update key, mesh CA, and Kubernetes client CA
+have different roles. Do not use the old production PEM files as new release
+anchors. New manifests do not require one fixed deployment mesh CA or operator
+key. A client can choose additional pins and must understand their scope.
 
-### The control-plane state disk
+## Verification limits
 
-The control-plane node mounts a persistent state disk at
-`/var/lib/rancher/rke2/server` and formats it as plain ext4, with no disk
-encryption
-(`images/control-plane-node/profile/control-plane-state/mkosi.extra/usr/local/libexec/confidential-inference/control-plane-state-disk.sh`;
-`images/control-plane-node/README.md`: "The persistent state disk is not
-encrypted by this profile. The host can read or change its content."). This
-disk holds RKE2 server state, including the RKE2 client CA key. A party with
-read access to the virtual disk can mint a cluster-admin certificate from
-that key.
+- Quote signatures alone do not establish current revocation or accepted TCB
+  status. Enable TEErminator's online Intel collateral policy explicitly.
+- A vendor TCB status that your policy rejects must stop acceptance. Do not
+  silently fall back to offline verification.
+- Public discovery and `/health` do not prove model correctness, availability,
+  or absence of software defects.
+- Kubernetes update rights remain. A blocked interactive execution path is
+  useful, but is not proof that every possible operator path is closed.
+- Public source and build evidence support independent review. Customers
+  select the releases, policy, and update authority that they accept.
 
-Encryption of this disk is planned.
-
-## 7. Verification procedure
-
-For the exact, current verification steps, read `README.md` ("Verify one
-live attestation") and run `scripts/verify-public-attestation.py`. Do not
-treat this document as a substitute for that procedure.
+The exact current verification procedure and dated deployment findings are in
+[verification.md](verification.md). Historical version 2 proofs remain useful
+for audits of those releases; they do not substitute for version 3 connection
+verification.

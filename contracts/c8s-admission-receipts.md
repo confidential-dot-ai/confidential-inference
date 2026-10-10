@@ -1,5 +1,9 @@
 # c8s admission receipts
 
+This is the historical aggregate receipt procedure. The version 3 gateway no
+longer collects this receipt set. Use [current client verification](../docs/verification.md)
+for the active release and policy discovery flow.
+
 The pinned c8s node image supplies the admission proof. Do not add a private
 workload admission API.
 

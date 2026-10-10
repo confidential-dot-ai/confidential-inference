@@ -1,12 +1,19 @@
 # TDX node image
 
+This directory preserves earlier consumer node profiles and build records.
+The current release selects the signed C8s node image through `release/spec.yaml`
+and `release/node-manifest.json`. Read [the current threat model](../../docs/threat-model.md)
+and [client verification](../../docs/verification.md) before using these historical
+profiles. The sealed-policy and custom-state-profile procedures below are not
+the current production deployment procedure.
+
 This directory owns the extra Confidential OS Builder profile for the
 Kubernetes CVMs. Operators can use the same measured image on each node of one
 cluster. This keeps one c8s node measurement across that cluster.
 
 Each environment that runs a sealed node image gets its own build. The build
 seals one allowlist into the measured image, and the nodes enforce that
-sealed allowlist. Production seals `c8s/allowlists/production.json`. See
+sealed allowlist. The historical production profile seals `c8s/allowlists/production.json`. See
 "Build inputs" below for the file table.
 
 Not every environment seals an allowlist. Under `policyMode: operator`
