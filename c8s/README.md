@@ -1,75 +1,17 @@
-# c8s policy and verification data
+# Historical c8s deployment inputs
 
-This directory contains the public c8s input schema and the canonical
-allowlists that are needed to verify published workload receipts.
+This directory preserves earlier per-environment policies, allowlists, and
+verification inputs. Scripts and tests still use these files. They are not
+the current production configuration or active policy.
 
-The production policy generator uses only the committed chart, production
-values, image pins, and process commands in this repository. It does not read
-the private deployment repository or any secret.
+Current releases select the exact c8s commit, node image, and core images
+through [release/spec.yaml](../release/spec.yaml). The signed release records
+their digests and node measurements. Read [release documentation](../release/README.md).
 
-```sh
-python3 scripts/regenerate-c8s-allowlist.py --help
-```
+For a live endpoint, use [client verification](../docs/verification.md).
+Production retains operator-managed policy. The policy returned by CDS can
+change without a new node image and can differ from the signed initial policy.
+Clients review and pin the exact active bytes.
 
-The generator renders the public production Helm chart, writes a workload-only
-bootstrap document, and passes it to the pinned c8s `render-allowlist` command.
-The c8s canonicalizer then produces `allowlists/production.json`. It changes
-that file only with `--apply`; it does not contact a cluster.
-
-Build the exact c8s command and generate the policy as follows. Replace
-`<c8s-checkout>` with a clean checkout of the commit in
-`production-policy.json`.
-
-```sh
-commit=$(jq -r .c8s.sourceCommit c8s/production-policy.json)
-test "$(git -C <c8s-checkout> rev-parse HEAD)" = "$commit"
-make -C <c8s-checkout> VERSION="$commit" build-c8s
-python3 scripts/regenerate-c8s-allowlist.py \
-  --c8s <c8s-checkout>/build/c8s --apply
-```
-
-Review the exact images, commands, arguments, and secret paths before commit.
-
-The allowlist identifies workload types. Multiple pod replicas can use one
-workload type when they use the same image and exact process arguments.
-
-The files under `allowlists/` are the authoritative release policies. A
-private deployment must select one public Git commit, one file path, and the
-file's canonical SHA-256 digest. It must not keep an editable copy. This rule
-keeps deployment and public verification on the same policy bytes.
-
-Production uses c8s static policy mode. The final allowlist is baked into the
-measured node image. CDS seals the same policy digest into its mesh CA. The
-running policy cannot change through an operator request. A policy update needs
-a new public allowlist and a new measured node image.
-
-Static mode still requires the configured `operatorPublicKey`. The deployment
-tools require the matching public key file, verify its fingerprint, and pass it
-to c8s with `--operator-keys`. This key authorizes CDS secret restoration only;
-it does not update or replace the immutable static allowlist. The install input
-must also keep its canonical file-backed allowlist.
-
-The private deployment repository selects the public Git commit, allowlist
-path, and canonical digest. It supplies infrastructure values and secrets, but
-it does not keep another editable allowlist.
-
-Staging moved off static policy mode when it moved to c8s v0.20.4. It now
-uses `policyMode: operator`, the same mode as `conf-inference-prod`: the
-node image is a stock, pull-mode image with no allowlist baked in, and the
-allowlist is uploaded to CDS after `c8s install` instead. `staging-policy.json`
-still pins `c8s.cvmMode: bare-metal` (the v0.20.4 name for the mode
-`production` still calls `node`) and still generates a committed
-`allowlists/staging.json`: an operator-mode cluster starts from this file as
-its floor and extends it with signed operator uploads afterward, so the
-generator, the review step, and the digest discipline below are unchanged.
-`images/control-plane-node/README.md` explains which environments seal a
-node image and which do not.
-
-`regenerate-c8s-allowlist.py` also generates the staging allowlist. Pass
-`--config c8s/staging-policy.json` to select it; the script rejects any
-`--config` path outside this fixed set. The staging policy renders the same
-public Helm chart with `c8s/staging-values.yaml`, a values file that carries
-only the fields the chart needs for the staging shape (one inference node,
-sglang simulator mode, no GPU, and image digests) and no secret material. It
-writes `allowlists/staging.json`. Review this file's exact commands,
-arguments, and secret paths the same way as production before commit.
+The [historical generation procedure](historical-policy-generation.md) is
+retained for audits of the older inputs only.

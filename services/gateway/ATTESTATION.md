@@ -98,3 +98,12 @@ update. That format includes nonce-bound workload receipts. The new process
 uses version 3 only. Rollout checks must select verification by response
 version and must keep inference-connection verification independent of the
 metadata response.
+
+## Customer procedure
+
+Read [client verification](../../docs/verification.md) for release downloads,
+metadata checks, full allowlist pinning, Intel collateral policy, and the GPU
+boot gate. A workload certificate binds the policy at issuance. The metadata
+cache and fresh connection proof do not make policy updates instantaneous.
+The current contract retains operator-managed updates; it does not promise
+zero Kubernetes API rights.
