@@ -1,8 +1,8 @@
 # Confidential Inference
 
 This repository contains the public confidential-inference product. It is the
-source for the OCI workloads, the TDX node image, the Kubernetes chart, the c8s
-policy tools, and the attestation verifier.
+source for the OCI workloads, Kubernetes chart, c8s policy tools, release
+inputs, and attestation verifier. Current releases pin a c8s TDX node image.
 
 Before you contribute or create a release, read the
 [developer workflow](docs/runbooks/developer-workflow.md).
@@ -14,10 +14,12 @@ receipts in a separate private repository.
 ## Components
 
 - `services/gateway`: API-key checks, request limits, routing, and attestation.
-- `images/sglang`: the pinned SGLang worker and router build. The same image
+- `images/sglang`: the pinned SGLang worker build. The same image
   runs a real model in production and a GPU-free simulator in staging.
+- `images/sglang-router`: the separate router image and build inputs.
 - `services/maintenance-gateway`: the fallback API.
-- `images/control-plane-node`: the reproducible ConfOS node-image inputs.
+- `images/control-plane-node`: historical consumer node profiles. Current
+  releases pin the c8s node image through `release/spec.yaml`.
 - `helm/confidential-inference`: the generic Kubernetes application chart.
 - `scripts/regenerate-c8s-allowlist.py`: c8s policy generation.
 - `scripts/verify-public-attestation.py`: policy metadata checks and historical receipt verification.
@@ -25,18 +27,15 @@ receipts in a separate private repository.
 
 ## Build and publish
 
-The manual image workflow takes an intended release candidate and a prior
-release ref. It builds and publishes only images whose build inputs changed
-between that ref and `main`. The release record must use each Linux AMD64 image
-digest. It must not use a multi-platform index digest.
+Use the approved `Release images` workflow on public `main`. It selects
+images changed since a reviewed prior release or commit. Publication requires
+clean rebuild comparisons and recorded evidence. The signed release binds
+each Linux AMD64 platform digest and the selected publication record.
+See [release publication](release/README.md) and
+[the developer workflow](docs/runbooks/developer-workflow.md).
 
-```sh
-./images/gateway/build.sh
-./images/sglang/build.sh
-```
-
-The fallback image uses its Dockerfile in `services/`. The node-image build
-inputs and measured TDX values are in `images/control-plane-node/`.
+Local builds are for development tests. Do not use them for production or
+for a candidate prepared for production.
 
 ## Local development
 
@@ -83,26 +82,16 @@ See [the threat model](docs/threat-model.md) for enforcement, update authority,
 and verification limits. Schema version 2 and the old receipt verifier remain
 available for historical evidence only.
 
-## Rebuild the reported product images
+## Review build evidence
 
-This is a separate release audit. It is not part of normal deployment. Normal
-deployment builds and publishes each image once.
+Current publication requires clean rebuild comparisons before an image can
+be published. Deployment consumes the verified artifacts. It does not build
+application images locally. Review the image publication record bound by the
+signed release. See [release publication](release/README.md).
 
-The audit needs Git, Docker Buildx, and enough Docker storage. The SGLang
-image is large. Keep at least 50 GiB free. The audit extracts each recorded
-source commit, builds each repository-owned image once, and compares its Linux
-AMD64 digest with the digest in the trusted release bundle:
-
-```sh
-python3 scripts/rebuild-release-images.py \
-  --bundle client-review/release-bundle.json \
-  --output /tmp/confidential-inference-rebuild
-```
-
-Use `--image gateway` to check only one image. The command writes
-`report.json`. It exits with an error if a rebuilt digest differs. Use the release format supported by that audit tool. Connection verification
-and image rebuild verification answer separate questions. Current publication
-evidence is described in `release/README.md`.
+`scripts/rebuild-release-images.py` retains independent rebuild checks for
+older release inventories with a `workloads` list. Do not pass a current
+v0.14 release manifest to that historical inventory tool.
 
 ## Attestation trust inputs
 
