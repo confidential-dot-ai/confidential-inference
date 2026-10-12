@@ -326,3 +326,8 @@ network:
   clusterCidrs:
     - 10.52.0.0/16
     - 10.53.0.0/16
+
+# Reviewed workload changes remain release inputs, not live patches.
+workloadOverridesEnabled: false
+workloadOverrides: {}
+additionalWorkloads: []

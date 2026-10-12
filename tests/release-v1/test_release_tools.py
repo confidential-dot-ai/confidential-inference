@@ -13,6 +13,7 @@ scripts/bump-c8s.py regenerates it with staging_allowlist().
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import importlib.util
 import io
@@ -50,6 +51,10 @@ FIXTURES = ROOT / "tests/release-v1/fixtures"
 OVERLAY = FIXTURES / "release-values.yaml"
 STAGING_ALLOWLIST = FIXTURES / "staging-allowlist.json"
 REPOSITORY_CONFIGS = json.loads((FIXTURES / "repository-image-config.json").read_text())
+# Packaging tests use a placeholder collector digest. Runtime generation is
+# verified separately with the registry configuration of the approved image.
+REPOSITORY_CONFIGS['ghcr.io/confidential-dot-ai/confidential-inference/log-collector@sha256:' + '2' * 64] = {
+    'env': [], 'entrypoint': [], 'cmd': []}
 RELEASE_IMAGES = yaml.safe_load(OVERLAY.read_text())["images"]
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 
@@ -130,6 +135,7 @@ def build_production(evidence: dict, download_dir: Path, tag: str = "v0.14.2") -
     allowlist = json.loads(STAGING_ALLOWLIST.read_text())
     operator = PROFILES.read_values(PRODUCTION)["images"]["c8sOperator"].rsplit("@", 1)[1]
     allowlist["workloads"]["production-operator"] = {"containers": [{"digest": operator}]}
+    allowlist["workloads"]["production-collector"] = {"containers": [{"digest": 'sha256:' + '2' * 64}]}
     generated = json.dumps(allowlist).encode()
     return build_release(tag, evidence, download_dir, lambda *_args, **_kwargs: generated,
                          mock.patch.object(MAN, "require_allowlist_contract"),
@@ -408,7 +414,7 @@ class ManifestTests(unittest.TestCase):
             return STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")
 
         with mock.patch.dict(MAN.ALLOWLIST_GENERATOR, {"generate": generate}):
-            self.assertEqual(staging_allowlist(Path("/tmp/c8s")), STAGING_ALLOWLIST.read_bytes())
+            self.assertEqual(staging_allowlist(Path("/tmp/c8s")), STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n"))
         self.assertEqual(calls, [Path("/tmp/c8s")])
 
     def test_staging_manifest_uses_the_staging_profile(self):
@@ -417,9 +423,10 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(manifest["release"], {"name": "v0.14.2-staging", "environment": "staging"})
         self.assertEqual(manifest["allowlist"], {
             "path": "release/staging/allowlist.json",
-            "sha256": MAN.sha256(STAGING_ALLOWLIST.read_bytes()),
+            "sha256": MAN.sha256(STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")),
         })
-        self.assertEqual(files["allowlist.json"], STAGING_ALLOWLIST.read_bytes())
+        self.assertEqual(files["allowlist.json"], STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n"))
+        self.assertFalse(files["allowlist.json"].endswith(b"\n"))
         self.assertEqual(manifest["releaseValues"], {
             "path": "release/staging/release-values.yaml",
             "sha256": MAN.sha256(files["release-values.yaml"]),

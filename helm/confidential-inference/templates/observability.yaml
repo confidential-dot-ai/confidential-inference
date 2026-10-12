@@ -1,3 +1,4 @@
+{{- define "confidential-inference.source.observability" -}}
 {{- if .Values.metricsCollector.enabled }}
 apiVersion: apps/v1
 kind: Deployment
@@ -142,3 +143,6 @@ spec:
       targetPort: cds-attest
     {{- end }}
 {{- end }}
+
+{{- end -}}
+{{- include "confidential-inference.applyWorkloadOverrides" (dict "root" . "body" (include "confidential-inference.source.observability" .)) }}

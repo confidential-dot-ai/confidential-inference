@@ -3,28 +3,28 @@
   "reviewedBy": "the release coordinator, 2026-09-26",
   "findings": [
     {
-      "entry": "inference-worker-0",
+      "entry": "inference-worker-0-u200b5c252a",
       "rule": "search-path-overlaps-mount",
       "variable": "PATH",
       "mountKind": "host",
       "mountPath": "/usr/bin/nvidia-persistenced"
     },
     {
-      "entry": "inference-worker-0",
+      "entry": "inference-worker-0-u200b5c252a",
       "rule": "search-path-overlaps-mount",
       "variable": "PATH",
       "mountKind": "host",
       "mountPath": "/usr/bin/nvidia-smi"
     },
     {
-      "entry": "inference-worker-1",
+      "entry": "inference-worker-1-u5f71fa321d",
       "rule": "search-path-overlaps-mount",
       "variable": "PATH",
       "mountKind": "host",
       "mountPath": "/usr/bin/nvidia-persistenced"
     },
     {
-      "entry": "inference-worker-1",
+      "entry": "inference-worker-1-u5f71fa321d",
       "rule": "search-path-overlaps-mount",
       "variable": "PATH",
       "mountKind": "host",

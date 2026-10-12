@@ -199,8 +199,10 @@ def render_chart(
     return [item for item in yaml.safe_load_all(result.stdout) if isinstance(item, dict)]
 
 
-def read_allowlist_policy(path: Path) -> dict[str, Any]:
+def read_allowlist_policy(path: Path, release_id: str = "") -> dict[str, Any]:
     policy = read_json(path)
+    if release_id:
+        policy = release_profiles.policy_for_release(policy, release_id)
     require(isinstance(policy, dict) and policy.get("schema") == ALLOWLIST_GENERATOR["POLICY_SCHEMA"],
             f"{path.name} has the wrong schema")
     chart = policy.get("chart")
@@ -666,7 +668,7 @@ def build(
     verify_image_source_boundary(publication["source"]["commit"], source_commit)
     with tempfile.TemporaryDirectory(prefix="base-release-") as directory:
         base = base_release_images(publication, download_dir or Path(directory))
-    policy = read_allowlist_policy(profile.policy)
+    policy = read_allowlist_policy(profile.policy, tag)
     values = release_profiles.read_values(profile)
     require(isinstance(values, dict) and bool(values), "the profile values are not a mapping")
     overlay = {
@@ -689,7 +691,7 @@ def build(
         try:
             allowlist_bytes = ALLOWLIST_GENERATOR["generate"](
                 profile, c8s, canonical_tool, overlay=overlay_path, image_env=configs,
-            ) + b"\n"
+            )
         except ALLOWLIST_GENERATOR["GenerationError"] as error:
             raise ManifestError(str(error)) from error
     allowlist_path = profile.allowlist

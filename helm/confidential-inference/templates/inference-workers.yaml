@@ -1,3 +1,4 @@
+{{- define "confidential-inference.source.inference-workers" -}}
 {{- if .Values.inference.enabled }}
 {{- if and (gt (int .Values.inference.gpusPerReplica) 0) (eq (len .Values.inference.gpuArchitectures) 0) }}
 {{- fail "inference.gpuArchitectures is required when inference.gpusPerReplica is greater than zero" }}
@@ -237,3 +238,6 @@ spec:
             sizeLimit: 64Gi
 {{- end }}
 {{- end }}
+
+{{- end -}}
+{{- include "confidential-inference.applyWorkloadOverrides" (dict "root" . "body" (include "confidential-inference.source.inference-workers" .)) }}

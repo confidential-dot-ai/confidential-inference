@@ -13,12 +13,36 @@
     "input": "release/inputs/cdi/nvidia-595.71.05.json"
   },
   "workloads": [
-    {"name": "gateway", "controller": "Deployment/gateway",
-     "secretReads": ["/confidential-inference/gateway/api-key-pepper"]},
-    {"name": "inference-worker-0", "controller": "StatefulSet/inference-worker-0"},
-    {"name": "inference-worker-1", "controller": "StatefulSet/inference-worker-1"},
-    {"name": "kube-state-metrics", "controller": "Deployment/kube-state-metrics"},
-    {"name": "metrics-collector", "controller": "Deployment/metrics-collector"},
-    {"name": "sglang-router", "controller": "Deployment/sglang-router"}
+    {
+      "name": "gateway-{release}",
+      "controller": "Deployment/gateway-{release}",
+      "secretReads": [
+        "/confidential-inference/gateway/api-key-pepper"
+      ]
+    },
+    {
+      "name": "kube-state-metrics",
+      "controller": "Deployment/kube-state-metrics"
+    },
+    {
+      "name": "log-collector-ua59410a16b",
+      "controller": "Deployment/log-collector"
+    },
+    {
+      "name": "metrics-collector",
+      "controller": "Deployment/metrics-collector"
+    },
+    {
+      "name": "router-ub871bda890",
+      "controller": "Deployment/router-ub871bda890"
+    },
+    {
+      "name": "inference-worker-0-u200b5c252a",
+      "controller": "StatefulSet/inference-worker-0"
+    },
+    {
+      "name": "inference-worker-1-u5f71fa321d",
+      "controller": "StatefulSet/inference-worker-1"
+    }
   ]
 }

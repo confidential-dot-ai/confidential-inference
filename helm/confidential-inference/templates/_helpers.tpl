@@ -117,3 +117,39 @@ layer cannot remove a key of a map, but it replaces a list.
 {{- end -}}
 {{- $files | sortAlpha | toJson -}}
 {{- end }}
+
+{{/* Apply source-controlled workload changes to the same chart used for release generation and deployment. */}}
+{{- define "confidential-inference.applyWorkloadOverrides" -}}
+{{- $root := .root -}}
+{{- range $fragment := splitList "\n---\n" .body -}}
+{{- $document := fromYaml $fragment -}}
+{{- if hasKey $document "Error" -}}{{- fail (get $document "Error") -}}{{- end -}}
+{{- if hasKey $document "kind" -}}
+{{- $key := printf "%s/%s" $document.kind $document.metadata.name -}}
+{{- if and $root.Values.workloadOverridesEnabled (hasKey $root.Values.workloadOverrides $key) -}}
+{{- $override := fromYaml (tpl (toYaml (get $root.Values.workloadOverrides $key)) $root) -}}
+{{- if hasKey $override "Error" -}}{{- fail (get $override "Error") -}}{{- end -}}
+{{- $podOverride := dig "spec" "template" "spec" (dict) $override -}}
+{{- if hasKey $podOverride "containers" -}}
+{{- $containers := list -}}
+{{- $known := dict -}}
+{{- range $container := $document.spec.template.spec.containers -}}
+{{- $_ := set $known $container.name true -}}
+{{- $merged := deepCopy $container -}}
+{{- range $change := $podOverride.containers -}}
+{{- if eq $change.name $container.name -}}{{- $merged = mergeOverwrite $merged $change -}}{{- end -}}
+{{- end -}}
+{{- $containers = append $containers $merged -}}
+{{- end -}}
+{{- range $change := $podOverride.containers -}}
+{{- if not (hasKey $known $change.name) -}}{{- fail (printf "unknown container override %s in %s" $change.name $key) -}}{{- end -}}
+{{- end -}}
+{{- $_ := set $podOverride "containers" $containers -}}
+{{- end -}}
+{{- $document = mergeOverwrite (deepCopy $document) $override -}}
+{{- end }}
+---
+{{ toYaml $document }}
+{{ end -}}
+{{ end -}}
+{{- end -}}

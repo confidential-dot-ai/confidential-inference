@@ -435,7 +435,8 @@ def generate(
     `overlay` is the values file with the image digests of the release, and
     `image_env` holds the configuration of every rendered image.
     """
-    policy = read_json(profile.policy)
+    policy = release_profiles.policy_for_release(
+        read_json(profile.policy), yaml.safe_load(overlay.read_text())["attestationReceipts"]["releaseId"])
     if policy.get("schema") != POLICY_SCHEMA:
         raise GenerationError(f"{profile.relative(profile.policy)} has the wrong schema")
     # The specification is the one place that pins c8s.
@@ -500,7 +501,8 @@ def generate(
     with tempfile.TemporaryDirectory(prefix="release-allowlist-lint-") as directory:
         candidate = Path(directory) / "allowlist.json"
         candidate.write_bytes(canonical)
-        lint(executable, candidate, read_accepted_findings(profile.accepted_findings))
+        lint(executable, candidate, {finding for finding in read_accepted_findings(profile.accepted_findings)
+                                    if finding[0] in workloads})
     return canonical
 
 

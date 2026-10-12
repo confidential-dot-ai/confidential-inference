@@ -138,6 +138,16 @@ def tag_pattern() -> re.Pattern[str]:
     return re.compile(f"{VERSION}(?:{'|'.join(suffixes)})")
 
 
+def policy_for_release(document: dict[str, Any], release_id: str) -> dict[str, Any]:
+    """Resolve versioned identities in reviewed workload declarations."""
+    result = json.loads(json.dumps(document))
+    for item in result.get("workloads", []):
+        for field in ("name", "controller"):
+            if isinstance(item.get(field), str):
+                item[field] = item[field].replace("{release}", release_id.replace(".", "-"))
+    return result
+
+
 def for_tag(tag: str) -> Profile:
     # A longer suffix first: every tag also ends with the empty suffix.
     for profile in sorted(load(), key=lambda p: len(p.tag_suffix), reverse=True):
