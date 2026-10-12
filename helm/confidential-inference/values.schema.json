@@ -3,6 +3,9 @@
   "type": "object",
   "required": ["environment", "imagePullSecret", "images", "scheduling", "gateway", "inference", "router", "metricsCollector", "kubeStateMetrics", "attestationReceipts", "namedWorkloadProxy"],
   "properties": {
+    "workloadOverridesEnabled": {"type": "boolean"},
+    "workloadOverrides": {"type": "object"},
+    "additionalWorkloads": {"type": "array", "items": {"type": "object"}},
     "environment": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"},
     "imagePullSecret": {
       "type": "object",

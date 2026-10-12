@@ -1,0 +1,6 @@
+{{- if .Values.workloadOverridesEnabled }}
+{{- range .Values.additionalWorkloads }}
+---
+{{ tpl (toYaml .) $ }}
+{{- end }}
+{{- end }}

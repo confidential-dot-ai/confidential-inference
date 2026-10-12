@@ -1,3 +1,4 @@
+{{- define "confidential-inference.source.gateway" -}}
 {{- if le (int .Values.gateway.terminationGracePeriodSeconds) (add (int .Values.gateway.shutdownGraceSeconds) (int .Values.gateway.endpointDrainSeconds)) }}
 {{- fail "gateway.terminationGracePeriodSeconds must exceed gateway.shutdownGraceSeconds plus gateway.endpointDrainSeconds" }}
 {{- end }}
@@ -296,3 +297,6 @@ spec:
           emptyDir: {}
         - name: tmp
           emptyDir: {}
+
+{{- end -}}
+{{- include "confidential-inference.applyWorkloadOverrides" (dict "root" . "body" (include "confidential-inference.source.gateway" .)) }}

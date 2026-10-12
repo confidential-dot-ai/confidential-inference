@@ -1,3 +1,4 @@
+{{- define "confidential-inference.source.sglang-router" -}}
 {{- if .Values.router.enabled }}
 apiVersion: v1
 kind: Service
@@ -176,3 +177,6 @@ spec:
         {{- include "confidential-inference.cdsAttestSidecar" (dict "root" . "workload" .Values.router.attestedWorkload "host" "0.0.0.0" "port" .Values.attestationReceipts.routerPort) | nindent 8 }}
         {{- end }}
 {{- end }}
+
+{{- end -}}
+{{- include "confidential-inference.applyWorkloadOverrides" (dict "root" . "body" (include "confidential-inference.source.sglang-router" .)) }}
