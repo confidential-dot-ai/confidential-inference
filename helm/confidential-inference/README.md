@@ -26,12 +26,10 @@ requests and signed admin requests use that same entry path. The gateway reads
 its API-key pepper from c8s application-secret memory. It stores API-key state
 on an operator-supplied persistent volume.
 
-`attestationReceipts.cds.url` names the CDS origin the gateway verifies for
-its schema 3 policy metadata; leave it empty when the deployment procedure
-sets the gateway's policy settings itself. The deployment supplies the two
-policy documents (`attestationReceipts.cds.imagePolicy` and
-`servedImagePolicy`, with `--set-file`); the chart mounts them next to the
-release identity and writes their SHA-256 pins into it.
+`attestationReceipts.cds` wires the gateway's schema 3 policy metadata: the
+CDS origin, and the two policy documents the deployment supplies with
+`--set-file`, pinned through the release identity file (the chart values and
+`services/gateway/ATTESTATION.md`, "CDS verification").
 
 `attestationReceipts.targets` defines the complete receipt set. Each entry
 binds an operational target name, a c8s workload identity, and an internal

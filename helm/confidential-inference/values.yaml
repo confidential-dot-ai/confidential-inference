@@ -68,13 +68,11 @@ attestationReceipts:
   expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   expectedStaticAllowlistSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  # Schema 3 policy metadata. url is the in-cluster CDS origin the gateway
-  # verifies; it is a release value, so the environment it adds is in the
-  # signed allowlist. Empty leaves the policy settings to the deployment
-  # procedure. imagePolicy is the c8s image policy that pins the CDS node;
-  # servedImagePolicy is the complete set CDS enforces. Both are JSON
-  # documents the deployment supplies (--set-file); their SHA-256 pins go
-  # into the release identity file. Set both or neither.
+  # Schema 3 policy metadata (services/gateway/ATTESTATION.md, "CDS
+  # verification"). url is the in-cluster CDS origin the gateway verifies;
+  # empty leaves the policy settings to the deployment procedure. The
+  # deployment supplies the two policy documents with --set-file; the chart
+  # pins them in the release identity file. Set both or neither.
   cds:
     url: ""
     imagePolicy: ""

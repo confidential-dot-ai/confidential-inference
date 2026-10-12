@@ -16,14 +16,13 @@ data:
   {{- $_ := set $identity "expectedOperatorKeySetSha256" .Values.attestationReceipts.expectedOperatorKeySetSha256 }}
   {{- end }}
   {{- $cds := .Values.attestationReceipts.cds }}
-  {{- if or $cds.imagePolicy $cds.servedImagePolicy }}
-  {{- if not (and $cds.imagePolicy $cds.servedImagePolicy $cds.url) }}
+  {{- if and (or $cds.imagePolicy $cds.servedImagePolicy) (not (and $cds.imagePolicy $cds.servedImagePolicy $cds.url)) }}
   {{- fail "attestationReceipts.cds needs url, imagePolicy and servedImagePolicy together" }}
   {{- end }}
-  # The deployment supplies the two c8s image policies. Their pins travel in
-  # this file, not the environment: the served policy carries the operator
-  # key of the target rebuild, so the exact allowlist cannot pin it. The
-  # gateway hashes each file against its pin before the verifier reads it.
+  {{- if $cds.imagePolicy }}
+  {{- /* The deployment supplies the two c8s image policies; their pins travel
+         in this file, not the environment (services/gateway/ATTESTATION.md,
+         "CDS verification"). */}}
   {{- $_ := set $identity "cdsImagePolicySha256" (printf "sha256:%s" (sha256sum $cds.imagePolicy)) }}
   {{- $_ := set $identity "cdsServedImagePolicySha256" (printf "sha256:%s" (sha256sum $cds.servedImagePolicy)) }}
   cds-image-policy.json: {{ toJson $cds.imagePolicy }}
