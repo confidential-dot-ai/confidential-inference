@@ -72,6 +72,16 @@
         "expectedOperatorPublicKeySha256": {"$ref": "#/definitions/sha256Digest"},
         "expectedOperatorKeySetSha256": {"$ref": "#/definitions/sha256Digest"},
         "expectedStaticAllowlistSha256": {"$ref": "#/definitions/sha256Digest"},
+        "cds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["url", "imagePolicy", "servedImagePolicy"],
+          "properties": {
+            "url": {"type": "string", "pattern": "^(|https://[^/?#]+(?::[0-9]{1,5})?)$"},
+            "imagePolicy": {"type": "string", "maxLength": 262144},
+            "servedImagePolicy": {"type": "string", "maxLength": 262144}
+          }
+        },
         "targets": {
           "type": "array",
           "minItems": 1,
