@@ -21,7 +21,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4ff134e05a12ad974eb1a82ef58e6f844f1468738cb683c53c4ea7a971a561a6": {
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:70d2231edbe2288677c7ba717fdb5b4f2f7eaf16759545796abbc981547d9f35": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
