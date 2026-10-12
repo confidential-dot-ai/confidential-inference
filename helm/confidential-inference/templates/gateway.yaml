@@ -15,6 +15,20 @@ data:
   {{- $_ := set $identity "expectedOperatorPublicKeySha256" .Values.attestationReceipts.expectedOperatorPublicKeySha256 }}
   {{- $_ := set $identity "expectedOperatorKeySetSha256" .Values.attestationReceipts.expectedOperatorKeySetSha256 }}
   {{- end }}
+  {{- $cds := .Values.attestationReceipts.cds }}
+  {{- if or $cds.imagePolicy $cds.servedImagePolicy }}
+  {{- if not (and $cds.imagePolicy $cds.servedImagePolicy $cds.url) }}
+  {{- fail "attestationReceipts.cds needs url, imagePolicy and servedImagePolicy together" }}
+  {{- end }}
+  # The deployment supplies the two c8s image policies. Their pins travel in
+  # this file, not the environment: the served policy carries the operator
+  # key of the target rebuild, so the exact allowlist cannot pin it. The
+  # gateway hashes each file against its pin before the verifier reads it.
+  {{- $_ := set $identity "cdsImagePolicySha256" (printf "sha256:%s" (sha256sum $cds.imagePolicy)) }}
+  {{- $_ := set $identity "cdsServedImagePolicySha256" (printf "sha256:%s" (sha256sum $cds.servedImagePolicy)) }}
+  cds-image-policy.json: {{ toJson $cds.imagePolicy }}
+  served-image-policy.json: {{ toJson $cds.servedImagePolicy }}
+  {{- end }}
   release-identity.json: {{ toJson $identity | quote }}
 ---
 apiVersion: v1
@@ -189,6 +203,16 @@ spec:
             # refuses. The file under ..data is the regular file they point at.
             - name: GATEWAY_RELEASE_IDENTITY_FILE
               value: /mnt/c8s-data/release-identity/..data/release-identity.json
+            {{- with .Values.attestationReceipts.cds.url }}
+            # The CDS origin and the policy file paths are release constants;
+            # the pins are in the release identity file.
+            - name: GATEWAY_C8S_CDS_URL
+              value: {{ . | quote }}
+            - name: GATEWAY_C8S_IMAGE_POLICY
+              value: /mnt/c8s-data/release-identity/..data/cds-image-policy.json
+            - name: GATEWAY_C8S_SERVED_IMAGE_POLICY
+              value: /mnt/c8s-data/release-identity/..data/served-image-policy.json
+            {{- end }}
             - name: GATEWAY_C8S_POLICY_MODE
               value: {{ .Values.attestationReceipts.policyMode | quote }}
             {{- if eq .Values.attestationReceipts.policyMode "static" }}

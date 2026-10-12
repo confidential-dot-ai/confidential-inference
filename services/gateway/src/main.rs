@@ -699,6 +699,13 @@ struct ReleaseIdentity {
     expected_operator_public_key_sha256: String,
     #[serde(default)]
     expected_operator_key_set_sha256: String,
+    // The CDS policy pins may come from this file too: in a deployment whose
+    // served policy carries a per-rebuild anchor, the exact allowlist cannot
+    // pin them. Both fields or neither.
+    #[serde(default)]
+    cds_image_policy_sha256: String,
+    #[serde(default)]
+    cds_served_image_policy_sha256: String,
 }
 
 /// Read the release identity file, when one is configured, into `args`.
@@ -719,6 +726,22 @@ fn load_release_identity(args: &mut Args) -> Result<()> {
     args.release_bundle_sha256 = identity.release_bundle_sha256;
     args.expected_operator_public_key_sha256 = identity.expected_operator_public_key_sha256;
     args.expected_operator_key_set_sha256 = identity.expected_operator_key_set_sha256;
+    if identity.cds_image_policy_sha256.is_empty()
+        != identity.cds_served_image_policy_sha256.is_empty()
+    {
+        bail!("the release identity file must set both CDS policy pins or neither");
+    }
+    if !identity.cds_image_policy_sha256.is_empty() {
+        if !args.cds_image_policy_sha256.is_empty()
+            || !args.cds_served_image_policy_sha256.is_empty()
+        {
+            bail!(
+                "set the CDS policy pins in GATEWAY_RELEASE_IDENTITY_FILE or in the environment, not both"
+            );
+        }
+        args.cds_image_policy_sha256 = identity.cds_image_policy_sha256;
+        args.cds_served_image_policy_sha256 = identity.cds_served_image_policy_sha256;
+    }
     Ok(())
 }
 
@@ -1160,6 +1183,81 @@ mod tests {
             format!("sha256:{}", "c".repeat(64)),
             value.expected_operator_key_set_sha256
         );
+        // A file without policy pins leaves the environment's pins alone.
+        assert!(value.cds_image_policy_sha256.is_empty());
+    }
+
+    fn identity_with_policy_pins(directory: &std::path::Path) -> PathBuf {
+        let path = directory.join("release-identity.json");
+        fs::write(
+            &path,
+            format!(
+                r#"{{"releaseBundleSha256":"sha256:{}","cdsImagePolicySha256":"sha256:{}","cdsServedImagePolicySha256":"sha256:{}"}}"#,
+                "a".repeat(64),
+                "d".repeat(64),
+                "e".repeat(64)
+            ),
+        )
+        .unwrap_or_else(|_| unreachable!());
+        path
+    }
+
+    #[test]
+    fn release_identity_file_fills_the_cds_policy_pins() {
+        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let mut value = args();
+        value.release_bundle_sha256 = String::new();
+        value.expected_operator_public_key_sha256 = String::new();
+        value.expected_operator_key_set_sha256 = String::new();
+        value.cds_image_policy_sha256 = String::new();
+        value.cds_served_image_policy_sha256 = String::new();
+        value.release_identity_file = Some(identity_with_policy_pins(directory.path()));
+        assert!(load_release_identity(&mut value).is_ok());
+        assert_eq!(
+            format!("sha256:{}", "d".repeat(64)),
+            value.cds_image_policy_sha256
+        );
+        assert_eq!(
+            format!("sha256:{}", "e".repeat(64)),
+            value.cds_served_image_policy_sha256
+        );
+        assert!(validate_metadata_identity(&value).is_ok());
+    }
+
+    #[test]
+    fn release_identity_file_and_environment_policy_pins_are_exclusive() {
+        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let mut value = args();
+        value.release_bundle_sha256 = String::new();
+        value.expected_operator_public_key_sha256 = String::new();
+        value.expected_operator_key_set_sha256 = String::new();
+        value.cds_image_policy_sha256 = format!("sha256:{}", "0".repeat(64));
+        value.cds_served_image_policy_sha256 = value.cds_image_policy_sha256.clone();
+        value.release_identity_file = Some(identity_with_policy_pins(directory.path()));
+        assert!(load_release_identity(&mut value).is_err());
+    }
+
+    #[test]
+    fn release_identity_file_requires_both_policy_pins() {
+        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let path = directory.path().join("release-identity.json");
+        fs::write(
+            &path,
+            format!(
+                r#"{{"releaseBundleSha256":"sha256:{}","cdsImagePolicySha256":"sha256:{}"}}"#,
+                "a".repeat(64),
+                "d".repeat(64)
+            ),
+        )
+        .unwrap_or_else(|_| unreachable!());
+        let mut value = args();
+        value.release_bundle_sha256 = String::new();
+        value.expected_operator_public_key_sha256 = String::new();
+        value.expected_operator_key_set_sha256 = String::new();
+        value.cds_image_policy_sha256 = String::new();
+        value.cds_served_image_policy_sha256 = String::new();
+        value.release_identity_file = Some(path);
+        assert!(load_release_identity(&mut value).is_err());
     }
 
     #[test]

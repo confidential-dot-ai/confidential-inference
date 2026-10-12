@@ -47,6 +47,12 @@ option, the live policy must equal the signed initial policy.
 `GATEWAY_C8S_IMAGE_POLICY_SHA256` pins its exact bytes in the admitted inputs.
 `GATEWAY_C8S_SERVED_IMAGE_POLICY` selects the full policy that CDS enforces.
 `GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256` pins that file.
+The two pins may instead come from the release identity file
+(`cdsImagePolicySha256` and `cdsServedImagePolicySha256`, both or neither,
+and not together with the environment). A deployment whose served policy
+carries a per-rebuild launch anchor cannot pin the files in its exact
+allowlist; the identity file already carries its operator-key pins, so the
+policy pins are then as trusted as those.
 The target policy must contain one reviewed control-node identity. Agent keys
 must not identify CDS. Both files have byte limits. The verifier reads private
 copies of the checked bytes. A later ConfigMap change cannot change those pins.

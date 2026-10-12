@@ -9,6 +9,10 @@ environment: staging
 
 attestationReceipts:
   evidenceBaseUrl: https://staging.api.confidential.ai
+  # The gateway verifies the in-cluster CDS for its schema 3 policy metadata.
+  # The deployment supplies the two policy documents; see the chart values.
+  cds:
+    url: https://c8s-cds.c8s-system.svc:8443
 
 inference:
   mode: simulator

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import tempfile
@@ -28,6 +29,58 @@ def helm(*arguments: str, success: bool = True) -> str:
     if (result.returncode == 0) != success:
         raise AssertionError(result.stderr or result.stdout)
     return result.stdout
+
+
+def gateway_render(*arguments: str, success: bool = True) -> tuple[dict, dict, dict]:
+    """Render with arguments; return the gateway env, the identity ConfigMap and its JSON."""
+    output = helm("template", "example", str(CHART), *NEUTRAL_MODE, *arguments, success=success)
+    if not success:
+        return {}, {}, {}
+    documents = [item for item in yaml.safe_load_all(output) if item]
+    gateway = next(
+        item for item in documents
+        if item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway"
+    )
+    container = next(
+        item for item in gateway["spec"]["template"]["spec"]["containers"]
+        if item["name"] == "gateway"
+    )
+    identity = next(
+        item for item in documents
+        if item["kind"] == "ConfigMap" and item["metadata"]["name"] == "gateway-release-identity"
+    )
+    env = {item["name"]: item["value"] for item in container["env"]}
+    return env, identity["data"], json.loads(identity["data"]["release-identity.json"])
+
+
+def check_cds_policy_pins() -> None:
+    """The CDS origin and the policy paths are environment (so allowlist input);
+    the policy bytes and their pins travel in the release identity ConfigMap."""
+    url = "attestationReceipts.cds.url=https://c8s-cds.c8s-system.svc:8443"
+    env, data, identity = gateway_render("--set", url)
+    assert env["GATEWAY_C8S_CDS_URL"] == "https://c8s-cds.c8s-system.svc:8443"
+    assert env["GATEWAY_C8S_IMAGE_POLICY"] == "/mnt/c8s-data/release-identity/..data/cds-image-policy.json"
+    assert env["GATEWAY_C8S_SERVED_IMAGE_POLICY"] == "/mnt/c8s-data/release-identity/..data/served-image-policy.json"
+    assert "GATEWAY_C8S_IMAGE_POLICY_SHA256" not in env
+    assert "cds-image-policy.json" not in data and "cdsImagePolicySha256" not in identity
+    with tempfile.TemporaryDirectory() as directory:
+        target = Path(directory) / "target.json"
+        served = Path(directory) / "served.json"
+        target.write_text('{"schema_version": "1", "tee": "tdx", "measurements": [{"name": "server"}]}\n')
+        served.write_text('{"schema_version": "1", "tee": "tdx", "measurements": [{"name": "server"}, {"name": "agent"}]}\n')
+        files = (
+            "--set-file", f"attestationReceipts.cds.imagePolicy={target}",
+            "--set-file", f"attestationReceipts.cds.servedImagePolicy={served}",
+        )
+        env, data, identity = gateway_render("--set", url, *files)
+        assert data["cds-image-policy.json"] == target.read_text()
+        assert data["served-image-policy.json"] == served.read_text()
+        assert identity["cdsImagePolicySha256"] == "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+        assert identity["cdsServedImagePolicySha256"] == "sha256:" + hashlib.sha256(served.read_bytes()).hexdigest()
+        assert "GATEWAY_C8S_IMAGE_POLICY_SHA256" not in env
+        # One document alone, or documents without the origin, is a mistake.
+        gateway_render("--set", url, *files[:2], success=False)
+        gateway_render(*files, success=False)
 
 
 def main() -> None:
@@ -109,6 +162,12 @@ def main() -> None:
     identity_values = json.loads(identity["data"]["release-identity.json"])
     assert identity_values["expectedOperatorKeySetSha256"].startswith("sha256:")
     assert gateway_env["GATEWAY_RELEASE_IDENTITY_FILE"] == "/mnt/c8s-data/release-identity/..data/release-identity.json"
+    # Without a CDS origin the chart sets no policy metadata settings, and the
+    # identity file carries no policy pins.
+    assert "GATEWAY_C8S_CDS_URL" not in gateway_env
+    assert "cdsImagePolicySha256" not in identity_values
+    assert "cds-image-policy.json" not in identity["data"]
+    check_cds_policy_pins()
     assert gateway_container["readinessProbe"]["httpGet"]["path"] == "/ready"
     assert gateway_container["livenessProbe"]["httpGet"]["path"] == "/health"
     assert gateway["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 960
