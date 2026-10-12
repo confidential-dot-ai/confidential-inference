@@ -163,8 +163,7 @@ workloadOverrides:
       revisionHistoryLimit: 10
       selector:
         matchLabels:
-          confidential.ai/gateway-slot: gateway-{{ .Values.attestationReceipts.releaseId
-            }}
+          confidential.ai/gateway-slot: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
       template:
         metadata:
           annotations:
@@ -172,8 +171,7 @@ workloadOverrides:
               | trunc 10) }}=/confidential-inference/volumes/{{ printf "gw%s" (sha256sum
               .Values.attestationReceipts.releaseId | trunc 10) }}'
           labels:
-            confidential.ai/gateway-slot: gateway-{{ .Values.attestationReceipts.releaseId
-              }}
+            confidential.ai/gateway-slot: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
         spec:
           containers:
           - name: gateway
@@ -227,8 +225,7 @@ workloadOverrides:
             - name: GATEWAY_MODEL
               value: deepseek-ai/DeepSeek-V4-Flash-0731
             - name: GATEWAY_C8S_RECEIPT_TARGETS
-              value: gateway|gateway-{{ .Values.attestationReceipts.releaseId }}|gateway-{{
-                .Values.attestationReceipts.releaseId }}=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804
+              value: gateway|gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}|gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804
             - name: GATEWAY_C8S_EVIDENCE_BASE_URL
               value: https://api.confidential.ai
             - name: GATEWAY_C8S_EVIDENCE_CONNECT_HOST
@@ -264,7 +261,7 @@ workloadOverrides:
             - name: GATEWAY_KEY_REGISTRY_MODE
               value: registry
             - name: GATEWAY_INSTANCE_ID
-              value: gateway-{{ .Values.attestationReceipts.releaseId }}
+              value: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
             - name: GATEWAY_C8S_CDS_URL
               value: https://c8s-cds.c8s-system.svc.cluster.local:8443
             - name: GATEWAY_RELEASE_URL
@@ -303,8 +300,7 @@ workloadOverrides:
             - --port=8800
             - --platform=tdx
             - --front-door-mode=webpki
-            - --expected-workload=gateway-{{ .Values.attestationReceipts.releaseId
-              }}
+            - --expected-workload=gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
             - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
             - --serving-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
@@ -348,7 +344,7 @@ workloadOverrides:
           - emptyDir: {}
             name: tmp
     metadata:
-      name: gateway-{{ .Values.attestationReceipts.releaseId }}
+      name: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
   Deployment/kube-state-metrics:
     spec:
       progressDeadlineSeconds: 600

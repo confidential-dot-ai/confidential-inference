@@ -144,7 +144,7 @@ def policy_for_release(document: dict[str, Any], release_id: str) -> dict[str, A
     for item in result.get("workloads", []):
         for field in ("name", "controller"):
             if isinstance(item.get(field), str):
-                item[field] = item[field].replace("{release}", release_id)
+                item[field] = item[field].replace("{release}", release_id.replace(".", "-"))
     return result
 
 
