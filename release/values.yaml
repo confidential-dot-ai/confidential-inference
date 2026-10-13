@@ -36,6 +36,7 @@ scheduling:
   routerNodeName: gateway-node-1
 
 images:
+  rolloutClient: ghcr.io/confidential-dot-ai/confidential-inference/rollout-client
   # The images that this repository builds have no digest here. The release
   # build adds the digest from the image publication evidence or the signed
   # base release (scripts/build-release-manifest.py).
@@ -191,6 +192,8 @@ workloadOverrides:
               value: 0.0.0.0:9090
             - name: GATEWAY_RUNTIME_CONFIG_FILE
               value: /mnt/c8s-data/runtime/settings.json
+            - name: GATEWAY_ROUTER_NAMESPACE
+              value: confidential-inference
             - name: GATEWAY_RELEASE_SELECTION_FILE
               value: /mnt/c8s-data/release-selection/releases.json
             - name: GATEWAY_INFERENCE_URL

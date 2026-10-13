@@ -36,6 +36,7 @@
         "sglangWorker": {"$ref": "#/definitions/image"},
         "sglangRouter": {"$ref": "#/definitions/image"},
         "logCollector": {"$ref": "#/definitions/image"},
+        "rolloutClient": {"$ref": "#/definitions/image"},
         "metricsCollector": {"$ref": "#/definitions/image"},
         "dcgmExporter": {"$ref": "#/definitions/image"},
         "nodeExporter": {"$ref": "#/definitions/image"},

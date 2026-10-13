@@ -184,6 +184,8 @@ spec:
               value: {{ join "," .Values.gateway.protection.trustedProxyCidrs | quote }}
             {{- end }}
             {{- if .Values.runtimeConfig.enabled }}
+            - name: GATEWAY_ROUTER_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
             - name: GATEWAY_RUNTIME_CONFIG_FILE
               value: /mnt/c8s-data/runtime/settings.json
             - name: GATEWAY_RELEASE_SELECTION_FILE

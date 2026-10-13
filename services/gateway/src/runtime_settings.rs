@@ -9,6 +9,8 @@ use crate::runtime_config::Versioned;
 pub struct GatewaySettings {
     pub schema_version: u32,
     pub revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router_service: Option<String>,
     pub catalog_model_ids: Vec<String>,
     pub inference_model_ids: Vec<String>,
     pub maximum_body_bytes: usize,
@@ -75,6 +77,14 @@ impl GatewaySettings {
             || self.inference_queue > 4096
             || !(1..=30).contains(&self.queue_timeout_seconds)
             || !(1..=10_000).contains(&self.requests_per_address_per_second)
+            || self.router_service.as_ref().is_some_and(|name| {
+                !(name == "sglang-router" || name.starts_with("router-"))
+                    || name.len() > 63
+                    || name.ends_with('-')
+                    || !name.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                    })
+            })
         {
             return Err("invalid gateway runtime settings".into());
         }

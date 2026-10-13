@@ -113,6 +113,27 @@ permits and blocks new admission until usage falls. Queued requests keep
 their deadline and use the current execution capacity. HTTP clients, rate
 windows, and request counters are not replaced on reload.
 
+The optional `routerService` setting selects `sglang-router` or a Service
+whose name starts with `router-`. It needs the fixed startup input
+`GATEWAY_ROUTER_NAMESPACE` and direct-router mode. It cannot select another
+namespace, port, or external URL. New requests use the new Service hostname.
+Active requests keep their old target and HTTP connection. The HTTP client
+keeps separate connection pools for the two hostnames.
+The target keeps the startup protocol and port.
+
+`gateway_router_requests_active` counts authenticated requests that retain
+each router target. This includes body reads, queued requests, and open
+streams. Deployment must check this counter as well as the old router's
+active-request counter before removal. A ready new router alone does not
+prove that the old route has drained.
+
+Runtime status also reports `retiredSnapshotReaders`. Old requests and streams
+keep their configuration snapshot until they close. When removing a model,
+stop new gateway admission first. Wait until the previous snapshot readers
+reach zero before removing its router alias. This allows traffic for other
+models to continue. Reload waits if 64 old snapshots still have readers; the
+polling fallback retries after requests drain.
+
 Secrets, CDS trust pins, authentication settings, listener settings, and
 worker initialization remain startup inputs. Mount configuration directories
 without `subPath`. Use `<mount>/file.json`, not a timestamp directory, as the

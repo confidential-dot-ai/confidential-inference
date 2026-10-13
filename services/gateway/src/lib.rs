@@ -137,6 +137,9 @@ pub struct GatewayConfig {
 struct AppState {
     config: GatewayConfig,
     runtime: Option<Arc<runtime_config::MountedConfig<runtime_settings::GatewaySettings>>>,
+    router_namespace: Option<String>,
+    fixed_router_label: String,
+    router_origin: Option<(String, u16)>,
     http: reqwest::Client,
     keys: Arc<dyn ApiKeyVerifier>,
     audit: Arc<dyn AuditSink>,
@@ -231,6 +234,7 @@ pub fn router(
         attestation_provider,
         http,
         None,
+        None,
     )
 }
 
@@ -244,6 +248,7 @@ pub fn router_with_runtime(
     attestation_provider: Arc<dyn AttestationProvider>,
     http: reqwest::Client,
     runtime: Option<Arc<runtime_config::MountedConfig<runtime_settings::GatewaySettings>>>,
+    router_namespace: Option<String>,
 ) -> Router {
     let maximum_body_bytes = if runtime.is_some() {
         8 * 1024 * 1024
@@ -252,9 +257,22 @@ pub fn router_with_runtime(
     };
     let protection =
         Arc::new(ProtectionState::new(config.protection.clone()).with_runtime(runtime.clone()));
+    let fixed_router_label = url::Url::parse(&config.upstream_base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "fixed-router".into());
+    let router_origin = url::Url::parse(&config.upstream_base_url)
+        .ok()
+        .and_then(|url| {
+            url.port_or_known_default()
+                .map(|port| (url.scheme().to_owned(), port))
+        });
     let state = Arc::new(AppState {
         config,
         runtime,
+        router_namespace,
+        fixed_router_label,
+        router_origin,
         http,
         keys,
         audit,
@@ -333,9 +351,39 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response<Body> {
 struct RequestConfig<'a> {
     base: &'a GatewayConfig,
     runtime: Option<Arc<runtime_settings::GatewaySettings>>,
+    router_namespace: Option<&'a str>,
+    fixed_router_label: &'a str,
+    router_origin: Option<(&'a str, u16)>,
 }
 
 impl RequestConfig<'_> {
+    fn router_label(&self) -> String {
+        match (
+            self.runtime
+                .as_ref()
+                .and_then(|settings| settings.router_service.as_ref()),
+            self.router_namespace,
+        ) {
+            (Some(service), Some(namespace)) => format!("{service}.{namespace}.svc.cluster.local"),
+            _ => self.fixed_router_label.to_owned(),
+        }
+    }
+    fn upstream_url(&self, route: &str) -> Option<String> {
+        if let Some(service) = self
+            .runtime
+            .as_ref()
+            .and_then(|settings| settings.router_service.as_ref())
+        {
+            let namespace = self.router_namespace?;
+            let (scheme, port) = self.router_origin?;
+            // The namespace and port are startup trust inputs. Runtime data
+            // can select only a router Service in this namespace.
+            return Some(format!(
+                "{scheme}://{service}.{namespace}.svc.cluster.local:{port}{route}"
+            ));
+        }
+        Some(format!("{}{route}", self.base.upstream_base_url))
+    }
     fn catalog_model_ids(&self) -> &[String] {
         self.runtime
             .as_ref()
@@ -384,6 +432,12 @@ fn request_config(state: &AppState) -> RequestConfig<'_> {
     RequestConfig {
         base: &state.config,
         runtime: state.runtime.as_ref().map(|source| source.snapshot()),
+        router_namespace: state.router_namespace.as_deref(),
+        fixed_router_label: &state.fixed_router_label,
+        router_origin: state
+            .router_origin
+            .as_ref()
+            .map(|(scheme, port)| (scheme.as_str(), *port)),
     }
 }
 
@@ -446,6 +500,7 @@ async fn proxy_inference(
         Authentication::Invalid => return unauthorized(&state),
     };
     let started = Instant::now();
+    let router_request = state.metrics.router_request(config.router_label());
     let body = match tokio::time::timeout(
         config.body_timeout(),
         axum::body::to_bytes(request.into_body(), config.maximum_body_bytes()),
@@ -484,9 +539,12 @@ async fn proxy_inference(
         return protection::overload("inference_capacity");
     };
     let active_request = state.metrics.active_request();
+    let Some(upstream_url) = config.upstream_url(route) else {
+        return inference_unavailable();
+    };
     let upstream = state
         .http
-        .post(format!("{}{route}", config.base.upstream_base_url))
+        .post(upstream_url)
         .timeout(config.upstream_timeout())
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-request-id", &request_id)
@@ -542,6 +600,8 @@ async fn proxy_inference(
     let stream = async_stream::stream! {
         let _permits = permits;
         let _active_request = active_request;
+        let _router_request = router_request;
+        let runtime_snapshot = config.runtime;
         let mut upstream_stream = upstream.bytes_stream();
         let mut stream_metrics = StreamMetrics::default();
         let mut json_metrics = Vec::new();
@@ -601,6 +661,7 @@ async fn proxy_inference(
         } else if is_event_stream {
             stream_metrics.finish(&metrics, &metric_model, &metric_key_id);
         }
+        drop(runtime_snapshot);
     };
     let mut response = Response::builder()
         .status(status)

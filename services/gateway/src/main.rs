@@ -37,6 +37,8 @@ const INFERENCE_UPSTREAM_URL: &str = "http://127.0.0.1:30001";
 #[derive(Parser, Debug)]
 #[command(name = "confidential-gateway")]
 struct Args {
+    #[arg(long, env = "GATEWAY_ROUTER_NAMESPACE")]
+    router_namespace: Option<String>,
     #[arg(long, env = "GATEWAY_RELEASE_SELECTION_FILE")]
     release_selection_file: Option<PathBuf>,
     #[arg(long, env = "GATEWAY_RUNTIME_CONFIG_FILE")]
@@ -290,19 +292,26 @@ async fn main() -> Result<()> {
         .runtime_config_file
         .as_ref()
         .map(|path| {
-            MountedConfig::<GatewaySettings>::open(
-                path.clone(),
-                256 * 1024,
-                GatewaySettings::validate,
-            )
+            MountedConfig::<GatewaySettings>::open(path.clone(), 256 * 1024, |settings| {
+                validate_runtime_settings(
+                    settings,
+                    args.router_namespace.as_deref(),
+                    args.allow_direct_inference_url,
+                )
+            })
             .map(Arc::new)
             .map_err(anyhow::Error::msg)
         })
         .transpose()
         .context("load gateway runtime settings")?;
-    let _runtime_watcher = runtime
-        .as_ref()
-        .map(|config| config.watch(GatewaySettings::validate, Duration::from_secs(5)));
+    let _runtime_watcher = runtime.as_ref().map(|config| {
+        let namespace = args.router_namespace.clone();
+        let direct = args.allow_direct_inference_url;
+        config.watch(
+            move |settings| validate_runtime_settings(settings, namespace.as_deref(), direct),
+            Duration::from_secs(5),
+        )
+    });
     if let Some(runtime) = &runtime {
         let snapshot = runtime.snapshot();
         args.model = snapshot
@@ -402,6 +411,9 @@ async fn main() -> Result<()> {
         attestation,
         http,
         runtime.clone(),
+        args.router_namespace
+            .clone()
+            .filter(|_| args.allow_direct_inference_url),
     );
     let public = with_instance_header(public, args.gateway_instance_id.as_deref())?;
     let admin_certificate =
@@ -692,7 +704,34 @@ fn metadata_provider_with_runtime(
     ))
 }
 
+fn validate_router_namespace(namespace: Option<&str>, inference_url: &str) -> Result<()> {
+    if namespace.is_some_and(|name| {
+        name.is_empty()
+            || name.len() > 63
+            || name.starts_with('-')
+            || name.ends_with('-')
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    }) {
+        bail!("GATEWAY_ROUTER_NAMESPACE must be a namespace name");
+    }
+    if namespace.is_some() {
+        let origin = url::Url::parse(inference_url).context("parse the fixed router origin")?;
+        if !origin.username().is_empty()
+            || origin.password().is_some()
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+            || origin.path() != "/"
+        {
+            bail!("the fixed router origin must have no credentials, query, fragment, or path");
+        }
+    }
+    Ok(())
+}
+
 fn validate_args(args: &Args) -> Result<()> {
+    validate_router_namespace(args.router_namespace.as_deref(), &args.inference_url)?;
     if args.environment.is_empty()
         || args.environment.len() > 63
         || !args
@@ -783,6 +822,20 @@ fn validate_args(args: &Args) -> Result<()> {
     )
     .map_err(anyhow::Error::msg)
     .context("validate the c8s receipt targets")?;
+    Ok(())
+}
+
+fn validate_runtime_settings(
+    settings: &GatewaySettings,
+    namespace: Option<&str>,
+    direct: bool,
+) -> Result<(), String> {
+    settings.validate()?;
+    if settings.router_service.is_some() && (!direct || namespace.is_none()) {
+        return Err(
+            "router Service reload needs the fixed namespace and direct-router mode".into(),
+        );
+    }
     Ok(())
 }
 
@@ -976,6 +1029,7 @@ mod tests {
 
     fn args() -> Args {
         Args {
+            router_namespace: None,
             release_selection_file: None,
             runtime_config_file: None,
             listen: "0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()),

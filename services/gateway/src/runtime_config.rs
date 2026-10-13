@@ -4,7 +4,7 @@ use std::{
     fs,
     io::Read as _,
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock, Weak},
     time::Duration,
 };
 
@@ -27,11 +27,13 @@ pub struct ReloadStatus {
     pub error: Option<String>,
     pub watcher_error: bool,
     pub watcher_active: bool,
+    pub retired_snapshot_readers: std::collections::BTreeMap<u64, usize>,
 }
 
 struct State<T> {
     accepted: Arc<T>,
     status: ReloadStatus,
+    retired: std::collections::BTreeMap<u64, Weak<T>>,
 }
 
 /// Validation must finish before one complete snapshot becomes visible.
@@ -67,7 +69,9 @@ impl<T: DeserializeOwned + Versioned> MountedConfig<T> {
                     error: None,
                     watcher_error: false,
                     watcher_active: false,
+                    retired_snapshot_readers: std::collections::BTreeMap::new(),
                 },
+                retired: std::collections::BTreeMap::new(),
             }),
         })
     }
@@ -84,11 +88,20 @@ impl<T: DeserializeOwned + Versioned> MountedConfig<T> {
 
     #[must_use]
     pub fn status(&self) -> ReloadStatus {
-        self.state
+        let state = self
+            .state
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .status
-            .clone()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut status = state.status.clone();
+        status.retired_snapshot_readers = state
+            .retired
+            .iter()
+            .filter_map(|(revision, snapshot)| {
+                let count = snapshot.strong_count();
+                (count > 0).then_some((*revision, count))
+            })
+            .collect();
+        status
     }
 
     /// Retry pending documents even when the bytes have not changed. For
@@ -127,6 +140,17 @@ impl<T: DeserializeOwned + Versioned> MountedConfig<T> {
             state.status.error = Some(error);
             return;
         }
+        state
+            .retired
+            .retain(|_, snapshot| snapshot.strong_count() > 0);
+        if state.retired.len() >= 64 && Arc::strong_count(&state.accepted) > 1 {
+            state.status.error =
+                Some("too many retained configuration snapshots; wait for request drain".into());
+            return;
+        }
+        let previous_revision = state.status.accepted_revision;
+        let previous = Arc::downgrade(&state.accepted);
+        state.retired.insert(previous_revision, previous);
         state.accepted = Arc::new(document);
         state.status.accepted_revision = revision;
         state.status.accepted_sha256 = hash;
@@ -281,6 +305,9 @@ mod tests {
         source.refresh(valid);
         assert_eq!(source.snapshot().value, "new");
         assert_eq!(active.value, "old");
+        assert_eq!(source.status().retired_snapshot_readers.get(&1), Some(&1));
+        drop(active);
+        assert!(source.status().retired_snapshot_readers.is_empty());
         fs::write(&path, br#"{"revision":1,"value":"old"}"#)?;
         source.refresh(valid);
         assert_eq!(source.snapshot().value, "new");
