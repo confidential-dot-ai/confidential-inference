@@ -88,6 +88,62 @@ def check_cds_policy_pins(url_only: Gateway) -> None:
 
 
 def main() -> None:
+    # The production release must route to a real Service and use the same
+    # C8s identity in the gateway controller and its evidence sidecar.
+    production = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+        '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+        '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+        '--set', 'attestationReceipts.releaseId=v0.14.18')) if item]
+    gateway = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'gateway-v0-14-18')
+    assert gateway['spec']['template']['metadata']['annotations']['confidential.ai/cw'] == gateway['metadata']['name']
+    main_container = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'gateway')
+    gateway_environment = {item['name']: item['value'] for item in main_container['env']}
+    assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://router-v0-14-18.confidential-inference.svc.cluster.local:30000'
+    evidence = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'cds-attest')
+    assert '--expected-workload='+gateway['metadata']['name'] in evidence['args']
+    service = next(d for d in production if d['kind'] == 'Service' and d['metadata']['name'] == 'router-v0-14-18')
+    router = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'router-v0-14-18')
+    assert all(router['spec']['template']['metadata']['labels'].get(k) == v for k, v in service['spec']['selector'].items())
+    # One model definition produces both views. A release metadata change
+    # must not change the pod templates or add a third gateway identity.
+    runtime_documents = render("--set", "runtimeConfig.enabled=true", "--set",
+        "attestationReceipts.releaseId=v0.14.18-transition", "--set-json",
+        'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}')
+    runtime_gateway = Gateway(runtime_documents)
+    maps = {item['metadata']['name']: item for item in runtime_documents if item['kind'] == 'ConfigMap'}
+    settings = json.loads(maps['gateway-runtime']['data']['settings.json'])
+    routes = json.loads(maps['router-model-routes']['data']['routes.json'])
+    assert settings['catalogModelIds'] == settings['inferenceModelIds'] == sorted(routes['routes'])
+    assert settings['revision'] == routes['revision'] == 1
+    assert routes['routes']['public-a'] == ['backend-a']
+    assert runtime_gateway.env['GATEWAY_RUNTIME_CONFIG_FILE'] == '/mnt/c8s-data/runtime/settings.json'
+    assert runtime_gateway.env['GATEWAY_RELEASE_SELECTION_FILE'] == '/mnt/c8s-data/release-selection/releases.json'
+    for removed in ('GATEWAY_MODEL', 'GATEWAY_RELEASE_ID', 'GATEWAY_INFERENCE_CONCURRENCY',
+                    'GATEWAY_MAXIMUM_BODY_BYTES', 'GATEWAY_UPSTREAM_TIMEOUT_SECONDS'):
+        assert removed not in runtime_gateway.env
+    assert 'releaseBundleSha256' not in runtime_gateway.identity
+    assert 'gateway-release-selection' not in maps
+    assert not any('subPath' in mount for mount in runtime_gateway.container['volumeMounts'])
+    final_documents = render("--set", "runtimeConfig.enabled=true", "--set",
+        "attestationReceipts.releaseId=v0.14.18", "--set-json",
+        'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}')
+    assert Gateway(final_documents).deployment['spec']['template'] == runtime_gateway.deployment['spec']['template']
+    runtime_router = next(item for item in runtime_documents if item['kind'] == 'Deployment'
+                          and item['metadata']['name'] == 'sglang-router')
+    private_router = next(item for item in runtime_documents if item['kind'] == 'Service'
+                          and item['metadata']['name'] == 'router-v0-14-18')
+    assert private_router['spec']['clusterIP'] == 'None'
+    assert all(runtime_router['spec']['template']['metadata']['labels'].get(key) == value
+               for key, value in private_router['spec']['selector'].items())
+    final_private_router = next(item for item in final_documents if item['kind'] == 'Service'
+                                and item['metadata']['name'] == 'router-v0-14-18')
+    assert private_router == final_private_router
+    router_container = next(item for item in runtime_router['spec']['template']['spec']['containers']
+                            if item['name'] == 'sglang-router')
+    assert router_container['env'] == [{'name':'CI_ROUTER_MODEL_ROUTES_FILE',
+                                     'value':'/mnt/c8s-data/model-routes/routes.json'}]
+    assert router_container['volumeMounts'][0]['readOnly'] is True
+    assert 'subPath' not in router_container['volumeMounts'][0]
     helm("lint", str(CHART), *NEUTRAL_MODE)
     documents = render("--namespace", "inference")
     workloads = [

@@ -21,7 +21,231 @@ use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use tower::ServiceExt;
 
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn runtime_models_change_without_interrupting_an_active_request()
+-> Result<(), Box<dyn std::error::Error>> {
+    use confidential_gateway::{
+        router_with_runtime, runtime_config::MountedConfig, runtime_settings::GatewaySettings,
+    };
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("settings.json");
+    let settings = |revision, name: &str| GatewaySettings {
+        schema_version: 1,
+        revision,
+        router_service: None,
+        catalog_model_ids: vec![name.into()],
+        inference_model_ids: vec![name.into()],
+        maximum_body_bytes: 1024,
+        upstream_timeout_seconds: 30,
+        body_timeout_seconds: 10,
+        stream_idle_timeout_seconds: 20,
+        attestation_cache_seconds: 10,
+        global_request_concurrency: 256,
+        per_address_concurrency: 16,
+        inference_concurrency: 1,
+        inference_queue: 0,
+        queue_timeout_seconds: 2,
+        per_key_concurrency: 4,
+        attestation_concurrency: 4,
+        requests_per_address_per_second: 30,
+    };
+    std::fs::write(&path, serde_json::to_vec(&settings(1, "old"))?)?;
+    let runtime = Arc::new(MountedConfig::open(
+        path.clone(),
+        4096,
+        GatewaySettings::validate,
+    )?);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let upstream = Router::new().route("/v1/chat/completions", post({
+        let entered = entered.clone(); let release = release.clone();
+        move |Json(value): Json<Value>| {
+            let entered = entered.clone(); let release = release.clone();
+            async move {
+                entered.notify_one();
+                release.notified().await;
+                Json(json!({"model": value["model"], "choices":[{"message":{"content":"complete"},"finish_reason":"stop"}]}))
+            }
+        }
+    }));
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await });
+    let app = router_with_runtime(
+        GatewayConfig {
+            catalog_model_ids: vec!["startup".into()],
+            inference_model_ids: vec!["startup".into()],
+            upstream_base_url: format!("http://{address}"),
+            maximum_body_bytes: 1024,
+            upstream_timeout: Duration::from_secs(30),
+            protection: confidential_gateway::protection::ProtectionConfig {
+                inference_concurrency: 1,
+                inference_queue: 0,
+                ..Default::default()
+            },
+        },
+        Arc::new(Keys),
+        Arc::new(Audit),
+        Arc::new(GatewayMetrics::new("test")),
+        GatewayAvailability::default(),
+        Arc::new(UnavailableAttestation),
+        reqwest::Client::new(),
+        Some(runtime.clone()),
+        None,
+    );
+    let completion = |model: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header(header::AUTHORIZATION, "Bearer accepted")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({"model":model}).to_string()))
+    };
+    let active = tokio::spawn(app.clone().oneshot(completion("old")?));
+    tokio::time::timeout(Duration::from_secs(3), entered.notified()).await?;
+    std::fs::write(&path, serde_json::to_vec(&settings(2, "new"))?)?;
+    runtime.refresh(GatewaySettings::validate);
+    let catalog = app
+        .clone()
+        .oneshot(Request::builder().uri("/v1/models").body(Body::empty())?)
+        .await?;
+    let catalog: Value =
+        serde_json::from_slice(&axum::body::to_bytes(catalog.into_body(), 4096).await?)?;
+    assert_eq!(catalog["data"][0]["id"], "new");
+    assert_eq!(
+        app.clone().oneshot(completion("old")?).await?.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // A reload must not reset the execution/admission counters.
+    assert_eq!(
+        app.clone().oneshot(completion("new")?).await?.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    release.notify_one();
+    let response = tokio::time::timeout(Duration::from_secs(3), active).await???;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response: Value =
+        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 4096).await?)?;
+    assert_eq!(response["model"], "old");
+    assert_eq!(response["choices"][0]["message"]["content"], "complete");
+    server.abort();
+    Ok(())
+}
+
 struct Keys;
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn router_file_change_moves_new_requests_and_tracks_the_old_request()
+-> Result<(), Box<dyn std::error::Error>> {
+    use confidential_gateway::{
+        metrics::MetricsSource as _, router_with_runtime, runtime_config::MountedConfig,
+        runtime_settings::GatewaySettings,
+    };
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("settings.json");
+    let settings = |revision, router| {
+        json!({"schemaVersion":1,"revision":revision,"routerService":router,
+        "catalogModelIds":["public"],"inferenceModelIds":["public"],"maximumBodyBytes":1024,
+        "upstreamTimeoutSeconds":30,"bodyTimeoutSeconds":10,"streamIdleTimeoutSeconds":20,
+        "attestationCacheSeconds":10,"globalRequestConcurrency":256,"perAddressConcurrency":16,
+        "inferenceConcurrency":4,"inferenceQueue":0,"queueTimeoutSeconds":2,
+        "perKeyConcurrency":4,"attestationConcurrency":4,"requestsPerAddressPerSecond":30})
+    };
+    std::fs::write(&path, settings(1, "router-one").to_string())?;
+    let runtime = Arc::new(MountedConfig::<GatewaySettings>::open(
+        path.clone(),
+        4096,
+        GatewaySettings::validate,
+    )?);
+    let random = uuid::Uuid::new_v4();
+    let bytes = random.as_bytes();
+    let old_ip = std::net::Ipv4Addr::new(127, bytes[0].max(1), bytes[1], 1);
+    let new_ip = std::net::Ipv4Addr::new(127, bytes[0].max(1), bytes[1], 2);
+    let old_listener = tokio::net::TcpListener::bind((old_ip, 30000)).await?;
+    let new_listener = tokio::net::TcpListener::bind((new_ip, 30000)).await?;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let old_requests = Arc::new(AtomicUsize::new(0));
+    let old_router = Router::new().route("/v1/chat/completions", post({
+        let entered = entered.clone(); let release = release.clone(); let requests = old_requests.clone();
+        move || { let entered = entered.clone(); let release = release.clone(); let requests = requests.clone();
+            async move { requests.fetch_add(1, Ordering::SeqCst); entered.notify_one(); release.notified().await;
+                Json(json!({"model":"public","choices":[{"message":{"content":"old"},"finish_reason":"stop"}]})) }
+        }
+    }));
+    let new_router = Router::new().route("/v1/chat/completions", post(|| async {
+        Json(json!({"model":"public","choices":[{"message":{"content":"new"},"finish_reason":"stop"}]}))
+    }));
+    let old_server = tokio::spawn(async move { axum::serve(old_listener, old_router).await });
+    let new_server = tokio::spawn(async move { axum::serve(new_listener, new_router).await });
+    let namespace = format!("test-{}", &random.to_string()[..8]);
+    let old_host = format!("router-one.{namespace}.svc.cluster.local");
+    let new_host = format!("router-two.{namespace}.svc.cluster.local");
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .resolve(&old_host, SocketAddr::from((old_ip, 30000)))
+        .resolve(&new_host, SocketAddr::from((new_ip, 30000)))
+        .build()?;
+    let metrics = Arc::new(GatewayMetrics::new("test"));
+    let app = router_with_runtime(
+        GatewayConfig {
+            catalog_model_ids: vec!["public".into()],
+            inference_model_ids: vec!["public".into()],
+            upstream_base_url: format!("http://{old_host}:30000"),
+            maximum_body_bytes: 1024,
+            upstream_timeout: Duration::from_secs(30),
+            protection: confidential_gateway::protection::ProtectionConfig::default(),
+        },
+        Arc::new(Keys),
+        Arc::new(Audit),
+        metrics.clone(),
+        GatewayAvailability::default(),
+        Arc::new(UnavailableAttestation),
+        client,
+        Some(runtime.clone()),
+        Some(namespace),
+    );
+    let request = || {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header(header::AUTHORIZATION, "Bearer accepted")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"model":"public"}"#))
+    };
+    let old = tokio::spawn(app.clone().oneshot(request()?));
+    tokio::time::timeout(Duration::from_secs(3), entered.notified()).await?;
+    std::fs::write(&path, settings(2, "router-two").to_string())?;
+    runtime.refresh(GatewaySettings::validate);
+    let new = app.oneshot(request()?).await?;
+    assert_eq!(new.status(), StatusCode::OK);
+    let new: Value = serde_json::from_slice(&axum::body::to_bytes(new.into_body(), 4096).await?)?;
+    assert_eq!(new["choices"][0]["message"]["content"], "new");
+    assert_eq!(old_requests.load(Ordering::SeqCst), 1);
+    let labels = format!("env=\"test\",router=\"{old_host}\"");
+    assert!(
+        metrics
+            .render_prometheus()
+            .contains(&format!("gateway_router_requests_active{{{labels}}} 1"))
+    );
+    release.notify_one();
+    let old = tokio::time::timeout(Duration::from_secs(3), old).await???;
+    assert_eq!(runtime.status().retired_snapshot_readers.get(&1), Some(&1));
+    let old: Value = serde_json::from_slice(&axum::body::to_bytes(old.into_body(), 4096).await?)?;
+    assert_eq!(old["choices"][0]["message"]["content"], "old");
+    assert!(runtime.status().retired_snapshot_readers.is_empty());
+    assert!(
+        metrics
+            .render_prometheus()
+            .contains(&format!("gateway_router_requests_active{{{labels}}} 0"))
+    );
+    old_server.abort();
+    new_server.abort();
+    Ok(())
+}
 
 impl ApiKeyVerifier for Keys {
     fn verify_bearer(&self, value: &str) -> Option<String> {

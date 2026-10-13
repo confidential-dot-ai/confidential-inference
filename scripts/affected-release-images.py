@@ -109,6 +109,13 @@ IMAGES = (
         "Confidential Inference kube-state metrics",
         ("images/kube-state-metrics/Dockerfile",),
     ),
+    Image(
+        "rollout-client",
+        "images/rollout-client",
+        "images/rollout-client/Dockerfile",
+        "Confidential Inference rollout client",
+        ("images/rollout-client/Dockerfile",),
+    ),
 )
 
 

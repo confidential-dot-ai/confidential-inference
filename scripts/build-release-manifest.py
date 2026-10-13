@@ -16,7 +16,8 @@ It holds no deployment value: no mesh CA, no operator key, no node name.
 
 The release tag is the version. The tag selects the profile
 (release/profiles.json), and the build sets the release name and the chart
-value attestationReceipts.releaseId to it. A release needs no commit that
+value attestationReceipts.releaseId to its final tag. Transition and final
+tags use the same replacement definitions. A release needs no commit that
 changes a version.
 
 The repository holds no digest of an image that it builds. The build takes
@@ -99,7 +100,7 @@ REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 IMAGE_SELECTOR = runpy.run_path(str(ROOT / "scripts/affected-release-images.py"))
 ALLOWLIST_GENERATOR = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
 PUBLICATION = runpy.run_path(str(ROOT / "scripts/image-publication-manifest.py"))
-C8S_VERSION = re.compile(f"^{release_profiles.VERSION}(?:-beta\.([1-9][0-9]*))?$")
+C8S_VERSION = re.compile(rf"^{release_profiles.VERSION}(?:-beta\.([1-9][0-9]*))?$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
@@ -150,8 +151,9 @@ def read_spec(profile: release_profiles.Profile) -> dict[str, Any]:
 def validate_spec(spec: Any) -> dict[str, Any]:
     require(isinstance(spec, dict), "the release specification is not a mapping")
     require(
-        set(spec) == {"c8s", "model", "publicHostnames"},
-        "the release specification must hold exactly c8s, model, and publicHostnames; the tag is the version",
+        {"c8s", "model", "publicHostnames"} <= set(spec)
+        and set(spec) <= {"c8s", "model", "publicHostnames", "transition"},
+        "the release specification needs c8s, model, and publicHostnames, with optional transition inputs; the tag is the version",
     )
     c8s = spec["c8s"]
     require(isinstance(c8s, dict), "c8s must be a mapping")
@@ -359,7 +361,8 @@ def chart_version(tag: str, profile: release_profiles.Profile) -> str:
     X.Y.Z. The tag has the form release_profiles.for_tag accepted.
     """
     require(release_profiles.for_tag(tag).name == profile.name, f"tag {tag} does not fit profile {profile.name}")
-    return tag[1:len(tag) - len(profile.tag_suffix)]
+    final_tag = release_profiles.workload_release(tag)
+    return final_tag[1:len(final_tag) - len(profile.tag_suffix)]
 
 
 def chart_reference(name: str, version: str) -> str:
@@ -527,6 +530,132 @@ def signed_release(tag: str, directory: Path, what: str) -> dict[str, Any]:
     return manifest
 
 
+def signed_allowlist(tag: str, directory: Path) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Verify the source release and its exact policy asset before composition."""
+    manifest = signed_release(tag, directory, "the transition input release")
+    path = directory / "allowlist.json"
+    if not path.is_file():
+        path.write_bytes(fetch(f"{REPOSITORY}/releases/download/{tag}/allowlist.json"))
+    raw = path.read_bytes()
+    require(sha256(raw) == manifest["allowlist"]["sha256"],
+            f"{tag} allowlist bytes differ from its signed manifest")
+    document = json.loads(raw)
+    require(document.get("schema") == "c8s.allowlist/v1" and isinstance(document.get("workloads"), dict),
+            f"{tag} has an invalid allowlist")
+    return manifest, document, sha256((directory / "release-bundle.json").read_bytes())
+
+
+def compose_transition_policy(old: dict[str, Any], new: dict[str, Any],
+                              helpers: dict[str, Any],
+                              permitted_images: set[str]) -> dict[str, Any]:
+    """Compose all reviewed states once. Never rename a conflicting identity."""
+    result: dict[str, Any] = {"schema": "c8s.allowlist/v1", "workloads": {}}
+    require(isinstance(helpers, dict), "transition helpers must be named workload definitions")
+    for document in (old, new):
+        require(set(document) == {"schema", "workloads"} and document["schema"] == "c8s.allowlist/v1"
+                and isinstance(document["workloads"], dict), "unsupported transition policy shape")
+    require(not set(helpers) & (set(old["workloads"]) | set(new["workloads"])),
+            "transition helpers must have separate workload identities")
+    for source in (old["workloads"], new["workloads"], helpers):
+        for name, entry in source.items():
+            require(name not in result["workloads"] or result["workloads"][name] == entry,
+                    f"transition workload {name} has conflicting definitions; use distinct replacement identities")
+            for container in entry.get("initContainers", []) + entry.get("containers", []):
+                require(container.get("image") in permitted_images,
+                        f"transition workload {name} has no approved release image: {container.get('image')}")
+                match = OCI.fullmatch(container["image"])
+                require(match is not None and container.get("digest") == match.group(2),
+                        f"transition workload {name} image and digest differ")
+                if source is helpers:
+                    require(all(container.get(field, {}).get("policy") in {"exact", "deny"}
+                                for field in ("command", "args", "env", "mounts")),
+                            f"transition helper {name} must have exact process, environment and mount policies")
+            result["workloads"][name] = entry
+    return result
+
+
+def resolve_transition_helpers(helpers: Any, images: dict[str, str], tag: str | None = None) -> dict[str, Any]:
+    """Resolve helper image keys through the verified release image inventory."""
+    require(isinstance(helpers, dict), "transition helpers must be a mapping")
+    result = json.loads(json.dumps(helpers))
+    replacements = {}
+    if tag is not None:
+        workload_tag = release_profiles.workload_release(tag).replace('.', '-')
+        replacements = {'${GATEWAY_WORKLOAD_ID}': 'gateway-'+workload_tag,
+                        '${ROUTER_WORKLOAD_ID}': 'router-'+workload_tag}
+    for name, entry in result.items():
+        require(isinstance(entry, dict), f"transition helper {name} is not a workload definition")
+        for container in entry.get("initContainers", []) + entry.get("containers", []):
+            values = container.get('env', {}).get('values', {})
+            for variable, value in values.items():
+                require(isinstance(value, str), f"transition helper {name} has a non-string environment value")
+                for marker, replacement in replacements.items():
+                    value = value.replace(marker, replacement)
+                require('${' not in value, f"transition helper {name} has an unresolved environment marker")
+                values[variable] = value
+            key = container.pop("imageKey", None)
+            if key is None:
+                continue
+            require(isinstance(key, str) and key in images,
+                    f"transition helper {name} has an unknown release image key")
+            require("image" not in container and "digest" not in container,
+                    f"transition helper {name} mixes an image key with a manual digest")
+            match = OCI.fullmatch(images[key])
+            require(match is not None, f"transition helper {name} has an unpinned release image")
+            container["image"] = images[key]
+            container["digest"] = match.group(2)
+    return result
+
+
+def transition_policy(tag: str, spec: dict[str, Any], source_commit: str,
+                      generated: bytes, images: dict[str, str], canonical_tool: Path | None,
+                      directory: Path, c8s: Path, profile: release_profiles.Profile
+                      ) -> tuple[bytes, dict[str, Any], dict[str, str]]:
+    """Bind old, final, replacement and helper policy inputs to a transition release."""
+    inputs = spec.get("transition")
+    require(isinstance(inputs, dict) and set(inputs) == {"fromRelease", "helpers"},
+            "a transition release needs fromRelease and exact helper definitions")
+    final_tag = release_profiles.workload_release(tag)
+    require(inputs["fromRelease"] == release_profiles.workload_release(inputs["fromRelease"]),
+            "the prior release must be a final release")
+    require(release_profiles.for_tag(inputs["fromRelease"]).environment == release_profiles.for_tag(tag).environment,
+            "transition input releases belong to different environments")
+    old_manifest, old, old_hash = signed_allowlist(inputs["fromRelease"], directory / "transition-old")
+    new_manifest, new, new_hash = signed_allowlist(final_tag, directory / "transition-final")
+    require(new_manifest["source"]["commit"] == source_commit,
+            "the final and transition releases must use the same source commit")
+    require(old_manifest["c8s"] == new_manifest["c8s"]
+            and old_manifest["nodeImage"] == new_manifest["nodeImage"],
+            "this transition changes a node image or C8s; use a separate reviewed procedure")
+    require(set(images.values()) <= set(new_manifest["images"].values()),
+            "transition replacement images differ from the verified final release")
+    permitted = set(old_manifest["images"].values()) | set(new_manifest["images"].values())
+    for document in (old, new):
+        for entry in document["workloads"].values():
+            permitted.update(c["image"] for c in entry.get("initContainers", []) + entry.get("containers", []))
+    require(json.loads(generated) == new,
+            "transition replacement definitions differ from the signed final policy")
+    helpers = resolve_transition_helpers(inputs["helpers"], images, tag)
+    combined = compose_transition_policy(old, new, helpers, permitted)
+    raw = ALLOWLIST_GENERATOR["canonicalize"](combined, canonical_tool)
+    candidate = directory / "transition-allowlist.json"
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_bytes(raw)
+    ALLOWLIST_GENERATOR["lint"](c8s, candidate,
+                               ALLOWLIST_GENERATOR["read_accepted_findings"](profile.accepted_findings))
+    binding = {
+        "fromRelease": {"name": inputs["fromRelease"], "bundleSha256": old_hash,
+                        "allowlistSha256": old_manifest["allowlist"]["sha256"]},
+        "finalRelease": {"name": final_tag, "bundleSha256": new_hash,
+                         "allowlistSha256": new_manifest["allowlist"]["sha256"]},
+        "helperWorkloads": sorted(helpers),
+    }
+    inventory = dict(images)
+    for index, image in enumerate(sorted(permitted - set(inventory.values()))):
+        inventory[f"transitionInput{index}"] = image
+    return raw, binding, inventory
+
+
 def base_release_images(
     publication: dict[str, Any],
     download_dir: Path,
@@ -557,9 +686,13 @@ def base_release_images(
             "image build inputs changed after the base release, and the publication has no new digest: "
             + ", ".join(unpublished))
     images: dict[str, str] = {}
-    for image in base["images"].values():
+    for key, image in base["images"].items():
+        if "transition" in base and re.fullmatch(r"transitionInput[0-9]+", key):
+            continue
         name, digest = image.rsplit("@", 1)
         if name.startswith(release_profiles.REPOSITORY_IMAGES):
+            require(name not in images or images[name] == digest,
+                    "the base release has ambiguous component image digests")
             images[name] = digest
     return images
 
@@ -673,7 +806,7 @@ def build(
     require(isinstance(values, dict) and bool(values), "the profile values are not a mapping")
     overlay = {
         "images": release_images(values, publication, base),
-        "attestationReceipts": {"releaseId": tag},
+        "attestationReceipts": {"releaseId": release_profiles.workload_release(tag)},
     }
     overlay_bytes = yaml.safe_dump(overlay, sort_keys=True).encode()
     values = release_profiles.merge_values(values, overlay)
@@ -713,6 +846,12 @@ def build(
     node = node_measurements(release_profiles.node_manifest(profile), spec)
     named_images = image_names(values, images)
     publication = publication_binding(publication_bytes, publication, named_images)
+    transition_binding = None
+    if "-transition" in tag:
+        with tempfile.TemporaryDirectory(prefix="transition-policy-") as directory:
+            allowlist_bytes, transition_binding, named_images = transition_policy(
+                tag, spec, source_commit, allowlist_bytes, named_images, canonical_tool,
+                download_dir or Path(directory), c8s, profile)
     files: dict[str, bytes] = {}
     if profile.name == PACKAGING_PROFILE:
         archive = package_chart(chart, identity["name"], version)
@@ -771,6 +910,8 @@ def build(
         "profileValues": profile_values,
         "publicHostnames": spec["publicHostnames"],
     }
+    if transition_binding is not None:
+        manifest["transition"] = transition_binding
     validate_schema(manifest)
     return {
         "release-bundle.json": encode(manifest),
@@ -794,7 +935,7 @@ def staging_chart_binding(tag: str, source_commit: str, tree_sha256: str, downlo
     the same source commit and chart tree.
     """
     packaging = next(p for p in release_profiles.load() if p.name == PACKAGING_PROFILE)
-    staging_tag = tag + packaging.tag_suffix
+    staging_tag = release_profiles.workload_release(tag) + packaging.tag_suffix
     try:
         staging = signed_release(staging_tag, download_dir / "staging-release", "the staging release")
     except ManifestError as error:

@@ -25,6 +25,7 @@ class AffectedReleaseImagesTests(unittest.TestCase):
     def test_image_change_selects_only_its_image(self) -> None:
         self.assertEqual(names(["images/gateway/Dockerfile"]), ["gateway"])
         self.assertEqual(names(["images/sglang/Dockerfile"]), ["sglang"])
+        self.assertEqual(names(["images/rollout-client/Dockerfile"]), ["rollout-client"])
 
     def test_router_patch_and_source_pin_do_not_select_workers(self) -> None:
         self.assertEqual(names(['images/sglang-router/patches/worker-withdrawal.patch',

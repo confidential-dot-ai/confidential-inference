@@ -33,8 +33,8 @@
       "controller": "Deployment/metrics-collector"
     },
     {
-      "name": "router-ub871bda890",
-      "controller": "Deployment/router-ub871bda890"
+      "name": "router-{release}",
+      "controller": "Deployment/router-{release}"
     },
     {
       "name": "inference-worker-0-u200b5c252a",

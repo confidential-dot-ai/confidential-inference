@@ -64,6 +64,31 @@ class MetadataTests(unittest.TestCase):
         with self.assertRaises(VERIFY['VerificationError']):
             self.check(changed)
 
+    def test_pending_release_has_no_false_identity_and_fails_verification(self):
+        changed = copy.deepcopy(self.response)
+        desired = changed['release']
+        changed['release'] = None
+        changed['releaseSelection'] = {
+            'status': 'pending', 'desired': desired,
+            'desiredPolicySha256': 'sha256:' + 'a' * 64,
+            'observedPolicySha256': changed['c8s']['activeAllowlist']['sha256'],
+        }
+        VERIFY['validate_schema'](changed, VERIFY['RESPONSE_SCHEMA'], 'metadata')
+        with self.assertRaisesRegex(VERIFY['VerificationError'], 'selection is pending'):
+            VERIFY['verify_policy_metadata'](changed, self.args, desired['id'],
+                desired['bundleSha256'], self.raw, self.policy)
+        changed['releaseSelection']['status'] = 'matched'
+        with self.assertRaises(VERIFY['VerificationError']):
+            VERIFY['validate_schema'](changed, VERIFY['RESPONSE_SCHEMA'], 'metadata')
+
+    def test_matched_release_keeps_existing_verification(self):
+        self.response['releaseSelection'] = {
+            'status': 'matched', 'desired': copy.deepcopy(self.response['release']),
+            'desiredPolicySha256': self.response['c8s']['activeAllowlist']['sha256'],
+            'observedPolicySha256': self.response['c8s']['activeAllowlist']['sha256'],
+        }
+        self.assertTrue(self.check()['metadataMatchesTrustedInputs'])
+
 
 if __name__ == '__main__':
     unittest.main()

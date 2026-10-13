@@ -173,6 +173,125 @@ def controller(kind="StatefulSet", name="worker", container=None, volumes=None, 
     }
 
 
+class TransitionCompositionTests(unittest.TestCase):
+    def test_transition_base_uses_the_final_component_not_its_old_rollback_image(self):
+        repository = 'ghcr.io/confidential-dot-ai/confidential-inference/gateway'
+        base = {'source': {'commit': 'a'*40}, 'transition': {},
+                'images': {'gateway': repository+'@sha256:'+'b'*64,
+                           'transitionInput0': repository+'@sha256:'+'c'*64}}
+        evidence = {'source': {'baseRef': 'v0.14.18-transition', 'baseRefCommit': 'a'*40,
+                              'commit': 'd'*40}, 'images': []}
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(MAN, 'signed_release', return_value=base), \
+             mock.patch.object(MAN, 'changed_paths', return_value=[]):
+            result = MAN.base_release_images(evidence, Path(folder))
+        self.assertEqual(result[repository], 'sha256:'+'b'*64)
+
+    def test_transition_manifest_requires_its_signed_input_binding(self):
+        manifest = json.loads(build_staging(publication(published_release_images()))['release-bundle.json'])
+        manifest['release']['name'] = 'v0.14.18-transition-staging'
+        with self.assertRaises(MAN.ManifestError):
+            MAN.validate_schema(manifest)
+        ref = lambda tag: {'name': tag, 'bundleSha256': 'sha256:'+'a'*64,
+                           'allowlistSha256': 'sha256:'+'b'*64}
+        manifest['transition'] = {'fromRelease': ref('v0.14.17-staging'),
+                                  'finalRelease': ref('v0.14.18-staging'), 'helperWorkloads': []}
+        MAN.validate_schema(manifest)
+        manifest['release']['name'] = 'v0.14.18-staging'
+        with self.assertRaises(MAN.ManifestError):
+            MAN.validate_schema(manifest)
+
+    def setUp(self):
+        self.image = 'example/app@sha256:' + 'a' * 64
+        self.entry = {'initContainers': [], 'containers': [{
+            'image': self.image, 'digest': 'sha256:' + 'a' * 64,
+            'command': {'policy': 'exact', 'argv': ['/app']},
+            'args': {'policy': 'deny'}, 'env': {'policy': 'exact', 'values': {}},
+            'mounts': {'policy': 'deny'}}]}
+
+    def policy(self, *names):
+        return {'schema': 'c8s.allowlist/v1', 'workloads': {name: copy.deepcopy(self.entry) for name in names}}
+
+    def compose(self, helpers=None, new=None):
+        return MAN.compose_transition_policy(self.policy('old'), new or self.policy('final'),
+                                             helpers or {}, {self.image})
+
+    def test_old_final_and_helpers_are_all_preserved(self):
+        result = self.compose({'test-client': self.entry})
+        self.assertEqual(set(result['workloads']), {'old', 'final', 'test-client'})
+
+    def test_changed_shared_identity_cannot_be_silently_overwritten(self):
+        new = self.policy('old')
+        new['workloads']['old']['containers'][0]['args'] = {'policy': 'exact', 'argv': ['--changed']}
+        with self.assertRaisesRegex(MAN.ManifestError, 'conflicting definitions'):
+            self.compose(new=new)
+
+    def test_unapproved_helper_image_is_rejected(self):
+        entry = copy.deepcopy(self.entry)
+        entry['containers'][0]['image'] = 'another/app@sha256:' + 'b' * 64
+        with self.assertRaisesRegex(MAN.ManifestError, 'no approved release image'):
+            self.compose({'helper': entry})
+
+    def test_mismatched_digest_is_rejected(self):
+        entry = copy.deepcopy(self.entry)
+        entry['containers'][0]['digest'] = 'sha256:' + 'b' * 64
+        with self.assertRaisesRegex(MAN.ManifestError, 'image and digest differ'):
+            self.compose({'helper': entry})
+
+    def test_unrestricted_new_helper_is_rejected(self):
+        entry = copy.deepcopy(self.entry)
+        entry['containers'][0]['mounts'] = {'policy': 'any'}
+        with self.assertRaisesRegex(MAN.ManifestError, 'must have exact'):
+            self.compose({'helper': entry})
+
+    def test_transition_tags_select_the_existing_environment_profiles(self):
+        self.assertEqual(PROFILES.for_tag('v0.14.18-transition').name, 'production')
+        self.assertEqual(PROFILES.for_tag('v0.14.18-transition-staging').name, 'staging')
+        for tag in ['v0.14.18-staging-transition', 'v0.14.18-transition-transition']:
+            with self.assertRaises(PROFILES.ProfileError):
+                PROFILES.for_tag(tag)
+
+
+
+    def test_helper_cannot_reuse_an_application_identity(self):
+        with self.assertRaisesRegex(MAN.ManifestError, 'separate workload identities'):
+            self.compose({'final': self.entry})
+
+    def test_helper_image_key_uses_verified_image_without_a_manual_digest(self):
+        entry = copy.deepcopy(self.entry)
+        container = entry['containers'][0]
+        container.pop('image'); container.pop('digest'); container['imageKey'] = 'rolloutClient'
+        resolved = MAN.resolve_transition_helpers({'helper': entry}, {'rolloutClient': self.image})
+        self.assertEqual(resolved['helper'], self.entry)
+        container['digest'] = 'sha256:' + 'a' * 64
+        with self.assertRaisesRegex(MAN.ManifestError, 'manual digest'):
+            MAN.resolve_transition_helpers({'helper': entry}, {'rolloutClient': self.image})
+
+    def test_helper_hosts_use_final_workload_ids_without_changing_the_program(self):
+        entry = copy.deepcopy(self.entry)
+        entry['containers'][0]['env']['values'] = {'HOSTS': '${GATEWAY_WORKLOAD_ID},${ROUTER_WORKLOAD_ID}'}
+        entry['containers'][0]['args'] = {'policy': 'exact', 'argv': ['literal ${GATEWAY_WORKLOAD_ID} in program']}
+        resolved = MAN.resolve_transition_helpers({'helper': entry}, {}, 'v0.14.18-transition')
+        self.assertEqual(resolved['helper']['containers'][0]['env']['values']['HOSTS'], 'gateway-v0-14-18,router-v0-14-18')
+        self.assertEqual(resolved['helper']['containers'][0]['args'], entry['containers'][0]['args'])
+        with self.assertRaisesRegex(MAN.ManifestError, 'unresolved environment marker'):
+            MAN.resolve_transition_helpers({'helper': entry}, {})
+
+    def test_transition_requires_the_exact_final_replacement_policy(self):
+        old, final = self.policy('old'), self.policy('final')
+        def manifest(policy):
+            return {'images': {'gateway': self.image}, 'source': {'commit': 'a'*40},
+                    'c8s': {'sourceCommit': 'b'*40}, 'nodeImage': {'reference': 'node'},
+                    'allowlist': {'sha256': MAN.sha256(json.dumps(policy).encode())}}
+        spec = {'transition': {'fromRelease': 'v0.14.17', 'helpers': {}}}
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(MAN, 'signed_allowlist',
+                side_effect=[(manifest(old), old, 'sha256:'+'c'*64),
+                             (manifest(final), final, 'sha256:'+'d'*64)]):
+            with self.assertRaisesRegex(MAN.ManifestError, 'differ from the signed final policy'):
+                MAN.transition_policy('v0.14.18-transition', spec, 'a'*40,
+                    json.dumps(self.policy('different')).encode(), {'gateway': self.image},
+                    None, Path(folder), Path('c8s'), PRODUCTION)
+
+
 class EnvironmentTests(unittest.TestCase):
     def env(self, obj, configs=None, cdi=None):
         container = obj["spec"]["template"]["spec"]["containers"][0]

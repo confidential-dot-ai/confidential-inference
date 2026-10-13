@@ -1,3 +1,12 @@
+# The new gateway and router images load configuration from mounted files.
+runtimeConfig:
+  enabled: true
+  revision: 1
+  attestationCacheSeconds: 3
+  modelRoutes:
+    deepseek-ai/DeepSeek-V4-Flash-0731:
+      - deepseek-ai/DeepSeek-V4-Flash-0731-rehearsal-worker-uf0b4c47afe
+
 # Chart values of the production release.
 #
 # These source definitions preserve the reviewed candidate workloads and
@@ -27,6 +36,7 @@ scheduling:
   routerNodeName: gateway-node-1
 
 images:
+  rolloutClient: ghcr.io/confidential-dot-ai/confidential-inference/rollout-client
   # The images that this repository builds have no digest here. The release
   # build adds the digest from the image publication evidence or the signed
   # base release (scripts/build-release-manifest.py).
@@ -167,6 +177,7 @@ workloadOverrides:
       template:
         metadata:
           annotations:
+            confidential.ai/cw: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
             confidential.ai/c8s-volumes: '{{ printf "gw%s" (sha256sum .Values.attestationReceipts.releaseId
               | trunc 10) }}=/confidential-inference/volumes/{{ printf "gw%s" (sha256sum
               .Values.attestationReceipts.releaseId | trunc 10) }}'
@@ -180,8 +191,14 @@ workloadOverrides:
               value: 0.0.0.0:9443
             - name: GATEWAY_METRICS_LISTEN
               value: 0.0.0.0:9090
+            - name: GATEWAY_RUNTIME_CONFIG_FILE
+              value: /mnt/c8s-data/runtime/settings.json
+            - name: GATEWAY_ROUTER_NAMESPACE
+              value: confidential-inference
+            - name: GATEWAY_RELEASE_SELECTION_FILE
+              value: /mnt/c8s-data/release-selection/releases.json
             - name: GATEWAY_INFERENCE_URL
-              value: http://router-ub871bda890.confidential-inference.svc.cluster.local:30000
+              value: http://router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}.confidential-inference.svc.cluster.local:30000
             - name: GATEWAY_ALLOW_DIRECT_INFERENCE_URL
               value: 'true'
             - name: GATEWAY_MAXIMUM_HEADERS
@@ -190,48 +207,20 @@ workloadOverrides:
               value: '16384'
             - name: GATEWAY_MAXIMUM_URI_BYTES
               value: '2048'
-            - name: GATEWAY_MAXIMUM_BODY_BYTES
-              value: '2097152'
             - name: GATEWAY_HEADER_TIMEOUT_SECONDS
               value: '5'
-            - name: GATEWAY_BODY_TIMEOUT_SECONDS
-              value: '10'
-            - name: GATEWAY_UPSTREAM_TIMEOUT_SECONDS
-              value: '900'
-            - name: GATEWAY_STREAM_IDLE_TIMEOUT_SECONDS
-              value: '60'
-            - name: GATEWAY_GLOBAL_REQUEST_CONCURRENCY
-              value: '256'
-            - name: GATEWAY_PER_ADDRESS_CONCURRENCY
-              value: '256'
-            - name: GATEWAY_INFERENCE_CONCURRENCY
-              value: '48'
-            - name: GATEWAY_INFERENCE_QUEUE
-              value: '0'
-            - name: GATEWAY_QUEUE_TIMEOUT_SECONDS
-              value: '2'
-            - name: GATEWAY_PER_KEY_CONCURRENCY
-              value: '128'
-            - name: GATEWAY_ATTESTATION_CONCURRENCY
-              value: '4'
-            - name: GATEWAY_REQUESTS_PER_ADDRESS_PER_SECOND
-              value: '256'
             - name: GATEWAY_SHUTDOWN_GRACE_SECONDS
               value: '900'
             - name: GATEWAY_ENDPOINT_DRAIN_SECONDS
               value: '35'
             - name: GATEWAY_TRUSTED_PROXY_CIDRS
               value: 10.52.0.0/16,172.20.0.0/24
-            - name: GATEWAY_MODEL
-              value: deepseek-ai/DeepSeek-V4-Flash-0731
             - name: GATEWAY_C8S_RECEIPT_TARGETS
               value: gateway|gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}|gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804
             - name: GATEWAY_C8S_EVIDENCE_BASE_URL
               value: https://api.confidential.ai
             - name: GATEWAY_C8S_EVIDENCE_CONNECT_HOST
               value: c8s-router.c8s-system.svc.cluster.local
-            - name: GATEWAY_RELEASE_ID
-              value: '{{ .Values.attestationReceipts.releaseId }}'
             - name: GATEWAY_RELEASE_IDENTITY_FILE
               value: /mnt/c8s-data/release-identity/..data/release-identity.json
             - name: GATEWAY_C8S_POLICY_MODE
@@ -275,8 +264,6 @@ workloadOverrides:
               value: /mnt/c8s-data/release-identity/..data/served-image-policy.json
             - name: GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256
               value: sha256:58ce47897eb2a8c29c06cf000c11a694b71b93031e71e4f5b6ba18b36ed91a48
-            - name: GATEWAY_ATTESTATION_CACHE_SECONDS
-              value: '3'
             image: '{{ .Values.images.gateway }}'
             livenessProbe:
               failureThreshold: 3
@@ -328,6 +315,12 @@ workloadOverrides:
           schedulerName: default-scheduler
           serviceAccount: confidential-inference
           volumes:
+          - name: runtime-config
+            configMap:
+              name: gateway-runtime
+          - name: release-selection
+            configMap:
+              name: gateway-release-selection
           - name: admin-auth
             secret:
               defaultMode: 420
@@ -337,7 +330,7 @@ workloadOverrides:
               secretName: gateway-admin-mtls
           - configMap:
               defaultMode: 420
-              name: gateway-uad7f80d5e4-release-identity
+              name: gateway-release-identity
             name: release-identity
           - emptyDir: {}
             name: run
@@ -505,15 +498,15 @@ workloadOverrides:
       revisionHistoryLimit: 10
       selector:
         matchLabels:
-          confidential.ai/router-slot: router-ub871bda890
+          confidential.ai/router-slot: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
       strategy:
         type: Recreate
       template:
         metadata:
           annotations:
-            confidential.ai/cw: router-ub871bda890
+            confidential.ai/cw: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
           labels:
-            confidential.ai/router-slot: router-ub871bda890
+            confidential.ai/router-slot: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
         spec:
           containers:
           - name: sglang-router
@@ -571,7 +564,7 @@ workloadOverrides:
             - --port=8801
             - --platform=tdx
             - --front-door-mode=webpki
-            - --expected-workload=router-ub871bda890
+            - --expected-workload=router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
             - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
             - --serving-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
@@ -595,7 +588,7 @@ workloadOverrides:
             terminationMessagePath: /dev/termination-log
             terminationMessagePolicy: File
           dnsPolicy: ClusterFirst
-          hostname: router-ub871bda890
+          hostname: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
           restartPolicy: Always
           schedulerName: default-scheduler
           serviceAccount: sglang-router
@@ -603,10 +596,10 @@ workloadOverrides:
           volumes:
           - configMap:
               defaultMode: 420
-              name: router-u19d1d831b1-model-routes
+              name: router-model-routes
             name: model-routes
     metadata:
-      name: router-ub871bda890
+      name: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
   StatefulSet/inference-worker-0:
     spec:
       persistentVolumeClaimRetentionPolicy:

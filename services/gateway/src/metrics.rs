@@ -48,6 +48,7 @@ struct MetricsState {
     rejections: BTreeMap<RejectionLabels, u64>,
     upstream_reachable: bool,
     active_requests: u64,
+    router_requests: BTreeMap<String, u64>,
     queue_depth: u64,
     queue_duration: Histogram,
     request_duration: BTreeMap<RequestDurationLabels, Histogram>,
@@ -255,6 +256,21 @@ impl GatewayMetrics {
         state.active_requests = state.active_requests.saturating_add(1);
         ActiveRequestGuard {
             metrics: Arc::clone(self),
+        }
+    }
+
+    /// Count an authenticated request from body read through stream close.
+    #[must_use]
+    pub fn router_request(self: &Arc<Self>, router: String) -> RouterRequestGuard {
+        let mut state = recover_lock(&self.state);
+        if state.router_requests.len() >= 1024 {
+            state.router_requests.retain(|_, count| *count > 0);
+        }
+        let count = state.router_requests.entry(router.clone()).or_default();
+        *count = count.saturating_add(1);
+        RouterRequestGuard {
+            metrics: self.clone(),
+            router,
         }
     }
 
@@ -719,6 +735,21 @@ impl MetricsSource for GatewayMetrics {
         );
         render_header(
             &mut output,
+            "gateway_router_requests_active",
+            "Authenticated requests retaining each router target, including body reads, queues and streams",
+            "gauge",
+        );
+        for (router, count) in &state.router_requests {
+            render_sample(
+                &mut output,
+                "gateway_router_requests_active",
+                &[("router", router.as_str())],
+                &self.environment,
+                *count,
+            );
+        }
+        render_header(
+            &mut output,
             "gateway_inference_queue_depth",
             "Authenticated inference requests waiting for execution",
             "gauge",
@@ -861,6 +892,20 @@ impl MetricsSource for GatewayMetrics {
 }
 
 /// Decrements the active-request gauge when the response body ends or closes.
+pub struct RouterRequestGuard {
+    metrics: Arc<GatewayMetrics>,
+    router: String,
+}
+
+impl Drop for RouterRequestGuard {
+    fn drop(&mut self) {
+        let mut state = recover_lock(&self.metrics.state);
+        if let Some(count) = state.router_requests.get_mut(&self.router) {
+            *count = count.saturating_sub(1);
+        }
+    }
+}
+
 pub struct ActiveRequestGuard {
     metrics: Arc<GatewayMetrics>,
 }

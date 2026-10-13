@@ -23,7 +23,9 @@ use confidential_gateway::{
     key_registry::KeyRegistryMode,
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
-    router,
+    router_with_runtime,
+    runtime_config::MountedConfig,
+    runtime_settings::GatewaySettings,
 };
 use hyper_util::rt::TokioTimer;
 
@@ -35,6 +37,12 @@ const INFERENCE_UPSTREAM_URL: &str = "http://127.0.0.1:30001";
 #[derive(Parser, Debug)]
 #[command(name = "confidential-gateway")]
 struct Args {
+    #[arg(long, env = "GATEWAY_ROUTER_NAMESPACE")]
+    router_namespace: Option<String>,
+    #[arg(long, env = "GATEWAY_RELEASE_SELECTION_FILE")]
+    release_selection_file: Option<PathBuf>,
+    #[arg(long, env = "GATEWAY_RUNTIME_CONFIG_FILE")]
+    runtime_config_file: Option<PathBuf>,
     #[arg(long, env = "GATEWAY_LISTEN", default_value = "0.0.0.0:9443")]
     listen: SocketAddr,
     #[arg(long, env = "GATEWAY_METRICS_LISTEN", default_value = "0.0.0.0:9090")]
@@ -51,7 +59,7 @@ struct Args {
     // only the exact loopback proxy URL is accepted without this flag.
     #[arg(long, env = "GATEWAY_ALLOW_DIRECT_INFERENCE_URL")]
     allow_direct_inference_url: bool,
-    #[arg(long, env = "GATEWAY_MODEL")]
+    #[arg(long, env = "GATEWAY_MODEL", default_value = "")]
     model: String,
     #[arg(long, env = "GATEWAY_C8S_RECEIPT_TARGETS", default_value = "")]
     c8s_receipt_targets: String,
@@ -59,7 +67,7 @@ struct Args {
     c8s_evidence_base_url: String,
     #[arg(long, env = "GATEWAY_C8S_EVIDENCE_CONNECT_HOST")]
     c8s_evidence_connect_host: Option<String>,
-    #[arg(long, env = "GATEWAY_RELEASE_ID")]
+    #[arg(long, env = "GATEWAY_RELEASE_ID", default_value = "")]
     release_id: String,
     #[arg(long, env = "GATEWAY_C8S_CDS_URL")]
     cds_url: Option<String>,
@@ -259,7 +267,66 @@ async fn main() -> Result<()> {
         .init();
     let mut args = Args::parse();
     load_release_identity(&mut args)?;
+    let releases = args
+        .release_selection_file
+        .as_ref()
+        .map(|path| {
+            MountedConfig::<confidential_gateway::release_settings::ReleaseSettings>::open(
+                path.clone(),
+                1024 * 1024,
+                confidential_gateway::release_settings::ReleaseSettings::validate,
+            )
+            .map(Arc::new)
+            .map_err(anyhow::Error::msg)
+        })
+        .transpose()
+        .context("load release selection")?;
+    if let Some(releases) = &releases {
+        let snapshot = releases.snapshot();
+        args.release_id.clone_from(&snapshot.selected().id);
+        args.release_url = Some(snapshot.selected().url.clone());
+        args.release_bundle_sha256
+            .clone_from(&snapshot.selected().bundle_sha256);
+    }
+    let runtime = args
+        .runtime_config_file
+        .as_ref()
+        .map(|path| {
+            MountedConfig::<GatewaySettings>::open(path.clone(), 256 * 1024, |settings| {
+                validate_runtime_settings(
+                    settings,
+                    args.router_namespace.as_deref(),
+                    args.allow_direct_inference_url,
+                )
+            })
+            .map(Arc::new)
+            .map_err(anyhow::Error::msg)
+        })
+        .transpose()
+        .context("load gateway runtime settings")?;
+    let _runtime_watcher = runtime.as_ref().map(|config| {
+        let namespace = args.router_namespace.clone();
+        let direct = args.allow_direct_inference_url;
+        config.watch(
+            move |settings| validate_runtime_settings(settings, namespace.as_deref(), direct),
+            Duration::from_secs(5),
+        )
+    });
+    if let Some(runtime) = &runtime {
+        let snapshot = runtime.snapshot();
+        args.model = snapshot
+            .inference_model_ids
+            .first()
+            .cloned()
+            .unwrap_or_default();
+    }
     validate_args(&args)?;
+    let _release_watcher = releases.as_ref().map(|config| {
+        config.watch(
+            confidential_gateway::release_settings::ReleaseSettings::validate,
+            Duration::from_secs(5),
+        )
+    });
     tracing::info!("gateway configuration validated");
 
     let gateway_state = if args.state_enabled {
@@ -312,14 +379,23 @@ async fn main() -> Result<()> {
         .context("build the internal inference client")?;
     let attestation: Arc<dyn confidential_gateway::AttestationProvider> = if args.cds_url.is_some()
     {
-        metadata_provider(&args, metrics.clone())?
+        metadata_provider_with_runtime(&args, metrics.clone(), runtime.clone())?
     } else {
         bail!("GATEWAY_C8S_CDS_URL is required for policy metadata")
+    };
+    let attestation: Arc<dyn confidential_gateway::AttestationProvider> = match &releases {
+        Some(releases) => Arc::new(
+            confidential_gateway::release_settings::ReleaseMetadataProvider {
+                policy: attestation,
+                releases: releases.clone(),
+            },
+        ),
+        None => attestation,
     };
     let protection = protection_config(&args);
     let inference_model_id = args.model;
     let catalog_model_ids = vec![inference_model_id.clone()];
-    let public = router(
+    let public = router_with_runtime(
         GatewayConfig {
             catalog_model_ids,
             inference_model_ids: vec![inference_model_id],
@@ -334,6 +410,10 @@ async fn main() -> Result<()> {
         availability,
         attestation,
         http,
+        runtime.clone(),
+        args.router_namespace
+            .clone()
+            .filter(|_| args.allow_direct_inference_url),
     );
     let public = with_instance_header(public, args.gateway_instance_id.as_deref())?;
     let admin_certificate =
@@ -351,8 +431,27 @@ async fn main() -> Result<()> {
     let metrics_listener = tokio::net::TcpListener::bind(args.metrics_listen)
         .await
         .context("bind the private metrics listener")?;
+    let mut private = metrics_router(metrics);
+    if let Some(releases) = releases {
+        private = private.route(
+            "/release-config",
+            axum::routing::get(move || {
+                let releases = releases.clone();
+                async move { axum::Json(releases.status()) }
+            }),
+        );
+    }
+    if let Some(runtime) = runtime {
+        private = private.route(
+            "/runtime-config",
+            axum::routing::get(move || {
+                let runtime = runtime.clone();
+                async move { axum::Json(runtime.status()) }
+            }),
+        );
+    }
     tokio::spawn(async move {
-        if let Err(error) = axum::serve(metrics_listener, metrics_router(metrics)).await {
+        if let Err(error) = axum::serve(metrics_listener, private).await {
             tracing::error!(%error, "the metrics listener stopped");
         }
     });
@@ -513,6 +612,14 @@ fn metadata_provider(
     args: &Args,
     metrics: Arc<GatewayMetrics>,
 ) -> Result<Arc<dyn confidential_gateway::AttestationProvider>> {
+    metadata_provider_with_runtime(args, metrics, None)
+}
+
+fn metadata_provider_with_runtime(
+    args: &Args,
+    metrics: Arc<GatewayMetrics>,
+    runtime: Option<Arc<MountedConfig<GatewaySettings>>>,
+) -> Result<Arc<dyn confidential_gateway::AttestationProvider>> {
     use confidential_gateway::attestation::{
         evidence_connection, mesh_ca_certificates, parse_evidence_base_url,
     };
@@ -592,11 +699,39 @@ fn metadata_provider(
             args.attestation_maximum_evidence_bytes,
             metrics,
         )
-        .map_err(anyhow::Error::msg)?,
+        .map_err(anyhow::Error::msg)?
+        .with_runtime(runtime),
     ))
 }
 
+fn validate_router_namespace(namespace: Option<&str>, inference_url: &str) -> Result<()> {
+    if namespace.is_some_and(|name| {
+        name.is_empty()
+            || name.len() > 63
+            || name.starts_with('-')
+            || name.ends_with('-')
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    }) {
+        bail!("GATEWAY_ROUTER_NAMESPACE must be a namespace name");
+    }
+    if namespace.is_some() {
+        let origin = url::Url::parse(inference_url).context("parse the fixed router origin")?;
+        if !origin.username().is_empty()
+            || origin.password().is_some()
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+            || origin.path() != "/"
+        {
+            bail!("the fixed router origin must have no credentials, query, fragment, or path");
+        }
+    }
+    Ok(())
+}
+
 fn validate_args(args: &Args) -> Result<()> {
+    validate_router_namespace(args.router_namespace.as_deref(), &args.inference_url)?;
     if args.environment.is_empty()
         || args.environment.len() > 63
         || !args
@@ -658,7 +793,7 @@ fn validate_args(args: &Args) -> Result<()> {
     {
         bail!("the attestation client limits are outside the safe range");
     }
-    if args.model.is_empty() || args.model.len() > 256 {
+    if args.runtime_config_file.is_none() && (args.model.is_empty() || args.model.len() > 256) {
         bail!("GATEWAY_MODEL must identify one configured model");
     }
     if args.cds_url.is_some() {
@@ -690,10 +825,25 @@ fn validate_args(args: &Args) -> Result<()> {
     Ok(())
 }
 
+fn validate_runtime_settings(
+    settings: &GatewaySettings,
+    namespace: Option<&str>,
+    direct: bool,
+) -> Result<(), String> {
+    settings.validate()?;
+    if settings.router_service.is_some() && (!direct || namespace.is_none()) {
+        return Err(
+            "router Service reload needs the fixed namespace and direct-router mode".into(),
+        );
+    }
+    Ok(())
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(clippy::struct_field_names)] // The names match the JSON file fields.
 struct ReleaseIdentity {
+    #[serde(default)]
     release_bundle_sha256: String,
     #[serde(default)]
     expected_operator_public_key_sha256: String,
@@ -879,6 +1029,9 @@ mod tests {
 
     fn args() -> Args {
         Args {
+            router_namespace: None,
+            release_selection_file: None,
+            runtime_config_file: None,
             listen: "0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()),
             metrics_listen: "0.0.0.0:9090".parse().unwrap_or_else(|_| unreachable!()),
             inference_url: INFERENCE_UPSTREAM_URL.to_owned(),
