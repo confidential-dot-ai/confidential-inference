@@ -26,6 +26,7 @@ pub struct ReloadStatus {
     pub accepted_sha256: String,
     pub error: Option<String>,
     pub watcher_error: bool,
+    pub watcher_active: bool,
 }
 
 struct State<T> {
@@ -65,6 +66,7 @@ impl<T: DeserializeOwned + Versioned> MountedConfig<T> {
                     accepted_sha256: hash,
                     error: None,
                     watcher_error: false,
+                    watcher_active: false,
                 },
             }),
         })
@@ -150,7 +152,7 @@ impl<T: DeserializeOwned + Versioned + Send + Sync + 'static> MountedConfig<T> {
                 })
                 .ok();
             let directory = source.path.parent().unwrap_or_else(|| Path::new("."));
-            let watching = watcher.as_mut().is_some_and(|watcher| {
+            let mut watching = watcher.as_mut().is_some_and(|watcher| {
                 watcher
                     .watch(directory, RecursiveMode::NonRecursive)
                     .is_ok()
@@ -161,6 +163,12 @@ impl<T: DeserializeOwned + Versioned + Send + Sync + 'static> MountedConfig<T> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .status
                 .watcher_error = !watching;
+            source
+                .state
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .status
+                .watcher_active = watching;
             let mut interval = tokio::time::interval(poll_interval.max(Duration::from_millis(100)));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
@@ -169,6 +177,10 @@ impl<T: DeserializeOwned + Versioned + Send + Sync + 'static> MountedConfig<T> {
                     event = receiver.recv(), if watching => {
                         if event != Some(true) {
                             source.state.write().unwrap_or_else(std::sync::PoisonError::into_inner).status.watcher_error = true;
+                            if event.is_none() {
+                                watching = false;
+                                source.state.write().unwrap_or_else(std::sync::PoisonError::into_inner).status.watcher_active = false;
+                            }
                         }
                         // Coalesce an atomic-writer event burst.
                         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -313,7 +325,14 @@ mod tests {
             1024,
             valid,
         )?);
-        let task = source.watch(valid, Duration::from_millis(100));
+        let task = source.watch(valid, Duration::from_secs(30));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !source.status().watcher_active {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
         symlink("..two", dir.path().join("..next"))?;
         fs::rename(dir.path().join("..next"), dir.path().join("..data"))?;
         tokio::time::timeout(Duration::from_secs(3), async {
@@ -329,6 +348,40 @@ mod tests {
         assert!(
             MountedConfig::<Document>::open(dir.path().join("config.json"), 1024, valid).is_err()
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn polling_accepts_configuration_when_the_watch_cannot_start()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let mount = directory.path().join("mount");
+        fs::create_dir(&mount)?;
+        let path = mount.join("config.json");
+        fs::write(&path, br#"{"revision":1,"value":"old"}"#)?;
+        let source = Arc::new(MountedConfig::<Document>::open(path, 1024, valid)?);
+        fs::rename(&mount, directory.path().join("old-mount"))?;
+        let task = source.watch(valid, Duration::from_millis(100));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !source.status().watcher_error {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+        assert!(!source.status().watcher_active);
+        fs::create_dir(&mount)?;
+        fs::write(
+            mount.join("config.json"),
+            br#"{"revision":2,"value":"new"}"#,
+        )?;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while source.status().accepted_revision != 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+        assert_eq!(source.snapshot().value, "new");
+        task.abort();
         Ok(())
     }
 }

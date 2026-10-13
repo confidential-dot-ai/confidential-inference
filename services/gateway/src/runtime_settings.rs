@@ -15,6 +15,15 @@ pub struct GatewaySettings {
     pub upstream_timeout_seconds: u64,
     pub body_timeout_seconds: u64,
     pub stream_idle_timeout_seconds: u64,
+    pub attestation_cache_seconds: u64,
+    pub global_request_concurrency: usize,
+    pub per_address_concurrency: usize,
+    pub inference_concurrency: usize,
+    pub inference_queue: usize,
+    pub queue_timeout_seconds: u64,
+    pub per_key_concurrency: usize,
+    pub attestation_concurrency: usize,
+    pub requests_per_address_per_second: u32,
 }
 
 impl Versioned for GatewaySettings {
@@ -53,6 +62,19 @@ impl GatewaySettings {
             || !(1..=120).contains(&self.body_timeout_seconds)
             || !(1..=600).contains(&self.stream_idle_timeout_seconds)
             || self.stream_idle_timeout_seconds > self.upstream_timeout_seconds
+            || !(1..=30).contains(&self.attestation_cache_seconds)
+            || [
+                self.global_request_concurrency,
+                self.per_address_concurrency,
+                self.inference_concurrency,
+                self.per_key_concurrency,
+                self.attestation_concurrency,
+            ]
+            .iter()
+            .any(|value| !(1..=4096).contains(value))
+            || self.inference_queue > 4096
+            || !(1..=30).contains(&self.queue_timeout_seconds)
+            || !(1..=10_000).contains(&self.requests_per_address_per_second)
         {
             return Err("invalid gateway runtime settings".into());
         }

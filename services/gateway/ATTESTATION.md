@@ -12,6 +12,7 @@ The schema also accepts version 2 during gateway replacement.
 | `release.id` | Selected release identifier. |
 | `release.url` | Public release URL. |
 | `release.bundleSha256` | Digest of the release bundle. |
+| `releaseSelection` | Desired release and its match with the reported CDS policy, when runtime selection is enabled. |
 | `c8s.activeAllowlist.document` | Parsed JSON from CDS `/allowlist`. |
 | `c8s.activeAllowlist.sha256` | SHA-256 of the exact CDS response bytes. |
 | `c8s.activeAllowlist.url` | Public allowlist download URL. |
@@ -78,6 +79,45 @@ has a one-second cooldown. Expired successful data is never returned on error.
 Refresh waits, upstream requests, verifier output, policy files, and response
 bodies have limits. A failed refresh returns 503 with `Retry-After: 1`.
 The response has `Cache-Control: no-store, max-age=0`.
+
+## Runtime release selection
+
+`GATEWAY_RELEASE_SELECTION_FILE` selects a mounted configuration file.
+It contains `schemaVersion: 1`, an increasing `revision`,
+`selectedBundleSha256`, and `releaseBundles`. Each bundle is a JSON string
+that preserves the exact bytes of its signed release asset. Deployment tools
+verify signatures and build evidence before they write this configuration.
+The gateway derives the release name, public URL, bundle hash, and policy hash
+from these bytes. It does not download an asset during a request.
+
+The selected bundle takes precedence when several releases share a policy.
+If the reported CDS policy matches another unique configured bundle, the
+gateway reports that release and marks the desired selection as pending.
+If no unique bundle matches, `release` is null and `releaseSelection.status`
+is `pending`. The client verifier rejects that state. The CDS allowlist stays
+in the response. A desired release is not a claim that its policy is enforced.
+
+The file watcher watches the mount directory. A five-second polling fallback
+handles missed events. Configuration status is available at `/release-config`
+on the private metrics listener. It shows desired and accepted revisions,
+hashes, and errors. These fields are operational information, not TEE evidence.
+Invalid updates retain the accepted configuration. Invalid startup data stops
+startup. A rollback writes the previous contents with a new revision.
+
+`GATEWAY_RUNTIME_CONFIG_FILE` selects the gateway settings file. It controls
+the model catalog and admitted models, body limit, request timeouts, capacity
+and queue limits, request rate, and attestation cache duration. The accepted
+status is at `/runtime-config` on the same private listener. Each request
+keeps its model and timeout snapshot. A capacity decrease preserves active
+permits and blocks new admission until usage falls. Queued requests keep
+their deadline and use the current execution capacity. HTTP clients, rate
+windows, and request counters are not replaced on reload.
+
+Secrets, CDS trust pins, authentication settings, listener settings, and
+worker initialization remain startup inputs. Mount configuration directories
+without `subPath`. Use `<mount>/file.json`, not a timestamp directory, as the
+configured path. ConfigMap contents are not C8s image measurements. Clients
+must still verify the signed release and the inference connection.
 
 The existing metrics endpoint reports attestation response counts, response
 duration, cache hits, refresh results, and failure cooldowns. Rejections use the

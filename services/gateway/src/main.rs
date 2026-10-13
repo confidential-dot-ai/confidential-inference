@@ -37,6 +37,8 @@ const INFERENCE_UPSTREAM_URL: &str = "http://127.0.0.1:30001";
 #[derive(Parser, Debug)]
 #[command(name = "confidential-gateway")]
 struct Args {
+    #[arg(long, env = "GATEWAY_RELEASE_SELECTION_FILE")]
+    release_selection_file: Option<PathBuf>,
     #[arg(long, env = "GATEWAY_RUNTIME_CONFIG_FILE")]
     runtime_config_file: Option<PathBuf>,
     #[arg(long, env = "GATEWAY_LISTEN", default_value = "0.0.0.0:9443")]
@@ -55,7 +57,7 @@ struct Args {
     // only the exact loopback proxy URL is accepted without this flag.
     #[arg(long, env = "GATEWAY_ALLOW_DIRECT_INFERENCE_URL")]
     allow_direct_inference_url: bool,
-    #[arg(long, env = "GATEWAY_MODEL")]
+    #[arg(long, env = "GATEWAY_MODEL", default_value = "")]
     model: String,
     #[arg(long, env = "GATEWAY_C8S_RECEIPT_TARGETS", default_value = "")]
     c8s_receipt_targets: String,
@@ -63,7 +65,7 @@ struct Args {
     c8s_evidence_base_url: String,
     #[arg(long, env = "GATEWAY_C8S_EVIDENCE_CONNECT_HOST")]
     c8s_evidence_connect_host: Option<String>,
-    #[arg(long, env = "GATEWAY_RELEASE_ID")]
+    #[arg(long, env = "GATEWAY_RELEASE_ID", default_value = "")]
     release_id: String,
     #[arg(long, env = "GATEWAY_C8S_CDS_URL")]
     cds_url: Option<String>,
@@ -263,7 +265,27 @@ async fn main() -> Result<()> {
         .init();
     let mut args = Args::parse();
     load_release_identity(&mut args)?;
-    validate_args(&args)?;
+    let releases = args
+        .release_selection_file
+        .as_ref()
+        .map(|path| {
+            MountedConfig::<confidential_gateway::release_settings::ReleaseSettings>::open(
+                path.clone(),
+                1024 * 1024,
+                confidential_gateway::release_settings::ReleaseSettings::validate,
+            )
+            .map(Arc::new)
+            .map_err(anyhow::Error::msg)
+        })
+        .transpose()
+        .context("load release selection")?;
+    if let Some(releases) = &releases {
+        let snapshot = releases.snapshot();
+        args.release_id.clone_from(&snapshot.selected().id);
+        args.release_url = Some(snapshot.selected().url.clone());
+        args.release_bundle_sha256
+            .clone_from(&snapshot.selected().bundle_sha256);
+    }
     let runtime = args
         .runtime_config_file
         .as_ref()
@@ -281,6 +303,21 @@ async fn main() -> Result<()> {
     let _runtime_watcher = runtime
         .as_ref()
         .map(|config| config.watch(GatewaySettings::validate, Duration::from_secs(5)));
+    if let Some(runtime) = &runtime {
+        let snapshot = runtime.snapshot();
+        args.model = snapshot
+            .inference_model_ids
+            .first()
+            .cloned()
+            .unwrap_or_default();
+    }
+    validate_args(&args)?;
+    let _release_watcher = releases.as_ref().map(|config| {
+        config.watch(
+            confidential_gateway::release_settings::ReleaseSettings::validate,
+            Duration::from_secs(5),
+        )
+    });
     tracing::info!("gateway configuration validated");
 
     let gateway_state = if args.state_enabled {
@@ -333,9 +370,18 @@ async fn main() -> Result<()> {
         .context("build the internal inference client")?;
     let attestation: Arc<dyn confidential_gateway::AttestationProvider> = if args.cds_url.is_some()
     {
-        metadata_provider(&args, metrics.clone())?
+        metadata_provider_with_runtime(&args, metrics.clone(), runtime.clone())?
     } else {
         bail!("GATEWAY_C8S_CDS_URL is required for policy metadata")
+    };
+    let attestation: Arc<dyn confidential_gateway::AttestationProvider> = match &releases {
+        Some(releases) => Arc::new(
+            confidential_gateway::release_settings::ReleaseMetadataProvider {
+                policy: attestation,
+                releases: releases.clone(),
+            },
+        ),
+        None => attestation,
     };
     let protection = protection_config(&args);
     let inference_model_id = args.model;
@@ -374,6 +420,15 @@ async fn main() -> Result<()> {
         .await
         .context("bind the private metrics listener")?;
     let mut private = metrics_router(metrics);
+    if let Some(releases) = releases {
+        private = private.route(
+            "/release-config",
+            axum::routing::get(move || {
+                let releases = releases.clone();
+                async move { axum::Json(releases.status()) }
+            }),
+        );
+    }
     if let Some(runtime) = runtime {
         private = private.route(
             "/runtime-config",
@@ -545,6 +600,14 @@ fn metadata_provider(
     args: &Args,
     metrics: Arc<GatewayMetrics>,
 ) -> Result<Arc<dyn confidential_gateway::AttestationProvider>> {
+    metadata_provider_with_runtime(args, metrics, None)
+}
+
+fn metadata_provider_with_runtime(
+    args: &Args,
+    metrics: Arc<GatewayMetrics>,
+    runtime: Option<Arc<MountedConfig<GatewaySettings>>>,
+) -> Result<Arc<dyn confidential_gateway::AttestationProvider>> {
     use confidential_gateway::attestation::{
         evidence_connection, mesh_ca_certificates, parse_evidence_base_url,
     };
@@ -624,7 +687,8 @@ fn metadata_provider(
             args.attestation_maximum_evidence_bytes,
             metrics,
         )
-        .map_err(anyhow::Error::msg)?,
+        .map_err(anyhow::Error::msg)?
+        .with_runtime(runtime),
     ))
 }
 
@@ -690,7 +754,7 @@ fn validate_args(args: &Args) -> Result<()> {
     {
         bail!("the attestation client limits are outside the safe range");
     }
-    if args.model.is_empty() || args.model.len() > 256 {
+    if args.runtime_config_file.is_none() && (args.model.is_empty() || args.model.len() > 256) {
         bail!("GATEWAY_MODEL must identify one configured model");
     }
     if args.cds_url.is_some() {
@@ -911,6 +975,7 @@ mod tests {
 
     fn args() -> Args {
         Args {
+            release_selection_file: None,
             runtime_config_file: None,
             listen: "0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()),
             metrics_listen: "0.0.0.0:9090".parse().unwrap_or_else(|_| unreachable!()),

@@ -22,6 +22,7 @@ use tokio::sync::oneshot;
 use tower::ServiceExt;
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn runtime_models_change_without_interrupting_an_active_request()
 -> Result<(), Box<dyn std::error::Error>> {
     use confidential_gateway::{
@@ -38,6 +39,15 @@ async fn runtime_models_change_without_interrupting_an_active_request()
         upstream_timeout_seconds: 30,
         body_timeout_seconds: 10,
         stream_idle_timeout_seconds: 20,
+        attestation_cache_seconds: 10,
+        global_request_concurrency: 256,
+        per_address_concurrency: 16,
+        inference_concurrency: 1,
+        inference_queue: 0,
+        queue_timeout_seconds: 2,
+        per_key_concurrency: 4,
+        attestation_concurrency: 4,
+        requests_per_address_per_second: 30,
     };
     std::fs::write(&path, serde_json::to_vec(&settings(1, "old"))?)?;
     let runtime = Arc::new(MountedConfig::open(

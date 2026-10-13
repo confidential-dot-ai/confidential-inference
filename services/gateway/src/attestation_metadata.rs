@@ -33,6 +33,8 @@ pub struct MetadataProvider {
     timeout: Duration,
     maximum_bytes: usize,
     metrics: Arc<GatewayMetrics>,
+    runtime:
+        Option<Arc<crate::runtime_config::MountedConfig<crate::runtime_settings::GatewaySettings>>>,
 }
 
 impl MetadataProvider {
@@ -62,7 +64,19 @@ impl MetadataProvider {
             timeout,
             maximum_bytes,
             metrics,
+            runtime: None,
         })
+    }
+
+    #[must_use]
+    pub fn with_runtime(
+        mut self,
+        runtime: Option<
+            Arc<crate::runtime_config::MountedConfig<crate::runtime_settings::GatewaySettings>>,
+        >,
+    ) -> Self {
+        self.runtime = runtime;
+        self
     }
 }
 
@@ -78,8 +92,16 @@ impl AttestationProvider for MetadataProvider {
         let mut cache = tokio::time::timeout(self.timeout, self.cache.lock())
             .await
             .map_err(|_| unavailable("metadata cache wait timed out"))?;
-        if let Some((expires, result)) = &*cache
-            && *expires > Instant::now()
+        let ttl = self.runtime.as_ref().map_or(self.ttl, |config| {
+            Duration::from_secs(config.snapshot().attestation_cache_seconds)
+        });
+        if let Some((created, result)) = &*cache
+            && created.elapsed()
+                < if result.is_ok() {
+                    ttl
+                } else {
+                    Duration::from_secs(1)
+                }
         {
             self.metrics.record_attestation_event(if result.is_ok() {
                 "cache_hit"
@@ -104,12 +126,7 @@ impl AttestationProvider for MetadataProvider {
         } else {
             "refresh_failed"
         });
-        let lifetime = if result.is_ok() {
-            self.ttl
-        } else {
-            Duration::from_secs(1)
-        };
-        *cache = Some((Instant::now() + lifetime, result.clone()));
+        *cache = Some((Instant::now(), result.clone()));
         result
     }
 }

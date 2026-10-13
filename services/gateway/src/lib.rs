@@ -28,10 +28,12 @@ pub mod admin_auth;
 pub mod api_keys;
 pub mod attestation;
 pub mod attestation_metadata;
+mod capacity;
 pub mod key_registry;
 pub mod metrics;
 mod model_response;
 pub mod protection;
+pub mod release_settings;
 pub mod runtime_config;
 pub mod runtime_settings;
 
@@ -248,7 +250,8 @@ pub fn router_with_runtime(
     } else {
         config.maximum_body_bytes
     };
-    let protection = Arc::new(ProtectionState::new(config.protection.clone()));
+    let protection =
+        Arc::new(ProtectionState::new(config.protection.clone()).with_runtime(runtime.clone()));
     let state = Arc::new(AppState {
         config,
         runtime,
