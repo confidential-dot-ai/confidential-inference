@@ -251,27 +251,6 @@ class TransitionCompositionTests(unittest.TestCase):
                 PROFILES.for_tag(tag)
 
 
-def rendered_workers(profile) -> list[dict]:
-    return [item for item in rendered(profile) if item.get("kind") == "StatefulSet"
-            and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
-
-DIGEST = "sha256:" + "a" * 64
-IMAGE = f"ghcr.io/example/app@{DIGEST}"
-CORE = f"ghcr.io/confidential-dot-ai/c8s-operator@sha256:{'b' * 64}"
-POLICY = {"chart": {"namespace": "confidential-inference"}, "kubernetes": {"serviceHost": "10.53.0.1"}}
-
-
-def controller(kind="StatefulSet", name="worker", container=None, volumes=None, annotations=None, **pod):
-    spec = {"enableServiceLinks": False, "containers": [container or {"name": "app", "image": IMAGE}]}
-    spec.update(pod)
-    if volumes is not None:
-        spec["volumes"] = volumes
-    return {
-        "kind": kind,
-        "metadata": {"name": name},
-        "spec": {"replicas": 1, "template": {"metadata": {"annotations": annotations or {}}, "spec": spec}},
-    }
-
 
     def test_helper_cannot_reuse_an_application_identity(self):
         with self.assertRaisesRegex(MAN.ManifestError, 'separate workload identities'):
@@ -286,6 +265,16 @@ def controller(kind="StatefulSet", name="worker", container=None, volumes=None, 
         container['digest'] = 'sha256:' + 'a' * 64
         with self.assertRaisesRegex(MAN.ManifestError, 'manual digest'):
             MAN.resolve_transition_helpers({'helper': entry}, {'rolloutClient': self.image})
+
+    def test_helper_hosts_use_final_workload_ids_without_changing_the_program(self):
+        entry = copy.deepcopy(self.entry)
+        entry['containers'][0]['env']['values'] = {'HOSTS': '${GATEWAY_WORKLOAD_ID},${ROUTER_WORKLOAD_ID}'}
+        entry['containers'][0]['args'] = {'policy': 'exact', 'argv': ['literal ${GATEWAY_WORKLOAD_ID} in program']}
+        resolved = MAN.resolve_transition_helpers({'helper': entry}, {}, 'v0.14.18-transition')
+        self.assertEqual(resolved['helper']['containers'][0]['env']['values']['HOSTS'], 'gateway-v0-14-18,router-v0-14-18')
+        self.assertEqual(resolved['helper']['containers'][0]['args'], entry['containers'][0]['args'])
+        with self.assertRaisesRegex(MAN.ManifestError, 'unresolved environment marker'):
+            MAN.resolve_transition_helpers({'helper': entry}, {})
 
     def test_transition_requires_the_exact_final_replacement_policy(self):
         old, final = self.policy('old'), self.policy('final')

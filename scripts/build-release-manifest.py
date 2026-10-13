@@ -100,7 +100,7 @@ REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 IMAGE_SELECTOR = runpy.run_path(str(ROOT / "scripts/affected-release-images.py"))
 ALLOWLIST_GENERATOR = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
 PUBLICATION = runpy.run_path(str(ROOT / "scripts/image-publication-manifest.py"))
-C8S_VERSION = re.compile(f"^{release_profiles.VERSION}(?:-beta\.([1-9][0-9]*))?$")
+C8S_VERSION = re.compile(rf"^{release_profiles.VERSION}(?:-beta\.([1-9][0-9]*))?$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
@@ -574,13 +574,25 @@ def compose_transition_policy(old: dict[str, Any], new: dict[str, Any],
     return result
 
 
-def resolve_transition_helpers(helpers: Any, images: dict[str, str]) -> dict[str, Any]:
+def resolve_transition_helpers(helpers: Any, images: dict[str, str], tag: str | None = None) -> dict[str, Any]:
     """Resolve helper image keys through the verified release image inventory."""
     require(isinstance(helpers, dict), "transition helpers must be a mapping")
     result = json.loads(json.dumps(helpers))
+    replacements = {}
+    if tag is not None:
+        workload_tag = release_profiles.workload_release(tag).replace('.', '-')
+        replacements = {'${GATEWAY_WORKLOAD_ID}': 'gateway-'+workload_tag,
+                        '${ROUTER_WORKLOAD_ID}': 'router-'+workload_tag}
     for name, entry in result.items():
         require(isinstance(entry, dict), f"transition helper {name} is not a workload definition")
         for container in entry.get("initContainers", []) + entry.get("containers", []):
+            values = container.get('env', {}).get('values', {})
+            for variable, value in values.items():
+                require(isinstance(value, str), f"transition helper {name} has a non-string environment value")
+                for marker, replacement in replacements.items():
+                    value = value.replace(marker, replacement)
+                require('${' not in value, f"transition helper {name} has an unresolved environment marker")
+                values[variable] = value
             key = container.pop("imageKey", None)
             if key is None:
                 continue
@@ -623,7 +635,7 @@ def transition_policy(tag: str, spec: dict[str, Any], source_commit: str,
             permitted.update(c["image"] for c in entry.get("initContainers", []) + entry.get("containers", []))
     require(json.loads(generated) == new,
             "transition replacement definitions differ from the signed final policy")
-    helpers = resolve_transition_helpers(inputs["helpers"], images)
+    helpers = resolve_transition_helpers(inputs["helpers"], images, tag)
     combined = compose_transition_policy(old, new, helpers, permitted)
     raw = ALLOWLIST_GENERATOR["canonicalize"](combined, canonical_tool)
     candidate = directory / "transition-allowlist.json"

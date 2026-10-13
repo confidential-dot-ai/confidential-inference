@@ -39,3 +39,225 @@ model:
 publicHostnames:
   - api.confidential.ai
   - candidate.api.confidential.ai
+
+# Keep the test program and its exact rules in the reviewed release source.
+transition:
+  fromRelease: v0.14.17
+  helpers:
+    gateway-update-agent:
+      initContainers: []
+      containers:
+      - command:
+          policy: exact
+          argv:
+          - /usr/local/bin/python3
+        args:
+          policy: exact
+          argv:
+          - -u
+          - -c
+          - |
+            """Run reviewed gateway checks inside the C8s mesh.
+
+            The operator submits signed admin packets through one namespaced Secret.
+            The service account can read only that Secret. No signer private key enters
+            this process. Responses exclude request headers, tokens, and snapshot bodies.
+            """
+            import base64
+            import concurrent.futures
+            import json
+            import os
+            import re
+            import ssl
+            import socket
+            import time
+            import urllib.error
+            import urllib.parse
+            import urllib.request
+
+
+            PATHS = {
+                "/health", "/ready", "/metrics", "/runtime-config", "/release-config", "/attestation",
+                "/v1/chat/completions", "/admin/v1/api-keys/source",
+                "/admin/v1/api-keys/snapshot",
+                "/.well-known/c8s/attest-pq",
+            }
+
+
+            class NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, request, fp, code, message, headers, new_url):
+                    raise ValueError("Redirects are not permitted for signed gateway requests.")
+
+
+            def validate_action(action, allowed_hosts, router_hosts=(), *, worker_hosts=(), worker_control=False):
+                parsed = urllib.parse.urlsplit(action["url"])
+                if parsed.hostname in worker_hosts:
+                    if parsed.hostname in allowed_hosts or parsed.hostname in router_hosts:
+                        raise ValueError('A worker target must be separate from other targets.')
+                    paths = {'/health': 'GET', '/v1/models': 'GET', '/get_model_info': 'GET',
+                             '/v1/chat/completions': 'POST'}
+                    if (parsed.scheme != 'http' or parsed.username or parsed.password or parsed.fragment
+                            or parsed.query or parsed.port != 30000 or parsed.path not in paths
+                            or action.get('method', 'GET') != paths[parsed.path]):
+                        raise ValueError('The worker action is not approved.')
+                    checked_body(action)
+                    return parsed
+                if parsed.hostname in router_hosts:
+                    if parsed.hostname in allowed_hosts:
+                        raise ValueError('A router target cannot also be a gateway target.')
+                    paths = {'/health': 'GET', '/readiness': 'GET', '/workers': 'GET',
+                             '/v1/chat/completions': 'POST', '/metrics': 'GET',
+                             '/model-routes': 'GET', '/model-routes/status': 'GET'}
+                    methods = {path: {method} for path, method in paths.items()}
+                    if worker_control:
+                        methods['/model-routes'] = {'GET'}
+                        methods['/model-routes/status'] = {'GET'}
+                        if re.fullmatch(r'/workers/[a-zA-Z0-9_-]{1,128}/drain', parsed.path):
+                            methods[parsed.path] = {'GET', 'POST', 'DELETE'}
+                    expected_port = 29000 if parsed.path == '/metrics' else 30000
+                    if (parsed.scheme != 'http' or parsed.username or parsed.password
+                            or parsed.fragment or parsed.query or parsed.path not in methods
+                            or parsed.port != expected_port
+                            or action.get('method', 'GET') not in methods[parsed.path]):
+                        raise ValueError('The router action is not approved.')
+                    checked_body(action)
+                    return parsed
+                if (parsed.scheme != "http" or parsed.hostname not in allowed_hosts
+                        or parsed.port not in (9443, 9090, 8800) or parsed.username
+                        or parsed.password or parsed.fragment or parsed.path not in PATHS):
+                    raise ValueError("The action destination is not approved.")
+                method = action.get("method", "GET")
+                expected = "PUT" if parsed.path.endswith("/snapshot") else (
+                    "POST" if parsed.path == "/v1/chat/completions" else "GET")
+                if method != expected or (parsed.query and parsed.path not in ('/attestation', '/.well-known/c8s/attest-pq')):
+                    raise ValueError("The action method or query is not approved.")
+                if parsed.path in ("/metrics", "/runtime-config", "/release-config") and parsed.port != 9090:
+                    raise ValueError("Metrics must use the metrics port.")
+                if parsed.path == '/.well-known/c8s/attest-pq' and parsed.port != 8800:
+                    raise ValueError('Workload evidence must use the evidence port.')
+                if parsed.path not in ('/metrics', '/runtime-config', '/release-config', '/.well-known/c8s/attest-pq') and parsed.port != 9443:
+                    raise ValueError("Gateway checks must use the gateway port.")
+                checked_body(action)
+                return parsed
+
+
+            def checked_body(action):
+                body = action.get("body")
+                if body is not None and (not isinstance(body, str) or len(body.encode()) > 4 * 1024 * 1024):
+                    raise ValueError("The request body exceeds the limit.")
+                if action.get('method', 'GET') == "GET" and body is not None:
+                    raise ValueError("A GET action cannot have a body.")
+
+
+            def perform(action, allowed_hosts, router_hosts=(), *, worker_hosts=(), worker_control=False):
+                parsed = validate_action(action, allowed_hosts, router_hosts,
+                                         worker_hosts=worker_hosts, worker_control=worker_control)
+                body = action.get("body")
+                data = None if body is None else body.encode()
+                request = urllib.request.Request(action["url"], data=data,
+                                                headers=action.get("headers", {}),
+                                                method=action.get("method", "GET"))
+                start = time.monotonic()
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+                try:
+                    with opener.open(request, timeout=45) as response:
+                        status = response.status
+                        instance = response.headers.get('X-Confidential-Gateway')
+                        raw = response.read(4 * 1024 * 1024 + 1)
+                except urllib.error.HTTPError as error:
+                    status, raw = error.code, error.read(8192)
+                    instance = error.headers.get('X-Confidential-Gateway')
+                if len(raw) > 4 * 1024 * 1024:
+                    raise ValueError("The response exceeds the limit.")
+                result = {"name": action["name"], "status": status,
+                          "durationSeconds": round(time.monotonic() - start, 3)}
+                if instance:
+                    result['gatewayIdentity'] = instance
+                if parsed.path == "/metrics":
+                    result["metrics"] = raw.decode()
+                else:
+                    try:
+                        document = json.loads(raw)
+                    except (ValueError, UnicodeDecodeError):
+                        document = {"code": "non_json_response"}
+                    if parsed.path == "/v1/chat/completions":
+                        result["validCompletion"] = isinstance(document.get("choices"), list) and bool(document["choices"])
+                        result["requestId"] = document.get("id")
+                        result['responseModel'] = document.get('model')
+                    else:
+                        # These endpoints return public evidence or safe key-source state.
+                        result["response"] = document
+                return result
+
+
+            def main():
+                namespace = os.environ["UPDATE_NAMESPACE"]
+                secret = os.environ["UPDATE_SECRET"]
+                hosts = json.loads(os.environ["UPDATE_HOSTS"])
+                router_hosts = json.loads(os.environ.get('UPDATE_ROUTER_HOSTS', '[]'))
+                worker_hosts = json.loads(os.environ.get('UPDATE_WORKER_HOSTS', '[]'))
+                worker_control = os.environ.get('UPDATE_WORKER_CONTROL', 'false') == 'true'
+                account = "/var/run/secrets/kubernetes.io/serviceaccount/"
+                context = ssl.create_default_context(cafile=account + "ca.crt")
+                url = f"https://kubernetes.default.svc/api/v1/namespaces/{namespace}/secrets/{secret}"
+                last = None
+                while True:
+                    try:
+                        with open(account + "token") as stream:
+                            token = stream.read().strip()
+                        request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+                        with urllib.request.urlopen(request, context=context, timeout=10) as response:
+                            record = json.load(response)
+                        packet = json.loads(base64.b64decode(record["data"]["task.json"]))
+                        if not isinstance(packet.get("actions"), list) or not 1 <= len(packet["actions"]) <= 32:
+                            raise ValueError("The task must have one to 32 actions.")
+                        if packet["id"] != last:
+                            results = []
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                                futures = [pool.submit(perform, action, hosts, router_hosts,
+                                                      worker_hosts=worker_hosts, worker_control=worker_control)
+                                           for action in packet["actions"]]
+                                for action, future in zip(packet["actions"], futures):
+                                    try:
+                                        results.append(future.result())
+                                    except Exception as error:
+                                        results.append({"name": action["name"], "status": 0,
+                                                        "error": type(error).__name__,
+                                                        "cause": type(getattr(error, "reason", error)).__name__,
+                                                        "errno": getattr(getattr(error, "reason", error), "errno", None)})
+                            print(json.dumps({"taskId": packet["id"], "results": results}), flush=True)
+                            last = packet["id"]
+                    except Exception as error:
+                        print(json.dumps({"agentError": type(error).__name__}), flush=True)
+                    time.sleep(0.5)
+
+
+            if __name__ == "__main__":
+                main()
+        mounts:
+          policy: exact
+          rules:
+          - destination: /etc/c8s/certs
+            kind: emptyDir
+        env:
+          policy: exact
+          values:
+            GPG_KEY: 7169605F62C751356D054A26A821E680E5FA6305
+            HOSTNAME: gateway-update-agent
+            KUBERNETES_PORT: tcp://10.53.0.1:443
+            KUBERNETES_PORT_443_TCP: tcp://10.53.0.1:443
+            KUBERNETES_PORT_443_TCP_ADDR: 10.53.0.1
+            KUBERNETES_PORT_443_TCP_PORT: '443'
+            KUBERNETES_PORT_443_TCP_PROTO: tcp
+            KUBERNETES_SERVICE_HOST: 10.53.0.1
+            KUBERNETES_SERVICE_PORT: '443'
+            KUBERNETES_SERVICE_PORT_HTTPS: '443'
+            LANG: C.UTF-8
+            PATH: /usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            PYTHON_SHA256: c2c4321961fab0fb999d66e0cecf521c2ab3994c7992873ea99e306c1094fd5a
+            PYTHON_VERSION: 3.12.15
+            UPDATE_HOSTS: '["gateway-update-old.confidential-inference.svc.cluster.local", "${GATEWAY_WORKLOAD_ID}.confidential-inference.svc.cluster.local"]'
+            UPDATE_NAMESPACE: confidential-inference
+            UPDATE_ROUTER_HOSTS: '["sglang-router.confidential-inference.svc.cluster.local", "${ROUTER_WORKLOAD_ID}.confidential-inference.svc.cluster.local"]'
+            UPDATE_SECRET: gateway-update-task
+        imageKey: rolloutClient
