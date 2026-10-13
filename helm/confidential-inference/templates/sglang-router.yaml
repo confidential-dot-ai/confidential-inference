@@ -1,5 +1,6 @@
 {{- define "confidential-inference.source.sglang-router" -}}
 {{- if .Values.router.enabled }}
+{{- $slot := printf "router-%s" (.Values.attestationReceipts.releaseId | replace "-transition" "" | replace "." "-") }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -26,6 +27,30 @@ spec:
       targetPort: cds-attest
     {{- end }}
 ---
+{{- if .Values.runtimeConfig.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $slot }}
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sglang-router
+spec:
+  clusterIP: None
+  selector:
+    confidential.ai/router-slot: {{ $slot }}
+  ports:
+    - name: openai
+      port: {{ .Values.router.port }}
+      targetPort: {{ .Values.router.port }}
+    - name: metrics
+      port: {{ .Values.router.metricsPort }}
+      targetPort: {{ .Values.router.metricsPort }}
+    - name: evidence
+      port: {{ .Values.attestationReceipts.routerPort }}
+      targetPort: {{ .Values.attestationReceipts.routerPort }}
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -48,6 +73,9 @@ spec:
     metadata:
       labels:
         {{- include "confidential-inference.selector" (dict "root" . "component" "sglang-router") | nindent 8 }}
+        {{- if .Values.runtimeConfig.enabled }}
+        confidential.ai/router-slot: {{ $slot }}
+        {{- end }}
         confidential.ai/environment: {{ .Values.environment | quote }}
       annotations:
         confidential.ai/cw: sglang-router

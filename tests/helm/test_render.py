@@ -114,6 +114,14 @@ def main() -> None:
     assert Gateway(final_documents).deployment['spec']['template'] == runtime_gateway.deployment['spec']['template']
     runtime_router = next(item for item in runtime_documents if item['kind'] == 'Deployment'
                           and item['metadata']['name'] == 'sglang-router')
+    private_router = next(item for item in runtime_documents if item['kind'] == 'Service'
+                          and item['metadata']['name'] == 'router-v0-14-18')
+    assert private_router['spec']['clusterIP'] == 'None'
+    assert all(runtime_router['spec']['template']['metadata']['labels'].get(key) == value
+               for key, value in private_router['spec']['selector'].items())
+    final_private_router = next(item for item in final_documents if item['kind'] == 'Service'
+                                and item['metadata']['name'] == 'router-v0-14-18')
+    assert private_router == final_private_router
     router_container = next(item for item in runtime_router['spec']['template']['spec']['containers']
                             if item['name'] == 'sglang-router')
     assert router_container['env'] == [{'name':'CI_ROUTER_MODEL_ROUTES_FILE',
