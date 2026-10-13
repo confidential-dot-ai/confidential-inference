@@ -177,6 +177,7 @@ workloadOverrides:
       template:
         metadata:
           annotations:
+            confidential.ai/cw: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
             confidential.ai/c8s-volumes: '{{ printf "gw%s" (sha256sum .Values.attestationReceipts.releaseId
               | trunc 10) }}=/confidential-inference/volumes/{{ printf "gw%s" (sha256sum
               .Values.attestationReceipts.releaseId | trunc 10) }}'

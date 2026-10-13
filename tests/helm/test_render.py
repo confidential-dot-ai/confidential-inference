@@ -88,6 +88,22 @@ def check_cds_policy_pins(url_only: Gateway) -> None:
 
 
 def main() -> None:
+    # The production release must route to a real Service and use the same
+    # C8s identity in the gateway controller and its evidence sidecar.
+    production = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+        '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+        '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+        '--set', 'attestationReceipts.releaseId=v0.14.18')) if item]
+    gateway = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'gateway-v0-14-18')
+    assert gateway['spec']['template']['metadata']['annotations']['confidential.ai/cw'] == gateway['metadata']['name']
+    main_container = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'gateway')
+    gateway_environment = {item['name']: item['value'] for item in main_container['env']}
+    assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://router-v0-14-18.confidential-inference.svc.cluster.local:30000'
+    evidence = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'cds-attest')
+    assert '--expected-workload='+gateway['metadata']['name'] in evidence['args']
+    service = next(d for d in production if d['kind'] == 'Service' and d['metadata']['name'] == 'router-v0-14-18')
+    router = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'router-v0-14-18')
+    assert all(router['spec']['template']['metadata']['labels'].get(k) == v for k, v in service['spec']['selector'].items())
     # One model definition produces both views. A release metadata change
     # must not change the pod templates or add a third gateway identity.
     runtime_documents = render("--set", "runtimeConfig.enabled=true", "--set",
