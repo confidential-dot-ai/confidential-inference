@@ -23,7 +23,9 @@ use confidential_gateway::{
     key_registry::KeyRegistryMode,
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
-    router,
+    router_with_runtime,
+    runtime_config::MountedConfig,
+    runtime_settings::GatewaySettings,
 };
 use hyper_util::rt::TokioTimer;
 
@@ -35,6 +37,8 @@ const INFERENCE_UPSTREAM_URL: &str = "http://127.0.0.1:30001";
 #[derive(Parser, Debug)]
 #[command(name = "confidential-gateway")]
 struct Args {
+    #[arg(long, env = "GATEWAY_RUNTIME_CONFIG_FILE")]
+    runtime_config_file: Option<PathBuf>,
     #[arg(long, env = "GATEWAY_LISTEN", default_value = "0.0.0.0:9443")]
     listen: SocketAddr,
     #[arg(long, env = "GATEWAY_METRICS_LISTEN", default_value = "0.0.0.0:9090")]
@@ -260,6 +264,23 @@ async fn main() -> Result<()> {
     let mut args = Args::parse();
     load_release_identity(&mut args)?;
     validate_args(&args)?;
+    let runtime = args
+        .runtime_config_file
+        .as_ref()
+        .map(|path| {
+            MountedConfig::<GatewaySettings>::open(
+                path.clone(),
+                256 * 1024,
+                GatewaySettings::validate,
+            )
+            .map(Arc::new)
+            .map_err(anyhow::Error::msg)
+        })
+        .transpose()
+        .context("load gateway runtime settings")?;
+    let _runtime_watcher = runtime
+        .as_ref()
+        .map(|config| config.watch(GatewaySettings::validate, Duration::from_secs(5)));
     tracing::info!("gateway configuration validated");
 
     let gateway_state = if args.state_enabled {
@@ -319,7 +340,7 @@ async fn main() -> Result<()> {
     let protection = protection_config(&args);
     let inference_model_id = args.model;
     let catalog_model_ids = vec![inference_model_id.clone()];
-    let public = router(
+    let public = router_with_runtime(
         GatewayConfig {
             catalog_model_ids,
             inference_model_ids: vec![inference_model_id],
@@ -334,6 +355,7 @@ async fn main() -> Result<()> {
         availability,
         attestation,
         http,
+        runtime.clone(),
     );
     let public = with_instance_header(public, args.gateway_instance_id.as_deref())?;
     let admin_certificate =
@@ -351,8 +373,18 @@ async fn main() -> Result<()> {
     let metrics_listener = tokio::net::TcpListener::bind(args.metrics_listen)
         .await
         .context("bind the private metrics listener")?;
+    let mut private = metrics_router(metrics);
+    if let Some(runtime) = runtime {
+        private = private.route(
+            "/runtime-config",
+            axum::routing::get(move || {
+                let runtime = runtime.clone();
+                async move { axum::Json(runtime.status()) }
+            }),
+        );
+    }
     tokio::spawn(async move {
-        if let Err(error) = axum::serve(metrics_listener, metrics_router(metrics)).await {
+        if let Err(error) = axum::serve(metrics_listener, private).await {
             tracing::error!(%error, "the metrics listener stopped");
         }
     });
@@ -879,6 +911,7 @@ mod tests {
 
     fn args() -> Args {
         Args {
+            runtime_config_file: None,
             listen: "0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()),
             metrics_listen: "0.0.0.0:9090".parse().unwrap_or_else(|_| unreachable!()),
             inference_url: INFERENCE_UPSTREAM_URL.to_owned(),

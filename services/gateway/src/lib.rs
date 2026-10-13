@@ -32,6 +32,8 @@ pub mod key_registry;
 pub mod metrics;
 mod model_response;
 pub mod protection;
+pub mod runtime_config;
+pub mod runtime_settings;
 
 use metrics::GatewayMetrics;
 use protection::{ProtectionConfig, ProtectionState};
@@ -132,6 +134,7 @@ pub struct GatewayConfig {
 #[derive(Clone)]
 struct AppState {
     config: GatewayConfig,
+    runtime: Option<Arc<runtime_config::MountedConfig<runtime_settings::GatewaySettings>>>,
     http: reqwest::Client,
     keys: Arc<dyn ApiKeyVerifier>,
     audit: Arc<dyn AuditSink>,
@@ -217,10 +220,38 @@ pub fn router(
     attestation_provider: Arc<dyn AttestationProvider>,
     http: reqwest::Client,
 ) -> Router {
-    let maximum_body_bytes = config.maximum_body_bytes;
+    router_with_runtime(
+        config,
+        keys,
+        audit,
+        metrics,
+        availability,
+        attestation_provider,
+        http,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn router_with_runtime(
+    config: GatewayConfig,
+    keys: Arc<dyn ApiKeyVerifier>,
+    audit: Arc<dyn AuditSink>,
+    metrics: Arc<GatewayMetrics>,
+    availability: GatewayAvailability,
+    attestation_provider: Arc<dyn AttestationProvider>,
+    http: reqwest::Client,
+    runtime: Option<Arc<runtime_config::MountedConfig<runtime_settings::GatewaySettings>>>,
+) -> Router {
+    let maximum_body_bytes = if runtime.is_some() {
+        8 * 1024 * 1024
+    } else {
+        config.maximum_body_bytes
+    };
     let protection = Arc::new(ProtectionState::new(config.protection.clone()));
     let state = Arc::new(AppState {
         config,
+        runtime,
         http,
         keys,
         audit,
@@ -296,10 +327,67 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response<Body> {
     (StatusCode::OK, Json(json!({"status":"ready"}))).into_response()
 }
 
+struct RequestConfig<'a> {
+    base: &'a GatewayConfig,
+    runtime: Option<Arc<runtime_settings::GatewaySettings>>,
+}
+
+impl RequestConfig<'_> {
+    fn catalog_model_ids(&self) -> &[String] {
+        self.runtime
+            .as_ref()
+            .map_or(&self.base.catalog_model_ids, |value| {
+                &value.catalog_model_ids
+            })
+    }
+    fn inference_model_ids(&self) -> &[String] {
+        self.runtime
+            .as_ref()
+            .map_or(&self.base.inference_model_ids, |value| {
+                &value.inference_model_ids
+            })
+    }
+    fn maximum_body_bytes(&self) -> usize {
+        self.runtime
+            .as_ref()
+            .map_or(self.base.maximum_body_bytes, |value| {
+                value.maximum_body_bytes
+            })
+    }
+    fn upstream_timeout(&self) -> Duration {
+        self.runtime
+            .as_ref()
+            .map_or(self.base.upstream_timeout, |value| {
+                Duration::from_secs(value.upstream_timeout_seconds)
+            })
+    }
+    fn body_timeout(&self) -> Duration {
+        self.runtime
+            .as_ref()
+            .map_or(self.base.protection.body_timeout, |value| {
+                Duration::from_secs(value.body_timeout_seconds)
+            })
+    }
+    fn stream_idle_timeout(&self) -> Duration {
+        self.runtime
+            .as_ref()
+            .map_or(self.base.protection.stream_idle_timeout, |value| {
+                Duration::from_secs(value.stream_idle_timeout_seconds)
+            })
+    }
+}
+
+fn request_config(state: &AppState) -> RequestConfig<'_> {
+    RequestConfig {
+        base: &state.config,
+        runtime: state.runtime.as_ref().map(|source| source.snapshot()),
+    }
+}
+
 async fn models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response<Body> {
-    let models: Vec<_> = state
-        .config
-        .catalog_model_ids
+    let config = request_config(&state);
+    let models: Vec<_> = config
+        .catalog_model_ids()
         .iter()
         .map(|id| json!({"id":id,"object":"model","owned_by":"confidential.ai"}))
         .collect();
@@ -326,6 +414,8 @@ async fn proxy_inference(
     request: Request,
     route: &'static str,
 ) -> Response<Body> {
+    // Capture once. An accepted update cannot change an active request or stream.
+    let config = request_config(&state);
     let request_id = request
         .extensions()
         .get::<String>()
@@ -354,8 +444,8 @@ async fn proxy_inference(
     };
     let started = Instant::now();
     let body = match tokio::time::timeout(
-        state.config.protection.body_timeout,
-        axum::body::to_bytes(request.into_body(), state.config.maximum_body_bytes),
+        config.body_timeout(),
+        axum::body::to_bytes(request.into_body(), config.maximum_body_bytes()),
     )
     .await
     {
@@ -372,9 +462,8 @@ async fn proxy_inference(
     let Some(model) = payload.get("model").and_then(Value::as_str) else {
         return client_error(StatusCode::BAD_REQUEST, "model_required");
     };
-    if !state
-        .config
-        .inference_model_ids
+    if !config
+        .inference_model_ids()
         .iter()
         .any(|candidate| candidate == model)
     {
@@ -394,7 +483,8 @@ async fn proxy_inference(
     let active_request = state.metrics.active_request();
     let upstream = state
         .http
-        .post(format!("{}{route}", state.config.upstream_base_url))
+        .post(format!("{}{route}", config.base.upstream_base_url))
+        .timeout(config.upstream_timeout())
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-request-id", &request_id)
         .body(body)
@@ -442,7 +532,7 @@ async fn proxy_inference(
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.starts_with("application/json")));
     let retry_after = safe_retry_after(upstream.headers());
-    let idle_timeout = state.config.protection.stream_idle_timeout;
+    let idle_timeout = config.stream_idle_timeout();
     let metrics = Arc::clone(&state.metrics);
     let metric_model = model.to_owned();
     let metric_key_id = key_id.clone();

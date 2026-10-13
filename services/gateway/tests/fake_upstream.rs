@@ -21,6 +21,106 @@ use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use tower::ServiceExt;
 
+#[tokio::test]
+async fn runtime_models_change_without_interrupting_an_active_request()
+-> Result<(), Box<dyn std::error::Error>> {
+    use confidential_gateway::{
+        router_with_runtime, runtime_config::MountedConfig, runtime_settings::GatewaySettings,
+    };
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("settings.json");
+    let settings = |revision, name: &str| GatewaySettings {
+        schema_version: 1,
+        revision,
+        catalog_model_ids: vec![name.into()],
+        inference_model_ids: vec![name.into()],
+        maximum_body_bytes: 1024,
+        upstream_timeout_seconds: 30,
+        body_timeout_seconds: 10,
+        stream_idle_timeout_seconds: 20,
+    };
+    std::fs::write(&path, serde_json::to_vec(&settings(1, "old"))?)?;
+    let runtime = Arc::new(MountedConfig::open(
+        path.clone(),
+        4096,
+        GatewaySettings::validate,
+    )?);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let upstream = Router::new().route("/v1/chat/completions", post({
+        let entered = entered.clone(); let release = release.clone();
+        move |Json(value): Json<Value>| {
+            let entered = entered.clone(); let release = release.clone();
+            async move {
+                entered.notify_one();
+                release.notified().await;
+                Json(json!({"model": value["model"], "choices":[{"message":{"content":"complete"},"finish_reason":"stop"}]}))
+            }
+        }
+    }));
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await });
+    let app = router_with_runtime(
+        GatewayConfig {
+            catalog_model_ids: vec!["startup".into()],
+            inference_model_ids: vec!["startup".into()],
+            upstream_base_url: format!("http://{address}"),
+            maximum_body_bytes: 1024,
+            upstream_timeout: Duration::from_secs(30),
+            protection: confidential_gateway::protection::ProtectionConfig {
+                inference_concurrency: 1,
+                inference_queue: 0,
+                ..Default::default()
+            },
+        },
+        Arc::new(Keys),
+        Arc::new(Audit),
+        Arc::new(GatewayMetrics::new("test")),
+        GatewayAvailability::default(),
+        Arc::new(UnavailableAttestation),
+        reqwest::Client::new(),
+        Some(runtime.clone()),
+    );
+    let completion = |model: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header(header::AUTHORIZATION, "Bearer accepted")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({"model":model}).to_string()))
+    };
+    let active = tokio::spawn(app.clone().oneshot(completion("old")?));
+    tokio::time::timeout(Duration::from_secs(3), entered.notified()).await?;
+    std::fs::write(&path, serde_json::to_vec(&settings(2, "new"))?)?;
+    runtime.refresh(GatewaySettings::validate);
+    let catalog = app
+        .clone()
+        .oneshot(Request::builder().uri("/v1/models").body(Body::empty())?)
+        .await?;
+    let catalog: Value =
+        serde_json::from_slice(&axum::body::to_bytes(catalog.into_body(), 4096).await?)?;
+    assert_eq!(catalog["data"][0]["id"], "new");
+    assert_eq!(
+        app.clone().oneshot(completion("old")?).await?.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // A reload must not reset the execution/admission counters.
+    assert_eq!(
+        app.clone().oneshot(completion("new")?).await?.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    release.notify_one();
+    let response = tokio::time::timeout(Duration::from_secs(3), active).await???;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response: Value =
+        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 4096).await?)?;
+    assert_eq!(response["model"], "old");
+    assert_eq!(response["choices"][0]["message"]["content"], "complete");
+    server.abort();
+    Ok(())
+}
+
 struct Keys;
 
 impl ApiKeyVerifier for Keys {
