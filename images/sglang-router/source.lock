@@ -8,7 +8,7 @@
   "routerVersion": "0.3.2",
   "patch": {
     "path": "patches/worker-withdrawal.patch",
-    "sha256": "8c1bf878491416caae5a5a43cb43d374a860de08e814efd247e2db0327dd0bf0"
+    "sha256": "19eb3d6aad263455fb782c83dab676ee879c6191eef39e51104353e006f05b1a"
   },
   "deploymentImage": {
     "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang-router"
