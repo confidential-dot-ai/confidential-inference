@@ -790,6 +790,7 @@ fn validate_args(args: &Args) -> Result<()> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(clippy::struct_field_names)] // The names match the JSON file fields.
 struct ReleaseIdentity {
+    #[serde(default)]
     release_bundle_sha256: String,
     #[serde(default)]
     expected_operator_public_key_sha256: String,

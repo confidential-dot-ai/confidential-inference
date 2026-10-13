@@ -10,7 +10,10 @@ metadata:
     {{- include "confidential-inference.labels" . | nindent 4 }}
     app.kubernetes.io/component: gateway
 data:
-  {{- $identity := dict "releaseBundleSha256" .Values.attestationReceipts.releaseBundleSha256 }}
+  {{- $identity := dict }}
+  {{- if not .Values.runtimeConfig.enabled }}
+  {{- $_ := set $identity "releaseBundleSha256" .Values.attestationReceipts.releaseBundleSha256 }}
+  {{- end }}
   {{- if eq .Values.attestationReceipts.policyMode "operator" }}
   {{- $_ := set $identity "expectedOperatorPublicKeySha256" .Values.attestationReceipts.expectedOperatorPublicKeySha256 }}
   {{- $_ := set $identity "expectedOperatorKeySetSha256" .Values.attestationReceipts.expectedOperatorKeySetSha256 }}
@@ -142,10 +145,13 @@ spec:
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.maximumHeaderBytes) | quote }}
             - name: GATEWAY_MAXIMUM_URI_BYTES
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.maximumUriBytes) | quote }}
+            {{- if not .Values.runtimeConfig.enabled }}
             - name: GATEWAY_MAXIMUM_BODY_BYTES
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.maximumBodyBytes) | quote }}
+            {{- end }}
             - name: GATEWAY_HEADER_TIMEOUT_SECONDS
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.headerTimeoutSeconds) | quote }}
+            {{- if not .Values.runtimeConfig.enabled }}
             - name: GATEWAY_BODY_TIMEOUT_SECONDS
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.bodyTimeoutSeconds) | quote }}
             - name: GATEWAY_UPSTREAM_TIMEOUT_SECONDS
@@ -168,6 +174,7 @@ spec:
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.attestationConcurrency) | quote }}
             - name: GATEWAY_REQUESTS_PER_ADDRESS_PER_SECOND
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.requestsPerAddressPerSecond) | quote }}
+            {{- end }}
             - name: GATEWAY_SHUTDOWN_GRACE_SECONDS
               value: {{ printf "%.0f" (float64 .Values.gateway.shutdownGraceSeconds) | quote }}
             - name: GATEWAY_ENDPOINT_DRAIN_SECONDS
@@ -176,8 +183,15 @@ spec:
             - name: GATEWAY_TRUSTED_PROXY_CIDRS
               value: {{ join "," .Values.gateway.protection.trustedProxyCidrs | quote }}
             {{- end }}
+            {{- if .Values.runtimeConfig.enabled }}
+            - name: GATEWAY_RUNTIME_CONFIG_FILE
+              value: /mnt/c8s-data/runtime/settings.json
+            - name: GATEWAY_RELEASE_SELECTION_FILE
+              value: /mnt/c8s-data/release-selection/releases.json
+            {{- else }}
             - name: GATEWAY_MODEL
               value: {{ .Values.inference.model.name | quote }}
+            {{- end }}
             {{- $receiptTargets := list }}
             {{- range $item := .Values.attestationReceipts.targets }}
             {{- if $.Values.attestationReceipts.legacyC8s615 }}
@@ -194,12 +208,13 @@ spec:
             - name: GATEWAY_C8S_EVIDENCE_CONNECT_HOST
               value: {{ . | quote }}
             {{- end }}
+            {{- if not .Values.runtimeConfig.enabled }}
             - name: GATEWAY_RELEASE_ID
               value: {{ .Values.attestationReceipts.releaseId | quote }}
+            {{- end }}
             # The release manifest hash and the operator key hashes are in a
             # mounted file, so the exact allowlist does not pin them.
-            # A directory mount holds kubelet's symlinks, which the gateway
-            # refuses. The file under ..data is the regular file they point at.
+            # The bounded reader accepts kubelet's symlink only inside the mount.
             - name: GATEWAY_RELEASE_IDENTITY_FILE
               value: /mnt/c8s-data/release-identity/..data/release-identity.json
             {{- with .Values.attestationReceipts.cds.url }}
@@ -273,6 +288,14 @@ spec:
             - name: release-identity
               mountPath: /mnt/c8s-data/release-identity
               readOnly: true
+            {{- if .Values.runtimeConfig.enabled }}
+            - name: runtime-config
+              mountPath: /mnt/c8s-data/runtime
+              readOnly: true
+            - name: release-selection
+              mountPath: /mnt/c8s-data/release-selection
+              readOnly: true
+            {{- end }}
             - name: run
               mountPath: /run/confidential-gateway
             - name: tmp
@@ -316,6 +339,14 @@ spec:
         - name: release-identity
           configMap:
             name: gateway-release-identity
+        {{- if .Values.runtimeConfig.enabled }}
+        - name: runtime-config
+          configMap:
+            name: {{ .Values.runtimeConfig.gatewayConfigMap }}
+        - name: release-selection
+          configMap:
+            name: {{ .Values.runtimeConfig.releaseConfigMap }}
+        {{- end }}
         - name: run
           emptyDir: {}
         - name: tmp

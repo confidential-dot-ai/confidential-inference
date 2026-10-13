@@ -113,6 +113,20 @@ attestationReceipts:
       cpu: 250m
       memory: 128Mi
 
+runtimeConfig:
+  # Enable for images that contain the gateway and router file readers.
+  enabled: false
+  revision: 1
+  # One public-model definition generates both application views. An empty
+  # map uses inference.model.name as both public and backend model name.
+  modelRoutes: {}
+  gatewayConfigMap: gateway-runtime
+  routerConfigMap: router-model-routes
+  # The release tool creates this map after it verifies the signed bundle.
+  # It is not part of Helm's generated configuration data.
+  releaseConfigMap: gateway-release-selection
+  attestationCacheSeconds: 10
+
 gateway:
   # This is the exact c8s policy entry for this workload.
   attestedWorkload: gateway
