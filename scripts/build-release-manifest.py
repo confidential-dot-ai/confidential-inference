@@ -359,7 +359,8 @@ def chart_version(tag: str, profile: release_profiles.Profile) -> str:
     X.Y.Z. The tag has the form release_profiles.for_tag accepted.
     """
     require(release_profiles.for_tag(tag).name == profile.name, f"tag {tag} does not fit profile {profile.name}")
-    return tag[1:len(tag) - len(profile.tag_suffix)]
+    final_tag = release_profiles.workload_release(tag)
+    return final_tag[1:len(final_tag) - len(profile.tag_suffix)]
 
 
 def chart_reference(name: str, version: str) -> str:
@@ -673,7 +674,7 @@ def build(
     require(isinstance(values, dict) and bool(values), "the profile values are not a mapping")
     overlay = {
         "images": release_images(values, publication, base),
-        "attestationReceipts": {"releaseId": tag},
+        "attestationReceipts": {"releaseId": release_profiles.workload_release(tag)},
     }
     overlay_bytes = yaml.safe_dump(overlay, sort_keys=True).encode()
     values = release_profiles.merge_values(values, overlay)

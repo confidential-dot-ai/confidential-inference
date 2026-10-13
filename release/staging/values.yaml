@@ -1,3 +1,6 @@
+runtimeConfig:
+  enabled: false
+
 # Staging chart values
 #
 # Helm applies this file after release/values.yaml (release/profiles.json).

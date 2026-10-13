@@ -135,7 +135,13 @@ def load(path: Path = PROFILES) -> tuple[Profile, ...]:
 def tag_pattern() -> re.Pattern[str]:
     """Match every release tag that a profile accepts."""
     suffixes = sorted((re.escape(p.tag_suffix) for p in load()), key=len, reverse=True)
-    return re.compile(f"{VERSION}(?:{'|'.join(suffixes)})")
+    return re.compile(f"{VERSION}(?:-transition)?(?:{'|'.join(suffixes)})")
+
+
+def workload_release(tag: str) -> str:
+    """Use the final release identity for the replacement workload definitions."""
+    for_tag(tag)
+    return tag.replace("-transition", "", 1)
 
 
 def policy_for_release(document: dict[str, Any], release_id: str) -> dict[str, Any]:
@@ -144,7 +150,7 @@ def policy_for_release(document: dict[str, Any], release_id: str) -> dict[str, A
     for item in result.get("workloads", []):
         for field in ("name", "controller"):
             if isinstance(item.get(field), str):
-                item[field] = item[field].replace("{release}", release_id.replace(".", "-"))
+                item[field] = item[field].replace("{release}", workload_release(release_id).replace(".", "-"))
     return result
 
 
@@ -152,7 +158,7 @@ def for_tag(tag: str) -> Profile:
     # A longer suffix first: every tag also ends with the empty suffix.
     for profile in sorted(load(), key=lambda p: len(p.tag_suffix), reverse=True):
         version = tag[:len(tag) - len(profile.tag_suffix)]
-        if tag.endswith(profile.tag_suffix) and re.fullmatch(VERSION, version):
+        if tag.endswith(profile.tag_suffix) and re.fullmatch(VERSION + r"(?:-transition)?", version):
             return profile
     raise ProfileError(f"no release profile accepts the tag {tag!r}")
 
