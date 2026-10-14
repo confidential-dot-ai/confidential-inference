@@ -115,6 +115,9 @@ def main() -> None:
     routes = json.loads(maps['router-model-routes']['data']['routes.json'])
     assert settings['catalogModelIds'] == settings['inferenceModelIds'] == sorted(routes['routes'])
     assert settings['revision'] == routes['revision'] == 1
+    assert settings['routerService'] == 'router-v0-14-18'
+    router_slot = next(item for item in runtime_documents if item['kind'] == 'Service' and item['metadata']['name'] == settings['routerService'])
+    assert router_slot['spec']['clusterIP'] == 'None'
     assert routes['routes']['public-a'] == ['backend-a']
     assert settings['evidence'] == {'baseUrl': 'https://api.example.invalid'}
     assert 'GATEWAY_C8S_EVIDENCE_BASE_URL' not in runtime_gateway.env
@@ -612,6 +615,9 @@ def main() -> None:
     routes = json.loads(maps["router-model-routes"]["data"]["routes.json"])
     assert settings["catalogModelIds"] == [model]
     assert settings["inferenceModelIds"] == [model]
+    assert settings["evidence"]["connectHost"] == "c8s-router.c8s-system.svc.cluster.local"
+    router_slot = next(item for item in staging_documents if item["kind"] == "Service" and item["metadata"]["name"] == settings["routerService"])
+    assert router_slot["spec"]["clusterIP"] == "None"
     assert routes["routes"] == {model: [model]}
     assert "gateway-release-selection" not in maps, "deployment owns verified release selection"
     sidecars = []
@@ -632,6 +638,8 @@ def main() -> None:
     client = agent["spec"]["template"]["spec"]["containers"][0]
     assert client["image"] == yaml.safe_load((ROOT / "tests/release-v1/fixtures/release-values.yaml").read_text())["images"]["rolloutClient"]
     assert client["args"] == ["-u", "-c", (CHART / "files/staging-validation-agent.py").read_text()]
+    client_env = {item["name"]: item.get("value") for item in client["env"]}
+    assert json.loads(client_env["UPDATE_ROUTER_HOSTS"]) == [settings["routerService"] + ".default.svc.cluster.local"]
     assert client["securityContext"]["runAsNonRoot"] is True
     assert client["securityContext"]["readOnlyRootFilesystem"] is True
     assert agent["spec"]["template"]["spec"]["serviceAccountName"] == "gateway-update-agent"
