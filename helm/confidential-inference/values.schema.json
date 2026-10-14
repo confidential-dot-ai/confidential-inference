@@ -107,6 +107,7 @@
         "kubeStateMetricsPort": {"const": 8804},
         "platform": {"const": "tdx"},
         "attestationApiPort": {"const": 8400},
+        "attestationApiUrl": {"type": "string", "enum": ["", "unix:///run/c8s/workload-claims/attestation-api.sock"]},
         "resources": {
           "type": "object",
           "additionalProperties": false,

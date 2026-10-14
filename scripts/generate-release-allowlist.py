@@ -24,8 +24,8 @@ The script never learns a value from a running container. A value that no
 pinned source can give (for example a node IP) is an error.
 
 `c8s allowlist derive` from the pinned c8s release builds each entry, so c8s
-itself decides which containers it injects and drops. The c8s core images are
-added as unrestricted entries, as the c8s bootstrap seed names them. The
+itself decides which containers it injects and drops. The c8s core entries mirror the bootstrap seed. New releases pin each
+component to its complete image ENTRYPOINT. The
 pinned Go tool in tools/c8s-allowlist-canonical writes the canonical bytes,
 and `c8s allowlist lint --strict` must pass.
 
@@ -73,6 +73,17 @@ GPU_RESOURCE = "nvidia.com/gpu"
 # unrestricted entry and its argv[0] is one of these (WorkloadContainers), so
 # a workload entry must not declare such a container.
 INJECTED_ENTRYPOINTS = ("get-cert", "get-secret", "get-volume", "/c8s")
+INJECTED_NAMES = {"c8s-cert", "c8s-cert-wait", "c8s-secret", "c8s-volume"}
+INJECTED_MODES = {"get-cert", "probe-file", "get-secret", "get-volume"}
+
+
+def c8s_at_least(release: str | None, version: tuple[int, int, int]) -> bool:
+    if release is None:
+        return False
+    match = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-beta\.[1-9][0-9]*)?", release)
+    if match is None:
+        raise GenerationError(f"unsupported c8s release: {release}")
+    return tuple(int(part) for part in match.groups()) >= version
 
 
 class GenerationError(ValueError):
@@ -363,10 +374,14 @@ def argv0(container: dict[str, Any]) -> str | None:
     return None
 
 
-def is_carved_out(container: dict[str, Any], core_digests: set[str]) -> bool:
-    """Report whether CDS drops this rendered container from workload matching."""
+def is_carved_out(container: dict[str, Any], core_digests: set[str], release: str | None = None) -> bool:
+    """Omit injected containers from authored input; retain application sidecars."""
     _reference, digest = split_image(container.get("image"))
     command = container.get("command") or []
+    if c8s_at_least(release, (0, 41, 0)):
+        argv = command + (container.get("args") or [])
+        return (digest in core_digests and container.get("name") in INJECTED_NAMES
+                and len(argv) >= 2 and argv[0] == "/c8s" and argv[1] in INJECTED_MODES)
     return digest in core_digests and bool(command) and command[0] in INJECTED_ENTRYPOINTS
 
 
@@ -394,8 +409,22 @@ def derive(
     return entry[name] if name in entry else entry
 
 
-def floor_entry(image: str) -> tuple[str, dict[str, Any]]:
-    """Mirror the c8s seed: one unrestricted entry for each core image."""
+def component_entrypoint(image: str, config: dict[str, Any]) -> list[str]:
+    """Match component command pins; platform installer rules stay in C8s."""
+    repository, _digest = split_image(image)
+    entrypoint = list(config.get("entrypoint", []))
+    if repository == "nginxinc/nginx-unprivileged":
+        cmd = config.get("cmd", [])
+        if not cmd or cmd[0] != "nginx":
+            raise GenerationError("the nginx core image CMD must start with nginx")
+        entrypoint.append(cmd[0])
+    return entrypoint
+
+
+def floor_entry(image: str, entrypoint: list[str] | None = None) -> tuple[str, dict[str, Any]]:
+    """Mirror the selected c8s seed, including its component command pins."""
+    if entrypoint is not None and (not entrypoint or not all(isinstance(arg, str) and arg for arg in entrypoint)):
+        raise GenerationError(f"core image {image} has no valid ENTRYPOINT")
     _reference, digest = split_image(image)
     base = image.split("@")[0].rsplit("/", 1)[-1].split(":")[0][:50]
     name = base + "-" + digest.removeprefix("sha256:")[:12]
@@ -404,10 +433,44 @@ def floor_entry(image: str) -> tuple[str, dict[str, Any]]:
         "initContainers": [],
         "containers": [{
             "digest": digest, "image": image,
-            "command": {"policy": "any"}, "args": {"policy": "any"},
+            "command": {"policy": "any"} if entrypoint is None else {"policy": "exact", "argv": entrypoint},
+            "args": {"policy": "any"},
             "env": {"policy": "any"}, "mounts": {"policy": "any"},
         }],
     }
+
+
+def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
+    if not c8s_at_least(c8s["release"], (0, 44, 0)):
+        return {}
+    path = ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json")
+    record = read_json(path)
+    if record.get("sourceCommit") != c8s["sourceCommit"] or record.get("coreImages") != c8s["coreImages"]:
+        raise GenerationError("the C8s node seed inputs differ from the profile pins")
+    seed = record.get("allowlist", {})
+    if seed.get("schema") != "c8s.allowlist/v1" or not isinstance(seed.get("workloads"), dict):
+        raise GenerationError("the C8s node seed record has no valid allowlist")
+    return seed["workloads"]
+
+
+def core_entries(images: list[str], configs: dict[str, Any], release: str | None,
+                 seed: dict[str, Any]) -> dict[str, Any]:
+    entries = {}
+    for image in images:
+        entrypoint = component_entrypoint(image, configs.get(image, {})) if c8s_at_least(release, (0, 44, 0)) else None
+        name, entry = floor_entry(image, entrypoint)
+        if name in seed:
+            entry = seed[name]
+            digest = split_image(image)[1]
+            if not entry.get("containers") or any(c.get("digest") != digest for c in entry["containers"]):
+                raise GenerationError(f"seed entry {name} does not bind its core image")
+            if entrypoint is not None and any(
+                c.get("command", {}).get("policy") != "exact"
+                or c["command"].get("argv") != entrypoint for c in entry["containers"]
+            ):
+                raise GenerationError(f"seed entry {name} does not preserve its component command pin")
+        entries[name] = entry
+    return entries
 
 
 def canonicalize(document: dict[str, Any], tool: Path | None) -> bytes:
@@ -461,7 +524,8 @@ def generate(
         env_policies: dict[str, Any] = {}
         mount_policies: dict[str, Any] = {}
         for container_name, container in containers.items():
-            if is_carved_out(container, core_digests):
+            if is_carved_out(effective_process(container, image_env.get(container["image"], {})),
+                             core_digests, c8s["release"]):
                 env_policies[container_name] = {"policy": "any"}
                 mount_policies[container_name] = {"policy": "any"}
                 continue
@@ -484,16 +548,18 @@ def generate(
                 effective_process(c, image_env.get(c["image"], {})) for c in explicit_pod.get(field, [])
             ] if field in explicit_pod else []
         entry = derive(executable, item["name"], explicit, env_policies, mount_policies, reads)
-        for field in ("initContainers", "containers"):
-            entry[field] = [
-                c for c in entry.get(field, [])
-                if not (c["digest"] in core_digests and argv0(c) in INJECTED_ENTRYPOINTS)
-            ]
+        # New c8s derive already omits injected names. Authored cds-attest
+        # and allowlist-proxy must remain in the exact workload definition.
+        if not c8s_at_least(c8s["release"], (0, 41, 0)):
+            for field in ("initContainers", "containers"):
+                entry[field] = [
+                    c for c in entry.get(field, [])
+                    if not (c["digest"] in core_digests and argv0(c) in INJECTED_ENTRYPOINTS)
+                ]
         workloads[item["name"]] = entry
     if errors:
         raise GenerationError("the release allowlist has unpinned inputs:\n  - " + "\n  - ".join(errors))
-    for image in c8s["coreImages"]:
-        name, entry = floor_entry(image)
+    for name, entry in core_entries(c8s["coreImages"], image_env, c8s["release"], core_seed(c8s)).items():
         if name in workloads:
             raise GenerationError(f"the core entry {name} collides with a workload")
         workloads[name] = entry
@@ -591,6 +657,7 @@ def refresh_image_config(profiles: tuple[release_profiles.Profile, ...]) -> dict
     images: set[str] = set()
     with tempfile.TemporaryDirectory(prefix="release-image-config-") as directory:
         for profile in profiles:
+            images.update(release_profiles.read_spec(profile)["c8s"]["coreImages"])
             placeholder = {
                 key: f"{value}@sha256:{'0' * 64}"
                 for key, value in release_profiles.read_values(profile).get("images", {}).items()

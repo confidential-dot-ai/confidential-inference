@@ -1,5 +1,7 @@
 runtimeConfig:
-  enabled: false
+  enabled: true
+  # Remove the production routes. The chart uses the staging model below.
+  modelRoutes: null
 
 # Staging chart values
 #
@@ -11,6 +13,7 @@ runtimeConfig:
 environment: staging
 
 attestationReceipts:
+  attestationApiUrl: unix:///run/c8s/workload-claims/attestation-api.sock
   evidenceBaseUrl: https://staging.api.confidential.ai
   # The gateway verifies the in-cluster CDS for its schema 3 policy metadata.
   # The deployment supplies the two policy documents; see the chart values.

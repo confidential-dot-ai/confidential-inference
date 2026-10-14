@@ -400,6 +400,81 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(name, "c8s-operator-" + "b" * 12)
         self.assertEqual(entry["containers"][0]["env"], {"policy": "any"})
 
+    def test_new_c8s_retains_authored_attestation_and_proxy_containers(self):
+        core = {GEN.split_image(CORE)[1]}
+        for mode in ("cds-attest", "allowlist-proxy", "cds", "get-cert"):
+            container = {"name": "authored", "image": CORE, "command": ["/c8s"], "args": [mode]}
+            self.assertFalse(GEN.is_carved_out(container, core, "v0.44.5-beta.1"))
+        cert = {"name": "c8s-cert", "image": CORE, "command": ["/c8s"], "args": ["get-cert"]}
+        self.assertTrue(GEN.is_carved_out(cert, core, "v0.41.0"))
+        self.assertFalse(GEN.is_carved_out({**cert, "args": ["cds-attest"]}, core, "v0.41.0"))
+
+    def test_new_component_entry_pins_the_complete_image_entrypoint(self):
+        _, entry = GEN.floor_entry(CORE, ["/c8s", "cds"])
+        self.assertEqual(entry["containers"][0]["command"],
+                         {"policy": "exact", "argv": ["/c8s", "cds"]})
+        self.assertEqual(entry["containers"][0]["args"], {"policy": "any"})
+        for invalid in ([], [""], ["/c8s", 1]):
+            with self.assertRaises(GEN.GenerationError):
+                GEN.floor_entry(CORE, invalid)
+
+    def test_nginx_command_pins_the_executable_after_its_entrypoint_script(self):
+        image = "nginxinc/nginx-unprivileged@sha256:" + "a" * 64
+        self.assertEqual(GEN.component_entrypoint(image, {
+            "entrypoint": ["/docker-entrypoint.sh"], "cmd": ["nginx", "-g", "daemon off;"]}),
+            ["/docker-entrypoint.sh", "nginx"])
+        for config in ({"entrypoint": ["/docker-entrypoint.sh"]}, {"cmd": ["sh"]}):
+            with self.assertRaises(GEN.GenerationError):
+                GEN.component_entrypoint(image, config)
+
+    def test_contract_refuses_unrestricted_or_partial_component_commands(self):
+        config = {CORE: {"entrypoint": ["/c8s", "cds"]}}
+        name, entry = GEN.floor_entry(CORE, config[CORE]["entrypoint"])
+        policy = {"workloads": []}
+        allowlist = {"workloads": {name: entry}}
+        MAN.require_allowlist_contract(allowlist, policy, [CORE], [], config, "v0.44.5-beta.1")
+        for command in ({"policy": "any"}, {"policy": "exact", "argv": ["/c8s"]}):
+            changed = copy.deepcopy(allowlist)
+            changed["workloads"][name]["containers"][0]["command"] = command
+            with self.assertRaisesRegex(MAN.ManifestError, "component ENTRYPOINT pin"):
+                MAN.require_allowlist_contract(changed, policy, [CORE], [], config, "v0.44.5-beta.1")
+
+    def test_measured_component_seed_is_preserved_and_fallback_stays_pinned(self):
+        name, baked = GEN.floor_entry(CORE, ["/c8s"])
+        baked["label"] = "measured node component"
+        entries = GEN.core_entries([CORE], {CORE: {"entrypoint": ["/c8s"]}}, "v0.44.5-beta.1", {name: baked})
+        self.assertEqual(entries[name], baked)
+        nri = "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:" + "a" * 64
+        fallback = GEN.core_entries([nri], {nri: {"entrypoint": ["/usr/local/bin/c8s", "nri-image-policy"]}},
+                                    "v0.44.5-beta.1", {})
+        entry = next(iter(fallback.values()))
+        self.assertEqual(entry["containers"][0]["command"],
+                         {"policy": "exact", "argv": ["/usr/local/bin/c8s", "nri-image-policy"]})
+        self.assertEqual(entry["containers"][0]["args"], {"policy": "any"})
+        with self.assertRaises(GEN.GenerationError):
+            GEN.core_entries([nri], {}, "v0.44.5-beta.1", {})
+        wrong = copy.deepcopy(baked)
+        wrong["containers"][0]["digest"] = "sha256:" + "c" * 64
+        with self.assertRaisesRegex(GEN.GenerationError, "does not bind"):
+            GEN.core_entries([CORE], {CORE: {"entrypoint": ["/c8s"]}}, "v0.44.5-beta.1", {name: wrong})
+
+    def test_core_seed_record_cannot_use_another_source_or_image_set(self):
+        spec = {"release": "v0.44.5-beta.1", "sourceCommit": "a" * 40, "coreImages": [CORE]}
+        record = {"sourceCommit": spec["sourceCommit"], "coreImages": [CORE],
+                  "allowlist": {"schema": "c8s.allowlist/v1", "workloads": {}}}
+        with mock.patch.object(GEN, "read_json", return_value=record):
+            self.assertEqual(GEN.core_seed(spec), {})
+        for field, value in (("sourceCommit", "b" * 40), ("coreImages", [])):
+            with mock.patch.object(GEN, "read_json", return_value={**record, field: value}):
+                with self.assertRaisesRegex(GEN.GenerationError, "differ from the profile"):
+                    GEN.core_seed(spec)
+
+    def test_beta_release_uses_its_base_version_for_admission_rules(self):
+        self.assertTrue(GEN.c8s_at_least("v0.44.0-beta.1", (0, 44, 0)))
+        self.assertFalse(GEN.c8s_at_least("v0.37.0-beta.1", (0, 41, 0)))
+        with self.assertRaises(GEN.GenerationError):
+            GEN.c8s_at_least("main", (0, 44, 0))
+
 
 class AcceptedFindingTests(unittest.TestCase):
     LINE = ('error: workload "{entry}" container sha256:' + "c" * 64 + ' pins PATH to a search path '
@@ -824,7 +899,7 @@ class ManifestTests(unittest.TestCase):
         documents = rendered(STAGING)
         allowlist = json.loads(STAGING_ALLOWLIST.read_text())
         configs = {**json.loads(PROFILES.IMAGE_CONFIG.read_text()), **REPOSITORY_CONFIGS}
-        MAN.require_allowlist_contract(allowlist, policy, core, documents, configs)
+        MAN.require_allowlist_contract(allowlist, policy, core, documents, configs, spec["c8s"]["release"])
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
@@ -832,12 +907,12 @@ class ManifestTests(unittest.TestCase):
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"].pop("inference-worker-1")
         with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
-            MAN.require_allowlist_contract(changed, policy, core, documents, configs)
+            MAN.require_allowlist_contract(changed, policy, core, documents, configs, spec["c8s"]["release"])
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"]["sglang-router"]["containers"][0]["args"]["argv"][1] = \
             "--service-discovery-namespace=wrong"
         with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
-            MAN.require_allowlist_contract(changed, policy, core, documents, configs)
+            MAN.require_allowlist_contract(changed, policy, core, documents, configs, spec["c8s"]["release"])
 
     def test_each_node_manifest_belongs_to_the_layer_that_pins_c8s(self):
         for profile in PROFILES.load():

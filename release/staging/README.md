@@ -59,3 +59,31 @@ fetch the node manifest into this directory:
 ```sh
 python3 scripts/fetch-node-manifest.py --release release/staging
 ```
+
+## Runtime configuration and attestation
+
+The staging profile enables the gateway and router file readers. It clears
+production model routes and uses the small staging model for both the public
+model name and the worker route. Helm creates `gateway-runtime` and
+`router-model-routes`. The existing Application Deployment workflow must
+create `gateway-release-selection` from verified signed release assets before
+it starts the gateway. Do not copy release metadata from a running pod.
+
+Application `cds-attest` containers use the node attestation Unix socket. The
+C8s NRI plugin supplies its read-only platform mount. The chart must not add a
+hostPath mount or a node-dependent `HOST_IP` value. Declare each authored
+attestation sidecar in the workload policy. Keep exact environment and mount
+rules, the gateway pepper secret grant, and encrypted-volume inputs.
+
+For C8s 0.44 and later, core policy entries pin the complete image ENTRYPOINT.
+The nginx pin also includes its `nginx` command.
+Refresh the image configuration record with the dependency bump. Preserve
+strict policy lint and verify that arbitrary component command overrides fail.
+
+The dependency bump also records the embedded C8s chart's measured node seed
+in `release/inputs/c8s-seeds/<source-commit>.json`. It uses the Helm and RKE2
+versions from the selected source's `mkosi.sync`, the TDX platform, and the
+release component digests. Policy generation preserves each matching baked
+core entry exactly. Components that do not run as pods in the baked node
+(for example the NRI installer and volume daemon) retain their image command
+pins for upload coverage. They do not get arbitrary shell commands.
