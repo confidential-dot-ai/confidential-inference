@@ -72,6 +72,10 @@ attestationReceipts:
   # ConfigMap, not the allowlist. The deployment sets them in its own values.
   releaseBundleSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   policyMode: operator
+  # The deployment supplies the verified policy files and their hashes in
+  # gateway-release-identity. Keep the CDS origin in the signed workload.
+  cds:
+    url: https://c8s-cds.c8s-system.svc.cluster.local:8443
   expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   targets:
@@ -259,12 +263,8 @@ workloadOverrides:
                 .Values.attestationReceipts.releaseId }}
             - name: GATEWAY_C8S_IMAGE_POLICY
               value: /mnt/c8s-data/release-identity/..data/cds-image-policy.json
-            - name: GATEWAY_C8S_IMAGE_POLICY_SHA256
-              value: sha256:b671eb84714ec358bce9686c46fc2ad3d78893cf47ebf5d4a7d17be90d580983
             - name: GATEWAY_C8S_SERVED_IMAGE_POLICY
               value: /mnt/c8s-data/release-identity/..data/served-image-policy.json
-            - name: GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256
-              value: sha256:58ce47897eb2a8c29c06cf000c11a694b71b93031e71e4f5b6ba18b36ed91a48
             image: '{{ .Values.images.gateway }}'
             livenessProbe:
               failureThreshold: 3

@@ -98,6 +98,29 @@ def main() -> None:
     assert gateway['spec']['template']['metadata']['annotations']['confidential.ai/cw'] == gateway['metadata']['name']
     main_container = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'gateway')
     gateway_environment = {item['name']: item['value'] for item in main_container['env']}
+    for name in ('GATEWAY_C8S_IMAGE_POLICY_SHA256', 'GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256'):
+        assert name not in gateway_environment
+    with tempfile.TemporaryDirectory() as directory:
+        target = Path(directory) / 'target.json'
+        served = Path(directory) / 'served.json'
+        target.write_text('{"target": 1}\n')
+        served.write_text('{"served": 2}\n')
+        pinned = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+            '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+            '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+            '--set', 'attestationReceipts.releaseId=v0.14.18',
+            '--set-file', f'attestationReceipts.cds.imagePolicy={target}',
+            '--set-file', f'attestationReceipts.cds.servedImagePolicy={served}')) if item]
+        trust = next(item['data'] for item in pinned if item['kind'] == 'ConfigMap'
+                     and item['metadata']['name'] == 'gateway-release-identity')
+        identity = json.loads(trust['release-identity.json'])
+        assert identity['cdsImagePolicySha256'] == 'sha256:' + hashlib.sha256(target.read_bytes()).hexdigest()
+        assert identity['cdsServedImagePolicySha256'] == 'sha256:' + hashlib.sha256(served.read_bytes()).hexdigest()
+        assert trust['cds-image-policy.json'] == target.read_text()
+        assert trust['served-image-policy.json'] == served.read_text()
+        pinned_gateway = next(item for item in pinned if item['kind'] == 'Deployment'
+                              and item['metadata']['name'] == gateway['metadata']['name'])
+        assert pinned_gateway['spec']['template'] == gateway['spec']['template']
     assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://router-v0-14-18.confidential-inference.svc.cluster.local:30000'
     evidence = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'cds-attest')
     assert '--expected-workload='+gateway['metadata']['name'] in evidence['args']
