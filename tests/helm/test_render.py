@@ -611,6 +611,23 @@ def main() -> None:
                 assert not any(item["name"] == "HOST_IP" for item in container.get("env", []))
                 assert not container.get("volumeMounts"), "C8s NRI adds the platform socket mount"
     assert len(sidecars) == 6
+    agent = next(item for item in staging_documents if item["kind"] == "Deployment"
+                 and item["metadata"]["name"] == "gateway-update-agent")
+    assert agent["spec"]["replicas"] == 1 and agent["spec"]["strategy"]["type"] == "Recreate"
+    client = agent["spec"]["template"]["spec"]["containers"][0]
+    assert client["image"] == yaml.safe_load((ROOT / "tests/release-v1/fixtures/release-values.yaml").read_text())["images"]["rolloutClient"]
+    assert client["args"] == ["-u", "-c", (CHART / "files/staging-validation-agent.py").read_text()]
+    assert client["securityContext"]["runAsNonRoot"] is True
+    assert client["securityContext"]["readOnlyRootFilesystem"] is True
+    assert agent["spec"]["template"]["spec"]["serviceAccountName"] == "gateway-update-agent"
+    role = next(item for item in staging_documents if item["kind"] == "Role"
+                and item["metadata"]["name"] == "gateway-update-agent")
+    assert role["rules"] == [{"apiGroups": [""], "resources": ["secrets"],
+                              "resourceNames": ["gateway-update-task"], "verbs": ["get"]}]
+    assert not any(item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway-update-agent"
+                   for item in production_documents)
+    helm("template", "example", str(CHART), *NEUTRAL_MODE,
+         "--set", "stagingValidation.enabled=true", success=False)
 
     print("Helm neutral-default and safety tests passed.")
 

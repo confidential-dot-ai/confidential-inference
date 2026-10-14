@@ -1,0 +1,161 @@
+{{- if .Values.stagingValidation.enabled }}
+{{- if ne .Values.environment "staging" }}
+{{- fail "The validation client is permitted only in the staging profile." }}
+{{- end }}
+{{- $name := "gateway-update-agent" }}
+{{- $gateway := printf "c8s-gateway.%s.svc.cluster.local" .Release.Namespace }}
+{{- $router := printf "sglang-router.%s.svc.cluster.local" .Release.Namespace }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [gateway-update-task]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "confidential-inference.labels" . | nindent 8 }}
+        app.kubernetes.io/component: {{ $name }}
+      annotations:
+        confidential.ai/cw: {{ $name }}
+        confidential.ai/c8s-cert-renew-before: 30s
+    spec:
+      hostname: {{ $name }}
+      serviceAccountName: {{ $name }}
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.scheduling.gatewayNodeName }}
+      securityContext:
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: client
+          image: {{ required "The staging client requires images.rolloutClient." .Values.images.rolloutClient }}
+          command: [/usr/local/bin/python3]
+          args:
+            - -u
+            - -c
+            - {{ required "The staging client source is missing." (.Files.Get "files/staging-validation-agent.py") | quote }}
+          env:
+            - {name: UPDATE_NAMESPACE, value: {{ .Release.Namespace | quote }}}
+            - {name: UPDATE_SECRET, value: gateway-update-task}
+            - {name: UPDATE_HOSTS, value: {{ toJson (list $gateway) | quote }}}
+            - {name: UPDATE_ROUTER_HOSTS, value: {{ toJson (list $router) | quote }}}
+            - {name: HOSTNAME, value: {{ $name }}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+      restartPolicy: Always
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: {{ $name }}
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: gateway
+      ports: [{protocol: TCP, port: 9443}, {protocol: TCP, port: 9090}]
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: sglang-router
+      ports: [{protocol: TCP, port: 30000}]
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: c8s-system
+      ports: [{protocol: TCP, port: 8443}]
+    # DNS uses allow-dns. C8s redirects workload TCP to its node mesh.
+    # The Kubernetes API is a host endpoint after Service DNAT.
+    - ports: [{protocol: TCP, port: 15001}, {protocol: TCP, port: 6443}]
+    - to:
+        - ipBlock: {cidr: 10.53.0.1/32}
+      ports: [{protocol: TCP, port: 443}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: staging-validation-to-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: gateway
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: {{ $name }}
+      ports: [{protocol: TCP, port: 9443}, {protocol: TCP, port: 9090}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: staging-validation-to-router
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: sglang-router
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: {{ $name }}
+      ports: [{protocol: TCP, port: 30000}]
+{{- end }}

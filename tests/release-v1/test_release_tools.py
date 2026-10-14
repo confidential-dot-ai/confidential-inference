@@ -56,6 +56,13 @@ REPOSITORY_CONFIGS = json.loads((FIXTURES / "repository-image-config.json").read
 REPOSITORY_CONFIGS['ghcr.io/confidential-dot-ai/confidential-inference/log-collector@sha256:' + '2' * 64] = {
     'env': [], 'entrypoint': [], 'cmd': []}
 RELEASE_IMAGES = yaml.safe_load(OVERLAY.read_text())["images"]
+# The rollout client uses the same pinned Python base as the router fixture.
+# Its program is signed in chart argv; this synthetic digest tests packaging.
+REPOSITORY_CONFIGS[RELEASE_IMAGES["rolloutClient"]] = {
+    "entrypoint": [], "cmd": ["python3"],
+    "env": REPOSITORY_CONFIGS[RELEASE_IMAGES["sglangRouter"]]["env"][:],
+}
+
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 
 
@@ -374,6 +381,33 @@ class MountTests(unittest.TestCase):
         obj = controller(container=container, volumes=[{"name": "proc", "hostPath": {"path": "/proc"}}])
         self.assertEqual(GEN.container_mounts(obj, container, None),
                          [{"destination": "/host/proc", "kind": "host", "source": "/proc", "readOnly": True}])
+
+
+class StagingValidationTests(unittest.TestCase):
+    def test_fixed_client_has_exact_process_environment_and_certificate_mounts(self):
+        pod = next(item for item in rendered(STAGING) if item.get("kind") == "Deployment"
+                   and item["metadata"]["name"] == "gateway-update-agent")
+        policy = MAN.read_allowlist_policy(STAGING.policy)
+        self.assertIn("Deployment/gateway-update-agent", {item["controller"] for item in policy["workloads"]})
+        client = pod["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(GEN.pod_name(pod), "gateway-update-agent")
+        environment = GEN.container_env(pod, client, {client["image"]: {"env": []}}, policy, None)
+        self.assertEqual(environment["UPDATE_NAMESPACE"], policy["chart"]["namespace"])
+        self.assertEqual(environment["UPDATE_SECRET"], "gateway-update-task")
+        self.assertEqual(json.loads(environment["UPDATE_HOSTS"]),
+                         ["c8s-gateway.confidential-inference-staging.svc.cluster.local"])
+        mounts = GEN.container_mounts(pod, client, None)
+        self.assertEqual(mounts, [{"destination": "/etc/c8s/certs", "kind": "emptyDir"}])
+        entry = {"initContainers": [], "containers": [{"digest": client["image"].split("@")[1],
+                 "command": {"policy": "exact", "argv": client["command"]},
+                 "args": {"policy": "exact", "argv": client["args"]}}]}
+        selected = {"workloads": [{"name": "gateway-update-agent", "controller": "Deployment/gateway-update-agent"}]}
+        allowlist = {"workloads": {"gateway-update-agent": entry}}
+        MAN.require_allowlist_contract(allowlist, selected, [], [pod], {})
+        changed = copy.deepcopy(allowlist)
+        changed["workloads"]["gateway-update-agent"]["containers"][0]["args"]["argv"][-1] = "unreviewed code"
+        with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
+            MAN.require_allowlist_contract(changed, selected, [], [pod], {})
 
 
 class ProcessTests(unittest.TestCase):

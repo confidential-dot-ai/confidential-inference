@@ -35,6 +35,10 @@
     {
       "name": "sglang-router",
       "controller": "Deployment/sglang-router"
+    },
+    {
+      "name": "gateway-update-agent",
+      "controller": "Deployment/gateway-update-agent"
     }
   ]
 }

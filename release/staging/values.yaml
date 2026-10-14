@@ -1,3 +1,6 @@
+stagingValidation:
+  enabled: true
+
 runtimeConfig:
   enabled: true
   # Remove the production routes. The chart uses the staging model below.

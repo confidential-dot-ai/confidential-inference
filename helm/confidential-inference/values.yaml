@@ -1,5 +1,9 @@
 environment: example
 
+# The final staging release declares its in-cluster validation client.
+stagingValidation:
+  enabled: false
+
 imagePullSecret:
   name: registry-pull
 

@@ -87,3 +87,23 @@ release component digests. Policy generation preserves each matching baked
 core entry exactly. Components that do not run as pods in the baked node
 (for example the NRI installer and volume daemon) retain their image command
 pins for upload coverage. They do not get arbitrary shell commands.
+
+## In-cluster validation client
+
+The final staging release declares `Deployment/gateway-update-agent`, its
+read-only ServiceAccount, and its NetworkPolicies. Production disables it.
+The client uses the pipeline-built `rolloutClient` image. Its complete Python
+program, environment, and mounts are signed in the generated allowlist.
+
+Workflow 3 submits `{"id": "...", "actions": [...]}` through the
+`gateway-update-task` Secret. The account can get only that Secret. The client
+writes `{"taskId": "...", "results": [...]}` to container `client` logs.
+Read these with `kubectl logs deployment/gateway-update-agent -c client`.
+The client holds no API-key signer or administrative key operations.
+
+The signed program permits gateway runtime/release status on port 9090,
+public gateway checks and inference on port 9443, and router model-route
+status on port 30000. It rejects unlisted hosts, administrative key endpoints,
+worker drain operations, and direct reload calls. Native file readers apply
+ConfigMap updates; acceptance checks compare the desired and accepted
+revision and digest and verify that the pod did not restart.
