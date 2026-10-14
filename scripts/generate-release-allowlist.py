@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,11 @@ GPU_RESOURCE = "nvidia.com/gpu"
 INJECTED_ENTRYPOINTS = ("get-cert", "get-secret", "get-volume", "/c8s")
 INJECTED_NAMES = {"c8s-cert", "c8s-cert-wait", "c8s-secret", "c8s-volume"}
 INJECTED_MODES = {"get-cert", "probe-file", "get-secret", "get-volume"}
+# The pinned node integration uses these NRI socket settings. The mount is
+# added to the final OCI spec, so Helm's pod specification does not show it.
+CLAIMS_SOCKET_CONSUMERS = {"c8s-cert", "c8s-secret", "c8s-volume", "cds-attest"}
+CLAIMS_SOCKET_SOURCE = "/var/run/nri-image-policy"
+CLAIMS_SOCKET_DESTINATION = "/run/c8s/workload-claims"
 
 
 def c8s_at_least(release: str | None, version: tuple[int, int, int]) -> bool:
@@ -285,7 +291,8 @@ def data_rule(destination: str, label: str) -> dict[str, str]:
 
 
 def container_mounts(
-    controller: dict[str, Any], container: dict[str, Any], cdi: dict[str, Any] | None
+    controller: dict[str, Any], container: dict[str, Any], cdi: dict[str, Any] | None,
+    *, c8s_release: str | None = None,
 ) -> list[dict[str, Any]]:
     label = f"{controller['kind']}/{controller['metadata']['name']} container {container['name']}"
     template = controller["spec"]["template"]
@@ -321,6 +328,10 @@ def container_mounts(
             for entry in annotations["confidential.ai/c8s-volumes"].split(","):
                 name = entry.partition("=")[0]
                 rules.append(data_rule(f"{directory}/{name}", label))
+        if (c8s_at_least(c8s_release, (0, 44, 6))
+                and container["name"] in CLAIMS_SOCKET_CONSUMERS):
+            rules.append({"destination": CLAIMS_SOCKET_DESTINATION, "kind": "host",
+                          "source": CLAIMS_SOCKET_SOURCE, "readOnly": True})
     if requests_gpu(container):
         if cdi is None:
             raise GenerationError(f"{label}: requests GPUs, and the NVIDIA CDI record is absent")
@@ -473,6 +484,17 @@ def core_entries(images: list[str], configs: dict[str, Any], release: str | None
     return entries
 
 
+def native_core_entries(c8s: dict[str, Any], configs: dict[str, Any]) -> dict[str, Any]:
+    if not c8s_at_least(c8s["release"], (0, 44, 6)):
+        return {}
+    record = read_json(ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json"))
+    helper = runpy.run_path(str(ROOT / "scripts/native_c8s_allowlist.py"))
+    try:
+        return helper["native_entries"](c8s, configs, record)
+    except helper["NativeRuleError"] as error:
+        raise GenerationError(str(error)) from error
+
+
 def canonicalize(document: dict[str, Any], tool: Path | None) -> bytes:
     data = json.dumps(document).encode()
     if tool is not None:
@@ -534,7 +556,7 @@ def generate(
                     "policy": "exact",
                     "values": container_env(controller, container, image_env, policy, cdi),
                 }
-                rules = container_mounts(controller, container, cdi)
+                rules = container_mounts(controller, container, cdi, c8s_release=c8s["release"])
                 mount_policies[container_name] = {"policy": "exact", "rules": rules} if rules else {"policy": "deny"}
             except GenerationError as error:
                 errors.append(str(error))
@@ -562,6 +584,10 @@ def generate(
     for name, entry in core_entries(c8s["coreImages"], image_env, c8s["release"], core_seed(c8s)).items():
         if name in workloads:
             raise GenerationError(f"the core entry {name} collides with a workload")
+        workloads[name] = entry
+    for name, entry in native_core_entries(c8s, image_env).items():
+        if name in workloads:
+            raise GenerationError(f"the native entry {name} collides with a workload")
         workloads[name] = entry
     canonical = canonicalize({"schema": "c8s.allowlist/v1", "workloads": workloads}, tool)
     with tempfile.TemporaryDirectory(prefix="release-allowlist-lint-") as directory:
