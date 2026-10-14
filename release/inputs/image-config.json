@@ -11,6 +11,36 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
+  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:112e7c4477bd4d47dace194e03e6e06fec569bea4c31c69aa76c0002803b8b01": {
+    "cmd": [],
+    "entrypoint": [
+      "/app/c8s",
+      "armtls-mesh"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:5d272d2ea6cee5443298a5c24e09c1c787b92a5fa0d649d10937c20e76d2536c": {
+    "cmd": [],
+    "entrypoint": [
+      "/app/c8s",
+      "armtls-mesh"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:04adf324591fb95fd75a9239c1cc8154f353c68e11863978c75d621b79079032": {
+    "cmd": [],
+    "entrypoint": [
+      "/c8s"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+    ]
+  },
   "ghcr.io/confidential-dot-ai/c8s-operator@sha256:0b86d0541d101e259e7879706bc68acf32fd084603b6180577bc53bdc99a796c": {
     "cmd": [],
     "entrypoint": [
@@ -21,14 +51,65 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:e822bd131345a7ed386f2a19c8c321680b591122eb4efbe9d7a20666e0fbcb3d": {
+  "ghcr.io/confidential-dot-ai/cds@sha256:14810c74d6db537168eb930ff7e5f741aea742dce8d0e9f8c102b7b200dedac9": {
     "cmd": [],
     "entrypoint": [
-      "/c8s"
+      "/c8s",
+      "cds"
     ],
     "env": [
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/cds@sha256:990a0750809acb94cdc7233d8ab6eb6b22844634b2b13f94e84263e3760dd8d5": {
+    "cmd": [],
+    "entrypoint": [
+      "/c8s",
+      "cds"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:c78bfa8adec614f1a3902627b3c444fa9058ca4b02eb57941c850c2873372a1b": {
+    "cmd": [
+      "--config",
+      "/etc/nri/conf.d/image-policy.yaml"
+    ],
+    "entrypoint": [
+      "/usr/local/bin/c8s",
+      "nri-image-policy"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/volumed@sha256:1dc9aab8cb80391dcc9748db68d30f70fb07bfb0a4a18d441cf6c2bdb106be31": {
+    "cmd": [],
+    "entrypoint": [
+      "/app/c8s",
+      "volumed"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0": {
+    "cmd": [
+      "nginx",
+      "-g",
+      "daemon off;"
+    ],
+    "entrypoint": [
+      "/docker-entrypoint.sh"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "NGINX_VERSION=1.30.5",
+      "PKG_RELEASE=1",
+      "DYNPKG_RELEASE=1"
     ]
   },
   "registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9": {

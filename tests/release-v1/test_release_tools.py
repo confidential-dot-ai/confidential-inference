@@ -866,7 +866,10 @@ class ManifestTests(unittest.TestCase):
         allowlist = json.loads(STAGING_ALLOWLIST.read_text())
         zero_digest = "sha256:" + "0" * 64
         for name in ("inference-worker-0", "inference-worker-1"):
-            policy = allowlist["workloads"][name]["containers"][0]
+            guarded = [item for item in allowlist["workloads"][name]["containers"]
+                       if item["command"].get("argv") == ["/usr/local/bin/wait-for-model"]]
+            self.assertEqual(len(guarded), 1)
+            policy = guarded[0]
             self.assertEqual(policy["command"]["argv"], ["/usr/local/bin/wait-for-model"])
             self.assertIn("sglang_simulator.simulation.sglang.launch_server", policy["args"]["argv"])
         self.assertNotIn(zero_digest, STAGING_ALLOWLIST.read_text())
