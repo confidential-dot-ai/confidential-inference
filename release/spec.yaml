@@ -8,28 +8,28 @@
 
 c8s:
   # The c8s release. It fixes the node image and its measurements.
-  release: v0.44.6-beta.1
-  sourceCommit: 1da4f3f9c42829420999b1e7a6bf038777e56898
+  release: v0.44.6
+  sourceCommit: deca64d1f5bf6c70e00c1a42ad0638bdf654efbc
   nodeImage:
     reference: ghcr.io/confidential-dot-ai/node-guest-base
-    tag: rke2-tdx-cdi-v0.44.6-beta.1
-    digest: sha256:ef0115625e45522d7efb471488a24521e384ee8d5f4f24b4c732b4590bdbcd76
+    tag: rke2-tdx-cdi-v0.44.6
+    digest: sha256:e971b0522e5523f8bbd2caf47a896685e2769416e194a4b34e70d8cfcb233a7e
   # The C8s core images. The generated policy preserves the measured
   # node's component command pins.
   coreImages:
-    - ghcr.io/confidential-dot-ai/c8s-operator@sha256:04adf324591fb95fd75a9239c1cc8154f353c68e11863978c75d621b79079032
-    - ghcr.io/confidential-dot-ai/cds@sha256:990a0750809acb94cdc7233d8ab6eb6b22844634b2b13f94e84263e3760dd8d5
-    - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:112e7c4477bd4d47dace194e03e6e06fec569bea4c31c69aa76c0002803b8b01
-    - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:c78bfa8adec614f1a3902627b3c444fa9058ca4b02eb57941c850c2873372a1b
-    - ghcr.io/confidential-dot-ai/volumed@sha256:1dc9aab8cb80391dcc9748db68d30f70fb07bfb0a4a18d441cf6c2bdb106be31
+    - ghcr.io/confidential-dot-ai/c8s-operator@sha256:daa439a7e5f1d2859b2edf2c70e68012fc256d513c1fb48d881ebda7fe521881
+    - ghcr.io/confidential-dot-ai/cds@sha256:6986c33f3d2c5ca0fef2833615cf27760f24231a0414f9ea695f445b923982c4
+    - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:55171cdd01acec5f100e0554e1069ac5c8e6488c37eae8d0f04b8f63d96dbea6
+    - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:6f46631f2d26066db5b78b572133d54ed35d7452358ee723a669bb5c684d66a4
+    - ghcr.io/confidential-dot-ai/volumed@sha256:04feb88173aaffdadd6043f1cc2a227ba1c2d22ebc7244667edcd4eae7688ffc
     - nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0
   # The artifact that c8s publishes with the node image. It holds the TDX
   # measurements MRTD, RTMR1, and RTMR2.
   nodeManifestArtifact:
-    tag: rke2-tdx-v0.44.6-beta.1
-    digest: sha256:d2b2e2d02d3082a2843371b28aeab4f9c89e8b720214c50cf91edf1a0f1184c8
+    tag: rke2-tdx-v0.44.6
+    digest: sha256:78637b05b6465b62704064c9f6e17b654564654fa39a57b2e30d6032e28564f5
     # The SHA-256 of the manifest.json layer, which is node-manifest.json.
-    manifestJson: sha256:ed04ffcc08d8375c707c78043ebf6acaed5ab3478d476a8f67890d8c7f7552a9
+    manifestJson: sha256:a386dee3fd5c88c0d050e0b9c8f37da7f6a9f8c6ef20f7a6168a8c4b5944a762
 
 model:
   repository: deepseek-ai/DeepSeek-V4-Flash-0731

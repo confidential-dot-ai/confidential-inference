@@ -1,0 +1,162 @@
+{
+  "sourceCommit": "deca64d1f5bf6c70e00c1a42ad0638bdf654efbc",
+  "coreImages": [
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:daa439a7e5f1d2859b2edf2c70e68012fc256d513c1fb48d881ebda7fe521881",
+    "ghcr.io/confidential-dot-ai/cds@sha256:6986c33f3d2c5ca0fef2833615cf27760f24231a0414f9ea695f445b923982c4",
+    "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:55171cdd01acec5f100e0554e1069ac5c8e6488c37eae8d0f04b8f63d96dbea6",
+    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:6f46631f2d26066db5b78b572133d54ed35d7452358ee723a669bb5c684d66a4",
+    "ghcr.io/confidential-dot-ai/volumed@sha256:04feb88173aaffdadd6043f1cc2a227ba1c2d22ebc7244667edcd4eae7688ffc",
+    "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
+  ],
+  "hardwarePlatform": "tdx",
+  "kubeVersion": "v1.36.4",
+  "helmVersion": "v3.14.4",
+  "allowlist": {
+    "schema": "c8s.allowlist/v1",
+    "workloads": {
+      "armtls-mesh-55171cdd01ac": {
+        "containers": [
+          {
+            "args": {
+              "policy": "any"
+            },
+            "command": {
+              "argv": [
+                "/app/c8s",
+                "armtls-mesh"
+              ],
+              "policy": "exact"
+            },
+            "digest": "sha256:55171cdd01acec5f100e0554e1069ac5c8e6488c37eae8d0f04b8f63d96dbea6",
+            "env": {
+              "policy": "any"
+            },
+            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:55171cdd01acec5f100e0554e1069ac5c8e6488c37eae8d0f04b8f63d96dbea6",
+            "mounts": {
+              "policy": "any"
+            }
+          }
+        ],
+        "initContainers": [],
+        "label": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:55171cdd01acec5f100e0554e1069ac5c8e6488c37eae8d0f04b8f63d96dbea6"
+      },
+      "busybox-fd8d9aa63ba2": {
+        "containers": [
+          {
+            "args": {
+              "policy": "any"
+            },
+            "command": {
+              "argv": [
+                "/bin/sh",
+                "/script/setup"
+              ],
+              "policy": "exact"
+            },
+            "digest": "sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d",
+            "image": "busybox@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d",
+            "mounts": {
+              "policy": "any"
+            }
+          },
+          {
+            "args": {
+              "policy": "any"
+            },
+            "command": {
+              "argv": [
+                "/bin/sh",
+                "/script/teardown"
+              ],
+              "policy": "exact"
+            },
+            "digest": "sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d",
+            "image": "busybox@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d",
+            "mounts": {
+              "policy": "any"
+            }
+          }
+        ],
+        "initContainers": [],
+        "label": "busybox@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d"
+      },
+      "c8s-operator-daa439a7e5f1": {
+        "containers": [
+          {
+            "args": {
+              "policy": "any"
+            },
+            "command": {
+              "argv": [
+                "/c8s"
+              ],
+              "policy": "exact"
+            },
+            "digest": "sha256:daa439a7e5f1d2859b2edf2c70e68012fc256d513c1fb48d881ebda7fe521881",
+            "env": {
+              "policy": "any"
+            },
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:daa439a7e5f1d2859b2edf2c70e68012fc256d513c1fb48d881ebda7fe521881",
+            "mounts": {
+              "policy": "any"
+            }
+          }
+        ],
+        "initContainers": [],
+        "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:daa439a7e5f1d2859b2edf2c70e68012fc256d513c1fb48d881ebda7fe521881"
+      },
+      "cds-6986c33f3d2c": {
+        "containers": [
+          {
+            "args": {
+              "policy": "any"
+            },
+            "command": {
+              "argv": [
+                "/c8s",
+                "cds"
+              ],
+              "policy": "exact"
+            },
+            "digest": "sha256:6986c33f3d2c5ca0fef2833615cf27760f24231a0414f9ea695f445b923982c4",
+            "env": {
+              "policy": "any"
+            },
+            "image": "ghcr.io/confidential-dot-ai/cds@sha256:6986c33f3d2c5ca0fef2833615cf27760f24231a0414f9ea695f445b923982c4",
+            "mounts": {
+              "policy": "any"
+            }
+          }
+        ],
+        "initContainers": [],
+        "label": "ghcr.io/confidential-dot-ai/cds@sha256:6986c33f3d2c5ca0fef2833615cf27760f24231a0414f9ea695f445b923982c4"
+      },
+      "nginx-unprivileged-3af0c10d960c": {
+        "containers": [
+          {
+            "args": {
+              "policy": "any"
+            },
+            "command": {
+              "argv": [
+                "/docker-entrypoint.sh",
+                "nginx"
+              ],
+              "policy": "exact"
+            },
+            "digest": "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
+            "env": {
+              "policy": "any"
+            },
+            "image": "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
+            "mounts": {
+              "policy": "any"
+            }
+          }
+        ],
+        "initContainers": [],
+        "label": "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
+      }
+    }
+  }
+}
