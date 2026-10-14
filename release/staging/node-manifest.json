@@ -1,7 +1,7 @@
 {
   "version": 3,
   "build": {
-    "timestamp": "2026-10-12T22:43:05Z",
+    "timestamp": "2026-10-14T01:24:37Z",
     "memory": "16G",
     "format": "raw",
     "platform": "tdx"
@@ -12,7 +12,7 @@
       "vmlinuz_sha256": "938196dc22df8c831e28dbe97ac0aa8f92107150cbd69cbf4fa7dfe9a0d6b763",
       "required_config_sha256": "ea97d2774893e2d33674db7bab601a2e029402ee3058b1f414fe14ace19618f2",
       "hardening_config_sha256": "0114a50e7b2695170be396b3820f2dbce940f84e7421414985197de17e4746ee",
-      "kernel_extra_config_sha256": "bc97217cd098b77933f0abbfe1d6d83e844c57afc51c7efb0055e719df0aa7ae",
+      "kernel_extra_config_sha256": "ebf85c74b908d8018e096e87f64c75b812ae9e1dd53382531582ebde15e1fea7",
       "snapshot_config_sha256": "c65688ac466a44fc13df3ac0fbf97d0735f94366da6b1a5d6684440dbd361764",
       "module_signing_cert_sha256": "7c9f63b0206dc794e5be126b86ce50c68cd33d1c22ecd5979984614c476a986e",
       "randstruct_seed_sha256": "7d6b81e63586f80ea22920623630caee43ec2eeab3113be606ab75da779ce317",
@@ -21,27 +21,27 @@
     },
     "initrd": {
       "path": "initrd.img",
-      "sha256": "a6d303be15f2d95a85d15a64de7d106da2d05704b40015bad8ccd0801a767a10"
+      "sha256": "c22a09ab78ff83a30ae60cb5601e7ca92bbfdd9e9316609244fe333abc249837"
     },
     "base_image": {
       "path": "image.raw",
-      "sha256": "2daa3339793e2095f4a65803fbac38874ebe203aba513368457001bfeef33c60"
+      "sha256": "8c10716db280c4bcc74e6a39d1ad8fab7d786677b74efb583a18714134534954"
     }
   },
   "outputs": {
     "disk_image": {
       "path": "disk.raw",
-      "sha256": "2daa3339793e2095f4a65803fbac38874ebe203aba513368457001bfeef33c60"
+      "sha256": "8c10716db280c4bcc74e6a39d1ad8fab7d786677b74efb583a18714134534954"
     },
     "uki": {
       "path": "uki.efi",
-      "sha256": "d98c6597b33fe808951000a063ae54861e7a9404fc3e60d2281a2b91a47d71b6"
+      "sha256": "eed4c9b14436636b8de934fd07873794ca96cf607917eb75da61d6ad708ae81f"
     }
   },
   "tdx": {
     "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
-    "rtmr1": "81fecedd15500baec64f844fd118a6ae542b518f5fd7a8d90153317468f8b55744b9d3956da27d9b04da33dc6acef5db",
-    "rtmr2": "4ba4c74a6dd3416cd6c56ce4473f1f3d601d0cce0dfa7999d3a66b3d08fcdee4b6287fb2514e4a5c24e03e3af28625f2",
+    "rtmr1": "4c9f24b412724b9bc76e887fd7ab1483edb2245608d00923f9d8b7bc3009c6889a6499c03f09464d8858f81ca7b364e9",
+    "rtmr2": "3f6d972e32655009afd32cc110951a9e229a617883063b6196397672eb59002c690fc68ec77144e19be9865a5fb22adb",
     "firmware": {
       "path": "OVMF.tdx.fd",
       "sha256": "a7edaeff6fc4bef8924461cb0fb68a194c3595d08ccad2720cca926dea12f7cf"

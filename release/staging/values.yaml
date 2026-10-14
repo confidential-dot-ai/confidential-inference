@@ -1,5 +1,10 @@
+stagingValidation:
+  enabled: true
+
 runtimeConfig:
-  enabled: false
+  enabled: true
+  # Remove the production routes. The chart uses the staging model below.
+  modelRoutes: null
 
 # Staging chart values
 #
@@ -11,6 +16,7 @@ runtimeConfig:
 environment: staging
 
 attestationReceipts:
+  attestationApiUrl: unix:///run/c8s/workload-claims/attestation-api.sock
   evidenceBaseUrl: https://staging.api.confidential.ai
   # The gateway verifies the in-cluster CDS for its schema 3 policy metadata.
   # The deployment supplies the two policy documents; see the chart values.
@@ -49,7 +55,7 @@ metricsCollector:
     enabled: false
 
 images:
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:e822bd131345a7ed386f2a19c8c321680b591122eb4efbe9d7a20666e0fbcb3d
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:04adf324591fb95fd75a9239c1cc8154f353c68e11863978c75d621b79079032
 
 # The simulator uses the staging workload definitions.
 workloadOverridesEnabled: false

@@ -3,6 +3,10 @@
   "type": "object",
   "required": ["environment", "imagePullSecret", "images", "scheduling", "gateway", "inference", "router", "metricsCollector", "kubeStateMetrics", "attestationReceipts", "namedWorkloadProxy"],
   "properties": {
+    "stagingValidation": {
+      "type": "object", "additionalProperties": false, "required": ["enabled"],
+      "properties": {"enabled": {"type": "boolean"}}
+    },
     "workloadOverridesEnabled": {"type": "boolean"},
     "workloadOverrides": {"type": "object"},
     "additionalWorkloads": {"type": "array", "items": {"type": "object"}},
@@ -107,6 +111,7 @@
         "kubeStateMetricsPort": {"const": 8804},
         "platform": {"const": "tdx"},
         "attestationApiPort": {"const": 8400},
+        "attestationApiUrl": {"type": "string", "enum": ["", "unix:///run/c8s/workload-claims/attestation-api.sock"]},
         "resources": {
           "type": "object",
           "additionalProperties": false,

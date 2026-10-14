@@ -586,6 +586,49 @@ def main() -> None:
             for item in container.get("volumeMounts", [])
         )
 
+    # The staging layer clears production model routes and loads live files.
+    staging_documents = render("--values", "release/values.yaml", "--values",
+                               "release/staging/values.yaml", "--values",
+                               "tests/release-v1/fixtures/release-values.yaml")
+    maps = {item["metadata"]["name"]: item for item in staging_documents
+            if item["kind"] == "ConfigMap"}
+    model = "hf-internal-testing/tiny-random-LlamaForCausalLM"
+    settings = json.loads(maps["gateway-runtime"]["data"]["settings.json"])
+    routes = json.loads(maps["router-model-routes"]["data"]["routes.json"])
+    assert settings["catalogModelIds"] == [model]
+    assert settings["inferenceModelIds"] == [model]
+    assert routes["routes"] == {model: [model]}
+    assert "gateway-release-selection" not in maps, "deployment owns verified release selection"
+    sidecars = []
+    for document in staging_documents:
+        if document["kind"] not in {"Deployment", "StatefulSet"}:
+            continue
+        pod = document["spec"]["template"]["spec"]
+        for container in pod["containers"]:
+            if container["name"] == "cds-attest":
+                sidecars.append(container)
+                assert "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock" in container["args"]
+                assert not any(item["name"] == "HOST_IP" for item in container.get("env", []))
+                assert not container.get("volumeMounts"), "C8s NRI adds the platform socket mount"
+    assert len(sidecars) == 6
+    agent = next(item for item in staging_documents if item["kind"] == "Deployment"
+                 and item["metadata"]["name"] == "gateway-update-agent")
+    assert agent["spec"]["replicas"] == 1 and agent["spec"]["strategy"]["type"] == "Recreate"
+    client = agent["spec"]["template"]["spec"]["containers"][0]
+    assert client["image"] == yaml.safe_load((ROOT / "tests/release-v1/fixtures/release-values.yaml").read_text())["images"]["rolloutClient"]
+    assert client["args"] == ["-u", "-c", (CHART / "files/staging-validation-agent.py").read_text()]
+    assert client["securityContext"]["runAsNonRoot"] is True
+    assert client["securityContext"]["readOnlyRootFilesystem"] is True
+    assert agent["spec"]["template"]["spec"]["serviceAccountName"] == "gateway-update-agent"
+    role = next(item for item in staging_documents if item["kind"] == "Role"
+                and item["metadata"]["name"] == "gateway-update-agent")
+    assert role["rules"] == [{"apiGroups": [""], "resources": ["secrets"],
+                              "resourceNames": ["gateway-update-task"], "verbs": ["get"]}]
+    assert not any(item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway-update-agent"
+                   for item in production_documents)
+    helm("template", "example", str(CHART), *NEUTRAL_MODE,
+         "--set", "stagingValidation.enabled=true", success=False)
+
     print("Helm neutral-default and safety tests passed.")
 
 

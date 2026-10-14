@@ -269,6 +269,8 @@ def require_allowlist_contract(
     core_images: list[str],
     documents: list[dict[str, Any]],
     image_configs: dict[str, Any],
+    c8s_release: str | None = None,
+    core_seed: dict[str, Any] | None = None,
 ) -> None:
     rendered = ALLOWLIST_GENERATOR["controllers"](documents)
     policy_controllers = {item["controller"] for item in policy["workloads"]}
@@ -280,8 +282,12 @@ def require_allowlist_contract(
     require(isinstance(workloads, dict) and set(workloads) == expected_names,
             "the allowlist entries differ from the profile allowlist policy")
     core_digests = {OCI.fullmatch(image).group(2) for image in core_images}
-    injected = ALLOWLIST_GENERATOR["INJECTED_ENTRYPOINTS"]
     effective_process = ALLOWLIST_GENERATOR["effective_process"]
+    if ALLOWLIST_GENERATOR["c8s_at_least"](c8s_release, (0, 44, 0)):
+        expected_core = ALLOWLIST_GENERATOR["core_entries"](core_images, image_configs, c8s_release, core_seed or {})
+        for name, expected in expected_core.items():
+            require(workloads[name] == expected,
+                    f"core entry {name} differs from the component ENTRYPOINT pin or baked seed")
     for item in policy["workloads"]:
         pod = rendered[item["controller"]]["spec"]["template"]["spec"]
         expected_processes = []
@@ -294,7 +300,7 @@ def require_allowlist_contract(
             except ALLOWLIST_GENERATOR["GenerationError"] as error:
                 raise ManifestError(f"{item['controller']}: {error}") from error
             command, args = process["command"], process.get("args", [])
-            if match.group(2) in core_digests and command and command[0] in injected:
+            if ALLOWLIST_GENERATOR["is_carved_out"](process, core_digests, c8s_release):
                 continue
             expected_processes.append((match.group(2), command, args))
         actual_processes = []
@@ -311,7 +317,10 @@ def require_allowlist_contract(
                 command_policy.get("argv"),
                 args_policy.get("argv", []) if args_policy.get("policy") == "exact" else [],
             ))
-        require(actual_processes == expected_processes,
+        # C8s canonicalization sorts rules by digest. Compare all exact
+        # processes with duplicate counts, independent of chart order.
+        process_key = lambda process: json.dumps(process, sort_keys=True)
+        require(sorted(actual_processes, key=process_key) == sorted(expected_processes, key=process_key),
                 f"allowlist workload {item['name']} process differs from the rendered profile")
 
 
@@ -820,7 +829,10 @@ def build(
         unresolved = [image for image in images if image.startswith(release_profiles.REPOSITORY_IMAGES)
                       and image not in overlay["images"].values()]
         require(not unresolved, f"rendered repository images without a published digest: {unresolved}")
-        configs = image_configs(images)
+        config_images = set(images)
+        if ALLOWLIST_GENERATOR["c8s_at_least"](spec["c8s"]["release"], (0, 44, 0)):
+            config_images.update(spec["c8s"]["coreImages"])
+        configs = image_configs(sorted(config_images))
         try:
             allowlist_bytes = ALLOWLIST_GENERATOR["generate"](
                 profile, c8s, canonical_tool, overlay=overlay_path, image_env=configs,
@@ -831,7 +843,8 @@ def build(
     allowlist = json.loads(allowlist_bytes)
     require(allowlist.get("schema") == "c8s.allowlist/v1", "the allowlist has the wrong schema")
     require_model_files(spec, documents)
-    require_allowlist_contract(allowlist, policy, spec["c8s"]["coreImages"], documents, configs)
+    require_allowlist_contract(allowlist, policy, spec["c8s"]["coreImages"], documents, configs,
+                              spec["c8s"]["release"], ALLOWLIST_GENERATOR["core_seed"](spec["c8s"]))
     allowlisted = {
         container["digest"]
         for entry in allowlist["workloads"].values()
