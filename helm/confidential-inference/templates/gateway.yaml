@@ -204,11 +204,13 @@ spec:
             {{- end }}
             - name: GATEWAY_C8S_RECEIPT_TARGETS
               value: {{ join "," $receiptTargets | quote }}
+            {{- if not .Values.runtimeConfig.enabled }}
             - name: GATEWAY_C8S_EVIDENCE_BASE_URL
               value: {{ .Values.attestationReceipts.evidenceBaseUrl | quote }}
             {{- with .Values.attestationReceipts.evidenceConnectHost }}
             - name: GATEWAY_C8S_EVIDENCE_CONNECT_HOST
               value: {{ . | quote }}
+            {{- end }}
             {{- end }}
             {{- if not .Values.runtimeConfig.enabled }}
             - name: GATEWAY_RELEASE_ID

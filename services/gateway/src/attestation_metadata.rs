@@ -1,6 +1,9 @@
 //! Public policy metadata. Only CDS and C8s discovery are upstream sources.
 
-use crate::{AttestationError, AttestationProvider, metrics::GatewayMetrics};
+use crate::{
+    AttestationError, AttestationProvider, metrics::GatewayMetrics,
+    runtime_settings::EvidenceSettings,
+};
 use base64::Engine as _;
 use futures_util::StreamExt as _;
 use serde_json::{Value, json};
@@ -22,17 +25,75 @@ fn unavailable(step: &str) -> AttestationError {
 #[async_trait::async_trait]
 pub trait MetadataSource: Send + Sync {
     async fn fetch(&self) -> Result<Value, AttestationError>;
+
+    /// Use one address snapshot for this complete refresh.
+    async fn fetch_with_evidence(
+        &self,
+        _evidence: Option<&EvidenceEndpoint>,
+    ) -> Result<Value, AttestationError> {
+        self.fetch().await
+    }
+}
+
+/// Prepared client for one accepted evidence-address snapshot.
+#[derive(Clone)]
+pub struct EvidenceEndpoint {
+    pub discovery_url: Url,
+    pub allowlist_url: Url,
+    pub client: reqwest::Client,
+}
+
+impl EvidenceEndpoint {
+    fn new(
+        settings: &EvidenceSettings,
+        timeout: Duration,
+        roots: &[reqwest::Certificate],
+    ) -> Result<Self, AttestationError> {
+        settings.validate().map_err(|error| unavailable(&error))?;
+        let base =
+            Url::parse(&settings.base_url).map_err(|_| unavailable("invalid evidence URL"))?;
+        let mut client = reqwest::Client::builder()
+            .timeout(timeout)
+            .connect_timeout(timeout.min(Duration::from_secs(10)))
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some(host) = &settings.connect_host {
+            client = crate::attestation::evidence_connection(client, &base, host)
+                .map_err(|error| unavailable(&error))?;
+        }
+        for certificate in roots {
+            client = client.add_root_certificate(certificate.clone());
+        }
+        Ok(Self {
+            discovery_url: base
+                .join("v1/discovery")
+                .map_err(|_| unavailable("invalid discovery URL"))?,
+            allowlist_url: base
+                .join("allowlist")
+                .map_err(|_| unavailable("invalid allowlist URL"))?,
+            client: client
+                .build()
+                .map_err(|_| unavailable("build discovery client"))?,
+        })
+    }
+}
+
+#[derive(Default)]
+struct MetadataCache {
+    evidence: Option<EvidenceSettings>,
+    endpoint: Option<EvidenceEndpoint>,
+    response: Option<(Instant, Result<Value, AttestationError>)>,
 }
 
 /// A short successful cache and a short failure cooldown bound CDS load.
 /// The same mutex serializes refreshes. Expired documents are never returned.
 pub struct MetadataProvider {
     source: Arc<dyn MetadataSource>,
-    cache: Mutex<Option<(Instant, Result<Value, AttestationError>)>>,
+    cache: Mutex<MetadataCache>,
     ttl: Duration,
     timeout: Duration,
     maximum_bytes: usize,
     metrics: Arc<GatewayMetrics>,
+    discovery_roots: Vec<reqwest::Certificate>,
     runtime:
         Option<Arc<crate::runtime_config::MountedConfig<crate::runtime_settings::GatewaySettings>>>,
 }
@@ -59,11 +120,12 @@ impl MetadataProvider {
         }
         Ok(Self {
             source,
-            cache: Mutex::new(None),
+            cache: Mutex::new(MetadataCache::default()),
             ttl,
             timeout,
             maximum_bytes,
             metrics,
+            discovery_roots: crate::attestation::mesh_ca_certificates()?,
             runtime: None,
         })
     }
@@ -92,10 +154,21 @@ impl AttestationProvider for MetadataProvider {
         let mut cache = tokio::time::timeout(self.timeout, self.cache.lock())
             .await
             .map_err(|_| unavailable("metadata cache wait timed out"))?;
-        let ttl = self.runtime.as_ref().map_or(self.ttl, |config| {
-            Duration::from_secs(config.snapshot().attestation_cache_seconds)
+        let settings = self.runtime.as_ref().map(|config| config.snapshot());
+        let evidence = settings
+            .as_ref()
+            .and_then(|settings| settings.evidence.clone());
+        // Address changes invalidate both successful results and failure cooldowns.
+        // A refresh already in progress keeps its complete old address snapshot.
+        if cache.evidence != evidence {
+            cache.evidence = evidence;
+            cache.endpoint = None;
+            cache.response = None;
+        }
+        let ttl = settings.as_ref().map_or(self.ttl, |settings| {
+            Duration::from_secs(settings.attestation_cache_seconds)
         });
-        if let Some((created, result)) = &*cache
+        if let Some((created, result)) = &cache.response
             && created.elapsed()
                 < if result.is_ok() {
                     ttl
@@ -111,7 +184,21 @@ impl AttestationProvider for MetadataProvider {
             return result.clone();
         }
         self.metrics.record_attestation_event("cache_miss");
-        let result = match tokio::time::timeout(self.timeout, self.source.fetch()).await {
+        let refresh = async {
+            if cache.endpoint.is_none()
+                && let Some(evidence) = &cache.evidence
+            {
+                cache.endpoint = Some(EvidenceEndpoint::new(
+                    evidence,
+                    self.timeout,
+                    &self.discovery_roots,
+                )?);
+            }
+            self.source
+                .fetch_with_evidence(cache.endpoint.as_ref())
+                .await
+        };
+        let result = match tokio::time::timeout(self.timeout, refresh).await {
             Ok(Ok(value))
                 if serde_json::to_vec(&value)
                     .map_or(true, |bytes| bytes.len() > self.maximum_bytes) =>
@@ -126,7 +213,7 @@ impl AttestationProvider for MetadataProvider {
         } else {
             "refresh_failed"
         });
-        *cache = Some((Instant::now(), result.clone()));
+        cache.response = Some((Instant::now(), result.clone()));
         result
     }
 }
@@ -357,6 +444,18 @@ fn operator_keys(bytes: &[u8], verdict: &Value) -> Result<Vec<String>, Attestati
 #[async_trait::async_trait]
 impl MetadataSource for CdsMetadataSource {
     async fn fetch(&self) -> Result<Value, AttestationError> {
+        self.fetch_with_evidence(None).await
+    }
+
+    async fn fetch_with_evidence(
+        &self,
+        evidence: Option<&EvidenceEndpoint>,
+    ) -> Result<Value, AttestationError> {
+        let discovery_url =
+            evidence.map_or(&self.discovery_url, |endpoint| &endpoint.discovery_url);
+        let allowlist_url =
+            evidence.map_or(&self.allowlist_url, |endpoint| &endpoint.allowlist_url);
+        let discovery_client = evidence.map_or(&self.discovery_client, |endpoint| &endpoint.client);
         let verdict = self.verify_cds().await?;
         let certificate = verdict["cert_sha256"]
             .as_str()
@@ -372,7 +471,7 @@ impl MetadataSource for CdsMetadataSource {
         let (policy, keys, discovery) = tokio::join!(
             self.cds_read(&client, "/allowlist", certificate),
             self.cds_read(&client, "/operator-keys", certificate),
-            self.discovery_client.get(self.discovery_url.clone()).send()
+            discovery_client.get(discovery_url.clone()).send()
         );
         let policy = policy?;
         if policy.status() != reqwest::StatusCode::OK {
@@ -410,7 +509,7 @@ impl MetadataSource for CdsMetadataSource {
         Ok(json!({"schemaVersion": 3,
             "release": {"id": self.release_id, "url": self.release_url.as_str(), "bundleSha256": self.bundle_sha256},
             "c8s": {"activeAllowlist": {"document": policy, "sha256": format!("sha256:{:x}", Sha256::digest(&policy_bytes)),
-                        "url": self.allowlist_url.as_str()}, "discovery": discovery, "operatorKeys": keys}}))
+                        "url": allowlist_url.as_str()}, "discovery": discovery, "operatorKeys": keys}}))
     }
 }
 
@@ -544,6 +643,259 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn runtime_settings(revision: u64, name: &str) -> Value {
+        json!({"schemaVersion":1,"revision":revision,
+            "evidence":{"baseUrl":format!("https://{name}.example.test"),"connectHost":"127.0.0.1"},
+            "catalogModelIds":["test"],"inferenceModelIds":["test"],"maximumBodyBytes":1024,
+            "upstreamTimeoutSeconds":30,"bodyTimeoutSeconds":10,"streamIdleTimeoutSeconds":20,
+            "attestationCacheSeconds":30,"globalRequestConcurrency":256,"perAddressConcurrency":16,
+            "inferenceConcurrency":1,"inferenceQueue":0,"queueTimeoutSeconds":2,"perKeyConcurrency":4,
+            "attestationConcurrency":4,"requestsPerAddressPerSecond":30})
+    }
+
+    #[derive(Default)]
+    struct RoutingSource {
+        calls: AtomicUsize,
+        fail: AtomicBool,
+        block: AtomicBool,
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl MetadataSource for RoutingSource {
+        async fn fetch(&self) -> Result<Value, AttestationError> {
+            Err(unavailable("missing evidence snapshot"))
+        }
+
+        async fn fetch_with_evidence(
+            &self,
+            endpoint: Option<&EvidenceEndpoint>,
+        ) -> Result<Value, AttestationError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let endpoint = endpoint.ok_or_else(|| unavailable("missing evidence snapshot"))?;
+            if self.block.swap(false, Ordering::SeqCst) {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(unavailable("discovery failed"));
+            }
+            Ok(
+                json!({"discovery":endpoint.discovery_url.as_str(),"allowlist":endpoint.allowlist_url.as_str()}),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn watched_evidence_changes_invalidate_success_and_failure_caches()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{runtime_config::MountedConfig, runtime_settings::GatewaySettings};
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&runtime_settings(1, "candidate"))?,
+        )?;
+        let config = Arc::new(MountedConfig::<GatewaySettings>::open(
+            path.clone(),
+            4096,
+            GatewaySettings::validate,
+        )?);
+        let watcher = config.watch(GatewaySettings::validate, Duration::from_millis(10));
+        let source = Arc::new(RoutingSource::default());
+        let provider = MetadataProvider::new(
+            source.clone(),
+            Duration::from_secs(30),
+            Duration::from_secs(2),
+            1024,
+            Arc::new(GatewayMetrics::new("test")),
+        )?
+        .with_runtime(Some(config.clone()));
+        assert_eq!(
+            provider
+                .response(&[0; 32])
+                .await
+                .map_err(|error| format!("{error:?}"))?
+                .get("discovery"),
+            Some(&json!("https://candidate.example.test/v1/discovery"))
+        );
+        // Atomic rename exercises the mounted-file watcher, not a reload API.
+        for (revision, name) in [
+            (2, "api"),
+            (3, "broken"),
+            (4, "recovered"),
+            (6, "candidate"),
+            (7, "candidate"),
+            (8, "candidate"),
+        ] {
+            source.fail.store(name == "broken", Ordering::SeqCst);
+            let mut settings = runtime_settings(revision, name);
+            if revision == 2 || revision == 7 {
+                settings["evidence"]["connectHost"] = json!("127.0.0.2");
+            }
+            if revision == 8 {
+                settings["evidence"]
+                    .as_object_mut()
+                    .ok_or("missing evidence")?
+                    .remove("connectHost");
+            }
+            let next = dir.path().join("next.json");
+            std::fs::write(&next, serde_json::to_vec(&settings)?)?;
+            std::fs::rename(next, &path)?;
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while config.status().accepted_revision != revision {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await?;
+            let result = provider.response(&[0; 32]).await;
+            if name == "broken" {
+                assert!(result.is_err());
+                continue;
+            }
+            assert_eq!(
+                result.map_err(|error| format!("{error:?}"))?["allowlist"],
+                format!("https://{name}.example.test/allowlist")
+            );
+            if revision == 4 {
+                let mut invalid = runtime_settings(5, "bad");
+                invalid["evidence"]["baseUrl"] = json!("http://api.example.test");
+                std::fs::write(&path, serde_json::to_vec(&invalid)?)?;
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    while config.status().error.is_none() {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await?;
+                assert_eq!(config.status().accepted_revision, 4);
+                assert_eq!(
+                    provider
+                        .response(&[0; 32])
+                        .await
+                        .map_err(|error| format!("{error:?}"))?["allowlist"],
+                    "https://recovered.example.test/allowlist"
+                );
+            }
+        }
+        assert_eq!(source.calls.load(Ordering::SeqCst), 7);
+        watcher.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_in_progress_keeps_old_addresses_and_next_request_uses_new_addresses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{runtime_config::MountedConfig, runtime_settings::GatewaySettings};
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&runtime_settings(1, "candidate"))?,
+        )?;
+        let config = Arc::new(MountedConfig::<GatewaySettings>::open(
+            path.clone(),
+            4096,
+            GatewaySettings::validate,
+        )?);
+        let source = Arc::new(RoutingSource::default());
+        source.block.store(true, Ordering::SeqCst);
+        let provider = Arc::new(
+            MetadataProvider::new(
+                source.clone(),
+                Duration::from_secs(30),
+                Duration::from_secs(2),
+                1024,
+                Arc::new(GatewayMetrics::new("test")),
+            )?
+            .with_runtime(Some(config.clone())),
+        );
+        let first = tokio::spawn({
+            let provider = provider.clone();
+            async move { provider.response(&[0; 32]).await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), source.entered.notified()).await?;
+        std::fs::write(&path, serde_json::to_vec(&runtime_settings(2, "api"))?)?;
+        config.refresh(GatewaySettings::validate);
+        let second = tokio::spawn({
+            let provider = provider.clone();
+            async move { provider.response(&[0; 32]).await }
+        });
+        source.release.notify_one();
+        assert_eq!(
+            first.await?.map_err(|error| format!("{error:?}"))?["discovery"],
+            "https://candidate.example.test/v1/discovery"
+        );
+        assert_eq!(
+            second.await?.map_err(|error| format!("{error:?}"))?["discovery"],
+            "https://api.example.test/v1/discovery"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_endpoint_preserves_tls_name_and_refuses_redirects()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cert = rcgen::generate_simple_self_signed(vec!["candidate.example.test".into()])?;
+        let root = reqwest::Certificate::from_der(cert.cert.der())?;
+        let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+            cert.cert.pem().into_bytes(),
+            cert.signing_key.serialize_pem().into_bytes(),
+        )
+        .await?;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let shutdown = axum_server::Handle::new();
+        let task = tokio::spawn(
+            axum_server::from_tcp_rustls(listener, tls)
+                .handle(shutdown.clone())
+                .serve(
+                    axum::Router::new()
+                        .route(
+                            "/v1/discovery",
+                            axum::routing::get(|| async {
+                                axum::response::Redirect::temporary(
+                                    "https://untrusted.example.test/",
+                                )
+                            }),
+                        )
+                        .into_make_service(),
+                ),
+        );
+        let settings = EvidenceSettings {
+            base_url: format!("https://candidate.example.test:{port}"),
+            connect_host: Some("127.0.0.1".into()),
+        };
+        let good = EvidenceEndpoint::new(
+            &settings,
+            Duration::from_secs(2),
+            std::slice::from_ref(&root),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        let response = good.client.get(good.discovery_url.clone()).send().await?;
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        let wrong = EvidenceEndpoint::new(
+            &EvidenceSettings {
+                base_url: format!("https://api.example.test:{port}"),
+                ..settings
+            },
+            Duration::from_secs(2),
+            std::slice::from_ref(&root),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        assert!(
+            wrong
+                .client
+                .get(wrong.discovery_url.clone())
+                .send()
+                .await
+                .is_err()
+        );
+        shutdown.shutdown();
+        task.await??;
+        Ok(())
     }
 
     fn cds_source(policy: PathBuf, policy_sha256: String) -> CdsMetadataSource {

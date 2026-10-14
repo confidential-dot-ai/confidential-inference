@@ -66,9 +66,17 @@ The public-key fingerprints must equal the set read by the verifier.
 A missing key set is accepted only when CDS reports that writes are disabled.
 A connection or verification error is not an empty key set.
 
-`GATEWAY_C8S_EVIDENCE_BASE_URL` selects the front door for native discovery.
-`GATEWAY_C8S_EVIDENCE_CONNECT_HOST` can select its connection address while
-preserving the expected TLS name. Discovery uses normal certificate checks.
+The runtime `evidence` object selects the front door for native discovery.
+`baseUrl` is an HTTPS origin. Its hostname remains the expected TLS name.
+The optional `connectHost` selects a connection address without changing that
+name or the TLS port. Omitting `connectHost` uses normal DNS for the origin.
+Discovery keeps certificate checks enabled and refuses redirects.
+
+Without runtime `evidence`, `GATEWAY_C8S_EVIDENCE_BASE_URL` and
+`GATEWAY_C8S_EVIDENCE_CONNECT_HOST` remain startup fallbacks for existing
+installations. If no startup URL is set, runtime `evidence` is required and
+cannot be removed by a later update. CDS addresses and trust pins remain
+startup inputs.
 
 ## Load protection
 
@@ -106,12 +114,40 @@ startup. A rollback writes the previous contents with a new revision.
 
 `GATEWAY_RUNTIME_CONFIG_FILE` selects the gateway settings file. It controls
 the model catalog and admitted models, body limit, request timeouts, capacity
-and queue limits, request rate, and attestation cache duration. The accepted
+and queue limits, request rate, attestation cache duration, and evidence addresses. The accepted
 status is at `/runtime-config` on the same private listener. Each request
 keeps its model and timeout snapshot. A capacity decrease preserves active
 permits and blocks new admission until usage falls. Queued requests keep
 their deadline and use the current execution capacity. HTTP clients, rate
 windows, and request counters are not replaced on reload.
+
+To change the evidence address during candidate promotion, update the existing
+runtime ConfigMap. Keep all other settings and increase `revision`. For example,
+the `settings.json` document can contain:
+
+```json
+"evidence": {
+  "baseUrl": "https://candidate.api.example.test",
+  "connectHost": "c8s-router.c8s-system.svc.cluster.local"
+}
+```
+
+After the front door has a valid certificate for the production hostname,
+change `baseUrl` to `https://api.example.test` with another increased revision.
+Use the existing Kubernetes API access to apply the ConfigMap. Do not put the
+file under a `subPath` mount. Check the accepted revision and errors at the
+private `/runtime-config` endpoint, then check public `/attestation`.
+No reload request or temporary pod is needed.
+
+The next metadata request after an accepted address change drops the old
+successful cache or failure cooldown and creates a client for the new address.
+Later refreshes reuse that client. A refresh already in progress finishes with
+its old address snapshot. A change to another setting retains the client and
+cache. Invalid configuration retains the last accepted settings. An unreachable
+address or a TLS failure returns 503; it does not disable verification or
+silently use the old address. The runtime status reports configuration
+acceptance, not a successful network or attestation check. CDS trust pins and
+startup TLS roots do not change with these addresses.
 
 The optional `routerService` setting selects `sglang-router` or a Service
 whose name starts with `router-`. It needs the fixed startup input

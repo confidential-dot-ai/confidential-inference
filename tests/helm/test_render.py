@@ -116,6 +116,21 @@ def main() -> None:
     assert settings['catalogModelIds'] == settings['inferenceModelIds'] == sorted(routes['routes'])
     assert settings['revision'] == routes['revision'] == 1
     assert routes['routes']['public-a'] == ['backend-a']
+    assert settings['evidence'] == {'baseUrl': 'https://api.example.invalid'}
+    assert 'GATEWAY_C8S_EVIDENCE_BASE_URL' not in runtime_gateway.env
+    assert 'GATEWAY_C8S_EVIDENCE_CONNECT_HOST' not in runtime_gateway.env
+    promoted_documents = render("--set", "runtimeConfig.enabled=true", "--set",
+        "attestationReceipts.releaseId=v0.14.18-transition", "--set-json",
+        'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}',
+        "--set", "attestationReceipts.evidenceBaseUrl=https://api.example.test",
+        "--set", "attestationReceipts.evidenceConnectHost=c8s-router.c8s-system.svc.cluster.local",
+        "--set", "runtimeConfig.revision=2")
+    promoted_maps = {item['metadata']['name']: item for item in promoted_documents if item['kind'] == 'ConfigMap'}
+    promoted_settings = json.loads(promoted_maps['gateway-runtime']['data']['settings.json'])
+    assert promoted_settings['evidence'] == {'baseUrl': 'https://api.example.test',
+        'connectHost': 'c8s-router.c8s-system.svc.cluster.local'}
+    assert promoted_settings['revision'] == 2
+    assert Gateway(promoted_documents).deployment['spec']['template'] == runtime_gateway.deployment['spec']['template']
     assert runtime_gateway.env['GATEWAY_RUNTIME_CONFIG_FILE'] == '/mnt/c8s-data/runtime/settings.json'
     assert runtime_gateway.env['GATEWAY_RELEASE_SELECTION_FILE'] == '/mnt/c8s-data/release-selection/releases.json'
     for removed in ('GATEWAY_MODEL', 'GATEWAY_RELEASE_ID', 'GATEWAY_INFERENCE_CONCURRENCY',

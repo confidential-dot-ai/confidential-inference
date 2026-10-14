@@ -63,7 +63,7 @@ struct Args {
     model: String,
     #[arg(long, env = "GATEWAY_C8S_RECEIPT_TARGETS", default_value = "")]
     c8s_receipt_targets: String,
-    #[arg(long, env = "GATEWAY_C8S_EVIDENCE_BASE_URL")]
+    #[arg(long, env = "GATEWAY_C8S_EVIDENCE_BASE_URL", default_value = "")]
     c8s_evidence_base_url: String,
     #[arg(long, env = "GATEWAY_C8S_EVIDENCE_CONNECT_HOST")]
     c8s_evidence_connect_host: Option<String>,
@@ -297,6 +297,7 @@ async fn main() -> Result<()> {
                     settings,
                     args.router_namespace.as_deref(),
                     args.allow_direct_inference_url,
+                    args.c8s_evidence_base_url.is_empty(),
                 )
             })
             .map(Arc::new)
@@ -307,8 +308,11 @@ async fn main() -> Result<()> {
     let _runtime_watcher = runtime.as_ref().map(|config| {
         let namespace = args.router_namespace.clone();
         let direct = args.allow_direct_inference_url;
+        let require_evidence = args.c8s_evidence_base_url.is_empty();
         config.watch(
-            move |settings| validate_runtime_settings(settings, namespace.as_deref(), direct),
+            move |settings| {
+                validate_runtime_settings(settings, namespace.as_deref(), direct, require_evidence)
+            },
             Duration::from_secs(5),
         )
     });
@@ -612,7 +616,20 @@ fn metadata_provider(
     args: &Args,
     metrics: Arc<GatewayMetrics>,
 ) -> Result<Arc<dyn confidential_gateway::AttestationProvider>> {
-    metadata_provider_with_runtime(args, metrics, None)
+    let runtime = args
+        .runtime_config_file
+        .as_ref()
+        .map(|path| {
+            MountedConfig::<GatewaySettings>::open(
+                path.clone(),
+                256 * 1024,
+                GatewaySettings::validate,
+            )
+            .map(Arc::new)
+            .map_err(anyhow::Error::msg)
+        })
+        .transpose()?;
+    metadata_provider_with_runtime(args, metrics, runtime)
 }
 
 fn metadata_provider_with_runtime(
@@ -626,7 +643,25 @@ fn metadata_provider_with_runtime(
     use confidential_gateway::attestation_metadata::{CdsMetadataSource, MetadataProvider};
     validate_metadata_identity(args)?;
     let timeout = Duration::from_secs(args.attestation_timeout_seconds);
-    let base = parse_evidence_base_url(&args.c8s_evidence_base_url).map_err(anyhow::Error::msg)?;
+    // Preserve the startup fallback if a later runtime update removes evidence.
+    // Without that fallback, the watcher requires evidence in every snapshot.
+    let evidence = runtime
+        .as_ref()
+        .filter(|_| args.c8s_evidence_base_url.is_empty())
+        .and_then(|config| config.snapshot().evidence.clone());
+    let base = parse_evidence_base_url(
+        evidence
+            .as_ref()
+            .map_or(args.c8s_evidence_base_url.as_str(), |settings| {
+                settings.base_url.as_str()
+            }),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let connect_host = evidence
+        .as_ref()
+        .map_or(args.c8s_evidence_connect_host.as_deref(), |settings| {
+            settings.connect_host.as_deref()
+        });
     let cds_url = url::Url::parse(
         args.cds_url
             .as_deref()
@@ -646,7 +681,7 @@ fn metadata_provider_with_runtime(
         .timeout(timeout)
         .connect_timeout(timeout.min(Duration::from_secs(10)))
         .redirect(reqwest::redirect::Policy::none());
-    if let Some(host) = &args.c8s_evidence_connect_host {
+    if let Some(host) = connect_host {
         client = evidence_connection(client, &base, host).map_err(anyhow::Error::msg)?;
     }
     for cert in mesh_ca_certificates().map_err(anyhow::Error::msg)? {
@@ -829,8 +864,12 @@ fn validate_runtime_settings(
     settings: &GatewaySettings,
     namespace: Option<&str>,
     direct: bool,
+    require_evidence: bool,
 ) -> Result<(), String> {
     settings.validate()?;
+    if require_evidence && settings.evidence.is_none() {
+        return Err("runtime evidence settings are required without a startup evidence URL".into());
+    }
     if settings.router_service.is_some() && (!direct || namespace.is_none()) {
         return Err(
             "router Service reload needs the fixed namespace and direct-router mode".into(),
@@ -1000,6 +1039,37 @@ mod tests {
         assert!(validate_args(&value).is_ok());
         value.cds_image_policy_sha256 = "untrusted".into();
         assert!(validate_args(&value).is_err());
+    }
+
+    #[test]
+    fn runtime_evidence_can_supply_the_only_startup_url() -> Result<()> {
+        let mut value = args();
+        value.cds_url = Some("https://cds.c8s-system.svc.cluster.local:8443".into());
+        value.cds_image_policy = Some(PathBuf::from("/mnt/c8s-data/image-policy/policy.json"));
+        value.cds_image_policy_sha256 = format!("sha256:{}", "0".repeat(64));
+        value.cds_served_image_policy = value.cds_image_policy.clone();
+        value.cds_served_image_policy_sha256 = value.cds_image_policy_sha256.clone();
+        value.c8s_evidence_base_url.clear();
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("settings.json");
+        let mut settings: GatewaySettings = serde_json::from_value(serde_json::json!({
+            "schemaVersion":1,"revision":1,"evidence":{"baseUrl":"https://candidate.example.test"},
+            "catalogModelIds":["test"],"inferenceModelIds":["test"],"maximumBodyBytes":1024,
+            "upstreamTimeoutSeconds":30,"bodyTimeoutSeconds":10,"streamIdleTimeoutSeconds":20,
+            "attestationCacheSeconds":10,"globalRequestConcurrency":256,"perAddressConcurrency":16,
+            "inferenceConcurrency":1,"inferenceQueue":0,"queueTimeoutSeconds":2,"perKeyConcurrency":4,
+            "attestationConcurrency":4,"requestsPerAddressPerSecond":30
+        }))?;
+        fs::write(&path, serde_json::to_vec(&settings)?)?;
+        value.runtime_config_file = Some(path.clone());
+        assert!(validate_args(&value).is_ok());
+        assert!(validate_runtime_settings(&settings, None, false, true).is_ok());
+        settings.evidence = None;
+        assert!(validate_runtime_settings(&settings, None, false, true).is_err());
+        assert!(validate_runtime_settings(&settings, None, false, false).is_ok());
+        fs::write(path, serde_json::to_vec(&settings)?)?;
+        assert!(validate_args(&value).is_err());
+        Ok(())
     }
 
     #[tokio::test]
