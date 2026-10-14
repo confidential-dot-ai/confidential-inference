@@ -90,7 +90,10 @@ runs now (`README.md`, "What attestation proves").
   signed admin channel (`PUT /admin/v1/api-keys/snapshot`). The snapshot
   carries one peppered hash per key. It carries no plaintext key and no
   pepper. The gateway refuses a revision lower than the one it holds, so
-  the control plane cannot roll the key set back. The control plane can
+  the control plane cannot roll the key set back through the snapshot
+  route. The admin signer certificate itself is a Kubernetes Secret
+  (`gateway-admin-mtls`); whoever can write that Secret and restart the
+  gateway holds the admin channel. The control plane can
   still remove a key. That is a denial of service, not a loss of
   confidentiality, and the threat model already treats the host as
   untrusted.
