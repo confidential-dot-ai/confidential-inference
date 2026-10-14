@@ -15,6 +15,14 @@ runtimeConfig:
 
 environment: staging
 
+gateway:
+  protection:
+    # The node mesh proxy opens the final connection to the gateway.
+    # Keep Pod proxies and the staging node network in the trusted scope.
+    trustedProxyCidrs:
+      - 10.52.0.0/16
+      - 10.42.0.0/16
+
 attestationReceipts:
   attestationApiUrl: unix:///run/c8s/workload-claims/attestation-api.sock
   evidenceBaseUrl: https://staging.api.confidential.ai
