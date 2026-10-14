@@ -98,7 +98,8 @@ def main() -> None:
     assert gateway['spec']['template']['metadata']['annotations']['confidential.ai/cw'] == gateway['metadata']['name']
     main_container = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'gateway')
     gateway_environment = {item['name']: item['value'] for item in main_container['env']}
-    for name in ('GATEWAY_C8S_IMAGE_POLICY_SHA256', 'GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256'):
+    for name in ('GATEWAY_C8S_IMAGE_POLICY_SHA256', 'GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256',
+                 'GATEWAY_C8S_EVIDENCE_BASE_URL', 'GATEWAY_C8S_EVIDENCE_CONNECT_HOST'):
         assert name not in gateway_environment
     with tempfile.TemporaryDirectory() as directory:
         target = Path(directory) / 'target.json'

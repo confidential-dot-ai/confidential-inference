@@ -222,10 +222,6 @@ workloadOverrides:
               value: 10.52.0.0/16,172.20.0.0/24
             - name: GATEWAY_C8S_RECEIPT_TARGETS
               value: gateway|gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}|gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804
-            - name: GATEWAY_C8S_EVIDENCE_BASE_URL
-              value: https://api.confidential.ai
-            - name: GATEWAY_C8S_EVIDENCE_CONNECT_HOST
-              value: c8s-router.c8s-system.svc.cluster.local
             - name: GATEWAY_RELEASE_IDENTITY_FILE
               value: /mnt/c8s-data/release-identity/..data/release-identity.json
             - name: GATEWAY_C8S_POLICY_MODE
