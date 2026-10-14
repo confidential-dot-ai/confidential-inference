@@ -5,6 +5,10 @@
 {{- end }}
 {{- $names := keys $routes | sortAlpha }}
 {{- $settings := dict "schemaVersion" 1 "revision" .Values.runtimeConfig.revision "catalogModelIds" $names "inferenceModelIds" $names "attestationCacheSeconds" .Values.runtimeConfig.attestationCacheSeconds }}
+{{- if .Values.router.enabled }}
+{{- $slot := printf "router-%s" (.Values.attestationReceipts.releaseId | replace "-transition" "" | replace "." "-") }}
+{{- $_ := set $settings "routerService" $slot }}
+{{- end }}
 {{- $evidence := dict "baseUrl" .Values.attestationReceipts.evidenceBaseUrl }}
 {{- with .Values.attestationReceipts.evidenceConnectHost }}
 {{- $_ := set $evidence "connectHost" . }}
