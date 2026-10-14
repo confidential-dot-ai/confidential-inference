@@ -503,6 +503,25 @@ class ProcessTests(unittest.TestCase):
                 with self.assertRaisesRegex(GEN.GenerationError, "differ from the profile"):
                     GEN.core_seed(spec)
 
+    def test_process_contract_accepts_canonical_order_but_refuses_duplicates_and_changes(self):
+        main = {"name": "main", "image": IMAGE, "command": ["/entry"], "args": ["--x"]}
+        sidecar = {"name": "cds-attest", "image": CORE, "command": ["/c8s"], "args": ["cds-attest"]}
+        document = controller(kind="Deployment", name="worker", containers=[main, sidecar])
+        def rule(container):
+            return {"digest": container["image"].split("@")[1],
+                    "command": {"policy": "exact", "argv": container["command"]},
+                    "args": {"policy": "exact", "argv": container["args"]}}
+        policy = {"workloads": [{"name": "worker", "controller": "Deployment/worker"}]}
+        entry = {"containers": [rule(sidecar), rule(main)]}
+        allowlist = {"workloads": {"worker": entry}}
+        MAN.require_allowlist_contract(allowlist, policy, [], [document], {}, "v0.44.6-beta.1")
+        for change in (lambda e: e["containers"].append(copy.deepcopy(e["containers"][0])),
+                       lambda e: e["containers"][0]["args"]["argv"].append("--unreviewed")):
+            changed = copy.deepcopy(allowlist)
+            change(changed["workloads"]["worker"])
+            with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
+                MAN.require_allowlist_contract(changed, policy, [], [document], {}, "v0.44.6-beta.1")
+
     def test_beta_release_uses_its_base_version_for_admission_rules(self):
         self.assertTrue(GEN.c8s_at_least("v0.44.0-beta.1", (0, 44, 0)))
         self.assertFalse(GEN.c8s_at_least("v0.37.0-beta.1", (0, 41, 0)))

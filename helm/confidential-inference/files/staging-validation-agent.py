@@ -91,6 +91,17 @@ def perform(action, allowed_hosts, router_hosts=(), *, worker_hosts=(), worker_c
     return result
 
 
+def read_task_secret(request, context):
+    """A missing task is idle. Authentication and transport errors stay visible."""
+    try:
+        with urllib.request.urlopen(request, context=context, timeout=10) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise
+
+
 def main():
     namespace = os.environ["UPDATE_NAMESPACE"]
     secret = os.environ["UPDATE_SECRET"]
@@ -107,8 +118,10 @@ def main():
             with open(account + "token") as stream:
                 token = stream.read().strip()
             request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
-            with urllib.request.urlopen(request, context=context, timeout=10) as response:
-                record = json.load(response)
+            record = read_task_secret(request, context)
+            if record is None:
+                time.sleep(0.5)
+                continue
             packet = json.loads(base64.b64decode(record["data"]["task.json"]))
             if not isinstance(packet.get("actions"), list) or not 1 <= len(packet["actions"]) <= 32:
                 raise ValueError("The task must have one to 32 actions.")

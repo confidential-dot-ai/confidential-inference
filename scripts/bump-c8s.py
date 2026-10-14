@@ -126,9 +126,10 @@ def digest(reference: str) -> str:
 
 def write_json(path: Path, value: object) -> None:
     """Write JSON in the two-space form that the repository uses."""
-    text = path.read_text(encoding="utf-8")
-    if json.dumps(json.loads(text), indent=2, ensure_ascii=False) + "\n" != text:
-        raise BumpError(f"{path.relative_to(ROOT)} is not in the expected JSON form")
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+        if json.dumps(json.loads(text), indent=2, ensure_ascii=False) + "\n" != text:
+            raise BumpError(f"{path.relative_to(ROOT)} is not in the expected JSON form")
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
@@ -141,7 +142,36 @@ def operator_image(c8s: dict[str, Any]) -> str:
     return next(image for image in c8s["coreImages"] if image.partition("@")[0] == f"{REGISTRY}c8s-operator")
 
 
-def new_c8s(tag: str, commit: str, old: dict[str, Any], renamed_mesh: bool = False) -> dict[str, Any]:
+def modern_core_images(c8s_repo: Path, commit: str, tag: str) -> list[str]:
+    """Use the selected embedded chart inventory, not the previous release set."""
+    values = yaml.safe_load(git_show(c8s_repo, commit, "internal/helmchart/c8s/values.yaml"))
+    components = values.get("c8sComponents")
+    if not isinstance(components, list) or not components:
+        raise BumpError("the selected C8s chart has no component inventory")
+    core = []
+    for component in components:
+        # Independently pinned attestation API runs on the measured host in
+        # bare-metal mode. It is not a tag-locked pod component there.
+        if component.get("pinnedDigest"):
+            continue
+        image = values
+        for key in component["valuePath"].split("."):
+            image = image[key]
+        repository = image.get("repository", "")
+        if not repository.startswith(REGISTRY):
+            raise BumpError("a tag-locked C8s component has an unexpected repository")
+        core.append(f"{repository}@{digest(f'{repository}:{tag}')}")
+    nginx = values["router"]["nginx"]["image"]
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", nginx.get("digest", "")):
+        raise BumpError("the selected C8s chart nginx image has no immutable digest")
+    core.append(nginx["repository"] + "@" + nginx["digest"])
+    if len(core) != len(set(core)):
+        raise BumpError("the selected C8s chart repeats a core image")
+    return core
+
+
+def new_c8s(tag: str, commit: str, old: dict[str, Any], renamed_mesh: bool = False,
+            c8s_repo: Path | None = None) -> dict[str, Any]:
     """Return the c8s mapping of the tag in the shape of the old one."""
     old_tag = old["release"]
     node, artifact = old["nodeImage"], old["nodeManifestArtifact"]
@@ -149,12 +179,17 @@ def new_c8s(tag: str, commit: str, old: dict[str, Any], renamed_mesh: bool = Fal
         raise BumpError("the node image tags do not follow the c8s release tag; edit them by hand")
     reference = node["reference"]
     artifact_digest = digest(f"{reference}:rke2-tdx-{tag}")
-    core = []
-    for image in old["coreImages"]:
-        name = image.partition("@")[0]
-        if renamed_mesh and name == REGISTRY + "ratls-mesh":
-            name = REGISTRY + "armtls-mesh"
-        core.append(f"{name}@{digest(f'{name}:{tag}')}" if name.startswith(REGISTRY) else image)
+    if tuple(int(part) for part in TAG.fullmatch(tag).groups()[:3]) >= (0, 44, 0):
+        if c8s_repo is None:
+            raise BumpError("modern C8s core image pins require the selected source checkout")
+        core = modern_core_images(c8s_repo, commit, tag)
+    else:
+        core = []
+        for image in old["coreImages"]:
+            name = image.partition("@")[0]
+            if renamed_mesh and name == REGISTRY + "ratls-mesh":
+                name = REGISTRY + "armtls-mesh"
+            core.append(f"{name}@{digest(f'{name}:{tag}')}" if name.startswith(REGISTRY) else image)
     value = copy.deepcopy(old)
     value.update({
         "release": tag,
@@ -222,6 +257,32 @@ def edit_yaml(path: Path, key_path: tuple[str, ...], value: Any) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def pin_c8s_mapping(path: Path, value: dict[str, Any]) -> None:
+    """Permit only the reviewed core inventory list to change its length."""
+    current = yaml.safe_load(path.read_text())
+    if "c8s" not in current or current["c8s"]["coreImages"] == value["coreImages"]:
+        edit_yaml(path, ("c8s",), value)
+        return
+    held_core = copy.deepcopy(value)
+    held_core["coreImages"] = current["c8s"]["coreImages"]
+    edit_yaml(path, ("c8s",), held_core)
+    text = path.read_text()
+    pattern = re.compile(r"(?m)^([ ]*)coreImages:[ \t]*\n((?:[ ]*-[ ]+[^\n]+\n)+)")
+    matches = list(pattern.finditer(text))
+    if len(matches) != 1:
+        raise BumpError(f"{path.relative_to(ROOT)} has no unique coreImages list")
+    match = matches[0]
+    indentation = re.match(r"([ ]*)-", match.group(2)).group(1)
+    replacement = match.group(1) + "coreImages:\n" + "".join(
+        indentation + "- " + image + "\n" for image in value["coreImages"])
+    updated = text[:match.start()] + replacement + text[match.end():]
+    expected = yaml.safe_load(text)
+    expected["c8s"] = value
+    if yaml.safe_load(updated) != expected:
+        raise BumpError(f"{path.relative_to(ROOT)} core inventory changes another input")
+    path.write_text(updated)
+
+
 def target_file(layer_file: Path, owner: release_profiles.Profile, moved: list[release_profiles.Profile],
                 users: list[release_profiles.Profile]) -> Path:
     """Edit a shared layer only when every profile that uses it moves."""
@@ -246,7 +307,10 @@ def pin_profiles(moved: list[release_profiles.Profile], everyone: tuple[release_
             users = [other for other in everyone if owners[other] == owners[profile]]
             targets.add(target_file(owners[profile], profile, moved, users))
         for path in sorted(targets):
-            edit_yaml(path, key_path, value)
+            if key_path == ("c8s",):
+                pin_c8s_mapping(path, value)
+            else:
+                edit_yaml(path, key_path, value)
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +585,7 @@ def main() -> int:
             raise BumpError("the moved profiles pin different c8s releases; move them one at a time")
         old = olds[0]
         renamed = "armtls-mesh-image" in git(c8s_repo, "grep", "-e", "armtls-mesh-image", "-e", "ratls-mesh-image", args.tag, "--", "cmd", "internal")
-        new = new_c8s(args.tag, commit, old, renamed_mesh=renamed)
+        new = new_c8s(args.tag, commit, old, renamed_mesh=renamed, c8s_repo=c8s_repo)
 
         pin_profiles(moved, everyone, new)
         bump_module(old["release"], args.tag)

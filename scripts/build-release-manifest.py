@@ -317,7 +317,10 @@ def require_allowlist_contract(
                 command_policy.get("argv"),
                 args_policy.get("argv", []) if args_policy.get("policy") == "exact" else [],
             ))
-        require(actual_processes == expected_processes,
+        # C8s canonicalization sorts rules by digest. Compare all exact
+        # processes with duplicate counts, independent of chart order.
+        process_key = lambda process: json.dumps(process, sort_keys=True)
+        require(sorted(actual_processes, key=process_key) == sorted(expected_processes, key=process_key),
                 f"allowlist workload {item['name']} process differs from the rendered profile")
 
 

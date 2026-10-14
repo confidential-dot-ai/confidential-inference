@@ -66,6 +66,59 @@ class BumpTests(unittest.TestCase):
         value["coreImages"][0] = "ghcr.io/confidential-dot-ai/cds@sha256:" + "3" * 64
         return value
 
+    def test_new_seed_record_is_written_and_existing_format_is_still_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "new-seed.json"
+            with mock.patch.object(BUMP, "ROOT", path.parent):
+                BUMP.write_json(path, {"allowlist": {"workloads": {}}})
+                self.assertEqual(path.read_text(), '{\n  "allowlist": {\n    "workloads": {}\n  }\n}\n')
+                path.write_text('{"unreviewed":"format"}')
+                with self.assertRaisesRegex(BUMP.BumpError, "expected JSON form"):
+                    BUMP.write_json(path, {})
+
+    def test_shared_module_moves_staging_first_then_production_without_reverting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tool = Path(directory)
+            path = tool / "go.mod"
+            path.write_text("module example\n\nrequire " + BUMP.C8S_MODULE + " v0.43.0\n")
+            with mock.patch.object(BUMP, "CANONICAL_TOOL", tool), mock.patch.object(BUMP, "run") as run:
+                BUMP.bump_module("v0.43.0", "v0.44.6-beta.1")
+                BUMP.bump_module("v0.37.0-beta.1", "v0.44.6-beta.1")
+                self.assertEqual(path.read_text(), "module example\n\nrequire " + BUMP.C8S_MODULE + " v0.44.6-beta.1\n")
+                self.assertEqual(run.call_count, 2)
+
+    def test_modern_core_inventory_adds_new_components_and_uses_chart_nginx_pin(self):
+        chart = {"c8sComponents": [
+            {"valuePath": "image"}, {"valuePath": "nri.image"}, {"valuePath": "volume.image"},
+            {"valuePath": "attest.image", "pinnedDigest": "sha256:" + "7" * 64}],
+            "image": {"repository": BUMP.REGISTRY + "c8s-operator"},
+            "nri": {"image": {"repository": BUMP.REGISTRY + "nri-image-policy"}},
+            "volume": {"image": {"repository": BUMP.REGISTRY + "volumed"}},
+            "attest": {"image": {"repository": BUMP.REGISTRY + "attestation-api"}},
+            "router": {"nginx": {"image": {"repository": "nginxinc/nginx-unprivileged",
+                                                   "digest": "sha256:" + "8" * 64}}}}
+        with mock.patch.object(BUMP, "git_show", return_value=BUMP.yaml.safe_dump(chart).encode()), \
+             mock.patch.object(BUMP, "digest", return_value="sha256:" + "9" * 64) as digest:
+            core = BUMP.modern_core_images(Path("selected-source"), "a" * 40, "v0.44.6-beta.1")
+        self.assertIn(BUMP.REGISTRY + "nri-image-policy@sha256:" + "9" * 64, core)
+        self.assertIn(BUMP.REGISTRY + "volumed@sha256:" + "9" * 64, core)
+        self.assertEqual(core[-1], "nginxinc/nginx-unprivileged@sha256:" + "8" * 64)
+        self.assertFalse(any("attestation-api" in image for image in core))
+        self.assertEqual(digest.call_count, 3)
+
+    def test_core_inventory_growth_preserves_comments_and_other_pins(self):
+        path = self.write(SPEC_TEXT)
+        value = self.new_c8s()
+        value["coreImages"].append(BUMP.REGISTRY + "nri-image-policy@sha256:" + "4" * 64)
+        with mock.patch.object(BUMP, "ROOT", path.parent):
+            BUMP.pin_c8s_mapping(path, value)
+        self.assertEqual(BUMP.yaml.safe_load(path.read_text())["c8s"], value)
+        self.assertTrue(path.read_text().startswith("# A comment that must stay.\n"))
+        self.assertIn("  # The c8s release.\n", path.read_text())
+        original, updated = BUMP.yaml.safe_load(SPEC_TEXT), BUMP.yaml.safe_load(path.read_text())
+        original.pop("c8s"); updated.pop("c8s")
+        self.assertEqual(original, updated)
+
     def test_the_c8s_edit_keeps_every_other_byte(self):
         path = self.write(SPEC_TEXT)
         with mock.patch.object(BUMP, "ROOT", path.parent):

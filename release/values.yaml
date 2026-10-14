@@ -62,6 +62,7 @@ c8s:
   frontDoorPodLabelName: router
 
 attestationReceipts:
+  attestationApiUrl: unix:///run/c8s/workload-claims/attestation-api.sock
   enabled: true
   gpuEvidenceFlagEnabled: false
   legacyC8s615: false
@@ -293,12 +294,7 @@ workloadOverrides:
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-key-file=/etc/c8s/certs/tls.key
             - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-            env:
-            - name: HOST_IP
-              valueFrom:
-                fieldRef:
-                  apiVersion: v1
-                  fieldPath: status.hostIP
+            env: []
             image: '{{ .Values.images.c8sOperator }}'
             livenessProbe:
               httpGet:
@@ -381,12 +377,7 @@ workloadOverrides:
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-key-file=/etc/c8s/certs/tls.key
             - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-            env:
-            - name: HOST_IP
-              valueFrom:
-                fieldRef:
-                  apiVersion: v1
-                  fieldPath: status.hostIP
+            env: []
             image: '{{ .Values.images.c8sOperator }}'
             livenessProbe:
               httpGet:
@@ -453,12 +444,7 @@ workloadOverrides:
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-key-file=/etc/c8s/certs/tls.key
             - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-            env:
-            - name: HOST_IP
-              valueFrom:
-                fieldRef:
-                  apiVersion: v1
-                  fieldPath: status.hostIP
+            env: []
             image: '{{ .Values.images.c8sOperator }}'
             livenessProbe:
               httpGet:
@@ -570,12 +556,7 @@ workloadOverrides:
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-key-file=/etc/c8s/certs/tls.key
             - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-            env:
-            - name: HOST_IP
-              valueFrom:
-                fieldRef:
-                  apiVersion: v1
-                  fieldPath: status.hostIP
+            env: []
             image: '{{ .Values.images.c8sOperator }}'
             livenessProbe:
               httpGet:
@@ -695,12 +676,7 @@ workloadOverrides:
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-key-file=/etc/c8s/certs/tls.key
             - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-            env:
-            - name: HOST_IP
-              valueFrom:
-                fieldRef:
-                  apiVersion: v1
-                  fieldPath: status.hostIP
+            env: []
             image: '{{ .Values.images.c8sOperator }}'
             livenessProbe:
               httpGet:
@@ -812,12 +788,7 @@ workloadOverrides:
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-key-file=/etc/c8s/certs/tls.key
             - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-            env:
-            - name: HOST_IP
-              valueFrom:
-                fieldRef:
-                  apiVersion: v1
-                  fieldPath: status.hostIP
+            env: []
             image: '{{ .Values.images.c8sOperator }}'
             livenessProbe:
               httpGet:

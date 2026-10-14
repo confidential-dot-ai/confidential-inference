@@ -2,6 +2,8 @@
 from pathlib import Path
 import runpy
 import unittest
+import urllib.error
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 AGENT = runpy.run_path(str(ROOT / 'helm/confidential-inference/files/staging-validation-agent.py'))
@@ -13,6 +15,16 @@ class StagingAgentTests(unittest.TestCase):
     def check(self, url, method='GET', **extra):
         return AGENT['validate_action']({'name': 'test', 'url': url, 'method': method, **extra},
                                         [GATEWAY], [ROUTER])
+
+    def test_only_missing_task_is_idle_and_authentication_failure_is_visible(self):
+        for status in (404, 401, 403, 500):
+            error = urllib.error.HTTPError("https://kubernetes.default.svc/held-task", status, "safe", {}, None)
+            with mock.patch.object(AGENT['urllib'].request, 'urlopen', side_effect=error):
+                if status == 404:
+                    self.assertIsNone(AGENT['read_task_secret'](object(), object()))
+                else:
+                    with self.assertRaises(urllib.error.HTTPError):
+                        AGENT['read_task_secret'](object(), object())
 
     def test_native_configuration_status_and_public_inference_are_permitted(self):
         for path in ('/runtime-config', '/release-config', '/metrics'):
