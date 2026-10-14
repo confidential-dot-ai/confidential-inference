@@ -290,7 +290,11 @@ def require_allowlist_contract(
         for name, expected in expected_core.items():
             require(workloads[name] == expected,
                     f"core entry {name} differs from the component ENTRYPOINT pin or baked seed")
-    for name, expected in (native_core or {}).items():
+    # CDS sorts process rules when it makes canonical policy bytes.
+    # Compare the exact native rules in the same pinned canonical form.
+    canonical_native = json.loads(ALLOWLIST_GENERATOR["canonicalize"](
+        {"schema": "c8s.allowlist/v1", "workloads": native_core}, None))["workloads"] if native_core else {}
+    for name, expected in canonical_native.items():
         require(workloads[name] == expected,
                 f"native entry {name} differs from the pinned node integration render")
     for item in policy["workloads"]:

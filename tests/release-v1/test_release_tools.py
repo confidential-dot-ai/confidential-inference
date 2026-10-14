@@ -969,6 +969,8 @@ class ManifestTests(unittest.TestCase):
         allowlist = json.loads(STAGING_ALLOWLIST.read_text())
         configs = {**json.loads(PROFILES.IMAGE_CONFIG.read_text()), **REPOSITORY_CONFIGS}
         native = GEN.native_core_entries(spec["c8s"], configs)
+        # Use the real CDS process ordering that publication generates.
+        allowlist = json.loads(GEN.canonicalize(allowlist, None))
         MAN.require_allowlist_contract(allowlist, policy, core, documents, configs,
                                       spec["c8s"]["release"], native_core=native)
         router = next(item for item in documents if item.get("kind") == "Deployment"
