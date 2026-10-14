@@ -34,6 +34,7 @@ async fn runtime_models_change_without_interrupting_an_active_request()
         schema_version: 1,
         revision,
         router_service: None,
+        evidence: None,
         catalog_model_ids: vec![name.into()],
         inference_model_ids: vec![name.into()],
         maximum_body_bytes: 1024,

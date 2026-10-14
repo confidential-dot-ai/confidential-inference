@@ -5,6 +5,11 @@
 {{- end }}
 {{- $names := keys $routes | sortAlpha }}
 {{- $settings := dict "schemaVersion" 1 "revision" .Values.runtimeConfig.revision "catalogModelIds" $names "inferenceModelIds" $names "attestationCacheSeconds" .Values.runtimeConfig.attestationCacheSeconds }}
+{{- $evidence := dict "baseUrl" .Values.attestationReceipts.evidenceBaseUrl }}
+{{- with .Values.attestationReceipts.evidenceConnectHost }}
+{{- $_ := set $evidence "connectHost" . }}
+{{- end }}
+{{- $_ := set $settings "evidence" $evidence }}
 {{- range $key := list "maximumBodyBytes" "upstreamTimeoutSeconds" "bodyTimeoutSeconds" "streamIdleTimeoutSeconds" "globalRequestConcurrency" "perAddressConcurrency" "inferenceConcurrency" "inferenceQueue" "queueTimeoutSeconds" "perKeyConcurrency" "attestationConcurrency" "requestsPerAddressPerSecond" }}
 {{- $_ := set $settings $key (index $.Values.gateway.protection $key) }}
 {{- end }}

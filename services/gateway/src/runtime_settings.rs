@@ -11,6 +11,8 @@ pub struct GatewaySettings {
     pub revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub router_service: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<EvidenceSettings>,
     pub catalog_model_ids: Vec<String>,
     pub inference_model_ids: Vec<String>,
     pub maximum_body_bytes: usize,
@@ -28,6 +30,36 @@ pub struct GatewaySettings {
     pub requests_per_address_per_second: u32,
 }
 
+/// Public TLS origin and optional connection address, changed as one unit.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EvidenceSettings {
+    pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_host: Option<String>,
+}
+
+impl EvidenceSettings {
+    /// Validate addresses without changing TLS trust or doing network I/O.
+    ///
+    /// # Errors
+    /// Return an error for an unsafe origin or invalid connection host.
+    pub fn validate(&self) -> Result<(), String> {
+        let url = crate::attestation::parse_evidence_base_url(&self.base_url)?;
+        if self.base_url.len() > 2048 || url.scheme() != "https" {
+            return Err("runtime evidence URL must be an HTTPS origin".into());
+        }
+        if let Some(host) = &self.connect_host {
+            if host.is_empty() || host.len() > 253 {
+                return Err("invalid runtime evidence connection host".into());
+            }
+            url::Host::parse(host)
+                .map_err(|_| "invalid runtime evidence connection host".to_owned())?;
+        }
+        Ok(())
+    }
+}
+
 impl Versioned for GatewaySettings {
     fn revision(&self) -> u64 {
         self.revision
@@ -40,6 +72,9 @@ impl GatewaySettings {
     /// # Errors
     /// Returns an error for unsafe settings or inconsistent model lists.
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(evidence) = &self.evidence {
+            evidence.validate()?;
+        }
         let names_valid = |names: &[String]| {
             names.len() <= 1024
                 && names
@@ -89,5 +124,54 @@ impl GatewaySettings {
             return Err("invalid gateway runtime settings".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_evidence_rejects_unsafe_addresses() {
+        for origin in [
+            "http://api.example.test",
+            "http://127.0.0.1",
+            "https://user:password@api.example.test",
+            "https://api.example.test/path",
+            "https://api.example.test?query=1",
+            "https://api.example.test#fragment",
+            "file:///tmp/evidence",
+        ] {
+            let settings = EvidenceSettings {
+                base_url: origin.into(),
+                connect_host: None,
+            };
+            assert!(settings.validate().is_err(), "accepted {origin}");
+        }
+        for host in [
+            "",
+            "router:443",
+            "https://router",
+            "router/path",
+            "user@router",
+            "router?query=1",
+        ] {
+            let settings = EvidenceSettings {
+                base_url: "https://api.example.test".into(),
+                connect_host: Some(host.into()),
+            };
+            assert!(settings.validate().is_err(), "accepted {host}");
+        }
+        for host in [
+            "c8s-router.c8s-system.svc.cluster.local",
+            "127.0.0.1",
+            "[::1]",
+        ] {
+            let settings = EvidenceSettings {
+                base_url: "https://api.example.test".into(),
+                connect_host: Some(host.into()),
+            };
+            assert!(settings.validate().is_ok(), "rejected {host}");
+        }
     }
 }
