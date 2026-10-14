@@ -376,6 +376,19 @@ class MountTests(unittest.TestCase):
         with self.assertRaisesRegex(GEN.GenerationError, "below /mnt/c8s-data/"):
             GEN.container_mounts(obj, container, None)
 
+    def test_declared_attestation_sidecar_pins_the_nri_socket_mount(self):
+        container = {"name": "cds-attest", "image": IMAGE,
+                     "command": ["/c8s"], "args": ["cds-attest"]}
+        obj = controller(container=container, annotations={"confidential.ai/cw": "gateway"})
+        rules = GEN.container_mounts(obj, container, None, c8s_release="v0.44.6")
+        self.assertIn({"destination": "/run/c8s/workload-claims", "kind": "host",
+                       "source": "/var/run/nri-image-policy", "readOnly": True}, rules)
+        self.assertEqual(len(rules), 2)
+        self.assertEqual(GEN.container_mounts(obj, container, None, c8s_release="v0.42.0"),
+                         [{"destination": "/etc/c8s/certs", "kind": "emptyDir"}])
+        obj["spec"]["template"]["metadata"]["annotations"] = {}
+        self.assertEqual(GEN.container_mounts(obj, container, None, c8s_release="v0.44.6"), [])
+
     def test_host_path_pins_source_and_mode(self):
         container = {"name": "app", "image": IMAGE, "volumeMounts": [{"name": "proc", "mountPath": "/host/proc", "readOnly": True}]}
         obj = controller(container=container, volumes=[{"name": "proc", "hostPath": {"path": "/proc"}}])
@@ -955,7 +968,9 @@ class ManifestTests(unittest.TestCase):
         documents = rendered(STAGING)
         allowlist = json.loads(STAGING_ALLOWLIST.read_text())
         configs = {**json.loads(PROFILES.IMAGE_CONFIG.read_text()), **REPOSITORY_CONFIGS}
-        MAN.require_allowlist_contract(allowlist, policy, core, documents, configs, spec["c8s"]["release"])
+        native = GEN.native_core_entries(spec["c8s"], configs)
+        MAN.require_allowlist_contract(allowlist, policy, core, documents, configs,
+                                      spec["c8s"]["release"], native_core=native)
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
@@ -963,12 +978,20 @@ class ManifestTests(unittest.TestCase):
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"].pop("inference-worker-1")
         with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
-            MAN.require_allowlist_contract(changed, policy, core, documents, configs, spec["c8s"]["release"])
+            MAN.require_allowlist_contract(changed, policy, core, documents, configs,
+                                          spec["c8s"]["release"], native_core=native)
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"]["sglang-router"]["containers"][0]["args"]["argv"][1] = \
             "--service-discovery-namespace=wrong"
         with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
-            MAN.require_allowlist_contract(changed, policy, core, documents, configs, spec["c8s"]["release"])
+            MAN.require_allowlist_contract(changed, policy, core, documents, configs,
+                                          spec["c8s"]["release"], native_core=native)
+
+        changed = json.loads(json.dumps(allowlist))
+        changed["workloads"]["c8s-router"]["containers"][0]["args"] = {"policy": "any"}
+        with self.assertRaisesRegex(MAN.ManifestError, "native entry c8s-router differs"):
+            MAN.require_allowlist_contract(changed, policy, core, documents, configs,
+                                          spec["c8s"]["release"], native_core=native)
 
     def test_each_node_manifest_belongs_to_the_layer_that_pins_c8s(self):
         for profile in PROFILES.load():

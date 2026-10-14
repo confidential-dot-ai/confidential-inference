@@ -271,6 +271,7 @@ def require_allowlist_contract(
     image_configs: dict[str, Any],
     c8s_release: str | None = None,
     core_seed: dict[str, Any] | None = None,
+    native_core: dict[str, Any] | None = None,
 ) -> None:
     rendered = ALLOWLIST_GENERATOR["controllers"](documents)
     policy_controllers = {item["controller"] for item in policy["workloads"]}
@@ -278,6 +279,7 @@ def require_allowlist_contract(
             f"rendered controllers differ from allowlist policy: rendered={sorted(rendered)} policy={sorted(policy_controllers)}")
     expected_names = {item["name"] for item in policy["workloads"]}
     expected_names |= {ALLOWLIST_GENERATOR["floor_entry"](image)[0] for image in core_images}
+    expected_names |= set(native_core or {})
     workloads = allowlist.get("workloads")
     require(isinstance(workloads, dict) and set(workloads) == expected_names,
             "the allowlist entries differ from the profile allowlist policy")
@@ -288,6 +290,9 @@ def require_allowlist_contract(
         for name, expected in expected_core.items():
             require(workloads[name] == expected,
                     f"core entry {name} differs from the component ENTRYPOINT pin or baked seed")
+    for name, expected in (native_core or {}).items():
+        require(workloads[name] == expected,
+                f"native entry {name} differs from the pinned node integration render")
     for item in policy["workloads"]:
         pod = rendered[item["controller"]]["spec"]["template"]["spec"]
         expected_processes = []
@@ -844,7 +849,8 @@ def build(
     require(allowlist.get("schema") == "c8s.allowlist/v1", "the allowlist has the wrong schema")
     require_model_files(spec, documents)
     require_allowlist_contract(allowlist, policy, spec["c8s"]["coreImages"], documents, configs,
-                              spec["c8s"]["release"], ALLOWLIST_GENERATOR["core_seed"](spec["c8s"]))
+                              spec["c8s"]["release"], ALLOWLIST_GENERATOR["core_seed"](spec["c8s"]),
+                              ALLOWLIST_GENERATOR["native_core_entries"](spec["c8s"], configs))
     allowlisted = {
         container["digest"]
         for entry in allowlist["workloads"].values()
