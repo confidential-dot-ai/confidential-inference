@@ -16,6 +16,8 @@ runtimeConfig:
 environment: staging
 
 gateway:
+  usage:
+    enabled: true
   protection:
     # The node mesh proxy opens the final connection to the gateway.
     # Keep Pod proxies and the staging node network in the trusted scope.

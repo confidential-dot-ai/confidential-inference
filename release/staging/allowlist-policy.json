@@ -13,7 +13,8 @@
       "name": "gateway",
       "controller": "Deployment/gateway",
       "secretReads": [
-        "/confidential-inference/gateway/api-key-pepper"
+        "/confidential-inference/gateway/api-key-pepper",
+        "/confidential-inference/gateway/product-usage"
       ]
     },
     {

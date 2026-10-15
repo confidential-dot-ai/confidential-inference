@@ -23,7 +23,7 @@ use confidential_gateway::{
     key_registry::KeyRegistryMode,
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
-    router_with_runtime,
+    router_with_runtime_and_usage,
     runtime_config::MountedConfig,
     runtime_settings::GatewaySettings,
 };
@@ -37,6 +37,8 @@ const INFERENCE_UPSTREAM_URL: &str = "http://127.0.0.1:30001";
 #[derive(Parser, Debug)]
 #[command(name = "confidential-gateway")]
 struct Args {
+    #[arg(long, env = "GATEWAY_USAGE_CONFIG_FILE")]
+    usage_config_file: Option<PathBuf>,
     #[arg(long, env = "GATEWAY_ROUTER_NAMESPACE")]
     router_namespace: Option<String>,
     #[arg(long, env = "GATEWAY_RELEASE_SELECTION_FILE")]
@@ -399,7 +401,28 @@ async fn main() -> Result<()> {
     let protection = protection_config(&args);
     let inference_model_id = args.model;
     let catalog_model_ids = vec![inference_model_id.clone()];
-    let public = router_with_runtime(
+    let usage = if let Some(path) = &args.usage_config_file {
+        if !args.state_enabled || !gateway_state.is_available() {
+            bail!("usage requires durable gateway state");
+        }
+        let config: confidential_gateway::usage::Config =
+            serde_json::from_slice(&read_bounded(path, 65_536)?)
+                .context("invalid usage configuration")?;
+        if config.environment != args.environment {
+            bail!("usage environment differs from gateway environment");
+        }
+        let path = args
+            .state_database
+            .parent()
+            .context("usage storage needs a state directory")?
+            .join("usage.sqlite3");
+        let recorder = confidential_gateway::usage::Recorder::open(&path, config)?;
+        recorder.spawn();
+        Some(recorder)
+    } else {
+        None
+    };
+    let public = router_with_runtime_and_usage(
         GatewayConfig {
             catalog_model_ids,
             inference_model_ids: vec![inference_model_id],
@@ -418,6 +441,7 @@ async fn main() -> Result<()> {
         args.router_namespace
             .clone()
             .filter(|_| args.allow_direct_inference_url),
+        usage.clone(),
     );
     let public = with_instance_header(public, args.gateway_instance_id.as_deref())?;
     let admin_certificate =
@@ -426,7 +450,11 @@ async fn main() -> Result<()> {
     let admin_verifier = AdminRequestVerifier::from_certificate_pem(&admin_certificate)
         .map_err(anyhow::Error::msg)
         .context("parse the admin request signer certificate")?;
-    let admin = admin_router(gateway_state).layer(middleware::from_fn_with_state(
+    let mut admin = admin_router(gateway_state);
+    if let Some(usage) = &usage {
+        admin = admin.merge(confidential_gateway::usage::admin_router(usage.clone()));
+    }
+    let admin = admin.layer(middleware::from_fn_with_state(
         admin_verifier,
         require_signed_admin_request,
     ));
@@ -436,6 +464,15 @@ async fn main() -> Result<()> {
         .await
         .context("bind the private metrics listener")?;
     let mut private = metrics_router(metrics);
+    if let Some(usage) = usage {
+        private = private.route(
+            "/usage-status",
+            axum::routing::get(move || {
+                let usage = usage.clone();
+                async move { axum::Json(usage.status()) }
+            }),
+        );
+    }
     if let Some(releases) = releases {
         private = private.route(
             "/release-config",
@@ -1099,6 +1136,7 @@ mod tests {
 
     fn args() -> Args {
         Args {
+            usage_config_file: None,
             router_namespace: None,
             release_selection_file: None,
             runtime_config_file: None,

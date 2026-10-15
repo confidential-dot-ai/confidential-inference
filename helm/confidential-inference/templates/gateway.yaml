@@ -88,7 +88,11 @@ spec:
         # is delivered through the c8s memory-backed secret directory. It
         # never enters a Kubernetes Secret, ConfigMap, image, or persistent
         # volume.
+        {{- if .Values.gateway.usage.enabled }}
+        confidential.ai/c8s-secrets: {{ printf "%s=%s,product-usage=/confidential-inference/gateway/product-usage" .Values.gateway.c8sSecrets.apiKeyPepper.name .Values.gateway.c8sSecrets.apiKeyPepper.sourcePath | quote }}
+        {{- else }}
         confidential.ai/c8s-secrets: {{ printf "%s=%s" .Values.gateway.c8sSecrets.apiKeyPepper.name .Values.gateway.c8sSecrets.apiKeyPepper.sourcePath | quote }}
+        {{- end }}
         confidential.ai/c8s-secret-dir: /run/c8s/secrets
         {{- if .Values.gateway.state.enabled }}
         {{- $state := .Values.gateway.state }}
@@ -239,6 +243,10 @@ spec:
             {{- end }}
             - name: GATEWAY_STATE_DATABASE
               value: {{ .Values.gateway.state.databasePath | quote }}
+            {{- if .Values.gateway.usage.enabled }}
+            - name: GATEWAY_USAGE_CONFIG_FILE
+              value: /run/c8s/secrets/product-usage
+            {{- end }}
             - name: GATEWAY_STATE_ABSENCE_POLICY
               value: {{ .Values.gateway.state.absencePolicy | quote }}
             - name: GATEWAY_STATE_VOLUME
