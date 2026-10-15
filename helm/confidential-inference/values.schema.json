@@ -53,6 +53,7 @@
       "additionalProperties": false,
       "required": ["enabled"],
       "properties": {
+        "usage": {"type":"object","additionalProperties":false,"required":["enabled","destinationCidrs","destinationPort"],"properties":{"enabled":{"type":"boolean"},"destinationPort":{"type":"integer","minimum":1024,"maximum":65535},"destinationCidrs":{"type":"array","uniqueItems":true,"maxItems":8,"items":{"type":"string","pattern":"^[0-9]{1,3}(?:\\.[0-9]{1,3}){3}/(?:[0-9]|[12][0-9]|3[0-2])$"}}}},
         "enabled": {"type": "boolean"}
       }
     },

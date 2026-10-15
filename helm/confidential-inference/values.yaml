@@ -157,6 +157,11 @@ gateway:
     apiKeyPepper:
       name: GATEWAY_API_KEY_PEPPER
       sourcePath: /confidential-inference/gateway/api-key-pepper
+  usage:
+    enabled: false
+    destinationPort: 9443
+    # Private configuration and sender credentials come from CDS memory.
+    destinationCidrs: []
   protection:
     maximumHeaders: 64
     maximumHeaderBytes: 16384

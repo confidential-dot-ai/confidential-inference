@@ -36,6 +36,7 @@ pub mod protection;
 pub mod release_settings;
 pub mod runtime_config;
 pub mod runtime_settings;
+pub mod usage;
 
 use metrics::GatewayMetrics;
 use protection::{ProtectionConfig, ProtectionState};
@@ -148,6 +149,7 @@ struct AppState {
     attestation_provider: Arc<dyn AttestationProvider>,
     nonces: Arc<Mutex<NonceStore>>,
     protection: Arc<ProtectionState>,
+    usage: Option<Arc<usage::Recorder>>,
 }
 
 #[async_trait::async_trait]
@@ -250,6 +252,33 @@ pub fn router_with_runtime(
     runtime: Option<Arc<runtime_config::MountedConfig<runtime_settings::GatewaySettings>>>,
     router_namespace: Option<String>,
 ) -> Router {
+    router_with_runtime_and_usage(
+        config,
+        keys,
+        audit,
+        metrics,
+        availability,
+        attestation_provider,
+        http,
+        runtime,
+        router_namespace,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn router_with_runtime_and_usage(
+    config: GatewayConfig,
+    keys: Arc<dyn ApiKeyVerifier>,
+    audit: Arc<dyn AuditSink>,
+    metrics: Arc<GatewayMetrics>,
+    availability: GatewayAvailability,
+    attestation_provider: Arc<dyn AttestationProvider>,
+    http: reqwest::Client,
+    runtime: Option<Arc<runtime_config::MountedConfig<runtime_settings::GatewaySettings>>>,
+    router_namespace: Option<String>,
+    usage: Option<Arc<usage::Recorder>>,
+) -> Router {
     let maximum_body_bytes = if runtime.is_some() {
         8 * 1024 * 1024
     } else {
@@ -281,6 +310,7 @@ pub fn router_with_runtime(
         attestation_provider,
         nonces: Arc::new(Mutex::new(NonceStore::default())),
         protection: protection.clone(),
+        usage,
     });
     Router::new()
         .route("/health", get(health))
@@ -513,21 +543,53 @@ async fn proxy_inference(
         }
         Err(_) => return client_error(StatusCode::REQUEST_TIMEOUT, "request_body_timeout"),
     };
-    let payload: Value = match serde_json::from_slice(&body) {
+    let mut payload: Value = match serde_json::from_slice(&body) {
         Ok(payload) => payload,
         Err(_) => return client_error(StatusCode::BAD_REQUEST, "invalid_json"),
     };
-    let Some(model) = payload.get("model").and_then(Value::as_str) else {
+    let Some(model) = payload
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
         return client_error(StatusCode::BAD_REQUEST, "model_required");
     };
     if !config
         .inference_model_ids()
         .iter()
-        .any(|candidate| candidate == model)
+        .any(|candidate| candidate == &model)
     {
         state.metrics.record_rejection("model_not_authorized");
         return client_error(StatusCode::UNAUTHORIZED, "model_not_authorized");
     }
+    let model = model.as_str();
+    let mut usage_request = match &state.usage {
+        Some(recorder) => match recorder.reserve(&key_id, model) {
+            Ok(guard) => Some(guard),
+            Err(_) => return protection::overload("usage_capacity"),
+        },
+        None => None,
+    };
+    let internal_stream_usage =
+        usage_request.is_some() && payload.get("stream").and_then(Value::as_bool) == Some(true);
+    let hide_final_usage = internal_stream_usage
+        && payload
+            .get("stream_options")
+            .and_then(|v| v.get("include_usage"))
+            .and_then(Value::as_bool)
+            != Some(true);
+    let body = if internal_stream_usage {
+        if !payload.get("stream_options").is_some_and(Value::is_object) {
+            payload["stream_options"] = json!({});
+        }
+        payload["stream_options"]["include_usage"] = json!(true);
+        match serde_json::to_vec(&payload) {
+            Ok(body) => axum::body::Bytes::from(body),
+            Err(_) => return client_error(StatusCode::BAD_REQUEST, "invalid_json"),
+        }
+    } else {
+        body
+    };
     let queue_started = Instant::now();
     state.metrics.enter_queue();
     let permits = state.protection.inference_permits(&key_id).await;
@@ -535,6 +597,9 @@ async fn proxy_inference(
         .metrics
         .leave_queue(queue_started.elapsed().as_secs_f64());
     let Ok(permits) = permits else {
+        if let Some(usage) = &mut usage_request {
+            usage.finish(usage::Outcome::Failed);
+        }
         state.metrics.record_rejection("inference_capacity");
         return protection::overload("inference_capacity");
     };
@@ -552,6 +617,9 @@ async fn proxy_inference(
         .send()
         .await;
     let Ok(upstream) = upstream else {
+        if let Some(usage) = &mut usage_request {
+            usage.finish(usage::Outcome::Failed);
+        }
         state.metrics.set_upstream_reachable(false);
         state.metrics.record_request(model, &key_id, 503);
         state
@@ -568,6 +636,9 @@ async fn proxy_inference(
     state.metrics.set_upstream_reachable(true);
     let status = upstream.status();
     if status == StatusCode::SERVICE_UNAVAILABLE {
+        if let Some(usage) = &mut usage_request {
+            usage.finish(usage::Outcome::Failed);
+        }
         state.metrics.set_upstream_reachable(false);
         state.metrics.record_request(model, &key_id, 503);
         state
@@ -598,6 +669,7 @@ async fn proxy_inference(
     let metric_model = model.to_owned();
     let metric_key_id = key_id.clone();
     let stream = async_stream::stream! {
+        let mut usage_request = usage_request;
         let _permits = permits;
         let _active_request = active_request;
         let _router_request = router_request;
@@ -606,7 +678,8 @@ async fn proxy_inference(
         let mut stream_metrics = StreamMetrics::default();
         let mut json_metrics = Vec::new();
         let mut json_metrics_overflow = false;
-        let mut model_response = model_response::ModelResponse::new(metric_model.clone(), is_event_stream);
+        let expected_model = usage_request.as_ref().map(|usage| usage.served_model().to_owned());
+        let mut model_response = model_response::ModelResponse::new(metric_model.clone(), is_event_stream).hide_final_usage(hide_final_usage).expected_model(expected_model);
         loop {
             match tokio::time::timeout(idle_timeout, upstream_stream.next()).await {
                 Ok(Some(Ok(chunk))) => {
@@ -628,29 +701,40 @@ async fn proxy_inference(
                     }
                     if rewrite_model {
                         match model_response.push(&chunk) {
-                            Ok(output) if !output.is_empty() => yield Ok::<_, std::io::Error>(axum::body::Bytes::from(output)),
-                            Ok(_) => {},
-                            Err(error) => { yield Err(error); break; }
+                            Ok(output) => {
+                                if let Some(usage) = &mut usage_request { usage.observation = model_response.observation(); if model_response.stream_done() { usage.finish(usage::Outcome::Completed); } }
+                                if !output.is_empty() { yield Ok::<_, std::io::Error>(axum::body::Bytes::from(output)); }
+                            },
+                            Err(error) => { if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); } yield Err(error); break; }
                         }
                     } else {
                         yield Ok::<_, std::io::Error>(chunk);
                     }
                 },
                 Ok(Some(Err(_))) => {
+                    if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); }
                     yield Err(std::io::Error::other("upstream response failed"));
                     break;
                 }
                 Ok(None) => {
                     if rewrite_model {
                         match model_response.finish() {
-                            Ok(output) if !output.is_empty() => yield Ok(axum::body::Bytes::from(output)),
-                            Ok(_) => {},
-                            Err(error) => yield Err(error),
+                            Ok(output) => {
+                                if let Some(usage) = &mut usage_request {
+                                    usage.observation = model_response.observation();
+                                    usage.finish(if !is_event_stream || model_response.stream_done() { usage::Outcome::Completed } else { usage::Outcome::Interrupted });
+                                }
+                                if !output.is_empty() { yield Ok(axum::body::Bytes::from(output)); }
+                            },
+                            Err(error) => { if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); } yield Err(error); },
                         }
+                    } else if let Some(usage) = &mut usage_request {
+                        usage.finish(if status.is_success() { usage::Outcome::Completed } else { usage::Outcome::Failed });
                     }
                     break;
                 },
                 Err(_) => {
+                    if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); }
                     yield Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "upstream stream timed out"));
                     break;
                 }
