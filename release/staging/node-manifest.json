@@ -1,7 +1,7 @@
 {
   "version": 3,
   "build": {
-    "timestamp": "2026-10-14T03:42:57Z",
+    "timestamp": "2026-10-15T14:57:26Z",
     "memory": "16G",
     "format": "raw",
     "platform": "tdx"
@@ -25,23 +25,23 @@
     },
     "base_image": {
       "path": "image.raw",
-      "sha256": "0d3547e8deb9049e8701cdb68746b446307b411d2357342442f3b91ef15899ce"
+      "sha256": "550fbd58602901b544ad5972e606a34e8a74db89c03e5ac64eb078bce53a867b"
     }
   },
   "outputs": {
     "disk_image": {
       "path": "disk.raw",
-      "sha256": "0d3547e8deb9049e8701cdb68746b446307b411d2357342442f3b91ef15899ce"
+      "sha256": "550fbd58602901b544ad5972e606a34e8a74db89c03e5ac64eb078bce53a867b"
     },
     "uki": {
       "path": "uki.efi",
-      "sha256": "92cd46033c712eecb921d7b0860b6075ce07bb82be63daf906c7310a99827a15"
+      "sha256": "8dbd6dd33d44b22d554c955c612403e586b054723e409c82ba517333c9861a26"
     }
   },
   "tdx": {
     "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
-    "rtmr1": "0d74b0a92f81b4c49e151675e70a2894d51ee7de6b7f8c96f948678531058bc2e4d42247ad2d6ea4db49622ae3224f87",
-    "rtmr2": "d7145170dfd4d7e7124f67d63c08d4619798b1b9384a52c80e1e79dbfd935226356a73f991e01d978061d46fc01f4b52",
+    "rtmr1": "5f9e798f1d5e3aa9f34ea5607f0b01694951fbe25ddd4032da3ef38a77cbc1873a89bbec079ef03f2bccf16cee0b25be",
+    "rtmr2": "d61c2b9c848a89d73051d067a7f4c4d764018b307623c4399ad57e266a3599e570c182480b549516b4369fdf99c1d106",
     "firmware": {
       "path": "OVMF.tdx.fd",
       "sha256": "a7edaeff6fc4bef8924461cb0fb68a194c3595d08ccad2720cca926dea12f7cf"
