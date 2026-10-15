@@ -121,4 +121,3 @@ The caller must enable those checks. For the current customer path, configure
 TEErminator with an explicit `--tdx-tcb-status` policy.
 
 Kettle provenance remains optional. Add it only when a release produces a Kettle statement.
-
