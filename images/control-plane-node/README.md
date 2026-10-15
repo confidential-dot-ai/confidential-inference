@@ -1,12 +1,21 @@
-# TDX node image
+# Historical TDX node profiles
 
-This directory owns the extra Confidential OS Builder profile for the
+This directory preserves earlier consumer node profiles and build records.
+The current release selects the signed C8s node image through `release/spec.yaml`
+and `release/node-manifest.json`. Read [the current threat model](../../docs/threat-model.md)
+and [client verification](../../docs/verification.md) before using these historical
+profiles. The sealed-policy and custom-state-profile procedures below are not
+the current production deployment procedure.
+
+## Historical profile procedure
+
+This directory owned the extra Confidential OS Builder profile for the
 Kubernetes CVMs. Operators can use the same measured image on each node of one
 cluster. This keeps one c8s node measurement across that cluster.
 
 Each environment that runs a sealed node image gets its own build. The build
 seals one allowlist into the measured image, and the nodes enforce that
-sealed allowlist. Production seals `c8s/allowlists/production.json`. See
+sealed allowlist. The historical production profile seals `c8s/allowlists/production.json`. See
 "Build inputs" below for the file table.
 
 Not every environment seals an allowlist. Under `policyMode: operator`
@@ -31,7 +40,7 @@ same profile script — see "Profile packaging" below.
 
 `builder-lock.json` also records the signed stage each sealed environment's
 last build produced, in one section per environment: `productionSignedStage`
-today. The published tag ends in `-sa` and the first twelve characters of the
+in the recorded build. The published tag ends in `-sa` and the first twelve characters of the
 sealed allowlist file's SHA-256, so the tag names the policy the image
 enforces.
 
@@ -245,11 +254,8 @@ whether the generated units are correct:
 
 - `tests/images/control-plane-node/test_boot_units.py` (seconds). Runs
   locally with every other test in this directory through
-  `scripts/ci-validate.sh`. In CI it runs in the same job as the boot
-  simulation below (`control-plane-node-boot-sim` in
-  `.github/workflows/v0-validation.yml`), gated to a change under this
-  directory. See "Continuous integration" in the top-level README.md for
-  the full category table.
+  `scripts/ci-validate.sh`. The old boot-simulation CI job has been removed. These legacy
+  profile tests are not current release-publication checks.
   Extracts every unit `control-plane-state-disk.sh` writes and the
   profile's two baked units, assembles them with vendored, hash-checked c8s
   base units (`fixtures/c8s-base/`, checked against the commit
@@ -265,9 +271,7 @@ whether the generated units are correct:
   available; run with `C8S_CHECKOUT=/path/to/c8s` to point it at one.
 
 - `tests/images/control-plane-node/boot-sim/` (a couple of minutes, a
-  separate CI job — `control-plane-node-boot-sim` in
-  `.github/workflows/v0-validation.yml` — since it needs a privileged
-  container, not part of `ci-validate.sh`). Runs the real generator script
+  privileged-container test, not part of `ci-validate.sh`). Runs the real generator script
   and the real two baked unit files inside a throwaway Ubuntu+systemd
   container against a fake base image, for both the server and the agent
   role, and asserts on the result: every generated unit exists,

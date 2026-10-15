@@ -317,7 +317,7 @@
         "operationId": "getC8sWellKnown",
         "tags": ["tls-lb-static"],
         "summary": "Read a c8s well-known evidence route",
-        "description": "Nginx proxies every `/.well-known/c8s/*` path straight to the internal c8s evidence service on port 8800. It never forwards these to the gateway process. `/.well-known/c8s/attest-lb` is the front-door TLS receipt that services/gateway/ATTESTATION.md describes.",
+        "description": "Nginx proxies every `/.well-known/c8s/*` path straight to the internal c8s evidence service on port 8800. It never forwards these to the gateway process. TEErminator uses `/.well-known/c8s/attest-lb` for fresh evidence bound to the public TLS certificate. This proof is separate from `/attestation` metadata. See docs/verification.md.",
         "parameters": [
           {
             "name": "path",
@@ -381,22 +381,6 @@
         "type": "http",
         "scheme": "bearer",
         "description": "`Authorization: Bearer <api-key>`. The gateway rejects a missing header, a missing `Bearer ` prefix, an empty token, and a token over 256 bytes, all with the same `invalid_api_key` error, to avoid revealing which check failed (services/gateway/src/lib.rs, `authenticate`)."
-      }
-    },
-    "parameters": {
-      "AttestationNonceQuery": {
-        "name": "nonce",
-        "in": "query",
-        "required": false,
-        "description": "A fresh, canonical, unpadded base64url-encoded 32-byte nonce (43 characters). One nonce is single-use. Supply this parameter or the `X-Attestation-Nonce` header, never both. The endpoint fails with `nonce_required` when neither is present (services/gateway/ATTESTATION.md; services/gateway/src/lib.rs, `attestation_response`).",
-        "schema": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"}
-      },
-      "AttestationNonceHeader": {
-        "name": "X-Attestation-Nonce",
-        "in": "header",
-        "required": false,
-        "description": "An alternative to the `nonce` query parameter. Supply at most one occurrence, and only one of the query parameter or this header, never both.",
-        "schema": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"}
       }
     },
     "schemas": {
@@ -730,28 +714,6 @@
           }
         }
       },
-      "AttestationBadNonce": {
-        "description": "The caller supplied the nonce in both places (`ambiguous_nonce`), supplied no nonce (`nonce_required`), or supplied a nonce that fails the 43-character canonical unpadded base64url check (`invalid_nonce`).",
-        "content": {
-          "application/json": {
-            "schema": {"$ref": "#/components/schemas/GatewayError"},
-            "examples": {
-              "ambiguous": {"value": {"error": {"code": "ambiguous_nonce", "message": "Bad Request"}}},
-              "required": {"value": {"error": {"code": "nonce_required", "message": "Bad Request"}}},
-              "invalid": {"value": {"error": {"code": "invalid_nonce", "message": "Bad Request"}}}
-            }
-          }
-        }
-      },
-      "AttestationNonceRejected": {
-        "description": "The nonce was already used, or the nonce store is at capacity (`nonce_rejected`). A nonce is single-use only after a successful response; a failed attestation releases the nonce for reuse (services/gateway/src/lib.rs, `release_failed_nonce`).",
-        "content": {
-          "application/json": {
-            "schema": {"$ref": "#/components/schemas/GatewayError"},
-            "example": {"error": {"code": "nonce_rejected", "message": "Conflict"}}
-          }
-        }
-      },
       "AttestationCapacity": {
         "description": "The attestation concurrency limit is full (4 concurrent requests by default; `GATEWAY_ATTESTATION_CONCURRENCY`).",
         "headers": {
@@ -764,17 +726,8 @@
           }
         }
       },
-      "AttestationInvalid": {
-        "description": "The c8s evidence collector returned evidence that failed the gateway's own shape checks.",
-        "content": {
-          "application/json": {
-            "schema": {"$ref": "#/components/schemas/GatewayError"},
-            "example": {"error": {"code": "attestation_invalid", "message": "Bad Gateway"}}
-          }
-        }
-      },
       "AttestationUnavailable": {
-        "description": "The c8s evidence collector was unreachable or timed out.",
+        "description": "The gateway could not refresh verified CDS policy metadata. The response includes Retry-After: 1. Retry with backoff.",
         "content": {
           "application/json": {
             "schema": {"$ref": "#/components/schemas/GatewayError"},

@@ -29,8 +29,11 @@ front-door evidence fields. The handler does not contact inference workers,
 SGLang Router, or monitoring pods.
 
 This response helps a client select and review its policy. It does not replace
-verification of the inference connection. The client must pin the reviewed
-policy and verify that connection with TEErminator or the native C8s verifier.
+verification of the inference connection. Clients that require fail-closed
+enforcement pin their reviewed policy and verify connections through
+TEErminator. Direct HTTPS with periodic verification
+is also possible, but does not enforce those pins on each inference connection.
+See [client verification](../../docs/verification.md) for commands and trust inputs.
 
 For a dynamic deployment, the reviewed live policy can differ from the initial
 policy in the signed software release. Use `--metadata-only --release-allowlist`
@@ -201,3 +204,12 @@ update. That format includes nonce-bound workload receipts. The new process
 uses version 3 only. Rollout checks must select verification by response
 version and must keep inference-connection verification independent of the
 metadata response.
+
+## Customer procedure
+
+Read [client verification](../../docs/verification.md) for release downloads,
+metadata checks, full allowlist pinning, Intel collateral policy, and the GPU
+boot gate. A workload certificate binds the policy at issuance. The metadata
+cache and fresh connection proof do not make policy updates instantaneous.
+The current contract retains operator-managed updates; it does not promise
+zero Kubernetes API rights.

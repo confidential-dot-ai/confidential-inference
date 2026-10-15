@@ -9,8 +9,8 @@ The image uses a pinned Python runtime. `requirements.lock` fixes every
 Python dependency version and file hash. It has a separate image name and
 digest. Updating it does not update inference workers or download model files.
 
-Build from this directory. Supply `SOURCE_REVISION` and `SOURCE_DATE_EPOCH`
-from the public repository commit. Publish and deploy by immutable digest.
+For a local development build, supply `SOURCE_REVISION` and `SOURCE_DATE_EPOCH`
+from the public repository commit. Use an immutable digest for image tests.
 The candidate router rehearsal must pass before this image is ready for use.
 
 The upstream build-time field uses `SOURCE_DATE_EPOCH`, the fixed timestamp
@@ -84,7 +84,14 @@ The built-image test checks mixed groups, request model rewriting, rejected
 route changes, an open stream across a route change, and restart recovery.
 These local checks do not replace the candidate worker/model rehearsal.
 
-For a reviewed local development build that has passed the image test, publish
+## Development publication
+
+The local publication command below is only for isolated development tests.
+Do not deploy its output to production or to a candidate prepared for production.
+For those deployments, use the approved `Release images` workflow and signed
+release pipeline. See [release publication](../../release/README.md).
+
+For a reviewed development build that has passed the image test, publish
 with a Docker registry login in tmpfs:
 
 ```sh
@@ -92,8 +99,9 @@ python3 images/sglang-router/publish.py --image <local-image> \
   --receipt /protected/path/router-publication.json
 ```
 
-The script checks the image platform and source label. It checks that the
-build inputs still match that commit. It records publication time and the
-repository digest. This is a development artifact, not a signed release.
-Candidate deployment still requires the separate router update script and
-its full manifest audit.
+The script checks the image platform, source label, and build inputs. It records
+publication time and the repository digest. This is a development artifact.
+It does not provide the approved pipeline's build and publication evidence.
+
+A production-ready candidate uses approved release artifacts and still needs
+the router rehearsal and deployment checks.
