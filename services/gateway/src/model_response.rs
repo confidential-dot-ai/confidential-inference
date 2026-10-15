@@ -5,9 +5,7 @@ use std::io;
 
 const MAXIMUM_PENDING_BYTES: usize = 16 * 1024 * 1024;
 
-fn rewrite_json(bytes: &[u8], model: &str) -> io::Result<Vec<u8>> {
-    let mut value: Value = serde_json::from_slice(bytes)
-        .map_err(|_| io::Error::other("invalid upstream completion JSON"))?;
+fn rewrite_value(mut value: Value, model: &str) -> io::Result<Vec<u8>> {
     if let Some(name) = value.get_mut("model") {
         *name = Value::String(model.to_owned());
     }
@@ -176,11 +174,11 @@ impl ModelResponse {
             .and_then(Value::as_array)
             .is_some_and(Vec::is_empty)
             && value.get("usage").is_some_and(Value::is_object);
-        let rewritten = rewrite_json(payload, &self.model)?;
         self.observe(&value, final_usage);
         if final_usage && self.hide_final_usage {
             return Ok(Vec::new());
         }
+        let rewritten = rewrite_value(value, &self.model)?;
         let mut output = b"data: ".to_vec();
         output.extend(rewritten);
         if self.pending.ends_with(b"\r\n") {
@@ -198,7 +196,7 @@ impl ModelResponse {
             let value: Value = serde_json::from_slice(&self.pending)
                 .map_err(|_| io::Error::other("invalid upstream completion JSON"))?;
             self.observe(&value, true);
-            rewrite_json(&self.pending, &self.model)
+            rewrite_value(value, &self.model)
         }
     }
 }
