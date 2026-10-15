@@ -7,7 +7,9 @@ use axum::{
     extract::{Request, State},
     response::Response,
 };
-use confidential_gateway::attestation_metadata::{CdsMetadataSource, MetadataSource as _};
+use confidential_gateway::attestation_metadata::{
+    CdsMetadataSource, EvidenceEndpoint, MetadataSource as _,
+};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -94,7 +96,7 @@ async fn reads_only_cds_and_discovery_and_hashes_exact_policy_bytes()
     let verdict = json!({"verified": true, "measurement_pinned": true, "cert_sha256": certificate_sha256, "operator_keys": [fingerprint]});
     std::fs::write(&verdict_path, serde_json::to_vec(&verdict)?)?;
     let cds_url = Url::parse(&format!("https://localhost:{}", address.port()))?;
-    let source = CdsMetadataSource {
+    let mut source = CdsMetadataSource {
         cds_url: cds_url.clone(),
         discovery_url: cds_url.join("/v1/discovery")?,
         allowlist_url: Url::parse("https://example.test/allowlist")?,
@@ -138,9 +140,39 @@ async fn reads_only_cds_and_discovery_and_hashes_exact_policy_bytes()
             "/v1/discovery".into()
         ])
     );
+    assert_runtime_discovery_override(&mut source, &fixture, &policy).await?;
     reject_bad_verdicts(&source, &verdict_path, &verdict).await?;
     shutdown.shutdown();
     task.await??;
+    Ok(())
+}
+
+async fn assert_runtime_discovery_override(
+    source: &mut CdsMetadataSource,
+    fixture: &Value,
+    policy: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Runtime discovery must use the new URLs and client while CDS stays pinned.
+    let endpoint = EvidenceEndpoint {
+        discovery_url: source.discovery_url.clone(),
+        allowlist_url: Url::parse("https://api.example.test/allowlist")?,
+        client: source.discovery_client.clone(),
+    };
+    let original_url = source.discovery_url.clone();
+    let original_client = source.discovery_client.clone();
+    source.discovery_url = Url::parse("https://127.0.0.1:1/v1/discovery")?;
+    source.discovery_client = reqwest::Client::new(); // Does not trust the test server.
+    let changed = source
+        .fetch_with_evidence(Some(&endpoint))
+        .await
+        .map_err(|error| format!("{error:?}"))?;
+    assert_eq!(
+        changed["c8s"]["activeAllowlist"]["url"],
+        "https://api.example.test/allowlist"
+    );
+    assert_exact_policy(&changed, fixture, policy);
+    source.discovery_url = original_url;
+    source.discovery_client = original_client;
     Ok(())
 }
 

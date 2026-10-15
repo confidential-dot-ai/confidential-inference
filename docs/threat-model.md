@@ -99,6 +99,33 @@ have different roles. Do not use the old production PEM files as new release
 anchors. New manifests do not require one fixed deployment mesh CA or operator
 key. A client can choose additional pins and must understand their scope.
 
+## Restricted Kubernetes credentials
+
+The C8s operator authentication key authorizes credential release and policy
+updates. The `c8s-operator` workload is a different component. Do not confuse
+CDS policy-update authority with Kubernetes permissions.
+
+The C8s node image pinned by the `v0.14.29` example issues Kubernetes user
+`operator` in group `c8s:node-operators`, rather than `system:masters`.
+The measured [role and binding](https://github.com/confidential-dot-ai/c8s/blob/deca64d1f5bf6c70e00c1a42ad0638bdf654efbc/node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/cred-release-rbac.yaml)
+permit application management and restrict access to the security controls.
+Measured admission guards deny exec, attach, port-forward, and ephemeral
+containers. They also protect system namespaces and prevent operator changes
+to the guards and cluster-wide permissions. Credential release waits for its
+measured readiness checks before serving credentials. Review these controls
+at the C8s commit in your selected release; group names alone grant no rights.
+
+The operator role can read pod logs, Kubernetes Secrets, and ConfigMaps.
+Protect request data and confidential keys from those readable resources.
+CDS application secrets are distinct from Kubernetes Secrets. Launch checks
+do not establish that approved application code never writes sensitive data
+to a log or exposes it through an API.
+
+RTMR3 binds launch configuration, including the operator public key. It does
+not define Kubernetes permissions. Those permissions and guards are part of
+the measured node implementation. Retaining a launch-bound operator key does
+not require issuing an unrestricted administrator credential.
+
 ## Verification limits
 
 - Quote signatures alone do not establish current revocation or accepted TCB

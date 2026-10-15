@@ -1,9 +1,17 @@
+# The new gateway and router images load configuration from mounted files.
+runtimeConfig:
+  enabled: true
+  revision: 1
+  attestationCacheSeconds: 3
+  modelRoutes:
+    deepseek-ai/DeepSeek-V4-Flash-0731:
+      - deepseek-ai/DeepSeek-V4-Flash-0731-rehearsal-worker-uf0b4c47afe
+
 # Chart values of the production release.
 #
-# The base is c8s/candidate-values.yaml, the values of the cluster that
-# serves api.confidential.ai today (release v0.13.28-rc.2). This file changes
-# only what the pinned c8s release and the new placement need. Each change has
-# a comment.
+# These source definitions preserve the reviewed candidate workloads and
+# their current configurations. The release replaces the gateway metadata.
+# The deployment selects the target; this file does not change production.
 #
 # The allowlist is generated from this file, so every value that reaches a
 # container command, argument, environment variable, or mount is part of the
@@ -28,6 +36,7 @@ scheduling:
   routerNodeName: gateway-node-1
 
 images:
+  rolloutClient: ghcr.io/confidential-dot-ai/confidential-inference/rollout-client
   # The images that this repository builds have no digest here. The release
   # build adds the digest from the image publication evidence or the signed
   # base release (scripts/build-release-manifest.py).
@@ -43,7 +52,7 @@ images:
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
   # changed: the c8s operator image. It must be one of the spec.yaml
   # c8s.coreImages, which scripts/bump-c8s.py moves together.
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:0b86d0541d101e259e7879706bc68acf32fd084603b6180577bc53bdc99a796c
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:daa439a7e5f1d2859b2edf2c70e68012fc256d513c1fb48d881ebda7fe521881
 
 namedWorkloadProxy:
   enabled: false
@@ -53,6 +62,7 @@ c8s:
   frontDoorPodLabelName: router
 
 attestationReceipts:
+  attestationApiUrl: unix:///run/c8s/workload-claims/attestation-api.sock
   enabled: true
   gpuEvidenceFlagEnabled: false
   legacyC8s615: false
@@ -62,6 +72,10 @@ attestationReceipts:
   # ConfigMap, not the allowlist. The deployment sets them in its own values.
   releaseBundleSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   policyMode: operator
+  # The deployment supplies the verified policy files and their hashes in
+  # gateway-release-identity. Keep the CDS origin in the signed workload.
+  cds:
+    url: https://c8s-cds.c8s-system.svc.cluster.local:8443
   expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   targets:
@@ -154,3 +168,740 @@ metricsCollector:
 
 kubeStateMetrics:
   attestedWorkload: kube-state-metrics
+
+# Current workload changes. Unchanged fields come from the chart.
+workloadOverridesEnabled: true
+workloadOverrides:
+  Deployment/gateway:
+    spec:
+      progressDeadlineSeconds: 600
+      revisionHistoryLimit: 10
+      selector:
+        matchLabels:
+          confidential.ai/gateway-slot: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+      template:
+        metadata:
+          annotations:
+            confidential.ai/cw: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+            confidential.ai/c8s-volumes: '{{ printf "gw%s" (sha256sum .Values.attestationReceipts.releaseId
+              | trunc 10) }}=/confidential-inference/volumes/{{ printf "gw%s" (sha256sum
+              .Values.attestationReceipts.releaseId | trunc 10) }}'
+          labels:
+            confidential.ai/gateway-slot: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+        spec:
+          containers:
+          - name: gateway
+            env:
+            - name: GATEWAY_LISTEN
+              value: 0.0.0.0:9443
+            - name: GATEWAY_METRICS_LISTEN
+              value: 0.0.0.0:9090
+            - name: GATEWAY_RUNTIME_CONFIG_FILE
+              value: /mnt/c8s-data/runtime/settings.json
+            - name: GATEWAY_ROUTER_NAMESPACE
+              value: confidential-inference
+            - name: GATEWAY_RELEASE_SELECTION_FILE
+              value: /mnt/c8s-data/release-selection/releases.json
+            - name: GATEWAY_INFERENCE_URL
+              value: http://router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}.confidential-inference.svc.cluster.local:30000
+            - name: GATEWAY_ALLOW_DIRECT_INFERENCE_URL
+              value: 'true'
+            - name: GATEWAY_MAXIMUM_HEADERS
+              value: '64'
+            - name: GATEWAY_MAXIMUM_HEADER_BYTES
+              value: '16384'
+            - name: GATEWAY_MAXIMUM_URI_BYTES
+              value: '2048'
+            - name: GATEWAY_HEADER_TIMEOUT_SECONDS
+              value: '5'
+            - name: GATEWAY_SHUTDOWN_GRACE_SECONDS
+              value: '900'
+            - name: GATEWAY_ENDPOINT_DRAIN_SECONDS
+              value: '35'
+            - name: GATEWAY_TRUSTED_PROXY_CIDRS
+              # The inner pod network is fixed by the approved C8s node image.
+              # A mesh relay can use a different outer node address. The gateway
+              # uses that connection address without trusting its forwarded header.
+              value: 10.52.0.0/16
+            - name: GATEWAY_C8S_RECEIPT_TARGETS
+              value: gateway|gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}|gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804
+            - name: GATEWAY_RELEASE_IDENTITY_FILE
+              value: /mnt/c8s-data/release-identity/..data/release-identity.json
+            - name: GATEWAY_C8S_POLICY_MODE
+              value: operator
+            - name: GATEWAY_STATE_DATABASE
+              value: /mnt/c8s-data/{{ printf "gw%s" (sha256sum .Values.attestationReceipts.releaseId
+                | trunc 10) }}/gateway.sqlite3
+            - name: GATEWAY_STATE_ABSENCE_POLICY
+              value: fail-closed
+            - name: GATEWAY_STATE_VOLUME
+              value: c8s
+            - name: GATEWAY_STATE_VOLUME_NAME
+              value: '{{ printf "gw%s" (sha256sum .Values.attestationReceipts.releaseId
+                | trunc 10) }}'
+            - name: GATEWAY_STATE_STARTUP_TIMEOUT_SECONDS
+              value: '300'
+            - name: GATEWAY_STATE_ENABLED
+              value: 'true'
+            - name: GATEWAY_API_KEY_PEPPER_FILE
+              value: /run/c8s/secrets/GATEWAY_API_KEY_PEPPER
+            - name: GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE
+              value: /mnt/c8s-data/admin-auth/..data/client.crt
+            - name: DEPLOYMENT_ENVIRONMENT
+              value: production
+            - name: GATEWAY_METRICS_API_KEY_LABEL_ALLOWLIST
+              value: unassigned
+            - name: GATEWAY_KEY_REGISTRY_MODE
+              value: registry
+            - name: GATEWAY_INSTANCE_ID
+              value: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+            - name: GATEWAY_C8S_CDS_URL
+              value: https://c8s-cds.c8s-system.svc.cluster.local:8443
+            - name: GATEWAY_RELEASE_URL
+              value: https://github.com/confidential-dot-ai/confidential-inference/releases/tag/{{
+                .Values.attestationReceipts.releaseId }}
+            - name: GATEWAY_C8S_IMAGE_POLICY
+              value: /mnt/c8s-data/release-identity/..data/cds-image-policy.json
+            - name: GATEWAY_C8S_SERVED_IMAGE_POLICY
+              value: /mnt/c8s-data/release-identity/..data/served-image-policy.json
+            image: '{{ .Values.images.gateway }}'
+            livenessProbe:
+              failureThreshold: 3
+              successThreshold: 1
+            ports:
+            - containerPort: 9443
+              name: http
+              protocol: TCP
+            - containerPort: 9090
+              name: metrics
+              protocol: TCP
+            readinessProbe:
+              failureThreshold: 3
+              successThreshold: 1
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          - name: cds-attest
+            args:
+            - cds-attest
+            - --host=0.0.0.0
+            - --port=8800
+            - --platform=tdx
+            - --front-door-mode=webpki
+            - --expected-workload=gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+            - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
+            - --serving-cert-file=/etc/c8s/certs/tls.crt
+            - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
+            - --mesh-identity-key-file=/etc/c8s/certs/tls.key
+            - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+            env: []
+            image: '{{ .Values.images.c8sOperator }}'
+            livenessProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            readinessProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          restartPolicy: Always
+          schedulerName: default-scheduler
+          serviceAccount: confidential-inference
+          volumes:
+          - name: runtime-config
+            configMap:
+              name: gateway-runtime
+          - name: release-selection
+            configMap:
+              name: gateway-release-selection
+          - name: admin-auth
+            secret:
+              defaultMode: 420
+              items:
+              - key: client.crt
+                path: client.crt
+              secretName: gateway-admin-mtls
+          - configMap:
+              defaultMode: 420
+              name: gateway-release-identity
+            name: release-identity
+          - emptyDir: {}
+            name: run
+          - emptyDir: {}
+            name: tmp
+    metadata:
+      name: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+  Deployment/kube-state-metrics:
+    spec:
+      progressDeadlineSeconds: 600
+      revisionHistoryLimit: 10
+      strategy:
+        rollingUpdate:
+          maxSurge: 25%
+          maxUnavailable: 25%
+        type: RollingUpdate
+      template:
+        spec:
+          containers:
+          - name: kube-state-metrics
+            image: '{{ .Values.images.kubeStateMetrics }}'
+            livenessProbe:
+              failureThreshold: 3
+              periodSeconds: 10
+              successThreshold: 1
+              timeoutSeconds: 1
+            ports:
+            - containerPort: 8080
+              name: metrics
+              protocol: TCP
+            readinessProbe:
+              failureThreshold: 3
+              periodSeconds: 10
+              successThreshold: 1
+              timeoutSeconds: 1
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          - name: cds-attest
+            args:
+            - cds-attest
+            - --host=0.0.0.0
+            - --port=8804
+            - --platform=tdx
+            - --front-door-mode=webpki
+            - --expected-workload=kube-state-metrics
+            - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
+            - --serving-cert-file=/etc/c8s/certs/tls.crt
+            - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
+            - --mesh-identity-key-file=/etc/c8s/certs/tls.key
+            - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+            env: []
+            image: '{{ .Values.images.c8sOperator }}'
+            livenessProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            readinessProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          restartPolicy: Always
+          schedulerName: default-scheduler
+          serviceAccount: kube-state-metrics
+          terminationGracePeriodSeconds: 30
+  Deployment/metrics-collector:
+    spec:
+      progressDeadlineSeconds: 600
+      revisionHistoryLimit: 10
+      strategy:
+        rollingUpdate:
+          maxSurge: 25%
+          maxUnavailable: 25%
+        type: RollingUpdate
+      template:
+        metadata:
+          annotations:
+            checksum/config: 5c5bea7e93b58af866bfc83794a409267612bd298a53587c944826c4ceb8636d
+        spec:
+          containers:
+          - name: prometheus
+            image: '{{ .Values.images.metricsCollector }}'
+            livenessProbe:
+              failureThreshold: 3
+              httpGet:
+                scheme: HTTP
+              periodSeconds: 10
+              successThreshold: 1
+              timeoutSeconds: 1
+            ports:
+            - containerPort: 9090
+              name: health
+              protocol: TCP
+            readinessProbe:
+              failureThreshold: 3
+              httpGet:
+                scheme: HTTP
+              periodSeconds: 10
+              successThreshold: 1
+              timeoutSeconds: 1
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          - name: cds-attest
+            args:
+            - cds-attest
+            - --host=0.0.0.0
+            - --port=8803
+            - --platform=tdx
+            - --front-door-mode=webpki
+            - --expected-workload=metrics-collector
+            - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
+            - --serving-cert-file=/etc/c8s/certs/tls.crt
+            - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
+            - --mesh-identity-key-file=/etc/c8s/certs/tls.key
+            - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+            env: []
+            image: '{{ .Values.images.c8sOperator }}'
+            livenessProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            readinessProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          restartPolicy: Always
+          schedulerName: default-scheduler
+          serviceAccount: metrics-collector
+          terminationGracePeriodSeconds: 30
+          volumes:
+          - configMap:
+              defaultMode: 420
+              name: metrics-collector
+            name: config
+          - name: remote-write
+            secret:
+              defaultMode: 420
+              items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              secretName: metrics-remote-write-mtls
+          - emptyDir:
+              sizeLimit: 4Gi
+            name: data
+  Deployment/sglang-router:
+    spec:
+      progressDeadlineSeconds: 600
+      revisionHistoryLimit: 10
+      selector:
+        matchLabels:
+          confidential.ai/router-slot: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+      strategy:
+        type: Recreate
+      template:
+        metadata:
+          annotations:
+            confidential.ai/cw: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+          labels:
+            confidential.ai/router-slot: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+        spec:
+          containers:
+          - name: sglang-router
+            args:
+            - --service-discovery
+            - --service-discovery-namespace=confidential-inference
+            - --service-discovery-port=30000
+            - --policy=cache_aware
+            - --cache-threshold=0.3
+            - --balance-abs-threshold=64
+            - --balance-rel-threshold=1.5
+            - --eviction-interval-secs=60
+            - --max-tree-size=67108864
+            - --health-check-endpoint=/health
+            - --worker-startup-timeout-secs=3600
+            - --host=0.0.0.0
+            - --port=30000
+            - --prometheus-host=0.0.0.0
+            - --prometheus-port=29000
+            - --enable-igw
+            - --selector
+            - app.kubernetes.io/component=inference-worker
+            - confidential.ai/traffic-eligible=true
+            env:
+            - name: CI_ROUTER_MODEL_ROUTES_FILE
+              value: /mnt/c8s-data/model-routes/routes.json
+            image: '{{ .Values.images.sglangRouter }}'
+            livenessProbe:
+              failureThreshold: 3
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            ports:
+            - containerPort: 30000
+              name: openai
+              protocol: TCP
+            - containerPort: 29000
+              name: metrics
+              protocol: TCP
+            readinessProbe:
+              failureThreshold: 3
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+            - mountPath: /mnt/c8s-data/model-routes
+              name: model-routes
+              readOnly: true
+          - name: cds-attest
+            args:
+            - cds-attest
+            - --host=0.0.0.0
+            - --port=8801
+            - --platform=tdx
+            - --front-door-mode=webpki
+            - --expected-workload=router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+            - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
+            - --serving-cert-file=/etc/c8s/certs/tls.crt
+            - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
+            - --mesh-identity-key-file=/etc/c8s/certs/tls.key
+            - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+            env: []
+            image: '{{ .Values.images.c8sOperator }}'
+            livenessProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            readinessProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          hostname: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+          restartPolicy: Always
+          schedulerName: default-scheduler
+          serviceAccount: sglang-router
+          terminationGracePeriodSeconds: 30
+          volumes:
+          - configMap:
+              defaultMode: 420
+              name: router-model-routes
+            name: model-routes
+    metadata:
+      name: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+  StatefulSet/inference-worker-0:
+    spec:
+      persistentVolumeClaimRetentionPolicy:
+        whenDeleted: Retain
+        whenScaled: Retain
+      podManagementPolicy: OrderedReady
+      revisionHistoryLimit: 10
+      template:
+        metadata:
+          annotations:
+            confidential.ai/c8s-volumes: md7b0eb3196a=/confidential-inference/model-updates/worker-uf0b4c47afe
+            confidential.ai/cw: inference-worker-0-u200b5c252a
+          labels:
+            confidential.ai/traffic-eligible: 'true'
+        spec:
+          containers:
+          - name: sglang
+            args:
+            - --path=/mnt/c8s-data/models/md7b0eb3196a
+            - --timeout-seconds=900
+            - --poll-seconds=1
+            - --expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731
+            - --expected-revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb
+            - --revision-metadata=.model-lock-local-manifest.json
+            - --expected-file=.model-lock-local-manifest.json=cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c
+            - --expected-file=config.json=6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023
+            - --expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b
+            - --expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
+            - --gpu-metrics-port=29000
+            - --gpu-metrics-worker=sglang-0
+            - --
+            - python3
+            - -m
+            - sglang.launch_server
+            - --model-path=/mnt/c8s-data/models/md7b0eb3196a
+            - --served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731-rehearsal-worker-uf0b4c47afe
+            - --revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb
+            - --tool-call-parser=deepseekv4
+            - --reasoning-parser=deepseek-v4
+            - --tp=4
+            - --moe-runner-backend=flashinfer_mxfp4
+            - --speculative-algorithm=DSPARK
+            - --mem-fraction-static=0.90
+            - --chunked-prefill-size=4096
+            - --swa-full-tokens-ratio=0.1
+            - --trust-remote-code
+            - --enable-metrics
+            - --enable-cache-report
+            - --host=0.0.0.0
+            - --port=30000
+            env:
+            - name: HOME
+              value: /tmp
+            - name: WORKER_DRAIN_DEADLINE_SECONDS
+              value: '570'
+            - name: HOSTNAME
+              value: inference-worker-0-u200b5c252a
+            image: '{{ .Values.images.sglangWorker }}'
+            livenessProbe:
+              failureThreshold: 3
+              successThreshold: 1
+            ports:
+            - containerPort: 30000
+              name: inference
+              protocol: TCP
+            - containerPort: 29000
+              name: gpu-metrics
+              protocol: TCP
+            readinessProbe:
+              failureThreshold: 3
+              successThreshold: 1
+            resources:
+              limits:
+                nvidia.com/gpu: '4'
+              requests:
+                nvidia.com/gpu: '4'
+            startupProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          - name: cds-attest
+            args:
+            - cds-attest
+            - --host=0.0.0.0
+            - --port=8802
+            - --platform=tdx
+            - --front-door-mode=webpki
+            - --expected-workload=inference-worker-0-u200b5c252a
+            - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
+            - --serving-cert-file=/etc/c8s/certs/tls.crt
+            - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
+            - --mesh-identity-key-file=/etc/c8s/certs/tls.key
+            - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+            env: []
+            image: '{{ .Values.images.c8sOperator }}'
+            livenessProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            readinessProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          restartPolicy: Always
+          schedulerName: default-scheduler
+          serviceAccount: confidential-inference
+      updateStrategy: {}
+  StatefulSet/inference-worker-1:
+    spec:
+      persistentVolumeClaimRetentionPolicy:
+        whenDeleted: Retain
+        whenScaled: Retain
+      podManagementPolicy: OrderedReady
+      revisionHistoryLimit: 10
+      template:
+        metadata:
+          annotations:
+            confidential.ai/c8s-volumes: md5bca183f9f=/confidential-inference/model-updates/worker-uf0b4c47afe
+            confidential.ai/cw: inference-worker-1-u5f71fa321d
+          labels:
+            confidential.ai/traffic-eligible: 'true'
+        spec:
+          containers:
+          - name: sglang
+            args:
+            - --path=/mnt/c8s-data/models/md5bca183f9f
+            - --timeout-seconds=900
+            - --poll-seconds=1
+            - --expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731
+            - --expected-revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb
+            - --revision-metadata=.model-lock-local-manifest.json
+            - --expected-file=.model-lock-local-manifest.json=cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c
+            - --expected-file=config.json=6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023
+            - --expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b
+            - --expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
+            - --gpu-metrics-port=29000
+            - --gpu-metrics-worker=sglang-1
+            - --
+            - python3
+            - -m
+            - sglang.launch_server
+            - --model-path=/mnt/c8s-data/models/md5bca183f9f
+            - --served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731-rehearsal-worker-uf0b4c47afe
+            - --revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb
+            - --tool-call-parser=deepseekv4
+            - --reasoning-parser=deepseek-v4
+            - --tp=4
+            - --moe-runner-backend=flashinfer_mxfp4
+            - --speculative-algorithm=DSPARK
+            - --mem-fraction-static=0.90
+            - --chunked-prefill-size=4096
+            - --swa-full-tokens-ratio=0.1
+            - --trust-remote-code
+            - --enable-metrics
+            - --enable-cache-report
+            - --host=0.0.0.0
+            - --port=30000
+            env:
+            - name: HOME
+              value: /tmp
+            - name: WORKER_DRAIN_DEADLINE_SECONDS
+              value: '570'
+            - name: HOSTNAME
+              value: inference-worker-1-u5f71fa321d
+            image: '{{ .Values.images.sglangWorker }}'
+            livenessProbe:
+              failureThreshold: 3
+              successThreshold: 1
+            ports:
+            - containerPort: 30000
+              name: inference
+              protocol: TCP
+            - containerPort: 29000
+              name: gpu-metrics
+              protocol: TCP
+            readinessProbe:
+              failureThreshold: 3
+              successThreshold: 1
+            resources:
+              limits:
+                nvidia.com/gpu: '4'
+              requests:
+                nvidia.com/gpu: '4'
+            startupProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          - name: cds-attest
+            args:
+            - cds-attest
+            - --host=0.0.0.0
+            - --port=8802
+            - --platform=tdx
+            - --front-door-mode=webpki
+            - --expected-workload=inference-worker-1-u5f71fa321d
+            - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
+            - --serving-cert-file=/etc/c8s/certs/tls.crt
+            - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
+            - --mesh-identity-key-file=/etc/c8s/certs/tls.key
+            - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+            env: []
+            image: '{{ .Values.images.c8sOperator }}'
+            livenessProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            readinessProbe:
+              httpGet:
+                scheme: HTTP
+              successThreshold: 1
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          restartPolicy: Always
+          schedulerName: default-scheduler
+          serviceAccount: confidential-inference
+      updateStrategy: {}
+additionalWorkloads:
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: log-collector
+    labels:
+      app.kubernetes.io/component: log-collector
+      app.kubernetes.io/managed-by: Helm
+      app.kubernetes.io/part-of: confidential-inference
+      app.kubernetes.io/version: 0.1.0
+      confidential.ai/environment: production
+  spec:
+    progressDeadlineSeconds: 600
+    replicas: 1
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        app.kubernetes.io/component: log-collector
+        app.kubernetes.io/part-of: confidential-inference
+    strategy:
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 25%
+      type: RollingUpdate
+    template:
+      metadata:
+        annotations:
+          confidential.ai/c8s-renew-interval: 30s
+          confidential.ai/cw: log-collector-ua59410a16b
+        labels:
+          app.kubernetes.io/component: log-collector
+          app.kubernetes.io/part-of: confidential-inference
+          confidential.ai/environment: production
+      spec:
+        automountServiceAccountToken: true
+        containers:
+        - env:
+          - name: KUBE_API_URL
+            value: https://kubernetes.default.svc:443
+          - name: LOG_NAMESPACE
+            value: confidential-inference
+          - name: LOG_APPLICATION
+            value: confidential-inference
+          - name: DEPLOYMENT_ID
+            value: production-20260926
+          - name: LOKI_URL
+            value: https://admin.api.confidential.ai:9443/deployments/production-20260926/loki/api/v1/push
+          - name: HOSTNAME
+            value: log-collector-ua59410a16b
+          image: '{{ .Values.images.logCollector }}'
+          imagePullPolicy: IfNotPresent
+          name: alloy
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 65532
+            runAsNonRoot: true
+            runAsUser: 65532
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /tmp
+            name: data
+          - mountPath: /mnt/c8s-data/admin-client
+            name: admin-client
+            readOnly: true
+        dnsPolicy: ClusterFirst
+        enableServiceLinks: false
+        hostAliases:
+        - hostnames:
+          - admin.api.confidential.ai
+          ip: 20.163.209.126
+        hostname: log-collector
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext:
+          fsGroup: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        serviceAccount: log-collector
+        serviceAccountName: log-collector
+        terminationGracePeriodSeconds: 30
+        volumes:
+        - emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+          name: data
+        - name: admin-client
+          secret:
+            defaultMode: 288
+            secretName: metrics-remote-write-mtls

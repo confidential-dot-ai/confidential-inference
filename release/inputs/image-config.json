@@ -11,7 +11,27 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:0b86d0541d101e259e7879706bc68acf32fd084603b6180577bc53bdc99a796c": {
+  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:55171cdd01acec5f100e0554e1069ac5c8e6488c37eae8d0f04b8f63d96dbea6": {
+    "cmd": [],
+    "entrypoint": [
+      "/app/c8s",
+      "armtls-mesh"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:ee76dc62cc8ffdbdf042a91892bcf44c3e99bcfb493156ab2a8e568465adf7ce": {
+    "cmd": [],
+    "entrypoint": [
+      "/app/c8s",
+      "armtls-mesh"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:44ffbfa776980a42aeb543466703217a65d35bd86ed615247fa985c403dca4fd": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
@@ -21,7 +41,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:9a99aacb8a1c06b306a5d78e21278c7abd9887527dd43bf4de5b7b2dc2210691": {
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:daa439a7e5f1d2859b2edf2c70e68012fc256d513c1fb48d881ebda7fe521881": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
@@ -29,6 +49,90 @@
     "env": [
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/cds@sha256:665a45b14f78e7eaef70339404ed7a39e923251d5301264a30196cf3ea742cfe": {
+    "cmd": [],
+    "entrypoint": [
+      "/c8s",
+      "cds"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/cds@sha256:6986c33f3d2c5ca0fef2833615cf27760f24231a0414f9ea695f445b923982c4": {
+    "cmd": [],
+    "entrypoint": [
+      "/c8s",
+      "cds"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:6f46631f2d26066db5b78b572133d54ed35d7452358ee723a669bb5c684d66a4": {
+    "cmd": [
+      "--config",
+      "/etc/nri/conf.d/image-policy.yaml"
+    ],
+    "entrypoint": [
+      "/usr/local/bin/c8s",
+      "nri-image-policy"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:b3dea5be98c97423f67068c9900b625dced262b300a1461daf7fa602648abb63": {
+    "cmd": [
+      "--config",
+      "/etc/nri/conf.d/image-policy.yaml"
+    ],
+    "entrypoint": [
+      "/usr/local/bin/c8s",
+      "nri-image-policy"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/volumed@sha256:04feb88173aaffdadd6043f1cc2a227ba1c2d22ebc7244667edcd4eae7688ffc": {
+    "cmd": [],
+    "entrypoint": [
+      "/app/c8s",
+      "volumed"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/volumed@sha256:367fbfd35516c18278acb12b87b28d5079aa8f9ab41e312f4d0ce64f67214ad7": {
+    "cmd": [],
+    "entrypoint": [
+      "/app/c8s",
+      "volumed"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0": {
+    "cmd": [
+      "nginx",
+      "-g",
+      "daemon off;"
+    ],
+    "entrypoint": [
+      "/docker-entrypoint.sh"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "NGINX_VERSION=1.30.5",
+      "PKG_RELEASE=1",
+      "DYNPKG_RELEASE=1"
     ]
   },
   "registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9": {

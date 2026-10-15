@@ -16,6 +16,8 @@ class ReleaseTagTests(unittest.TestCase):
         self.assertEqual(parse_tag("v0.14.0"), "v0.14.0")
         self.assertEqual(parse_tag("v0.14.0-staging"), "v0.14.0-staging")
         self.assertEqual(parse_tag("v12.4.103"), "v12.4.103")
+        self.assertEqual(parse_tag("v0.14.18-transition"), "v0.14.18-transition")
+        self.assertEqual(parse_tag("v0.14.18-transition-staging"), "v0.14.18-transition-staging")
 
     def test_rejects_release_candidates_and_other_names(self) -> None:
         for tag in (
@@ -27,6 +29,8 @@ class ReleaseTagTests(unittest.TestCase):
             "v0.14.3-t-v0.13.0",
             "integration-staging-v0.14.3",
             "v0.14.3-staging.1",
+            "v0.14.18-staging-transition",
+            "v0.14.18-transition-transition",
         ):
             with self.subTest(tag=tag), self.assertRaises(ReleaseTagError):
                 parse_tag(tag)

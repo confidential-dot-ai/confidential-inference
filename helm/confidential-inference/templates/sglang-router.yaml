@@ -1,4 +1,6 @@
+{{- define "confidential-inference.source.sglang-router" -}}
 {{- if .Values.router.enabled }}
+{{- $slot := printf "router-%s" (.Values.attestationReceipts.releaseId | replace "-transition" "" | replace "." "-") }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -25,6 +27,30 @@ spec:
       targetPort: cds-attest
     {{- end }}
 ---
+{{- if .Values.runtimeConfig.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $slot }}
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sglang-router
+spec:
+  clusterIP: None
+  selector:
+    confidential.ai/router-slot: {{ $slot }}
+  ports:
+    - name: openai
+      port: {{ .Values.router.port }}
+      targetPort: {{ .Values.router.port }}
+    - name: metrics
+      port: {{ .Values.router.metricsPort }}
+      targetPort: {{ .Values.router.metricsPort }}
+    - name: evidence
+      port: {{ .Values.attestationReceipts.routerPort }}
+      targetPort: {{ .Values.attestationReceipts.routerPort }}
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -47,6 +73,9 @@ spec:
     metadata:
       labels:
         {{- include "confidential-inference.selector" (dict "root" . "component" "sglang-router") | nindent 8 }}
+        {{- if .Values.runtimeConfig.enabled }}
+        confidential.ai/router-slot: {{ $slot }}
+        {{- end }}
         confidential.ai/environment: {{ .Values.environment | quote }}
       annotations:
         confidential.ai/cw: sglang-router
@@ -98,6 +127,15 @@ spec:
             - --port={{ .Values.router.port }}
             - --prometheus-host=0.0.0.0
             - --prometheus-port={{ .Values.router.metricsPort }}
+          {{- if .Values.runtimeConfig.enabled }}
+          env:
+            - name: CI_ROUTER_MODEL_ROUTES_FILE
+              value: /mnt/c8s-data/model-routes/routes.json
+          volumeMounts:
+            - name: model-routes
+              mountPath: /mnt/c8s-data/model-routes
+              readOnly: true
+          {{- end }}
           ports:
             - name: openai
               containerPort: {{ .Values.router.port }}
@@ -175,4 +213,13 @@ spec:
         {{- if .Values.attestationReceipts.enabled }}
         {{- include "confidential-inference.cdsAttestSidecar" (dict "root" . "workload" .Values.router.attestedWorkload "host" "0.0.0.0" "port" .Values.attestationReceipts.routerPort) | nindent 8 }}
         {{- end }}
+      {{- if .Values.runtimeConfig.enabled }}
+      volumes:
+        - name: model-routes
+          configMap:
+            name: {{ .Values.runtimeConfig.routerConfigMap }}
+      {{- end }}
 {{- end }}
+
+{{- end -}}
+{{- include "confidential-inference.applyWorkloadOverrides" (dict "root" . "body" (include "confidential-inference.source.sglang-router" .)) }}

@@ -1,3 +1,11 @@
+stagingValidation:
+  enabled: true
+
+runtimeConfig:
+  enabled: true
+  # Remove the production routes. The chart uses the staging model below.
+  modelRoutes: null
+
 # Staging chart values
 #
 # Helm applies this file after release/values.yaml (release/profiles.json).
@@ -7,8 +15,24 @@
 
 environment: staging
 
+gateway:
+  usage:
+    enabled: true
+  protection:
+    # The node mesh proxy opens the final connection to the gateway.
+    # Keep Pod proxies and the staging node network in the trusted scope.
+    trustedProxyCidrs:
+      - 10.52.0.0/16
+      - 10.42.0.0/16
+
 attestationReceipts:
+  attestationApiUrl: unix:///run/c8s/workload-claims/attestation-api.sock
   evidenceBaseUrl: https://staging.api.confidential.ai
+  evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
+  # The gateway verifies the in-cluster CDS for its schema 3 policy metadata.
+  # The deployment supplies the two policy documents; see the chart values.
+  cds:
+    url: https://c8s-cds.c8s-system.svc:8443
 
 inference:
   mode: simulator
@@ -42,4 +66,7 @@ metricsCollector:
     enabled: false
 
 images:
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:9a99aacb8a1c06b306a5d78e21278c7abd9887527dd43bf4de5b7b2dc2210691
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:44ffbfa776980a42aeb543466703217a65d35bd86ed615247fa985c403dca4fd
+
+# The simulator uses the staging workload definitions.
+workloadOverridesEnabled: false

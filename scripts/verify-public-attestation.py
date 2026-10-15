@@ -1621,6 +1621,8 @@ def verify_policy_metadata(
             "version 3 contains policy metadata, not workload receipts; use --metadata-only "
             "to compare trusted inputs and verify the inference connection with TEErminator"
         )
+    if response.get("release") is None:
+        raise VerificationError("release selection is pending: no release matches the reported CDS policy")
     expected_url = "https://github.com/confidential-dot-ai/confidential-inference/releases/tag/" + release_id
     if response["release"] != {"id": release_id, "url": expected_url, "bundleSha256": release_digest}:
         raise VerificationError("the metadata release identity differs from the signed release")

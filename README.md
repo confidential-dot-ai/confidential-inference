@@ -110,7 +110,7 @@ Use [services/gateway/ATTESTATION.md](services/gateway/ATTESTATION.md) for the
 version 3 fields and gateway checks, and [release/README.md](release/README.md)
 for source and publication evidence. The files under `releases/production/`
 and `c8s/` preserve historical inputs; they are not the active production trust
-files.
+files. Read the [notice beside the old PEM files](releases/production/trust/README.md).
 
 ## Configuration ownership
 

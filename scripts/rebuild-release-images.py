@@ -32,6 +32,7 @@ IMAGE_TITLES = {
     "metrics-collector": "Confidential Inference metrics collector",
     "log-collector": "Confidential Inference log collector",
     "kube-state-metrics": "Confidential Inference kube-state metrics",
+    "rollout-client": "Confidential Inference rollout client",
 }
 
 

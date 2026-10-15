@@ -23,7 +23,9 @@ use confidential_gateway::{
     key_registry::KeyRegistryMode,
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
-    router,
+    router_with_runtime_and_usage,
+    runtime_config::MountedConfig,
+    runtime_settings::GatewaySettings,
 };
 use hyper_util::rt::TokioTimer;
 
@@ -35,6 +37,14 @@ const INFERENCE_UPSTREAM_URL: &str = "http://127.0.0.1:30001";
 #[derive(Parser, Debug)]
 #[command(name = "confidential-gateway")]
 struct Args {
+    #[arg(long, env = "GATEWAY_USAGE_CONFIG_FILE")]
+    usage_config_file: Option<PathBuf>,
+    #[arg(long, env = "GATEWAY_ROUTER_NAMESPACE")]
+    router_namespace: Option<String>,
+    #[arg(long, env = "GATEWAY_RELEASE_SELECTION_FILE")]
+    release_selection_file: Option<PathBuf>,
+    #[arg(long, env = "GATEWAY_RUNTIME_CONFIG_FILE")]
+    runtime_config_file: Option<PathBuf>,
     #[arg(long, env = "GATEWAY_LISTEN", default_value = "0.0.0.0:9443")]
     listen: SocketAddr,
     #[arg(long, env = "GATEWAY_METRICS_LISTEN", default_value = "0.0.0.0:9090")]
@@ -51,15 +61,15 @@ struct Args {
     // only the exact loopback proxy URL is accepted without this flag.
     #[arg(long, env = "GATEWAY_ALLOW_DIRECT_INFERENCE_URL")]
     allow_direct_inference_url: bool,
-    #[arg(long, env = "GATEWAY_MODEL")]
+    #[arg(long, env = "GATEWAY_MODEL", default_value = "")]
     model: String,
     #[arg(long, env = "GATEWAY_C8S_RECEIPT_TARGETS", default_value = "")]
     c8s_receipt_targets: String,
-    #[arg(long, env = "GATEWAY_C8S_EVIDENCE_BASE_URL")]
+    #[arg(long, env = "GATEWAY_C8S_EVIDENCE_BASE_URL", default_value = "")]
     c8s_evidence_base_url: String,
     #[arg(long, env = "GATEWAY_C8S_EVIDENCE_CONNECT_HOST")]
     c8s_evidence_connect_host: Option<String>,
-    #[arg(long, env = "GATEWAY_RELEASE_ID")]
+    #[arg(long, env = "GATEWAY_RELEASE_ID", default_value = "")]
     release_id: String,
     #[arg(long, env = "GATEWAY_C8S_CDS_URL")]
     cds_url: Option<String>,
@@ -259,7 +269,70 @@ async fn main() -> Result<()> {
         .init();
     let mut args = Args::parse();
     load_release_identity(&mut args)?;
+    let releases = args
+        .release_selection_file
+        .as_ref()
+        .map(|path| {
+            MountedConfig::<confidential_gateway::release_settings::ReleaseSettings>::open(
+                path.clone(),
+                1024 * 1024,
+                confidential_gateway::release_settings::ReleaseSettings::validate,
+            )
+            .map(Arc::new)
+            .map_err(anyhow::Error::msg)
+        })
+        .transpose()
+        .context("load release selection")?;
+    if let Some(releases) = &releases {
+        let snapshot = releases.snapshot();
+        args.release_id.clone_from(&snapshot.selected().id);
+        args.release_url = Some(snapshot.selected().url.clone());
+        args.release_bundle_sha256
+            .clone_from(&snapshot.selected().bundle_sha256);
+    }
+    let runtime = args
+        .runtime_config_file
+        .as_ref()
+        .map(|path| {
+            MountedConfig::<GatewaySettings>::open(path.clone(), 256 * 1024, |settings| {
+                validate_runtime_settings(
+                    settings,
+                    args.router_namespace.as_deref(),
+                    args.allow_direct_inference_url,
+                    args.c8s_evidence_base_url.is_empty(),
+                )
+            })
+            .map(Arc::new)
+            .map_err(anyhow::Error::msg)
+        })
+        .transpose()
+        .context("load gateway runtime settings")?;
+    let _runtime_watcher = runtime.as_ref().map(|config| {
+        let namespace = args.router_namespace.clone();
+        let direct = args.allow_direct_inference_url;
+        let require_evidence = args.c8s_evidence_base_url.is_empty();
+        config.watch(
+            move |settings| {
+                validate_runtime_settings(settings, namespace.as_deref(), direct, require_evidence)
+            },
+            Duration::from_secs(5),
+        )
+    });
+    if let Some(runtime) = &runtime {
+        let snapshot = runtime.snapshot();
+        args.model = snapshot
+            .inference_model_ids
+            .first()
+            .cloned()
+            .unwrap_or_default();
+    }
     validate_args(&args)?;
+    let _release_watcher = releases.as_ref().map(|config| {
+        config.watch(
+            confidential_gateway::release_settings::ReleaseSettings::validate,
+            Duration::from_secs(5),
+        )
+    });
     tracing::info!("gateway configuration validated");
 
     let gateway_state = if args.state_enabled {
@@ -312,14 +385,44 @@ async fn main() -> Result<()> {
         .context("build the internal inference client")?;
     let attestation: Arc<dyn confidential_gateway::AttestationProvider> = if args.cds_url.is_some()
     {
-        metadata_provider(&args, metrics.clone())?
+        metadata_provider_with_runtime(&args, metrics.clone(), runtime.clone())?
     } else {
         bail!("GATEWAY_C8S_CDS_URL is required for policy metadata")
+    };
+    let attestation: Arc<dyn confidential_gateway::AttestationProvider> = match &releases {
+        Some(releases) => Arc::new(
+            confidential_gateway::release_settings::ReleaseMetadataProvider {
+                policy: attestation,
+                releases: releases.clone(),
+            },
+        ),
+        None => attestation,
     };
     let protection = protection_config(&args);
     let inference_model_id = args.model;
     let catalog_model_ids = vec![inference_model_id.clone()];
-    let public = router(
+    let usage = if let Some(path) = &args.usage_config_file {
+        if !args.state_enabled || !gateway_state.is_available() {
+            bail!("usage requires durable gateway state");
+        }
+        let config: confidential_gateway::usage::Config =
+            serde_json::from_slice(&read_bounded(path, 65_536)?)
+                .context("invalid usage configuration")?;
+        if config.environment != args.environment {
+            bail!("usage environment differs from gateway environment");
+        }
+        let path = args
+            .state_database
+            .parent()
+            .context("usage storage needs a state directory")?
+            .join("usage.sqlite3");
+        let recorder = confidential_gateway::usage::Recorder::open(&path, config)?;
+        recorder.spawn();
+        Some(recorder)
+    } else {
+        None
+    };
+    let public = router_with_runtime_and_usage(
         GatewayConfig {
             catalog_model_ids,
             inference_model_ids: vec![inference_model_id],
@@ -334,6 +437,11 @@ async fn main() -> Result<()> {
         availability,
         attestation,
         http,
+        runtime.clone(),
+        args.router_namespace
+            .clone()
+            .filter(|_| args.allow_direct_inference_url),
+        usage.clone(),
     );
     let public = with_instance_header(public, args.gateway_instance_id.as_deref())?;
     let admin_certificate =
@@ -342,7 +450,11 @@ async fn main() -> Result<()> {
     let admin_verifier = AdminRequestVerifier::from_certificate_pem(&admin_certificate)
         .map_err(anyhow::Error::msg)
         .context("parse the admin request signer certificate")?;
-    let admin = admin_router(gateway_state).layer(middleware::from_fn_with_state(
+    let mut admin = admin_router(gateway_state);
+    if let Some(usage) = &usage {
+        admin = admin.merge(confidential_gateway::usage::admin_router(usage.clone()));
+    }
+    let admin = admin.layer(middleware::from_fn_with_state(
         admin_verifier,
         require_signed_admin_request,
     ));
@@ -351,8 +463,36 @@ async fn main() -> Result<()> {
     let metrics_listener = tokio::net::TcpListener::bind(args.metrics_listen)
         .await
         .context("bind the private metrics listener")?;
+    let mut private = metrics_router(metrics);
+    if let Some(usage) = usage {
+        private = private.route(
+            "/usage-status",
+            axum::routing::get(move || {
+                let usage = usage.clone();
+                async move { axum::Json(usage.status()) }
+            }),
+        );
+    }
+    if let Some(releases) = releases {
+        private = private.route(
+            "/release-config",
+            axum::routing::get(move || {
+                let releases = releases.clone();
+                async move { axum::Json(releases.status()) }
+            }),
+        );
+    }
+    if let Some(runtime) = runtime {
+        private = private.route(
+            "/runtime-config",
+            axum::routing::get(move || {
+                let runtime = runtime.clone();
+                async move { axum::Json(runtime.status()) }
+            }),
+        );
+    }
     tokio::spawn(async move {
-        if let Err(error) = axum::serve(metrics_listener, metrics_router(metrics)).await {
+        if let Err(error) = axum::serve(metrics_listener, private).await {
             tracing::error!(%error, "the metrics listener stopped");
         }
     });
@@ -513,13 +653,52 @@ fn metadata_provider(
     args: &Args,
     metrics: Arc<GatewayMetrics>,
 ) -> Result<Arc<dyn confidential_gateway::AttestationProvider>> {
+    let runtime = args
+        .runtime_config_file
+        .as_ref()
+        .map(|path| {
+            MountedConfig::<GatewaySettings>::open(
+                path.clone(),
+                256 * 1024,
+                GatewaySettings::validate,
+            )
+            .map(Arc::new)
+            .map_err(anyhow::Error::msg)
+        })
+        .transpose()?;
+    metadata_provider_with_runtime(args, metrics, runtime)
+}
+
+fn metadata_provider_with_runtime(
+    args: &Args,
+    metrics: Arc<GatewayMetrics>,
+    runtime: Option<Arc<MountedConfig<GatewaySettings>>>,
+) -> Result<Arc<dyn confidential_gateway::AttestationProvider>> {
     use confidential_gateway::attestation::{
         evidence_connection, mesh_ca_certificates, parse_evidence_base_url,
     };
     use confidential_gateway::attestation_metadata::{CdsMetadataSource, MetadataProvider};
     validate_metadata_identity(args)?;
     let timeout = Duration::from_secs(args.attestation_timeout_seconds);
-    let base = parse_evidence_base_url(&args.c8s_evidence_base_url).map_err(anyhow::Error::msg)?;
+    // Preserve the startup fallback if a later runtime update removes evidence.
+    // Without that fallback, the watcher requires evidence in every snapshot.
+    let evidence = runtime
+        .as_ref()
+        .filter(|_| args.c8s_evidence_base_url.is_empty())
+        .and_then(|config| config.snapshot().evidence.clone());
+    let base = parse_evidence_base_url(
+        evidence
+            .as_ref()
+            .map_or(args.c8s_evidence_base_url.as_str(), |settings| {
+                settings.base_url.as_str()
+            }),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let connect_host = evidence
+        .as_ref()
+        .map_or(args.c8s_evidence_connect_host.as_deref(), |settings| {
+            settings.connect_host.as_deref()
+        });
     let cds_url = url::Url::parse(
         args.cds_url
             .as_deref()
@@ -539,7 +718,7 @@ fn metadata_provider(
         .timeout(timeout)
         .connect_timeout(timeout.min(Duration::from_secs(10)))
         .redirect(reqwest::redirect::Policy::none());
-    if let Some(host) = &args.c8s_evidence_connect_host {
+    if let Some(host) = connect_host {
         client = evidence_connection(client, &base, host).map_err(anyhow::Error::msg)?;
     }
     for cert in mesh_ca_certificates().map_err(anyhow::Error::msg)? {
@@ -592,11 +771,39 @@ fn metadata_provider(
             args.attestation_maximum_evidence_bytes,
             metrics,
         )
-        .map_err(anyhow::Error::msg)?,
+        .map_err(anyhow::Error::msg)?
+        .with_runtime(runtime),
     ))
 }
 
+fn validate_router_namespace(namespace: Option<&str>, inference_url: &str) -> Result<()> {
+    if namespace.is_some_and(|name| {
+        name.is_empty()
+            || name.len() > 63
+            || name.starts_with('-')
+            || name.ends_with('-')
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    }) {
+        bail!("GATEWAY_ROUTER_NAMESPACE must be a namespace name");
+    }
+    if namespace.is_some() {
+        let origin = url::Url::parse(inference_url).context("parse the fixed router origin")?;
+        if !origin.username().is_empty()
+            || origin.password().is_some()
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+            || origin.path() != "/"
+        {
+            bail!("the fixed router origin must have no credentials, query, fragment, or path");
+        }
+    }
+    Ok(())
+}
+
 fn validate_args(args: &Args) -> Result<()> {
+    validate_router_namespace(args.router_namespace.as_deref(), &args.inference_url)?;
     if args.environment.is_empty()
         || args.environment.len() > 63
         || !args
@@ -658,7 +865,7 @@ fn validate_args(args: &Args) -> Result<()> {
     {
         bail!("the attestation client limits are outside the safe range");
     }
-    if args.model.is_empty() || args.model.len() > 256 {
+    if args.runtime_config_file.is_none() && (args.model.is_empty() || args.model.len() > 256) {
         bail!("GATEWAY_MODEL must identify one configured model");
     }
     if args.cds_url.is_some() {
@@ -690,15 +897,40 @@ fn validate_args(args: &Args) -> Result<()> {
     Ok(())
 }
 
+fn validate_runtime_settings(
+    settings: &GatewaySettings,
+    namespace: Option<&str>,
+    direct: bool,
+    require_evidence: bool,
+) -> Result<(), String> {
+    settings.validate()?;
+    if require_evidence && settings.evidence.is_none() {
+        return Err("runtime evidence settings are required without a startup evidence URL".into());
+    }
+    if settings.router_service.is_some() && (!direct || namespace.is_none()) {
+        return Err(
+            "router Service reload needs the fixed namespace and direct-router mode".into(),
+        );
+    }
+    Ok(())
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(clippy::struct_field_names)] // The names match the JSON file fields.
 struct ReleaseIdentity {
+    #[serde(default)]
     release_bundle_sha256: String,
     #[serde(default)]
     expected_operator_public_key_sha256: String,
     #[serde(default)]
     expected_operator_key_set_sha256: String,
+    // The CDS policy pins may come from this file instead of the environment
+    // (ATTESTATION.md, "CDS verification"). Both fields or neither.
+    #[serde(default)]
+    cds_image_policy_sha256: String,
+    #[serde(default)]
+    cds_served_image_policy_sha256: String,
 }
 
 /// Read the release identity file, when one is configured, into `args`.
@@ -719,6 +951,26 @@ fn load_release_identity(args: &mut Args) -> Result<()> {
     args.release_bundle_sha256 = identity.release_bundle_sha256;
     args.expected_operator_public_key_sha256 = identity.expected_operator_public_key_sha256;
     args.expected_operator_key_set_sha256 = identity.expected_operator_key_set_sha256;
+    // Unlike the fields above, the policy pins keep their environment route:
+    // the production values still pin the policy files there.
+    match (
+        identity.cds_image_policy_sha256.is_empty(),
+        identity.cds_served_image_policy_sha256.is_empty(),
+    ) {
+        (true, true) => {}
+        (false, false) => {
+            if !args.cds_image_policy_sha256.is_empty()
+                || !args.cds_served_image_policy_sha256.is_empty()
+            {
+                bail!(
+                    "set the CDS policy pins in GATEWAY_RELEASE_IDENTITY_FILE or in the environment, not both"
+                );
+            }
+            args.cds_image_policy_sha256 = identity.cds_image_policy_sha256;
+            args.cds_served_image_policy_sha256 = identity.cds_served_image_policy_sha256;
+        }
+        _ => bail!("the release identity file must set both CDS policy pins or neither"),
+    }
     Ok(())
 }
 
@@ -826,6 +1078,37 @@ mod tests {
         assert!(validate_args(&value).is_err());
     }
 
+    #[test]
+    fn runtime_evidence_can_supply_the_only_startup_url() -> Result<()> {
+        let mut value = args();
+        value.cds_url = Some("https://cds.c8s-system.svc.cluster.local:8443".into());
+        value.cds_image_policy = Some(PathBuf::from("/mnt/c8s-data/image-policy/policy.json"));
+        value.cds_image_policy_sha256 = format!("sha256:{}", "0".repeat(64));
+        value.cds_served_image_policy = value.cds_image_policy.clone();
+        value.cds_served_image_policy_sha256 = value.cds_image_policy_sha256.clone();
+        value.c8s_evidence_base_url.clear();
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("settings.json");
+        let mut settings: GatewaySettings = serde_json::from_value(serde_json::json!({
+            "schemaVersion":1,"revision":1,"evidence":{"baseUrl":"https://candidate.example.test"},
+            "catalogModelIds":["test"],"inferenceModelIds":["test"],"maximumBodyBytes":1024,
+            "upstreamTimeoutSeconds":30,"bodyTimeoutSeconds":10,"streamIdleTimeoutSeconds":20,
+            "attestationCacheSeconds":10,"globalRequestConcurrency":256,"perAddressConcurrency":16,
+            "inferenceConcurrency":1,"inferenceQueue":0,"queueTimeoutSeconds":2,"perKeyConcurrency":4,
+            "attestationConcurrency":4,"requestsPerAddressPerSecond":30
+        }))?;
+        fs::write(&path, serde_json::to_vec(&settings)?)?;
+        value.runtime_config_file = Some(path.clone());
+        assert!(validate_args(&value).is_ok());
+        assert!(validate_runtime_settings(&settings, None, false, true).is_ok());
+        settings.evidence = None;
+        assert!(validate_runtime_settings(&settings, None, false, true).is_err());
+        assert!(validate_runtime_settings(&settings, None, false, false).is_ok());
+        fs::write(path, serde_json::to_vec(&settings)?)?;
+        assert!(validate_args(&value).is_err());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn instance_header_identifies_the_slot_without_changing_the_body() -> Result<()> {
         use tower::ServiceExt as _;
@@ -853,6 +1136,10 @@ mod tests {
 
     fn args() -> Args {
         Args {
+            usage_config_file: None,
+            router_namespace: None,
+            release_selection_file: None,
+            runtime_config_file: None,
             listen: "0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()),
             metrics_listen: "0.0.0.0:9090".parse().unwrap_or_else(|_| unreachable!()),
             inference_url: INFERENCE_UPSTREAM_URL.to_owned(),
@@ -1128,25 +1415,46 @@ mod tests {
         assert!(wait_for_bounded_file(&path, 4_096, Duration::from_millis(100)).is_err());
     }
 
+    fn write_identity(directory: &std::path::Path, body: &str) -> PathBuf {
+        let path = directory.join("release-identity.json");
+        fs::write(&path, body).unwrap_or_else(|_| unreachable!());
+        path
+    }
+
+    /// `args()` without the inputs that the release identity file supplies.
+    fn args_without_identity() -> Args {
+        let mut value = args();
+        value.release_bundle_sha256 = String::new();
+        value.expected_operator_public_key_sha256 = String::new();
+        value.expected_operator_key_set_sha256 = String::new();
+        value.cds_image_policy_sha256 = String::new();
+        value.cds_served_image_policy_sha256 = String::new();
+        value
+    }
+
+    fn pins_identity() -> String {
+        format!(
+            r#"{{"releaseBundleSha256":"sha256:{}","cdsImagePolicySha256":"sha256:{}","cdsServedImagePolicySha256":"sha256:{}"}}"#,
+            "a".repeat(64),
+            "d".repeat(64),
+            "e".repeat(64)
+        )
+    }
+
     #[test]
     fn release_identity_file_fills_the_attestation_inputs() {
         let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let path = directory.path().join("release-identity.json");
-        fs::write(
-            &path,
-            format!(
+        let mut value = args_without_identity();
+        value.cds_image_policy_sha256 = format!("sha256:{}", "0".repeat(64));
+        value.release_identity_file = Some(write_identity(
+            directory.path(),
+            &format!(
                 r#"{{"releaseBundleSha256":"sha256:{}","expectedOperatorPublicKeySha256":"sha256:{}","expectedOperatorKeySetSha256":"sha256:{}"}}"#,
                 "a".repeat(64),
                 "b".repeat(64),
                 "c".repeat(64)
             ),
-        )
-        .unwrap_or_else(|_| unreachable!());
-        let mut value = args();
-        value.release_bundle_sha256 = String::new();
-        value.expected_operator_public_key_sha256 = String::new();
-        value.expected_operator_key_set_sha256 = String::new();
-        value.release_identity_file = Some(path);
+        ));
         assert!(load_release_identity(&mut value).is_ok());
         assert_eq!(
             format!("sha256:{}", "a".repeat(64)),
@@ -1160,6 +1468,53 @@ mod tests {
             format!("sha256:{}", "c".repeat(64)),
             value.expected_operator_key_set_sha256
         );
+        // A file without policy pins leaves the environment's pins alone.
+        assert_eq!(
+            format!("sha256:{}", "0".repeat(64)),
+            value.cds_image_policy_sha256
+        );
+    }
+
+    #[test]
+    fn release_identity_file_fills_the_cds_policy_pins() {
+        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let mut value = args_without_identity();
+        value.release_identity_file = Some(write_identity(directory.path(), &pins_identity()));
+        assert!(load_release_identity(&mut value).is_ok());
+        assert_eq!(
+            format!("sha256:{}", "d".repeat(64)),
+            value.cds_image_policy_sha256
+        );
+        assert_eq!(
+            format!("sha256:{}", "e".repeat(64)),
+            value.cds_served_image_policy_sha256
+        );
+        assert!(validate_metadata_identity(&value).is_ok());
+    }
+
+    #[test]
+    fn release_identity_file_and_environment_policy_pins_are_exclusive() {
+        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let mut value = args_without_identity();
+        value.cds_image_policy_sha256 = format!("sha256:{}", "0".repeat(64));
+        value.cds_served_image_policy_sha256 = value.cds_image_policy_sha256.clone();
+        value.release_identity_file = Some(write_identity(directory.path(), &pins_identity()));
+        assert!(load_release_identity(&mut value).is_err());
+    }
+
+    #[test]
+    fn release_identity_file_requires_both_policy_pins() {
+        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let mut value = args_without_identity();
+        value.release_identity_file = Some(write_identity(
+            directory.path(),
+            &format!(
+                r#"{{"releaseBundleSha256":"sha256:{}","cdsImagePolicySha256":"sha256:{}"}}"#,
+                "a".repeat(64),
+                "d".repeat(64)
+            ),
+        ));
+        assert!(load_release_identity(&mut value).is_err());
     }
 
     #[test]

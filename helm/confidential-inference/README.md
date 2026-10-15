@@ -26,11 +26,13 @@ requests and signed admin requests use that same entry path. The gateway reads
 its API-key pepper from c8s application-secret memory. It stores API-key state
 on an operator-supplied persistent volume.
 
-The `attestationReceipts` values retain names used by older chart versions.
-The current gateway returns version 3 metadata and does not collect the
-configured workload receipts. It verifies CDS before reading the policy and
-operator keys. Read [the gateway contract](../../services/gateway/ATTESTATION.md)
-and [client verification](../../docs/verification.md).
+`attestationReceipts.cds` configures schema 3 metadata: the CDS origin and
+policy documents supplied by the deployment and pinned through release identity.
+The gateway verifies CDS before reading the active policy and operator keys.
+The current gateway does not collect `attestationReceipts.targets` receipts.
+Those target settings remain for historical releases. Read
+[the gateway contract](../../services/gateway/ATTESTATION.md) and
+[client verification](../../docs/verification.md).
 
 The chart does not own public addresses, DNS, secret-manager paths, machine
 names, or resource sizes. Keep those values in the operator repository.

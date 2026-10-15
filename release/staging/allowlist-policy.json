@@ -13,7 +13,8 @@
       "name": "gateway",
       "controller": "Deployment/gateway",
       "secretReads": [
-        "/confidential-inference/gateway/api-key-pepper"
+        "/confidential-inference/gateway/api-key-pepper",
+        "/confidential-inference/gateway/product-usage"
       ]
     },
     {
@@ -35,6 +36,10 @@
     {
       "name": "sglang-router",
       "controller": "Deployment/sglang-router"
+    },
+    {
+      "name": "gateway-update-agent",
+      "controller": "Deployment/gateway-update-agent"
     }
   ]
 }

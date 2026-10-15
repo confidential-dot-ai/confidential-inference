@@ -8,10 +8,10 @@
   "routerVersion": "0.3.2",
   "patch": {
     "path": "patches/worker-withdrawal.patch",
-    "sha256": "b99841281984de659edb86ff8c55c5c7048ce721edcac57610cb7875ecb425e9"
+    "sha256": "19eb3d6aad263455fb782c83dab676ee879c6191eef39e51104353e006f05b1a"
   },
   "deploymentImage": {
     "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang-router"
   },
-  "cargoLockSha256": "5ec49604d728451fbfcea153fac082dc5d47f7916ac069156cd3310e4d275dca"
+  "cargoLockSha256": "9427cd2dc151fed8c9da43cf620f26e165077cd8660244b1b83ea02f50ad282e"
 }

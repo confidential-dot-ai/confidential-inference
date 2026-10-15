@@ -13,6 +13,7 @@ scripts/bump-c8s.py regenerates it with staging_allowlist().
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import importlib.util
 import io
@@ -50,7 +51,18 @@ FIXTURES = ROOT / "tests/release-v1/fixtures"
 OVERLAY = FIXTURES / "release-values.yaml"
 STAGING_ALLOWLIST = FIXTURES / "staging-allowlist.json"
 REPOSITORY_CONFIGS = json.loads((FIXTURES / "repository-image-config.json").read_text())
+# Packaging tests use a placeholder collector digest. Runtime generation is
+# verified separately with the registry configuration of the approved image.
+REPOSITORY_CONFIGS['ghcr.io/confidential-dot-ai/confidential-inference/log-collector@sha256:' + '2' * 64] = {
+    'env': [], 'entrypoint': [], 'cmd': []}
 RELEASE_IMAGES = yaml.safe_load(OVERLAY.read_text())["images"]
+# The rollout client uses the same pinned Python base as the router fixture.
+# Its program is signed in chart argv; this synthetic digest tests packaging.
+REPOSITORY_CONFIGS[RELEASE_IMAGES["rolloutClient"]] = {
+    "entrypoint": [], "cmd": ["python3"],
+    "env": REPOSITORY_CONFIGS[RELEASE_IMAGES["sglangRouter"]]["env"][:],
+}
+
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 
 
@@ -130,6 +142,7 @@ def build_production(evidence: dict, download_dir: Path, tag: str = "v0.14.2") -
     allowlist = json.loads(STAGING_ALLOWLIST.read_text())
     operator = PROFILES.read_values(PRODUCTION)["images"]["c8sOperator"].rsplit("@", 1)[1]
     allowlist["workloads"]["production-operator"] = {"containers": [{"digest": operator}]}
+    allowlist["workloads"]["production-collector"] = {"containers": [{"digest": 'sha256:' + '2' * 64}]}
     generated = json.dumps(allowlist).encode()
     return build_release(tag, evidence, download_dir, lambda *_args, **_kwargs: generated,
                          mock.patch.object(MAN, "require_allowlist_contract"),
@@ -165,6 +178,125 @@ def controller(kind="StatefulSet", name="worker", container=None, volumes=None, 
         "metadata": {"name": name},
         "spec": {"replicas": 1, "template": {"metadata": {"annotations": annotations or {}}, "spec": spec}},
     }
+
+
+class TransitionCompositionTests(unittest.TestCase):
+    def test_transition_base_uses_the_final_component_not_its_old_rollback_image(self):
+        repository = 'ghcr.io/confidential-dot-ai/confidential-inference/gateway'
+        base = {'source': {'commit': 'a'*40}, 'transition': {},
+                'images': {'gateway': repository+'@sha256:'+'b'*64,
+                           'transitionInput0': repository+'@sha256:'+'c'*64}}
+        evidence = {'source': {'baseRef': 'v0.14.18-transition', 'baseRefCommit': 'a'*40,
+                              'commit': 'd'*40}, 'images': []}
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(MAN, 'signed_release', return_value=base), \
+             mock.patch.object(MAN, 'changed_paths', return_value=[]):
+            result = MAN.base_release_images(evidence, Path(folder))
+        self.assertEqual(result[repository], 'sha256:'+'b'*64)
+
+    def test_transition_manifest_requires_its_signed_input_binding(self):
+        manifest = json.loads(build_staging(publication(published_release_images()))['release-bundle.json'])
+        manifest['release']['name'] = 'v0.14.18-transition-staging'
+        with self.assertRaises(MAN.ManifestError):
+            MAN.validate_schema(manifest)
+        ref = lambda tag: {'name': tag, 'bundleSha256': 'sha256:'+'a'*64,
+                           'allowlistSha256': 'sha256:'+'b'*64}
+        manifest['transition'] = {'fromRelease': ref('v0.14.17-staging'),
+                                  'finalRelease': ref('v0.14.18-staging'), 'helperWorkloads': []}
+        MAN.validate_schema(manifest)
+        manifest['release']['name'] = 'v0.14.18-staging'
+        with self.assertRaises(MAN.ManifestError):
+            MAN.validate_schema(manifest)
+
+    def setUp(self):
+        self.image = 'example/app@sha256:' + 'a' * 64
+        self.entry = {'initContainers': [], 'containers': [{
+            'image': self.image, 'digest': 'sha256:' + 'a' * 64,
+            'command': {'policy': 'exact', 'argv': ['/app']},
+            'args': {'policy': 'deny'}, 'env': {'policy': 'exact', 'values': {}},
+            'mounts': {'policy': 'deny'}}]}
+
+    def policy(self, *names):
+        return {'schema': 'c8s.allowlist/v1', 'workloads': {name: copy.deepcopy(self.entry) for name in names}}
+
+    def compose(self, helpers=None, new=None):
+        return MAN.compose_transition_policy(self.policy('old'), new or self.policy('final'),
+                                             helpers or {}, {self.image})
+
+    def test_old_final_and_helpers_are_all_preserved(self):
+        result = self.compose({'test-client': self.entry})
+        self.assertEqual(set(result['workloads']), {'old', 'final', 'test-client'})
+
+    def test_changed_shared_identity_cannot_be_silently_overwritten(self):
+        new = self.policy('old')
+        new['workloads']['old']['containers'][0]['args'] = {'policy': 'exact', 'argv': ['--changed']}
+        with self.assertRaisesRegex(MAN.ManifestError, 'conflicting definitions'):
+            self.compose(new=new)
+
+    def test_unapproved_helper_image_is_rejected(self):
+        entry = copy.deepcopy(self.entry)
+        entry['containers'][0]['image'] = 'another/app@sha256:' + 'b' * 64
+        with self.assertRaisesRegex(MAN.ManifestError, 'no approved release image'):
+            self.compose({'helper': entry})
+
+    def test_mismatched_digest_is_rejected(self):
+        entry = copy.deepcopy(self.entry)
+        entry['containers'][0]['digest'] = 'sha256:' + 'b' * 64
+        with self.assertRaisesRegex(MAN.ManifestError, 'image and digest differ'):
+            self.compose({'helper': entry})
+
+    def test_unrestricted_new_helper_is_rejected(self):
+        entry = copy.deepcopy(self.entry)
+        entry['containers'][0]['mounts'] = {'policy': 'any'}
+        with self.assertRaisesRegex(MAN.ManifestError, 'must have exact'):
+            self.compose({'helper': entry})
+
+    def test_transition_tags_select_the_existing_environment_profiles(self):
+        self.assertEqual(PROFILES.for_tag('v0.14.18-transition').name, 'production')
+        self.assertEqual(PROFILES.for_tag('v0.14.18-transition-staging').name, 'staging')
+        for tag in ['v0.14.18-staging-transition', 'v0.14.18-transition-transition']:
+            with self.assertRaises(PROFILES.ProfileError):
+                PROFILES.for_tag(tag)
+
+
+
+    def test_helper_cannot_reuse_an_application_identity(self):
+        with self.assertRaisesRegex(MAN.ManifestError, 'separate workload identities'):
+            self.compose({'final': self.entry})
+
+    def test_helper_image_key_uses_verified_image_without_a_manual_digest(self):
+        entry = copy.deepcopy(self.entry)
+        container = entry['containers'][0]
+        container.pop('image'); container.pop('digest'); container['imageKey'] = 'rolloutClient'
+        resolved = MAN.resolve_transition_helpers({'helper': entry}, {'rolloutClient': self.image})
+        self.assertEqual(resolved['helper'], self.entry)
+        container['digest'] = 'sha256:' + 'a' * 64
+        with self.assertRaisesRegex(MAN.ManifestError, 'manual digest'):
+            MAN.resolve_transition_helpers({'helper': entry}, {'rolloutClient': self.image})
+
+    def test_helper_hosts_use_final_workload_ids_without_changing_the_program(self):
+        entry = copy.deepcopy(self.entry)
+        entry['containers'][0]['env']['values'] = {'HOSTS': '${GATEWAY_WORKLOAD_ID},${ROUTER_WORKLOAD_ID}'}
+        entry['containers'][0]['args'] = {'policy': 'exact', 'argv': ['literal ${GATEWAY_WORKLOAD_ID} in program']}
+        resolved = MAN.resolve_transition_helpers({'helper': entry}, {}, 'v0.14.18-transition')
+        self.assertEqual(resolved['helper']['containers'][0]['env']['values']['HOSTS'], 'gateway-v0-14-18,router-v0-14-18')
+        self.assertEqual(resolved['helper']['containers'][0]['args'], entry['containers'][0]['args'])
+        with self.assertRaisesRegex(MAN.ManifestError, 'unresolved environment marker'):
+            MAN.resolve_transition_helpers({'helper': entry}, {})
+
+    def test_transition_requires_the_exact_final_replacement_policy(self):
+        old, final = self.policy('old'), self.policy('final')
+        def manifest(policy):
+            return {'images': {'gateway': self.image}, 'source': {'commit': 'a'*40},
+                    'c8s': {'sourceCommit': 'b'*40}, 'nodeImage': {'reference': 'node'},
+                    'allowlist': {'sha256': MAN.sha256(json.dumps(policy).encode())}}
+        spec = {'transition': {'fromRelease': 'v0.14.17', 'helpers': {}}}
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(MAN, 'signed_allowlist',
+                side_effect=[(manifest(old), old, 'sha256:'+'c'*64),
+                             (manifest(final), final, 'sha256:'+'d'*64)]):
+            with self.assertRaisesRegex(MAN.ManifestError, 'differ from the signed final policy'):
+                MAN.transition_policy('v0.14.18-transition', spec, 'a'*40,
+                    json.dumps(self.policy('different')).encode(), {'gateway': self.image},
+                    None, Path(folder), Path('c8s'), PRODUCTION)
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -244,11 +376,51 @@ class MountTests(unittest.TestCase):
         with self.assertRaisesRegex(GEN.GenerationError, "below /mnt/c8s-data/"):
             GEN.container_mounts(obj, container, None)
 
+    def test_declared_attestation_sidecar_pins_the_nri_socket_mount(self):
+        container = {"name": "cds-attest", "image": IMAGE,
+                     "command": ["/c8s"], "args": ["cds-attest"]}
+        obj = controller(container=container, annotations={"confidential.ai/cw": "gateway"})
+        rules = GEN.container_mounts(obj, container, None, c8s_release="v0.44.6")
+        self.assertIn({"destination": "/run/c8s/workload-claims", "kind": "host",
+                       "source": "/var/run/nri-image-policy", "readOnly": True}, rules)
+        self.assertEqual(len(rules), 2)
+        self.assertEqual(GEN.container_mounts(obj, container, None, c8s_release="v0.42.0"),
+                         [{"destination": "/etc/c8s/certs", "kind": "emptyDir"}])
+        obj["spec"]["template"]["metadata"]["annotations"] = {}
+        self.assertEqual(GEN.container_mounts(obj, container, None, c8s_release="v0.44.6"), [])
+
     def test_host_path_pins_source_and_mode(self):
         container = {"name": "app", "image": IMAGE, "volumeMounts": [{"name": "proc", "mountPath": "/host/proc", "readOnly": True}]}
         obj = controller(container=container, volumes=[{"name": "proc", "hostPath": {"path": "/proc"}}])
         self.assertEqual(GEN.container_mounts(obj, container, None),
                          [{"destination": "/host/proc", "kind": "host", "source": "/proc", "readOnly": True}])
+
+
+class StagingValidationTests(unittest.TestCase):
+    def test_fixed_client_has_exact_process_environment_and_certificate_mounts(self):
+        pod = next(item for item in rendered(STAGING) if item.get("kind") == "Deployment"
+                   and item["metadata"]["name"] == "gateway-update-agent")
+        policy = MAN.read_allowlist_policy(STAGING.policy)
+        self.assertIn("Deployment/gateway-update-agent", {item["controller"] for item in policy["workloads"]})
+        client = pod["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(GEN.pod_name(pod), "gateway-update-agent")
+        environment = GEN.container_env(pod, client, {client["image"]: {"env": []}}, policy, None)
+        self.assertEqual(environment["UPDATE_NAMESPACE"], policy["chart"]["namespace"])
+        self.assertEqual(environment["UPDATE_SECRET"], "gateway-update-task")
+        self.assertEqual(json.loads(environment["UPDATE_HOSTS"]),
+                         ["c8s-gateway.confidential-inference-staging.svc.cluster.local"])
+        mounts = GEN.container_mounts(pod, client, None)
+        self.assertEqual(mounts, [{"destination": "/etc/c8s/certs", "kind": "emptyDir"}])
+        entry = {"initContainers": [], "containers": [{"digest": client["image"].split("@")[1],
+                 "command": {"policy": "exact", "argv": client["command"]},
+                 "args": {"policy": "exact", "argv": client["args"]}}]}
+        selected = {"workloads": [{"name": "gateway-update-agent", "controller": "Deployment/gateway-update-agent"}]}
+        allowlist = {"workloads": {"gateway-update-agent": entry}}
+        MAN.require_allowlist_contract(allowlist, selected, [], [pod], {})
+        changed = copy.deepcopy(allowlist)
+        changed["workloads"]["gateway-update-agent"]["containers"][0]["args"]["argv"][-1] = "unreviewed code"
+        with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
+            MAN.require_allowlist_contract(changed, selected, [], [pod], {})
 
 
 class ProcessTests(unittest.TestCase):
@@ -274,6 +446,100 @@ class ProcessTests(unittest.TestCase):
         name, entry = GEN.floor_entry(CORE)
         self.assertEqual(name, "c8s-operator-" + "b" * 12)
         self.assertEqual(entry["containers"][0]["env"], {"policy": "any"})
+
+    def test_new_c8s_retains_authored_attestation_and_proxy_containers(self):
+        core = {GEN.split_image(CORE)[1]}
+        for mode in ("cds-attest", "allowlist-proxy", "cds", "get-cert"):
+            container = {"name": "authored", "image": CORE, "command": ["/c8s"], "args": [mode]}
+            self.assertFalse(GEN.is_carved_out(container, core, "v0.44.5-beta.1"))
+        cert = {"name": "c8s-cert", "image": CORE, "command": ["/c8s"], "args": ["get-cert"]}
+        self.assertTrue(GEN.is_carved_out(cert, core, "v0.41.0"))
+        self.assertFalse(GEN.is_carved_out({**cert, "args": ["cds-attest"]}, core, "v0.41.0"))
+
+    def test_new_component_entry_pins_the_complete_image_entrypoint(self):
+        _, entry = GEN.floor_entry(CORE, ["/c8s", "cds"])
+        self.assertEqual(entry["containers"][0]["command"],
+                         {"policy": "exact", "argv": ["/c8s", "cds"]})
+        self.assertEqual(entry["containers"][0]["args"], {"policy": "any"})
+        for invalid in ([], [""], ["/c8s", 1]):
+            with self.assertRaises(GEN.GenerationError):
+                GEN.floor_entry(CORE, invalid)
+
+    def test_nginx_command_pins_the_executable_after_its_entrypoint_script(self):
+        image = "nginxinc/nginx-unprivileged@sha256:" + "a" * 64
+        self.assertEqual(GEN.component_entrypoint(image, {
+            "entrypoint": ["/docker-entrypoint.sh"], "cmd": ["nginx", "-g", "daemon off;"]}),
+            ["/docker-entrypoint.sh", "nginx"])
+        for config in ({"entrypoint": ["/docker-entrypoint.sh"]}, {"cmd": ["sh"]}):
+            with self.assertRaises(GEN.GenerationError):
+                GEN.component_entrypoint(image, config)
+
+    def test_contract_refuses_unrestricted_or_partial_component_commands(self):
+        config = {CORE: {"entrypoint": ["/c8s", "cds"]}}
+        name, entry = GEN.floor_entry(CORE, config[CORE]["entrypoint"])
+        policy = {"workloads": []}
+        allowlist = {"workloads": {name: entry}}
+        MAN.require_allowlist_contract(allowlist, policy, [CORE], [], config, "v0.44.5-beta.1")
+        for command in ({"policy": "any"}, {"policy": "exact", "argv": ["/c8s"]}):
+            changed = copy.deepcopy(allowlist)
+            changed["workloads"][name]["containers"][0]["command"] = command
+            with self.assertRaisesRegex(MAN.ManifestError, "component ENTRYPOINT pin"):
+                MAN.require_allowlist_contract(changed, policy, [CORE], [], config, "v0.44.5-beta.1")
+
+    def test_measured_component_seed_is_preserved_and_fallback_stays_pinned(self):
+        name, baked = GEN.floor_entry(CORE, ["/c8s"])
+        baked["label"] = "measured node component"
+        entries = GEN.core_entries([CORE], {CORE: {"entrypoint": ["/c8s"]}}, "v0.44.5-beta.1", {name: baked})
+        self.assertEqual(entries[name], baked)
+        nri = "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:" + "a" * 64
+        fallback = GEN.core_entries([nri], {nri: {"entrypoint": ["/usr/local/bin/c8s", "nri-image-policy"]}},
+                                    "v0.44.5-beta.1", {})
+        entry = next(iter(fallback.values()))
+        self.assertEqual(entry["containers"][0]["command"],
+                         {"policy": "exact", "argv": ["/usr/local/bin/c8s", "nri-image-policy"]})
+        self.assertEqual(entry["containers"][0]["args"], {"policy": "any"})
+        with self.assertRaises(GEN.GenerationError):
+            GEN.core_entries([nri], {}, "v0.44.5-beta.1", {})
+        wrong = copy.deepcopy(baked)
+        wrong["containers"][0]["digest"] = "sha256:" + "c" * 64
+        with self.assertRaisesRegex(GEN.GenerationError, "does not bind"):
+            GEN.core_entries([CORE], {CORE: {"entrypoint": ["/c8s"]}}, "v0.44.5-beta.1", {name: wrong})
+
+    def test_core_seed_record_cannot_use_another_source_or_image_set(self):
+        spec = {"release": "v0.44.5-beta.1", "sourceCommit": "a" * 40, "coreImages": [CORE]}
+        record = {"sourceCommit": spec["sourceCommit"], "coreImages": [CORE],
+                  "allowlist": {"schema": "c8s.allowlist/v1", "workloads": {}}}
+        with mock.patch.object(GEN, "read_json", return_value=record):
+            self.assertEqual(GEN.core_seed(spec), {})
+        for field, value in (("sourceCommit", "b" * 40), ("coreImages", [])):
+            with mock.patch.object(GEN, "read_json", return_value={**record, field: value}):
+                with self.assertRaisesRegex(GEN.GenerationError, "differ from the profile"):
+                    GEN.core_seed(spec)
+
+    def test_process_contract_accepts_canonical_order_but_refuses_duplicates_and_changes(self):
+        main = {"name": "main", "image": IMAGE, "command": ["/entry"], "args": ["--x"]}
+        sidecar = {"name": "cds-attest", "image": CORE, "command": ["/c8s"], "args": ["cds-attest"]}
+        document = controller(kind="Deployment", name="worker", containers=[main, sidecar])
+        def rule(container):
+            return {"digest": container["image"].split("@")[1],
+                    "command": {"policy": "exact", "argv": container["command"]},
+                    "args": {"policy": "exact", "argv": container["args"]}}
+        policy = {"workloads": [{"name": "worker", "controller": "Deployment/worker"}]}
+        entry = {"containers": [rule(sidecar), rule(main)]}
+        allowlist = {"workloads": {"worker": entry}}
+        MAN.require_allowlist_contract(allowlist, policy, [], [document], {}, "v0.44.6-beta.1")
+        for change in (lambda e: e["containers"].append(copy.deepcopy(e["containers"][0])),
+                       lambda e: e["containers"][0]["args"]["argv"].append("--unreviewed")):
+            changed = copy.deepcopy(allowlist)
+            change(changed["workloads"]["worker"])
+            with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
+                MAN.require_allowlist_contract(changed, policy, [], [document], {}, "v0.44.6-beta.1")
+
+    def test_beta_release_uses_its_base_version_for_admission_rules(self):
+        self.assertTrue(GEN.c8s_at_least("v0.44.0-beta.1", (0, 44, 0)))
+        self.assertFalse(GEN.c8s_at_least("v0.37.0-beta.1", (0, 41, 0)))
+        with self.assertRaises(GEN.GenerationError):
+            GEN.c8s_at_least("main", (0, 44, 0))
 
 
 class AcceptedFindingTests(unittest.TestCase):
@@ -408,7 +674,7 @@ class ManifestTests(unittest.TestCase):
             return STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")
 
         with mock.patch.dict(MAN.ALLOWLIST_GENERATOR, {"generate": generate}):
-            self.assertEqual(staging_allowlist(Path("/tmp/c8s")), STAGING_ALLOWLIST.read_bytes())
+            self.assertEqual(staging_allowlist(Path("/tmp/c8s")), STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n"))
         self.assertEqual(calls, [Path("/tmp/c8s")])
 
     def test_staging_manifest_uses_the_staging_profile(self):
@@ -417,9 +683,10 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(manifest["release"], {"name": "v0.14.2-staging", "environment": "staging"})
         self.assertEqual(manifest["allowlist"], {
             "path": "release/staging/allowlist.json",
-            "sha256": MAN.sha256(STAGING_ALLOWLIST.read_bytes()),
+            "sha256": MAN.sha256(STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")),
         })
-        self.assertEqual(files["allowlist.json"], STAGING_ALLOWLIST.read_bytes())
+        self.assertEqual(files["allowlist.json"], STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n"))
+        self.assertFalse(files["allowlist.json"].endswith(b"\n"))
         self.assertEqual(manifest["releaseValues"], {
             "path": "release/staging/release-values.yaml",
             "sha256": MAN.sha256(files["release-values.yaml"]),
@@ -612,7 +879,10 @@ class ManifestTests(unittest.TestCase):
         allowlist = json.loads(STAGING_ALLOWLIST.read_text())
         zero_digest = "sha256:" + "0" * 64
         for name in ("inference-worker-0", "inference-worker-1"):
-            policy = allowlist["workloads"][name]["containers"][0]
+            guarded = [item for item in allowlist["workloads"][name]["containers"]
+                       if item["command"].get("argv") == ["/usr/local/bin/wait-for-model"]]
+            self.assertEqual(len(guarded), 1)
+            policy = guarded[0]
             self.assertEqual(policy["command"]["argv"], ["/usr/local/bin/wait-for-model"])
             self.assertIn("sglang_simulator.simulation.sglang.launch_server", policy["args"]["argv"])
         self.assertNotIn(zero_digest, STAGING_ALLOWLIST.read_text())
@@ -698,7 +968,11 @@ class ManifestTests(unittest.TestCase):
         documents = rendered(STAGING)
         allowlist = json.loads(STAGING_ALLOWLIST.read_text())
         configs = {**json.loads(PROFILES.IMAGE_CONFIG.read_text()), **REPOSITORY_CONFIGS}
-        MAN.require_allowlist_contract(allowlist, policy, core, documents, configs)
+        native = GEN.native_core_entries(spec["c8s"], configs)
+        # Use the real CDS process ordering that publication generates.
+        allowlist = json.loads(GEN.canonicalize(allowlist, None))
+        MAN.require_allowlist_contract(allowlist, policy, core, documents, configs,
+                                      spec["c8s"]["release"], native_core=native)
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
@@ -706,12 +980,20 @@ class ManifestTests(unittest.TestCase):
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"].pop("inference-worker-1")
         with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
-            MAN.require_allowlist_contract(changed, policy, core, documents, configs)
+            MAN.require_allowlist_contract(changed, policy, core, documents, configs,
+                                          spec["c8s"]["release"], native_core=native)
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"]["sglang-router"]["containers"][0]["args"]["argv"][1] = \
             "--service-discovery-namespace=wrong"
         with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
-            MAN.require_allowlist_contract(changed, policy, core, documents, configs)
+            MAN.require_allowlist_contract(changed, policy, core, documents, configs,
+                                          spec["c8s"]["release"], native_core=native)
+
+        changed = json.loads(json.dumps(allowlist))
+        changed["workloads"]["c8s-router"]["containers"][0]["args"] = {"policy": "any"}
+        with self.assertRaisesRegex(MAN.ManifestError, "native entry c8s-router differs"):
+            MAN.require_allowlist_contract(changed, policy, core, documents, configs,
+                                          spec["c8s"]["release"], native_core=native)
 
     def test_each_node_manifest_belongs_to_the_layer_that_pins_c8s(self):
         for profile in PROFILES.load():

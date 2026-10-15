@@ -46,11 +46,21 @@ authentication, attestation evidence, release schemas, and operator interfaces.
 Internal implementation changes do not require a major version when these
 interfaces remain compatible.
 
-Only `vX.Y.Z` and `vX.Y.Z-staging` are valid new release tags. The staging tag
-uses the reviewed simulator profile. A fix to either profile uses a new patch
+New release tags are `vX.Y.Z`, `vX.Y.Z-staging`, `vX.Y.Z-transition`, or
+`vX.Y.Z-transition-staging`. The staging tag uses the reviewed simulator
+profile. A fix to either profile uses a new patch
 version. The tag is the version: no commit changes a version, and a staging
 tag needs no production tag. The tag must point to a commit on `main`. After
 publication, the tag must never move or be deleted.
+
+A transition release binds the prior release, the final release, and the
+required test workloads. Publish the final definition first. Publish the
+transition definition from the same source commit. The transition policy
+contains the exact final workload rules, the prior workload rules, and the
+test rules. It does not require another gateway image for a release name.
+The runtime release selection changes after the enforced policy changes.
+The gateway reports a release only when its policy matches the evidence in
+that response. Clients still verify the release and its build evidence.
 
 C8s, TEEriminator, and other release dependencies are exact release inputs.
 A production release can pin a C8s beta version. It must bind the exact

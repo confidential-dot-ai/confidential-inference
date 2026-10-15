@@ -257,6 +257,31 @@
       ]
     },
     "responseV3": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "release": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "releaseSelection"
+            ],
+            "properties": {
+              "releaseSelection": {
+                "properties": {
+                  "status": {
+                    "const": "pending"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -269,24 +294,78 @@
           "const": 3
         },
         "release": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "url",
+                "bundleSha256"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri",
+                  "pattern": "^https://"
+                },
+                "bundleSha256": {
+                  "$ref": "#/$defs/sha256Digest"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "releaseSelection": {
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "id",
-            "url",
-            "bundleSha256"
+            "status",
+            "desired",
+            "desiredPolicySha256",
+            "observedPolicySha256"
           ],
           "properties": {
-            "id": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            "status": {
+              "enum": [
+                "matched",
+                "pending"
+              ]
             },
-            "url": {
-              "type": "string",
-              "format": "uri",
-              "pattern": "^https://"
+            "desired": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "url",
+                "bundleSha256"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri",
+                  "pattern": "^https://"
+                },
+                "bundleSha256": {
+                  "$ref": "#/$defs/sha256Digest"
+                }
+              }
             },
-            "bundleSha256": {
+            "desiredPolicySha256": {
+              "$ref": "#/$defs/sha256Digest"
+            },
+            "observedPolicySha256": {
               "$ref": "#/$defs/sha256Digest"
             }
           }
