@@ -319,7 +319,10 @@ fn client_address(
         .iter()
         .any(|cidr| cidr.contains(&peer))
     {
-        return Err(());
+        // An untrusted header is not an address source. Keep the connection's
+        // address so a proxy move cannot reject otherwise valid requests, and
+        // changing the header cannot create a new rate-limit bucket.
+        return Ok(peer);
     }
     let text = value.to_str().map_err(|_| ())?;
     if text.contains(',') || text.trim() != text {
@@ -440,7 +443,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_spoofed_forwarding_headers() {
+    async fn ignores_spoofed_forwarding_headers() {
         let state = Arc::new(ProtectionState::new(ProtectionConfig::default()));
         let app = Router::new().route("/", get(|| async { "ok" })).layer(
             axum::middleware::from_fn_with_state(state, enforce_public_limits),
@@ -457,8 +460,38 @@ mod tests {
                 .await
                 .unwrap_or_else(|_| unreachable!())
                 .status(),
-            StatusCode::BAD_REQUEST
+            StatusCode::OK
         );
+    }
+
+    #[tokio::test]
+    async fn untrusted_forwarded_addresses_share_the_peer_rate_limit() {
+        let config = ProtectionConfig {
+            requests_per_address_per_second: 1,
+            ..ProtectionConfig::default()
+        };
+        let state = Arc::new(ProtectionState::new(config));
+        let app = Router::new().route("/", get(|| async { "ok" })).layer(
+            axum::middleware::from_fn_with_state(state, enforce_public_limits),
+        );
+        for (address, expected) in [
+            ("198.51.100.2", StatusCode::OK),
+            ("198.51.100.3", StatusCode::TOO_MANY_REQUESTS),
+        ] {
+            let mut request = request("/", "192.0.2.1".parse().unwrap_or_else(|_| unreachable!()));
+            request.headers_mut().insert(
+                "x-forwarded-for",
+                HeaderValue::from_str(address).unwrap_or_else(|_| unreachable!()),
+            );
+            assert_eq!(
+                app.clone()
+                    .oneshot(request)
+                    .await
+                    .unwrap_or_else(|_| unreachable!())
+                    .status(),
+                expected
+            );
+        }
     }
 
     #[tokio::test]

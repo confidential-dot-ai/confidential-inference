@@ -219,7 +219,10 @@ workloadOverrides:
             - name: GATEWAY_ENDPOINT_DRAIN_SECONDS
               value: '35'
             - name: GATEWAY_TRUSTED_PROXY_CIDRS
-              value: 10.52.0.0/16,172.20.0.0/24
+              # The inner pod network is fixed by the approved C8s node image.
+              # A mesh relay can use a different outer node address. The gateway
+              # uses that connection address without trusting its forwarded header.
+              value: 10.52.0.0/16
             - name: GATEWAY_C8S_RECEIPT_TARGETS
               value: gateway|gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}|gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804
             - name: GATEWAY_RELEASE_IDENTITY_FILE
