@@ -528,15 +528,10 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(entries, seed)
         self.assertIsNot(entries["c8s-router-" + "e" * 12], router)
         self.assertEqual(GEN.native_core_entries({"release": "v0.47.0"}, configs), {})
-        # The node's own images run outside the chart: the seed binds no entry
-        # to them, and they keep the floor entry pinned to the entrypoint.
-        nri = "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:" + "a" * 64
-        nri_configs = {**configs, nri: {"entrypoint": ["/usr/local/bin/c8s", "nri-image-policy"]}}
-        with_floor = GEN.core_entries([CORE, nri], nri_configs, "v0.47.0", seed)
-        floor_name, floor = GEN.floor_entry(nri, ["/usr/local/bin/c8s", "nri-image-policy"])
-        self.assertEqual(with_floor, {**seed, floor_name: floor})
-        with self.assertRaises(GEN.GenerationError):
-            GEN.core_entries([CORE, nri], configs, "v0.47.0", seed)
+        # The node's own images run outside the chart, never as pods: the seed
+        # binds no entry to them and they get none.
+        volumed = "ghcr.io/confidential-dot-ai/volumed@sha256:" + "a" * 64
+        self.assertEqual(GEN.core_entries([CORE, volumed], configs, "v0.47.0", seed), seed)
         # A shape may pin the container's own command, which extends the
         # entrypoint; a command that leaves it is not the component.
         extended = copy.deepcopy(seed)
@@ -1021,7 +1016,7 @@ class ManifestTests(unittest.TestCase):
         # Use the real CDS process ordering that publication generates.
         allowlist = json.loads(GEN.canonicalize(allowlist, None))
         MAN.require_allowlist_contract(allowlist, policy, core, documents, configs,
-                                      spec["c8s"]["release"], native_core=native)
+                                      spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
@@ -1030,19 +1025,21 @@ class ManifestTests(unittest.TestCase):
         changed["workloads"].pop("inference-worker-1")
         with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
             MAN.require_allowlist_contract(changed, policy, core, documents, configs,
-                                          spec["c8s"]["release"], native_core=native)
+                                          spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"]["sglang-router"]["containers"][0]["args"]["argv"][1] = \
             "--service-discovery-namespace=wrong"
         with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
             MAN.require_allowlist_contract(changed, policy, core, documents, configs,
-                                          spec["c8s"]["release"], native_core=native)
+                                          spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
 
         changed = json.loads(json.dumps(allowlist))
-        changed["workloads"]["c8s-router"]["containers"][0]["args"] = {"policy": "any"}
-        with self.assertRaisesRegex(MAN.ManifestError, "native entry c8s-router differs"):
+        # The router is a native entry before c8s v0.47.0 and a seeded one after.
+        router_entry = next(name for name in changed["workloads"] if name.startswith("c8s-router"))
+        changed["workloads"][router_entry]["containers"][0]["args"] = {"policy": "any"}
+        with self.assertRaisesRegex(MAN.ManifestError, "entry c8s-router.* differs"):
             MAN.require_allowlist_contract(changed, policy, core, documents, configs,
-                                          spec["c8s"]["release"], native_core=native)
+                                          spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
 
     def test_each_node_manifest_belongs_to_the_layer_that_pins_c8s(self):
         for profile in PROFILES.load():
