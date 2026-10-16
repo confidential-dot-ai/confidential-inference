@@ -278,7 +278,10 @@ def require_allowlist_contract(
     require(set(rendered) == policy_controllers,
             f"rendered controllers differ from allowlist policy: rendered={sorted(rendered)} policy={sorted(policy_controllers)}")
     expected_names = {item["name"] for item in policy["workloads"]}
-    expected_names |= {ALLOWLIST_GENERATOR["floor_entry"](image)[0] for image in core_images}
+    if ALLOWLIST_GENERATOR["c8s_at_least"](c8s_release, ALLOWLIST_GENERATOR["SEED_PINS_COMPONENTS_SINCE"]):
+        expected_names |= set(core_seed or {})
+    else:
+        expected_names |= {ALLOWLIST_GENERATOR["floor_entry"](image)[0] for image in core_images}
     expected_names |= set(native_core or {})
     workloads = allowlist.get("workloads")
     require(isinstance(workloads, dict) and set(workloads) == expected_names,

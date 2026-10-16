@@ -24,8 +24,10 @@ The script never learns a value from a running container. A value that no
 pinned source can give (for example a node IP) is an error.
 
 `c8s allowlist derive` from the pinned c8s release builds each entry, so c8s
-itself decides which containers it injects and drops. The c8s core entries mirror the bootstrap seed. New releases pin each
-component to its complete image ENTRYPOINT. The
+itself decides which containers it injects and drops. The c8s core entries mirror the bootstrap seed: from c8s v0.47.0 as
+the chart renders it, one pinned entry per component shape and the router pod;
+before it, one floor entry per core image pinned to its complete image
+ENTRYPOINT beside the seed. The
 pinned Go tool in tools/c8s-allowlist-canonical writes the canonical bytes,
 and `c8s allowlist lint --strict` must pass.
 
@@ -38,6 +40,7 @@ release input.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import runpy
@@ -84,6 +87,12 @@ CLAIMS_SOCKET_CONSUMERS = {"c8s-cert", "c8s-secret", "c8s-volume", "cds-attest"}
 # as a read-only host mount, which an exact policy must list; from this one a
 # host rule for it refuses the secrets grant, and no rule names it.
 CLAIMS_SOCKET_PLATFORM_SINCE = (0, 50, 0)
+# The first c8s release whose chart seed names one entry per component shape
+# (`<image>-<digest>-<shape>`), pins its args and mounts, and seeds the router
+# pod's composition (c8s #876, #878). From it the release mirrors the seed as
+# it is: a floor entry or a native router entry beside it would leave args,
+# mounts or env `any`, which `c8s allowlist lint --strict` refuses.
+SEED_PINS_COMPONENTS_SINCE = (0, 47, 0)
 CLAIMS_SOCKET_SOURCE = "/var/run/nri-image-policy"
 CLAIMS_SOCKET_DESTINATION = "/run/c8s/workload-claims"
 
@@ -471,6 +480,8 @@ def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
 
 def core_entries(images: list[str], configs: dict[str, Any], release: str | None,
                  seed: dict[str, Any]) -> dict[str, Any]:
+    if c8s_at_least(release, SEED_PINS_COMPONENTS_SINCE):
+        return seeded_core_entries(images, configs, seed)
     entries = {}
     for image in images:
         entrypoint = component_entrypoint(image, configs.get(image, {})) if c8s_at_least(release, (0, 44, 0)) else None
@@ -489,8 +500,30 @@ def core_entries(images: list[str], configs: dict[str, Any], release: str | None
     return entries
 
 
+def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[str, Any]) -> dict[str, Any]:
+    """Mirror the chart's seed: every entry as rendered, each core image bound.
+
+    The seed pins each component shape's command at the image entrypoint, so a
+    seed container of a core image must still carry that pin.
+    """
+    bound = set()
+    for name, entry in seed.items():
+        for container in entry.get("initContainers", []) + entry.get("containers", []):
+            image = container.get("image", "")
+            if image not in images:
+                continue
+            bound.add(image)
+            entrypoint = component_entrypoint(image, configs.get(image, {}))
+            if container.get("command", {}).get("policy") != "exact" or container["command"].get("argv") != entrypoint:
+                raise GenerationError(f"seed entry {name} does not preserve its component command pin")
+    missing = [image for image in images if image not in bound]
+    if missing:
+        raise GenerationError(f"the C8s node seed binds no entry to the core images {missing}")
+    return copy.deepcopy(seed)
+
+
 def native_core_entries(c8s: dict[str, Any], configs: dict[str, Any]) -> dict[str, Any]:
-    if not c8s_at_least(c8s["release"], (0, 44, 6)):
+    if not c8s_at_least(c8s["release"], (0, 44, 6)) or c8s_at_least(c8s["release"], SEED_PINS_COMPONENTS_SINCE):
         return {}
     record = read_json(ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json"))
     helper = runpy.run_path(str(ROOT / "scripts/native_c8s_allowlist.py"))

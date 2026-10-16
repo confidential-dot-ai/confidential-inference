@@ -509,6 +509,39 @@ class ProcessTests(unittest.TestCase):
         with self.assertRaisesRegex(GEN.GenerationError, "does not bind"):
             GEN.core_entries([CORE], {CORE: {"entrypoint": ["/c8s"]}}, "v0.44.5-beta.1", {name: wrong})
 
+    def test_seeded_c8s_mirrors_the_chart_seed_without_floor_or_native_entries(self):
+        # From c8s v0.47.0 the chart seed names one pinned entry per component
+        # shape and the router pod; a floor or native entry beside it leaves
+        # args, mounts or env any, which strict lint refuses.
+        shape = {"label": CORE, "initContainers": [], "containers": [{
+            "digest": GEN.split_image(CORE)[1], "image": CORE,
+            "command": {"policy": "exact", "argv": ["/c8s"]}, "args": {"policy": "exact", "argv": ["cds"]},
+            "mounts": {"policy": "exact", "rules": []}, "env": {"policy": "match", "variables": {}}}]}
+        router = {"label": "router", "initContainers": [], "containers": [{
+            "digest": "sha256:" + "d" * 64, "image": "docker.io/nginxinc/nginx-unprivileged@sha256:" + "d" * 64,
+            "command": {"policy": "exact", "argv": ["/docker-entrypoint.sh", "nginx"]},
+            "args": {"policy": "exact", "argv": []}, "mounts": {"policy": "exact", "rules": []},
+            "env": {"policy": "match", "variables": {}}}]}
+        seed = {"c8s-operator-" + "b" * 12 + "-01234567": shape, "c8s-router-" + "e" * 12: router}
+        configs = {CORE: {"entrypoint": ["/c8s"]}}
+        entries = GEN.core_entries([CORE], configs, "v0.47.0", seed)
+        self.assertEqual(entries, seed)
+        self.assertIsNot(entries["c8s-router-" + "e" * 12], router)
+        self.assertEqual(GEN.native_core_entries({"release": "v0.47.0"}, configs), {})
+        with self.assertRaisesRegex(GEN.GenerationError, "binds no entry to the core images"):
+            GEN.core_entries([CORE], configs, "v0.47.0", {"c8s-router-" + "e" * 12: router})
+        wrong = copy.deepcopy(seed)
+        wrong["c8s-operator-" + "b" * 12 + "-01234567"]["containers"][0]["command"]["argv"] = ["/c8s", "cds"]
+        with self.assertRaisesRegex(GEN.GenerationError, "component command pin"):
+            GEN.core_entries([CORE], configs, "v0.47.0", wrong)
+        # The manifest contract expects the seed's names, not floor names.
+        policy = {"workloads": []}
+        MAN.require_allowlist_contract({"workloads": seed}, policy, [CORE], [], configs, "v0.47.0", core_seed=seed)
+        floor_name, floor = GEN.floor_entry(CORE, ["/c8s"])
+        with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
+            MAN.require_allowlist_contract({"workloads": {**seed, floor_name: floor}}, policy, [CORE], [], configs,
+                                          "v0.47.0", core_seed=seed)
+
     def test_core_seed_record_cannot_use_another_source_or_image_set(self):
         spec = {"release": "v0.44.5-beta.1", "sourceCommit": "a" * 40, "coreImages": [CORE]}
         record = {"sourceCommit": spec["sourceCommit"], "coreImages": [CORE],
