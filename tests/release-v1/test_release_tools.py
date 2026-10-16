@@ -530,8 +530,13 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(GEN.native_core_entries({"release": "v0.47.0"}, configs), {})
         with self.assertRaisesRegex(GEN.GenerationError, "binds no entry to the core images"):
             GEN.core_entries([CORE], configs, "v0.47.0", {"c8s-router-" + "e" * 12: router})
+        # A shape may pin the container's own command, which extends the
+        # entrypoint; a command that leaves it is not the component.
+        extended = copy.deepcopy(seed)
+        extended["c8s-operator-" + "b" * 12 + "-01234567"]["containers"][0]["command"]["argv"] = ["/c8s", "get-cert"]
+        self.assertEqual(GEN.core_entries([CORE], configs, "v0.47.0", extended), extended)
         wrong = copy.deepcopy(seed)
-        wrong["c8s-operator-" + "b" * 12 + "-01234567"]["containers"][0]["command"]["argv"] = ["/c8s", "cds"]
+        wrong["c8s-operator-" + "b" * 12 + "-01234567"]["containers"][0]["command"]["argv"] = ["/bin/sh", "-c", "/c8s"]
         with self.assertRaisesRegex(GEN.GenerationError, "component command pin"):
             GEN.core_entries([CORE], configs, "v0.47.0", wrong)
         # The manifest contract expects the seed's names, not floor names.
