@@ -1016,7 +1016,7 @@ class ManifestTests(unittest.TestCase):
         # Use the real CDS process ordering that publication generates.
         allowlist = json.loads(GEN.canonicalize(allowlist, None))
         MAN.require_allowlist_contract(allowlist, policy, core, documents, configs,
-                                      spec["c8s"]["release"], native_core=native)
+                                      spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
