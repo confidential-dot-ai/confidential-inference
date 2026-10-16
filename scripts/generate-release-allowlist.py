@@ -503,6 +503,10 @@ def core_entries(images: list[str], configs: dict[str, Any], release: str | None
 def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[str, Any]) -> dict[str, Any]:
     """Mirror the chart's seed: every entry as rendered, nothing else.
 
+    bump-c8s records the seed in canonical form, so the mirrored entries are
+    the canonical allowlist's entries byte for byte and the manifest contract
+    can require equality.
+
     The seed pins each component shape's command at the image entrypoint or at
     the container's own command, which extends it (`/c8s get-cert`), so a seed
     container of a core image must pin a command that starts with the
