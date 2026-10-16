@@ -481,7 +481,12 @@ def extend_cdi_record(c8s_repo: Path, confos_repo: Path | None, old: dict[str, A
 
 
 def regenerate_core_seed(c8s_repo: Path, c8s: dict[str, Any]) -> None:
-    """Render the measured node seed with the exact mkosi.sync inputs."""
+    """Render the measured node seed with the exact mkosi.sync inputs.
+
+    The seed is recorded in the canonical allowlist form, so a release
+    allowlist that mirrors its entries (c8s v0.47.0 and later) holds them
+    byte for byte.
+    """
     if tuple(int(x) for x in TAG.fullmatch(c8s["release"]).groups()[:3]) < (0, 44, 0):
         return
     sync = (c8s_repo / "node-guest-image/c8s/mkosi.sync").read_text()
@@ -502,6 +507,8 @@ def regenerate_core_seed(c8s_repo: Path, c8s: dict[str, Any]) -> None:
     with tempfile.TemporaryDirectory(prefix="c8s-core-seed-") as directory:
         run([*command, "--output-dir", directory], cwd=c8s_repo, env=go_env())
         seed = json.loads((Path(directory) / "allowlist-seed.json").read_text())
+        generator = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
+        seed = json.loads(generator["canonicalize"](seed, None))
         native = runpy.run_path(str(ROOT / "scripts/native_c8s_allowlist.py"))
         integration = list(yaml.safe_load_all((Path(directory) / "c8s-integration.yaml").read_text()))
         router = native["router_controller"](integration)
