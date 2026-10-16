@@ -528,15 +528,10 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(entries, seed)
         self.assertIsNot(entries["c8s-router-" + "e" * 12], router)
         self.assertEqual(GEN.native_core_entries({"release": "v0.47.0"}, configs), {})
-        # The node's own images run outside the chart: the seed binds no entry
-        # to them, and they keep the floor entry pinned to the entrypoint.
-        nri = "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:" + "a" * 64
-        nri_configs = {**configs, nri: {"entrypoint": ["/usr/local/bin/c8s", "nri-image-policy"]}}
-        with_floor = GEN.core_entries([CORE, nri], nri_configs, "v0.47.0", seed)
-        floor_name, floor = GEN.floor_entry(nri, ["/usr/local/bin/c8s", "nri-image-policy"])
-        self.assertEqual(with_floor, {**seed, floor_name: floor})
-        with self.assertRaises(GEN.GenerationError):
-            GEN.core_entries([CORE, nri], configs, "v0.47.0", seed)
+        # The node's own images run outside the chart, never as pods: the seed
+        # binds no entry to them and they get none.
+        volumed = "ghcr.io/confidential-dot-ai/volumed@sha256:" + "a" * 64
+        self.assertEqual(GEN.core_entries([CORE, volumed], configs, "v0.47.0", seed), seed)
         # A shape may pin the container's own command, which extends the
         # entrypoint; a command that leaves it is not the component.
         extended = copy.deepcopy(seed)

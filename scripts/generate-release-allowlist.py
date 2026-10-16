@@ -501,35 +501,26 @@ def core_entries(images: list[str], configs: dict[str, Any], release: str | None
 
 
 def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[str, Any]) -> dict[str, Any]:
-    """Mirror the chart's seed: every entry as rendered, plus a floor entry for
-    each core image the seed does not bind.
+    """Mirror the chart's seed: every entry as rendered, nothing else.
 
     The seed pins each component shape's command at the image entrypoint or at
     the container's own command, which extends it (`/c8s get-cert`), so a seed
     container of a core image must pin a command that starts with the
-    entrypoint. The node's own images (nri-image-policy, volumed) run outside
-    the chart and keep the floor entry pinned to their entrypoint.
+    entrypoint. A core image the seed does not bind runs on the node, never as
+    a pod (nri-image-policy, volumed), and gets no entry: a floor entry for it
+    would admit a component with open mounts and env, which strict lint
+    refuses.
     """
-    bound = set()
     for name, entry in seed.items():
         for container in entry.get("initContainers", []) + entry.get("containers", []):
             image = container.get("image", "")
             if image not in images:
                 continue
-            bound.add(image)
             entrypoint = component_entrypoint(image, configs.get(image, {}))
             argv = container.get("command", {}).get("argv") or []
             if container.get("command", {}).get("policy") != "exact" or argv[:len(entrypoint)] != entrypoint:
                 raise GenerationError(f"seed entry {name} does not preserve its component command pin")
-    entries = copy.deepcopy(seed)
-    for image in images:
-        if image in bound:
-            continue
-        name, entry = floor_entry(image, component_entrypoint(image, configs.get(image, {})))
-        if name in entries:
-            raise GenerationError(f"the floor entry {name} collides with a seed entry")
-        entries[name] = entry
-    return entries
+    return copy.deepcopy(seed)
 
 
 def native_core_entries(c8s: dict[str, Any], configs: dict[str, Any]) -> dict[str, Any]:
