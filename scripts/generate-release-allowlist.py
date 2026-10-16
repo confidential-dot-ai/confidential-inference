@@ -503,8 +503,10 @@ def core_entries(images: list[str], configs: dict[str, Any], release: str | None
 def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[str, Any]) -> dict[str, Any]:
     """Mirror the chart's seed: every entry as rendered, each core image bound.
 
-    The seed pins each component shape's command at the image entrypoint, so a
-    seed container of a core image must still carry that pin.
+    The seed pins each component shape's command at the image entrypoint or at
+    the container's own command, which extends it (`/c8s get-cert`), so a seed
+    container of a core image must pin a command that starts with the
+    entrypoint.
     """
     bound = set()
     for name, entry in seed.items():
@@ -514,7 +516,8 @@ def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[s
                 continue
             bound.add(image)
             entrypoint = component_entrypoint(image, configs.get(image, {}))
-            if container.get("command", {}).get("policy") != "exact" or container["command"].get("argv") != entrypoint:
+            argv = container.get("command", {}).get("argv") or []
+            if container.get("command", {}).get("policy") != "exact" or argv[:len(entrypoint)] != entrypoint:
                 raise GenerationError(f"seed entry {name} does not preserve its component command pin")
     missing = [image for image in images if image not in bound]
     if missing:
