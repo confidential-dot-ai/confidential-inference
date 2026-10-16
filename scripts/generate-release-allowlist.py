@@ -79,6 +79,11 @@ INJECTED_MODES = {"get-cert", "probe-file", "get-secret", "get-volume"}
 # The pinned node integration uses these NRI socket settings. The mount is
 # added to the final OCI spec, so Helm's pod specification does not show it.
 CLAIMS_SOCKET_CONSUMERS = {"c8s-cert", "c8s-secret", "c8s-volume", "cds-attest"}
+# The first c8s release whose node policy observes the socket directory it
+# bind-mounts itself as a platform mount (c8s #915). Earlier releases report it
+# as a read-only host mount, which an exact policy must list; from this one a
+# host rule for it refuses the secrets grant, and no rule names it.
+CLAIMS_SOCKET_PLATFORM_SINCE = (0, 50, 0)
 CLAIMS_SOCKET_SOURCE = "/var/run/nri-image-policy"
 CLAIMS_SOCKET_DESTINATION = "/run/c8s/workload-claims"
 
@@ -328,7 +333,7 @@ def container_mounts(
             for entry in annotations["confidential.ai/c8s-volumes"].split(","):
                 name = entry.partition("=")[0]
                 rules.append(data_rule(f"{directory}/{name}", label))
-        if (c8s_at_least(c8s_release, (0, 44, 6))
+        if (c8s_at_least(c8s_release, (0, 44, 6)) and not c8s_at_least(c8s_release, CLAIMS_SOCKET_PLATFORM_SINCE)
                 and container["name"] in CLAIMS_SOCKET_CONSUMERS):
             rules.append({"destination": CLAIMS_SOCKET_DESTINATION, "kind": "host",
                           "source": CLAIMS_SOCKET_SOURCE, "readOnly": True})

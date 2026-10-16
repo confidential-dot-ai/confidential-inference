@@ -386,6 +386,10 @@ class MountTests(unittest.TestCase):
         self.assertEqual(len(rules), 2)
         self.assertEqual(GEN.container_mounts(obj, container, None, c8s_release="v0.42.0"),
                          [{"destination": "/etc/c8s/certs", "kind": "emptyDir"}])
+        # From c8s #915 the node policy observes its own socket mount as a
+        # platform mount, and a host rule for it would refuse the secrets grant.
+        self.assertEqual(GEN.container_mounts(obj, container, None, c8s_release="v0.50.0"),
+                         [{"destination": "/etc/c8s/certs", "kind": "emptyDir"}])
         obj["spec"]["template"]["metadata"]["annotations"] = {}
         self.assertEqual(GEN.container_mounts(obj, container, None, c8s_release="v0.44.6"), [])
 
