@@ -1025,19 +1025,21 @@ class ManifestTests(unittest.TestCase):
         changed["workloads"].pop("inference-worker-1")
         with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
             MAN.require_allowlist_contract(changed, policy, core, documents, configs,
-                                          spec["c8s"]["release"], native_core=native)
+                                          spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"]["sglang-router"]["containers"][0]["args"]["argv"][1] = \
             "--service-discovery-namespace=wrong"
         with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
             MAN.require_allowlist_contract(changed, policy, core, documents, configs,
-                                          spec["c8s"]["release"], native_core=native)
+                                          spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
 
         changed = json.loads(json.dumps(allowlist))
-        changed["workloads"]["c8s-router"]["containers"][0]["args"] = {"policy": "any"}
-        with self.assertRaisesRegex(MAN.ManifestError, "native entry c8s-router differs"):
+        # The router is a native entry before c8s v0.47.0 and a seeded one after.
+        router_entry = next(name for name in changed["workloads"] if name.startswith("c8s-router"))
+        changed["workloads"][router_entry]["containers"][0]["args"] = {"policy": "any"}
+        with self.assertRaisesRegex(MAN.ManifestError, "entry c8s-router.* differs"):
             MAN.require_allowlist_contract(changed, policy, core, documents, configs,
-                                          spec["c8s"]["release"], native_core=native)
+                                          spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
 
     def test_each_node_manifest_belongs_to_the_layer_that_pins_c8s(self):
         for profile in PROFILES.load():
