@@ -733,7 +733,10 @@ def refresh_image_config(profiles: tuple[release_profiles.Profile, ...]) -> dict
                 if isinstance(value, str) and value.startswith(release_profiles.REPOSITORY_IMAGES)
             }
             overlay = Path(directory) / f"{profile.name}.yaml"
-            overlay.write_text(json.dumps({"images": placeholder}))
+            tdx = read_json(release_profiles.node_manifest(profile))["tdx"]
+            # cds-attest pins CDS, which runs on the pinned node image (c8s #851).
+            pin = {name: tdx[name] for name in ("mrtd", "rtmr1", "rtmr2")}
+            overlay.write_text(json.dumps({"images": placeholder, "attestationReceipts": {"cdsPin": pin}}))
             policy = read_json(profile.policy)
             for controller in controllers(render_chart(policy, profile, overlay)).values():
                 pod = controller["spec"]["template"]["spec"]
