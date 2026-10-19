@@ -48,11 +48,6 @@ spec:
     - name: http
       port: {{ .Values.gateway.service.publicPort }}
       targetPort: http
-    {{- if .Values.gateway.meshTls.enabled }}
-    - name: https
-      port: {{ .Values.gateway.containerPorts.tls }}
-      targetPort: https
-    {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment

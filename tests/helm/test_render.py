@@ -95,9 +95,11 @@ def check_mesh_tls_listener() -> None:
     assert gateway.env["GATEWAY_LISTEN"] == "0.0.0.0:9443"
     assert gateway.env["GATEWAY_TLS_LISTEN"] == "0.0.0.0:9444"
     assert {"name": "https", "containerPort": 9444} in gateway.container["ports"]
+    # The router dials the pod through the c8s-gateway Service that c8s
+    # makes, so the chart's gateway Service keeps only its plaintext port.
     service = next(item for item in documents
                    if item["kind"] == "Service" and item["metadata"]["name"] == "gateway")
-    assert {"name": "https", "port": 9444, "targetPort": "https"} in service["spec"]["ports"]
+    assert all(port["name"] != "https" for port in service["spec"]["ports"])
     policy = next(item for item in documents if item["kind"] == "NetworkPolicy"
                   and item["spec"]["podSelector"].get("matchLabels", {}).get("app.kubernetes.io/component") == "gateway")
     router_ports = [port["port"] for port in policy["spec"]["ingress"][0]["ports"]]

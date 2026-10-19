@@ -612,7 +612,12 @@ fn modified(path: &Path) -> Option<std::time::SystemTime> {
 }
 
 /// Reload the mesh certificate when get-cert renews it. A failed reload
-/// keeps the certificate in use and is retried at the next change.
+/// keeps the certificate in use, and `seen` does not advance, so the next
+/// tick retries. That retry matters: get-cert writes the key and then the
+/// certificate, each atomically, so a tick between the two writes sees a
+/// new key with the old certificate and fails. c8s signals only nginx on
+/// renewal, so the gateway polls. The plaintext listener and this one stay
+/// side by side only until production runs a c8s router of v0.56.0 or later.
 async fn reload_tls_certificate(
     config: RustlsConfig,
     cert: PathBuf,
