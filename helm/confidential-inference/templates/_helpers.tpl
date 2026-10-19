@@ -153,6 +153,11 @@ layer cannot remove a key of a map, but it replaces a list.
 {{- $_ := set $podOverride "containers" $containers -}}
 {{- end -}}
 {{- $document = mergeOverwrite (deepCopy $document) $override -}}
+{{- /* A Deployment strategy is a union: an override replaces it whole, so a
+Recreate override drops the chart's rollingUpdate. */ -}}
+{{- with dig "spec" "strategy" nil $override -}}
+{{- $_ := set $document.spec "strategy" . -}}
+{{- end -}}
 {{- end }}
 ---
 {{ toYaml $document }}
