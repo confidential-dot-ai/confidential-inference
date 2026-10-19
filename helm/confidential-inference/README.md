@@ -36,3 +36,31 @@ Those target settings remain for historical releases. Read
 
 The chart does not own public addresses, DNS, secret-manager paths, machine
 names, or resource sizes. Keep those values in the operator repository.
+
+## Upgrade and rollback
+
+`helm upgrade` and `helm rollback` replace the gateway pod (`Recreate`: c8s
+opens its state volume for one pod) and roll the router (`RollingUpdate`,
+one extra pod). Set `runtimeConfig.releaseBundle` with `--set-file` to the
+verified `release-bundle.json` so the release selection changes with the
+release.
+
+The inference workers use `updateStrategy: OnDelete`. Helm updates their
+StatefulSets, but a worker keeps its old pod until you delete it. Each worker
+is its own StatefulSet with its own c8s workload and model volume, so neither
+a StatefulSet `RollingUpdate` nor a PodDisruptionBudget keeps one worker
+serving: both StatefulSets would roll at once, and a PodDisruptionBudget does
+not apply to controller updates. Roll them one at a time:
+
+```sh
+for worker in inference-worker-0 inference-worker-1; do
+  revision=$(kubectl -n "$NS" get statefulset "$worker" -o jsonpath='{.status.updateRevision}')
+  kubectl -n "$NS" delete pod "$worker-0"
+  # The new pod starts after the old one frees its GPUs; model load and
+  # tuning take about 35 minutes.
+  until [ "$(kubectl -n "$NS" get pod "$worker-0" \
+      -o jsonpath='{.metadata.labels.controller-revision-hash}')" = "$revision" ]; do sleep 10; done
+  kubectl -n "$NS" wait --for=condition=Ready "pod/$worker-0" --timeout=60m
+  # Send one chat completion through the router before the next worker.
+done
+```

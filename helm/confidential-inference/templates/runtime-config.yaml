@@ -36,4 +36,18 @@ metadata:
     confidential.ai/runtime-config: router
 data:
   routes.json: {{ toJson (dict "schemaVersion" 1 "revision" .Values.runtimeConfig.revision "routes" $routes) | quote }}
+{{- with .Values.runtimeConfig.releaseBundle }}
+---
+{{- /* The gateway reads every start from this file. A release change also
+       changes the gateway pod, so the revision stays 1. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Values.runtimeConfig.releaseConfigMap }}
+  labels:
+    {{- include "confidential-inference.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: gateway
+data:
+  releases.json: {{ toJson (dict "schemaVersion" 1 "revision" 1 "selectedBundleSha256" (printf "sha256:%s" (sha256sum .)) "releaseBundles" (list .)) | quote }}
+{{- end }}
 {{- end }}
