@@ -83,6 +83,15 @@ attestationReceipts:
     url: ""
     imagePolicy: ""
     servedImagePolicy: ""
+  # c8s v0.56.0 and later (c8s #851): every cds-attest sidecar routes by the
+  # signed route manifest that it polls from cds.url, and pins that CDS by the
+  # TDX measurements of the node image. The release build sets cdsPin from the
+  # pinned node manifest.
+  cdsRoutes: false
+  cdsPin:
+    mrtd: ""
+    rtmr1: ""
+    rtmr2: ""
   targets:
     - target: gateway
       workload: gateway

@@ -76,6 +76,9 @@ attestationReceipts:
   # gateway-release-identity. Keep the CDS origin in the signed workload.
   cds:
     url: https://c8s-cds.c8s-system.svc.cluster.local:8443
+  # c8s v0.56.0+ (#851): cds-attest polls the route manifest from cds.url. The
+  # workload overrides below restate the same flags.
+  cdsRoutes: true
   expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   targets:
@@ -196,6 +199,10 @@ workloadOverrides:
               value: 0.0.0.0:9443
             - name: GATEWAY_METRICS_LISTEN
               value: 0.0.0.0:9090
+            # The c8s v0.56.0+ router dials the gateway over TLS with the
+            # get-cert leaf in /etc/c8s/certs (#172).
+            - name: GATEWAY_TLS_LISTEN
+              value: 0.0.0.0:9444
             - name: GATEWAY_RUNTIME_CONFIG_FILE
               value: /mnt/c8s-data/runtime/settings.json
             - name: GATEWAY_ROUTER_NAMESPACE
@@ -275,6 +282,9 @@ workloadOverrides:
             - containerPort: 9090
               name: metrics
               protocol: TCP
+            - containerPort: 9444
+              name: https
+              protocol: TCP
             readinessProbe:
               failureThreshold: 3
               successThreshold: 1
@@ -293,6 +303,9 @@ workloadOverrides:
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-key-file=/etc/c8s/certs/tls.key
             - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+            - --cds-url={{ required "attestationReceipts.cds.url" .Values.attestationReceipts.cds.url }}
+            - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd" .Values.attestationReceipts.cdsPin.mrtd }}
+            - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1" .Values.attestationReceipts.cdsPin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2" .Values.attestationReceipts.cdsPin.rtmr2 }}
             env: []
             image: '{{ .Values.images.c8sOperator }}'
             livenessProbe:
@@ -376,6 +389,9 @@ workloadOverrides:
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-key-file=/etc/c8s/certs/tls.key
             - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+            - --cds-url={{ required "attestationReceipts.cds.url" .Values.attestationReceipts.cds.url }}
+            - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd" .Values.attestationReceipts.cdsPin.mrtd }}
+            - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1" .Values.attestationReceipts.cdsPin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2" .Values.attestationReceipts.cdsPin.rtmr2 }}
             env: []
             image: '{{ .Values.images.c8sOperator }}'
             livenessProbe:
@@ -443,6 +459,9 @@ workloadOverrides:
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-key-file=/etc/c8s/certs/tls.key
             - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+            - --cds-url={{ required "attestationReceipts.cds.url" .Values.attestationReceipts.cds.url }}
+            - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd" .Values.attestationReceipts.cdsPin.mrtd }}
+            - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1" .Values.attestationReceipts.cdsPin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2" .Values.attestationReceipts.cdsPin.rtmr2 }}
             env: []
             image: '{{ .Values.images.c8sOperator }}'
             livenessProbe:
@@ -555,6 +574,9 @@ workloadOverrides:
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-key-file=/etc/c8s/certs/tls.key
             - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+            - --cds-url={{ required "attestationReceipts.cds.url" .Values.attestationReceipts.cds.url }}
+            - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd" .Values.attestationReceipts.cdsPin.mrtd }}
+            - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1" .Values.attestationReceipts.cdsPin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2" .Values.attestationReceipts.cdsPin.rtmr2 }}
             env: []
             image: '{{ .Values.images.c8sOperator }}'
             livenessProbe:
@@ -675,6 +697,9 @@ workloadOverrides:
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-key-file=/etc/c8s/certs/tls.key
             - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+            - --cds-url={{ required "attestationReceipts.cds.url" .Values.attestationReceipts.cds.url }}
+            - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd" .Values.attestationReceipts.cdsPin.mrtd }}
+            - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1" .Values.attestationReceipts.cdsPin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2" .Values.attestationReceipts.cdsPin.rtmr2 }}
             env: []
             image: '{{ .Values.images.c8sOperator }}'
             livenessProbe:
@@ -787,6 +812,9 @@ workloadOverrides:
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-key-file=/etc/c8s/certs/tls.key
             - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+            - --cds-url={{ required "attestationReceipts.cds.url" .Values.attestationReceipts.cds.url }}
+            - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd" .Values.attestationReceipts.cdsPin.mrtd }}
+            - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1" .Values.attestationReceipts.cdsPin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2" .Values.attestationReceipts.cdsPin.rtmr2 }}
             env: []
             image: '{{ .Values.images.c8sOperator }}'
             livenessProbe:

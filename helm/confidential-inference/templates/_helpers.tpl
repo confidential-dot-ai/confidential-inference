@@ -38,6 +38,9 @@ app.kubernetes.io/component: {{ .component }}
     - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
     - --mesh-identity-key-file=/etc/c8s/certs/tls.key
     - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+    {{- if .root.Values.attestationReceipts.cdsRoutes }}
+    {{- include "confidential-inference.cdsRouteArgs" .root | nindent 4 }}
+    {{- end }}
   {{- if not .root.Values.attestationReceipts.attestationApiUrl }}
   env:
     - name: HOST_IP
@@ -153,9 +156,27 @@ layer cannot remove a key of a map, but it replaces a list.
 {{- $_ := set $podOverride "containers" $containers -}}
 {{- end -}}
 {{- $document = mergeOverwrite (deepCopy $document) $override -}}
+{{- /* A Deployment strategy is a union: an override replaces it whole, so a
+Recreate override drops the chart's rollingUpdate. */ -}}
+{{- with dig "spec" "strategy" nil $override -}}
+{{- $_ := set $document.spec "strategy" . -}}
+{{- end -}}
 {{- end }}
 ---
 {{ toYaml $document }}
 {{ end -}}
 {{ end -}}
 {{- end -}}
+
+{{/*
+The cds-attest flags of c8s v0.56.0 and later (c8s #851): the CDS to poll the
+route manifest from, pinned by the TDX measurements of the node image. The
+operator keys come from that pinned CDS.
+*/}}
+{{- define "confidential-inference.cdsRouteArgs" -}}
+{{- $receipts := .Values.attestationReceipts -}}
+{{- $pin := $receipts.cdsPin -}}
+- --cds-url={{ required "attestationReceipts.cds.url is required with cdsRoutes" $receipts.cds.url }}
+- --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd is required with cdsRoutes" $pin.mrtd }}
+- --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1 is required with cdsRoutes" $pin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2 is required with cdsRoutes" $pin.rtmr2 }}
+{{- end }}

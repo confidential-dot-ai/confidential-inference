@@ -87,6 +87,36 @@ def check_cds_policy_pins(url_only: Gateway) -> None:
         helm("template", "example", str(CHART), *NEUTRAL_MODE, *files, success=False)
 
 
+def check_cds_routes() -> None:
+    """With cdsRoutes (c8s v0.56.0+), every cds-attest sidecar polls CDS for
+    the route manifest and pins it; an empty pin fails the render."""
+    url = ("--set", "attestationReceipts.cds.url=https://c8s-cds.c8s-system.svc:8443")
+    helm("template", "example", str(CHART), *NEUTRAL_MODE, *url,
+         "--set", "attestationReceipts.cdsRoutes=true", success=False)
+    pin = ("--set", "attestationReceipts.cdsPin.mrtd=" + "a" * 96,
+           "--set", "attestationReceipts.cdsPin.rtmr1=" + "b" * 96,
+           "--set", "attestationReceipts.cdsPin.rtmr2=" + "c" * 96)
+    sidecars = [container for item in render(*url, *pin, "--set", "attestationReceipts.cdsRoutes=true")
+                if item["kind"] in ("Deployment", "StatefulSet")
+                for container in item["spec"]["template"]["spec"]["containers"] if container["name"] == "cds-attest"]
+    assert sidecars
+    for sidecar in sidecars:
+        assert sidecar["args"][-3:] == ["--cds-url=https://c8s-cds.c8s-system.svc:8443",
+                                        "--cds-measurements=" + "a" * 96,
+                                        f"--cds-rtmrs=1={'b' * 96},2={'c' * 96}"]
+
+
+def check_override_replaces_strategy() -> None:
+    """A Recreate override drops the chart's rollingUpdate, which the API server refuses with Recreate."""
+    with tempfile.TemporaryDirectory() as directory:
+        values = Path(directory) / "values.yaml"
+        values.write_text(yaml.safe_dump({"workloadOverridesEnabled": True, "workloadOverrides": {
+            "Deployment/sglang-router": {"spec": {"strategy": {"type": "Recreate"}}}}}))
+        router = next(item for item in render("-f", str(values))
+                      if item["kind"] == "Deployment" and item["metadata"]["name"] == "sglang-router")
+    assert router["spec"]["strategy"] == {"type": "Recreate"}
+
+
 def check_mesh_tls_listener() -> None:
     """The gateway serves the c8s router over TLS on 9444 with the injected
     mesh certificate, beside the plaintext 9443, unless meshTls is off."""
@@ -702,6 +732,8 @@ def main() -> None:
          "--set", "stagingValidation.enabled=true", success=False)
 
     check_mesh_tls_listener()
+    check_cds_routes()
+    check_override_replaces_strategy()
     print("Helm neutral-default and safety tests passed.")
 
 

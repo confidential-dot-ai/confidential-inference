@@ -825,9 +825,11 @@ def build(
     policy = read_allowlist_policy(profile.policy, tag)
     values = release_profiles.read_values(profile)
     require(isinstance(values, dict) and bool(values), "the profile values are not a mapping")
+    node = node_measurements(release_profiles.node_manifest(profile), spec)
     overlay = {
         "images": release_images(values, publication, base),
-        "attestationReceipts": {"releaseId": release_profiles.workload_release(tag)},
+        # cds-attest pins CDS, which runs on the pinned node image (c8s #851).
+        "attestationReceipts": {"releaseId": release_profiles.workload_release(tag), "cdsPin": node["tdx"]},
     }
     overlay_bytes = yaml.safe_dump(overlay, sort_keys=True).encode()
     values = release_profiles.merge_values(values, overlay)
@@ -869,7 +871,6 @@ def build(
     require(lock.get("tag") == spec["c8s"]["release"], "the source lock tag differs from c8s.release")
     node_reference = f"{spec['c8s']['nodeImage']['reference']}@{spec['c8s']['nodeImage']['digest']}"
     require(lock["nodeImage"] == node_reference, "the source lock node image differs from c8s.nodeImage")
-    node = node_measurements(release_profiles.node_manifest(profile), spec)
     named_images = image_names(values, images)
     publication = publication_binding(publication_bytes, publication, named_images)
     transition_binding = None
