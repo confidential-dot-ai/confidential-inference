@@ -68,8 +68,16 @@ REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 
 @functools.cache
 def rendered(profile) -> list[dict]:
-    """The chart rendered with the profile values and its policy settings. Do not change it."""
-    return MAN.render_chart(MAN.CHART, profile, MAN.read_allowlist_policy(profile.policy)["chart"], OVERLAY)
+    """The chart rendered with the profile values and its policy settings. Do not change it.
+
+    The overlay adds the CDS pin of the profile's node image, as the release build does.
+    """
+    overlay = yaml.safe_load(OVERLAY.read_text())
+    overlay["attestationReceipts"] = {"cdsPin": node_pin(profile)}
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "release-values.yaml"
+        path.write_text(yaml.safe_dump(overlay))
+        return MAN.render_chart(MAN.CHART, profile, MAN.read_allowlist_policy(profile.policy)["chart"], path)
 
 
 def publication(images: dict[str, str], *, commit: str = "b" * 40, base_ref: str = "v0.13.28-rc.2",
@@ -156,6 +164,11 @@ def staging_allowlist(c8s: Path) -> bytes:
     staging profile moves to another c8s release.
     """
     return build_staging(publication(published_release_images()), c8s=c8s)["allowlist.json"]
+
+
+def node_pin(profile) -> dict[str, str]:
+    """The CDS pin that the release build writes: the TDX measurements of the node image."""
+    return MAN.node_measurements(PROFILES.node_manifest(profile), MAN.read_spec(profile))["tdx"]
 
 
 def rendered_workers(profile) -> list[dict]:
@@ -652,7 +665,7 @@ class ManifestTests(unittest.TestCase):
         manifest = json.loads(files["release-bundle.json"])
         self.assertEqual(manifest["release"], {"name": "v0.14.9-staging", "environment": "staging"})
         self.assertEqual(yaml.safe_load(files["release-values.yaml"])["attestationReceipts"],
-                         {"releaseId": "v0.14.9-staging"})
+                         {"releaseId": "v0.14.9-staging", "cdsPin": node_pin(STAGING)})
         for tag in ("v0.14.9-rc.1", "v0.14.9-staging.1", "staging"):
             with self.subTest(tag=tag), self.assertRaisesRegex(MAN.ManifestError, "no release profile"):
                 build_staging(publication(published_release_images()), tag=tag)
@@ -739,7 +752,7 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(manifest["imagePublication"]["sourceCommit"], "b" * 40)
         self.assertEqual(yaml.safe_load(files["release-values.yaml"]), {
             "images": RELEASE_IMAGES,
-            "attestationReceipts": {"releaseId": "v0.14.2-staging"},
+            "attestationReceipts": {"releaseId": "v0.14.2-staging", "cdsPin": node_pin(STAGING)},
         })
         for key, image in RELEASE_IMAGES.items():
             self.assertEqual(manifest["images"][key], image)
