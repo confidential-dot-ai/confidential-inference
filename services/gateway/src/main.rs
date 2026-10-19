@@ -11,6 +11,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use axum::middleware;
+use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use confidential_gateway::{
     GatewayConfig, TracingAuditSink,
@@ -27,7 +28,7 @@ use confidential_gateway::{
     runtime_config::MountedConfig,
     runtime_settings::GatewaySettings,
 };
-use hyper_util::rt::TokioTimer;
+use hyper_util::rt::{TokioExecutor, TokioTimer};
 
 // The gateway must never dial the router Service directly. The c8s
 // workload-proxy client owns this loopback port and provides the authenticated
@@ -49,6 +50,25 @@ struct Args {
     listen: SocketAddr,
     #[arg(long, env = "GATEWAY_METRICS_LISTEN", default_value = "0.0.0.0:9090")]
     metrics_listen: SocketAddr,
+    // The c8s router (v0.56.0 and later) dials its route backends over TLS
+    // 1.3 and requires the get-cert leaf of the named workload, so the
+    // gateway also serves the public router on this listener with the
+    // certificate c8s injects into the pod. The plaintext listener stays for
+    // older c8s routers.
+    #[arg(long, env = "GATEWAY_TLS_LISTEN")]
+    tls_listen: Option<SocketAddr>,
+    #[arg(
+        long,
+        env = "GATEWAY_TLS_CERT_FILE",
+        default_value = "/etc/c8s/certs/tls.crt"
+    )]
+    tls_cert_file: PathBuf,
+    #[arg(
+        long,
+        env = "GATEWAY_TLS_KEY_FILE",
+        default_value = "/etc/c8s/certs/tls.key"
+    )]
+    tls_key_file: PathBuf,
     #[arg(
         long,
         env = "GATEWAY_INFERENCE_URL",
@@ -327,6 +347,7 @@ async fn main() -> Result<()> {
             .unwrap_or_default();
     }
     validate_args(&args)?;
+    let limits = HttpLimits::from_args(&args)?;
     let _release_watcher = releases.as_ref().map(|config| {
         config.watch(
             confidential_gateway::release_settings::ReleaseSettings::validate,
@@ -516,27 +537,112 @@ async fn main() -> Result<()> {
         signal_handle.graceful_shutdown(Some(shutdown_grace));
     });
 
-    let mut public_server = axum_server::bind(args.listen).handle(shutdown_handle);
-    public_server
-        .http_builder()
-        .http1()
-        .timer(TokioTimer::new())
-        .header_read_timeout(Duration::from_secs(args.header_timeout_seconds))
-        .max_headers(args.maximum_headers)
-        .max_buf_size(args.maximum_header_bytes.max(8_192));
-    let h2_streams =
-        u32::try_from(args.inference_concurrency).context("convert the HTTP/2 stream limit")?;
-    let h2_header_bytes =
-        u32::try_from(args.maximum_header_bytes).context("convert the HTTP/2 header limit")?;
-    public_server
-        .http_builder()
-        .http2()
-        .max_concurrent_streams(h2_streams)
-        .max_header_list_size(h2_header_bytes);
-    public_server
-        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+    let mut public_server = axum_server::bind(args.listen).handle(shutdown_handle.clone());
+    limits.apply(public_server.http_builder());
+    let plaintext = public_server.serve(
+        app.clone()
+            .into_make_service_with_connect_info::<SocketAddr>(),
+    );
+    let Some(tls_listen) = args.tls_listen else {
+        return plaintext.await.context("serve the public gateway");
+    };
+    let tls_config = RustlsConfig::from_pem_file(&args.tls_cert_file, &args.tls_key_file)
         .await
-        .context("serve the public gateway")
+        .context("read the mesh TLS certificate and key")?;
+    tokio::spawn(reload_tls_certificate(
+        tls_config.clone(),
+        args.tls_cert_file.clone(),
+        args.tls_key_file.clone(),
+        TLS_RELOAD_INTERVAL,
+    ));
+    tracing::info!(listen = %tls_listen, "the gateway serves TLS with the mesh certificate");
+    let mut tls_server = axum_server::bind_rustls(tls_listen, tls_config).handle(shutdown_handle);
+    limits.apply(tls_server.http_builder());
+    let tls = tls_server.serve(app.into_make_service_with_connect_info::<SocketAddr>());
+    // Either listener stopping ends the process; Kubernetes restarts it.
+    tokio::try_join!(
+        async { plaintext.await.context("serve the public gateway") },
+        async { tls.await.context("serve the public gateway over TLS") },
+    )?;
+    Ok(())
+}
+
+/// HTTP limits shared by the plaintext and the TLS listener.
+struct HttpLimits {
+    header_timeout: Duration,
+    maximum_headers: usize,
+    maximum_buffer: usize,
+    h2_streams: u32,
+    h2_header_bytes: u32,
+}
+
+impl HttpLimits {
+    fn from_args(args: &Args) -> Result<Self> {
+        Ok(Self {
+            header_timeout: Duration::from_secs(args.header_timeout_seconds),
+            maximum_headers: args.maximum_headers,
+            maximum_buffer: args.maximum_header_bytes.max(8_192),
+            h2_streams: u32::try_from(args.inference_concurrency)
+                .context("convert the HTTP/2 stream limit")?,
+            h2_header_bytes: u32::try_from(args.maximum_header_bytes)
+                .context("convert the HTTP/2 header limit")?,
+        })
+    }
+
+    fn apply(&self, builder: &mut hyper_util::server::conn::auto::Builder<TokioExecutor>) {
+        builder
+            .http1()
+            .timer(TokioTimer::new())
+            .header_read_timeout(self.header_timeout)
+            .max_headers(self.maximum_headers)
+            .max_buf_size(self.maximum_buffer);
+        builder
+            .http2()
+            .max_concurrent_streams(self.h2_streams)
+            .max_header_list_size(self.h2_header_bytes);
+    }
+}
+
+const TLS_RELOAD_INTERVAL: Duration = Duration::from_secs(30);
+
+fn modified(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+}
+
+/// Reload the mesh certificate when get-cert renews it. A failed reload
+/// keeps the certificate in use, and `seen` does not advance, so the next
+/// tick retries. That retry matters: get-cert writes the key and then the
+/// certificate, each atomically, so a tick between the two writes sees a
+/// new key with the old certificate and fails. c8s signals only nginx on
+/// renewal, so the gateway polls. The plaintext listener and this one stay
+/// side by side only until production runs a c8s router of v0.56.0 or later.
+async fn reload_tls_certificate(
+    config: RustlsConfig,
+    cert: PathBuf,
+    key: PathBuf,
+    interval: Duration,
+) {
+    let mut seen = (modified(&cert), modified(&key));
+    let mut tick = tokio::time::interval(interval);
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+        let now = (modified(&cert), modified(&key));
+        if now == seen {
+            continue;
+        }
+        match config.reload_from_pem_file(&cert, &key).await {
+            Ok(()) => {
+                tracing::info!("the gateway reloaded the mesh TLS certificate");
+                seen = now;
+            }
+            Err(error) => {
+                tracing::error!(%error, "the gateway could not reload the mesh TLS certificate");
+            }
+        }
+    }
 }
 
 async fn wait_for_shutdown_signal() {
@@ -815,7 +921,10 @@ fn validate_args(args: &Args) -> Result<()> {
     {
         bail!("DEPLOYMENT_ENVIRONMENT must be a DNS label");
     }
-    if args.listen.port() != 9443 || args.metrics_listen.port() != 9090 {
+    if args.listen.port() != 9443
+        || args.metrics_listen.port() != 9090
+        || args.tls_listen.is_some_and(|listen| listen.port() != 9444)
+    {
         bail!("the gateway listeners do not match the Kubernetes port contract");
     }
     if !args.allow_direct_inference_url && args.inference_url != INFERENCE_UPSTREAM_URL {
@@ -1142,6 +1251,9 @@ mod tests {
             runtime_config_file: None,
             listen: "0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()),
             metrics_listen: "0.0.0.0:9090".parse().unwrap_or_else(|_| unreachable!()),
+            tls_listen: None,
+            tls_cert_file: PathBuf::from("/etc/c8s/certs/tls.crt"),
+            tls_key_file: PathBuf::from("/etc/c8s/certs/tls.key"),
             inference_url: INFERENCE_UPSTREAM_URL.to_owned(),
             allow_direct_inference_url: false,
             model: "deepseek-ai/DeepSeek-V4-Flash-0731".to_owned(),
@@ -1205,6 +1317,92 @@ mod tests {
     #[test]
     fn kubernetes_ports_and_internal_upstream_pass() {
         assert!(validate_args(&args()).is_ok());
+    }
+
+    fn write_certificate(directory: &Path, name: &str) -> Result<Vec<u8>> {
+        let certificate = rcgen::generate_simple_self_signed(vec![name.to_owned()])?;
+        std::fs::write(directory.join("tls.crt"), certificate.cert.pem())?;
+        std::fs::write(
+            directory.join("tls.key"),
+            certificate.signing_key.serialize_pem(),
+        )?;
+        Ok(certificate.cert.der().to_vec())
+    }
+
+    async fn served_certificate(port: u16) -> Result<Vec<u8>> {
+        // The router pins the leaf itself, so the client here only reads it.
+        let client = reqwest::Client::builder()
+            .tls_danger_accept_invalid_certs(true)
+            .tls_version_min(reqwest::tls::Version::TLS_1_3)
+            .tls_info(true)
+            .build()?;
+        let response = client
+            .get(format!("https://localhost:{port}/"))
+            .send()
+            .await?;
+        let info = response
+            .extensions()
+            .get::<reqwest::tls::TlsInfo>()
+            .context("no TLS info")?;
+        Ok(info
+            .peer_certificate()
+            .context("no peer certificate")?
+            .to_vec())
+    }
+
+    #[tokio::test]
+    async fn the_tls_listener_serves_and_reloads_the_mesh_certificate() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let first = write_certificate(directory.path(), "gateway-first")?;
+        let (cert, key) = (
+            directory.path().join("tls.crt"),
+            directory.path().join("tls.key"),
+        );
+        let config = RustlsConfig::from_pem_file(&cert, &key).await?;
+        tokio::spawn(reload_tls_certificate(
+            config.clone(),
+            cert.clone(),
+            key.clone(),
+            Duration::from_millis(50),
+        ));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let handle = axum_server::Handle::new();
+        let serve_handle = handle.clone();
+        tokio::spawn(async move {
+            axum_server::from_tcp_rustls(listener, config)
+                .handle(serve_handle)
+                .serve(
+                    axum::Router::new()
+                        .fallback(|| async { "ok" })
+                        .into_make_service(),
+                )
+                .await
+        });
+        assert_eq!(served_certificate(port).await?, first);
+        let second = write_certificate(directory.path(), "gateway-second")?;
+        let mut served = Vec::new();
+        for _ in 0..100 {
+            served = served_certificate(port).await?;
+            if served == second {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        handle.shutdown();
+        assert_eq!(served, second, "the renewed certificate was not served");
+        Ok(())
+    }
+
+    #[test]
+    fn the_tls_listener_must_use_its_kubernetes_port() {
+        let mut value = args();
+        value.tls_listen = Some("0.0.0.0:9444".parse().unwrap_or_else(|_| unreachable!()));
+        assert!(validate_args(&value).is_ok());
+        value.tls_listen = Some("0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()));
+        assert!(validate_args(&value).is_err());
+        value.tls_listen = Some("0.0.0.0:8443".parse().unwrap_or_else(|_| unreachable!()));
+        assert!(validate_args(&value).is_err());
     }
 
     #[test]

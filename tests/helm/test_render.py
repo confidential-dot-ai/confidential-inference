@@ -87,6 +87,31 @@ def check_cds_policy_pins(url_only: Gateway) -> None:
         helm("template", "example", str(CHART), *NEUTRAL_MODE, *files, success=False)
 
 
+def check_mesh_tls_listener() -> None:
+    """The gateway serves the c8s router over TLS on 9444 with the injected
+    mesh certificate, beside the plaintext 9443, unless meshTls is off."""
+    documents = render()
+    gateway = Gateway(documents)
+    assert gateway.env["GATEWAY_LISTEN"] == "0.0.0.0:9443"
+    assert gateway.env["GATEWAY_TLS_LISTEN"] == "0.0.0.0:9444"
+    assert {"name": "https", "containerPort": 9444} in gateway.container["ports"]
+    # The router dials the pod through the c8s-gateway Service that c8s
+    # makes, so the chart's gateway Service keeps only its plaintext port.
+    service = next(item for item in documents
+                   if item["kind"] == "Service" and item["metadata"]["name"] == "gateway")
+    assert all(port["name"] != "https" for port in service["spec"]["ports"])
+    policy = next(item for item in documents if item["kind"] == "NetworkPolicy"
+                  and item["spec"]["podSelector"].get("matchLabels", {}).get("app.kubernetes.io/component") == "gateway")
+    router_ports = [port["port"] for port in policy["spec"]["ingress"][0]["ports"]]
+    assert router_ports == [9443, 9444]
+    off = render("--set", "gateway.meshTls.enabled=false")
+    plain = Gateway(off)
+    assert "GATEWAY_TLS_LISTEN" not in plain.env
+    assert all(port["name"] != "https" for port in plain.container["ports"])
+    helm("template", "example", str(CHART), *NEUTRAL_MODE,
+         "--set", "gateway.containerPorts.tls=8443", success=False)
+
+
 def main() -> None:
     # The production release must route to a real Service and use the same
     # C8s identity in the gateway controller and its evidence sidecar.
@@ -676,6 +701,7 @@ def main() -> None:
     helm("template", "example", str(CHART), *NEUTRAL_MODE,
          "--set", "stagingValidation.enabled=true", success=False)
 
+    check_mesh_tls_listener()
     print("Helm neutral-default and safety tests passed.")
 
 

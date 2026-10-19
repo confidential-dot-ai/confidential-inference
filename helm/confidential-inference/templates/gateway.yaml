@@ -135,6 +135,10 @@ spec:
               value: 0.0.0.0:{{ .Values.gateway.containerPorts.public }}
             - name: GATEWAY_METRICS_LISTEN
               value: 0.0.0.0:{{ .Values.gateway.containerPorts.metrics }}
+            {{- if .Values.gateway.meshTls.enabled }}
+            - name: GATEWAY_TLS_LISTEN
+              value: 0.0.0.0:{{ .Values.gateway.containerPorts.tls }}
+            {{- end }}
             - name: GATEWAY_INFERENCE_URL
               {{- if .Values.namedWorkloadProxy.enabled }}
               value: http://127.0.0.1:30001
@@ -272,6 +276,10 @@ spec:
               containerPort: {{ .Values.gateway.containerPorts.public }}
             - name: metrics
               containerPort: {{ .Values.gateway.containerPorts.metrics }}
+            {{- if .Values.gateway.meshTls.enabled }}
+            - name: https
+              containerPort: {{ .Values.gateway.containerPorts.tls }}
+            {{- end }}
           resources:
             requests:
               cpu: {{ .Values.gateway.resources.cpu | quote }}

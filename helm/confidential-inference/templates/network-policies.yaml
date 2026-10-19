@@ -42,6 +42,9 @@ spec:
               app.kubernetes.io/name: {{ .Values.c8s.frontDoorPodLabelName }}
       ports:
         - {protocol: TCP, port: {{ .Values.gateway.containerPorts.public }}}
+        {{- if .Values.gateway.meshTls.enabled }}
+        - {protocol: TCP, port: {{ .Values.gateway.containerPorts.tls }}}
+        {{- end }}
     - from:
         - podSelector:
             matchLabels:

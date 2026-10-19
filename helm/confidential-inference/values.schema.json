@@ -245,8 +245,15 @@
           "additionalProperties": false,
           "properties": {
             "public": {"const": 9443},
-            "metrics": {"const": 9090}
+            "metrics": {"const": 9090},
+            "tls": {"const": 9444}
           }
+        },
+        "meshTls": {
+          "type": "object",
+          "required": ["enabled"],
+          "additionalProperties": false,
+          "properties": {"enabled": {"type": "boolean"}}
         },
         "c8sSecrets": {
           "type": "object",
