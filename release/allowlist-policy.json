@@ -14,8 +14,8 @@
   },
   "workloads": [
     {
-      "name": "gateway-{release}",
-      "controller": "Deployment/gateway-{release}",
+      "name": "gateway",
+      "controller": "Deployment/gateway",
       "secretReads": [
         "/confidential-inference/gateway/api-key-pepper"
       ]
