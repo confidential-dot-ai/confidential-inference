@@ -373,9 +373,11 @@ def read_cdi(policy: dict[str, Any], node_image: str) -> dict[str, Any] | None:
         raise GenerationError(f"{record['input']} records a different driver version")
     if node_image not in value.get("nodeImages", []):
         raise GenerationError(f"{record['input']} does not hold for the node image {node_image}")
+    # A secrets grant admits a host file only as a read-only nodeRootFile rule (c8s #936).
     for rule in value["mounts"]:
-        if rule.get("kind") != "host" or not rule.get("source") or not rule.get("destination"):
-            raise GenerationError(f"{record['input']} has a mount that is not an exact host rule")
+        if (rule.get("kind") != "nodeRootFile" or rule.get("readOnly") is not True
+                or not rule.get("source") or not rule.get("destination")):
+            raise GenerationError(f"{record['input']} has a mount that is not a read-only nodeRootFile rule")
     return value
 
 
