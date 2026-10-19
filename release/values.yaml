@@ -196,6 +196,10 @@ workloadOverrides:
               value: 0.0.0.0:9443
             - name: GATEWAY_METRICS_LISTEN
               value: 0.0.0.0:9090
+            # The c8s v0.56.0+ router dials the gateway over TLS with the
+            # get-cert leaf in /etc/c8s/certs (#172).
+            - name: GATEWAY_TLS_LISTEN
+              value: 0.0.0.0:9444
             - name: GATEWAY_RUNTIME_CONFIG_FILE
               value: /mnt/c8s-data/runtime/settings.json
             - name: GATEWAY_ROUTER_NAMESPACE
@@ -274,6 +278,9 @@ workloadOverrides:
               protocol: TCP
             - containerPort: 9090
               name: metrics
+              protocol: TCP
+            - containerPort: 9444
+              name: https
               protocol: TCP
             readinessProbe:
               failureThreshold: 3
