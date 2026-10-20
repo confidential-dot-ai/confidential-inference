@@ -346,6 +346,27 @@ class WorkloadAttestationFixtureTests(unittest.TestCase):
         )
         self.assertEqual(fixture["gpuEvidence"]["status"], "not-exposed-by-c8s")
 
+    def test_v3_metadata_fixture_is_valid(self):
+        fixture = load(FIXTURES / "workload-attestation.v3.valid.json")
+        validate(fixture, self.schema)
+        self.assertEqual(set(fixture), {"schemaVersion", "release", "c8s"})
+        self.assertEqual(set(fixture["c8s"]), {"activeAllowlist", "discovery", "operatorKeys"})
+
+    def test_v3_rejects_removed_fields_and_missing_sources(self):
+        fixture = load(FIXTURES / "workload-attestation.v3.valid.json")
+        for field in ("nonce", "receipts", "scope", "operationalStatus", "gpuEvidence", "tls"):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(fixture)
+                changed[field] = []
+                with self.assertRaises(jsonschema.ValidationError):
+                    validate(changed, self.schema)
+        for field in ("activeAllowlist", "discovery", "operatorKeys"):
+            with self.subTest(missing=field):
+                changed = copy.deepcopy(fixture)
+                del changed["c8s"][field]
+                with self.assertRaises(jsonschema.ValidationError):
+                    validate(changed, self.schema)
+
 
 class GatewayInferenceContractTests(unittest.TestCase):
     """Checks contracts/gateway-inference.openapi.json against the gateway source."""

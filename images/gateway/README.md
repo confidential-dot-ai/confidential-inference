@@ -15,15 +15,19 @@ images/gateway/build.sh \
 
 The local command verifies the application build. An OCI digest can also depend on the OCI
 builder and layer timestamps. The release workflow pins Buildx and BuildKit. It builds two
-clean OCI archives and compares their Linux AMD64 platform manifests. It then builds the
-published image and requires the published platform digest to equal the verified digest.
+clean OCI archives and compares their Linux AMD64 platform manifests.
+It publishes the audited OCI archive. The published platform digest must
+equal the verified digest.
 
-Use the `V0 image and release builds` workflow with `publish: true` and
-`publish_target: gateway` to publish a gateway. Do not publish a release image with an
-unverified local command.
+Use the approved `Release images` workflow in
+[release-images.yml](../../.github/workflows/release-images.yml) on public
+`main`. Set `publish` and `rebuild_audit` to `true` and provide the reviewed
+`base_ref` and `base_ref_commit`. The workflow selects affected images.
+See [release publication](../../release/README.md) for the full sequence.
+
+The local command above is for development tests. A production-ready candidate
+must use images from the approved build and signed release pipeline.
 
 The final image runs one binary as UID and GID `65532`. Kubernetes supplies all configuration and writable mounts.
 
 The image contains no shell, SSH server, init system, cloud helper, or overlay network client. The gateway uses high pod ports.
-
-The workflow builds this image after all source files exist. The workflow does not publish the gateway image yet.

@@ -25,6 +25,16 @@ class AffectedReleaseImagesTests(unittest.TestCase):
     def test_image_change_selects_only_its_image(self) -> None:
         self.assertEqual(names(["images/gateway/Dockerfile"]), ["gateway"])
         self.assertEqual(names(["images/sglang/Dockerfile"]), ["sglang"])
+        self.assertEqual(names(["images/rollout-client/Dockerfile"]), ["rollout-client"])
+
+    def test_router_patch_and_source_pin_do_not_select_workers(self) -> None:
+        self.assertEqual(names(['images/sglang-router/patches/worker-withdrawal.patch',
+                                'images/sglang-router/source.lock',
+                                'images/sglang-router/canonicalize_wheel.py']), ['sglang-router'])
+
+    def test_log_pipeline_selects_only_log_collector(self) -> None:
+        self.assertEqual(names(["images/log-collector/config.alloy"]), ["log-collector"])
+        self.assertEqual(names(["images/log-collector/Dockerfile"]), ["log-collector"])
 
     def test_shared_rust_input_selects_both_rust_images(self) -> None:
         self.assertEqual(

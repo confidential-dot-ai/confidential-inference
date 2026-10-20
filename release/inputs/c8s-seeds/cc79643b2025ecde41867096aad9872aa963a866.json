@@ -1,0 +1,622 @@
+{
+  "sourceCommit": "cc79643b2025ecde41867096aad9872aa963a866",
+  "coreImages": [
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:44ffbfa776980a42aeb543466703217a65d35bd86ed615247fa985c403dca4fd",
+    "ghcr.io/confidential-dot-ai/cds@sha256:665a45b14f78e7eaef70339404ed7a39e923251d5301264a30196cf3ea742cfe",
+    "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:ee76dc62cc8ffdbdf042a91892bcf44c3e99bcfb493156ab2a8e568465adf7ce",
+    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:b3dea5be98c97423f67068c9900b625dced262b300a1461daf7fa602648abb63",
+    "ghcr.io/confidential-dot-ai/volumed@sha256:367fbfd35516c18278acb12b87b28d5079aa8f9ab41e312f4d0ce64f67214ad7",
+    "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
+  ],
+  "hardwarePlatform": "tdx",
+  "kubeVersion": "v1.36.4",
+  "helmVersion": "v3.14.4",
+  "allowlist": {
+    "schema": "c8s.allowlist/v1",
+    "workloads": {
+      "armtls-mesh-ee76dc62cc8f": {
+        "containers": [
+          {
+            "args": {
+              "policy": "any"
+            },
+            "command": {
+              "argv": [
+                "/app/c8s",
+                "armtls-mesh"
+              ],
+              "policy": "exact"
+            },
+            "digest": "sha256:ee76dc62cc8ffdbdf042a91892bcf44c3e99bcfb493156ab2a8e568465adf7ce",
+            "env": {
+              "policy": "any"
+            },
+            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:ee76dc62cc8ffdbdf042a91892bcf44c3e99bcfb493156ab2a8e568465adf7ce",
+            "mounts": {
+              "policy": "any"
+            }
+          }
+        ],
+        "initContainers": [],
+        "label": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:ee76dc62cc8ffdbdf042a91892bcf44c3e99bcfb493156ab2a8e568465adf7ce"
+      },
+      "busybox-fd8d9aa63ba2": {
+        "containers": [
+          {
+            "args": {
+              "policy": "any"
+            },
+            "command": {
+              "argv": [
+                "/bin/sh",
+                "/script/setup"
+              ],
+              "policy": "exact"
+            },
+            "digest": "sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d",
+            "image": "busybox@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d",
+            "mounts": {
+              "policy": "any"
+            }
+          },
+          {
+            "args": {
+              "policy": "any"
+            },
+            "command": {
+              "argv": [
+                "/bin/sh",
+                "/script/teardown"
+              ],
+              "policy": "exact"
+            },
+            "digest": "sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d",
+            "image": "busybox@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d",
+            "mounts": {
+              "policy": "any"
+            }
+          }
+        ],
+        "initContainers": [],
+        "label": "busybox@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d"
+      },
+      "c8s-operator-44ffbfa77698": {
+        "containers": [
+          {
+            "args": {
+              "policy": "any"
+            },
+            "command": {
+              "argv": [
+                "/c8s"
+              ],
+              "policy": "exact"
+            },
+            "digest": "sha256:44ffbfa776980a42aeb543466703217a65d35bd86ed615247fa985c403dca4fd",
+            "env": {
+              "policy": "any"
+            },
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:44ffbfa776980a42aeb543466703217a65d35bd86ed615247fa985c403dca4fd",
+            "mounts": {
+              "policy": "any"
+            }
+          }
+        ],
+        "initContainers": [],
+        "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:44ffbfa776980a42aeb543466703217a65d35bd86ed615247fa985c403dca4fd"
+      },
+      "cds-665a45b14f78": {
+        "containers": [
+          {
+            "args": {
+              "policy": "any"
+            },
+            "command": {
+              "argv": [
+                "/c8s",
+                "cds"
+              ],
+              "policy": "exact"
+            },
+            "digest": "sha256:665a45b14f78e7eaef70339404ed7a39e923251d5301264a30196cf3ea742cfe",
+            "env": {
+              "policy": "any"
+            },
+            "image": "ghcr.io/confidential-dot-ai/cds@sha256:665a45b14f78e7eaef70339404ed7a39e923251d5301264a30196cf3ea742cfe",
+            "mounts": {
+              "policy": "any"
+            }
+          }
+        ],
+        "initContainers": [],
+        "label": "ghcr.io/confidential-dot-ai/cds@sha256:665a45b14f78e7eaef70339404ed7a39e923251d5301264a30196cf3ea742cfe"
+      },
+      "nginx-unprivileged-3af0c10d960c": {
+        "containers": [
+          {
+            "args": {
+              "policy": "any"
+            },
+            "command": {
+              "argv": [
+                "/docker-entrypoint.sh",
+                "nginx"
+              ],
+              "policy": "exact"
+            },
+            "digest": "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
+            "env": {
+              "policy": "any"
+            },
+            "image": "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
+            "mounts": {
+              "policy": "any"
+            }
+          }
+        ],
+        "initContainers": [],
+        "label": "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
+      }
+    }
+  },
+  "nativeRouter": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/instance": "c8s",
+        "app.kubernetes.io/managed-by": "Helm",
+        "app.kubernetes.io/name": "router",
+        "helm.sh/chart": "router-0.5.0"
+      },
+      "name": "c8s-router",
+      "namespace": "c8s-system"
+    },
+    "spec": {
+      "replicas": 1,
+      "selector": {
+        "matchLabels": {
+          "app.kubernetes.io/instance": "c8s",
+          "app.kubernetes.io/name": "router"
+        }
+      },
+      "strategy": {
+        "type": "Recreate"
+      },
+      "template": {
+        "metadata": {
+          "annotations": {
+            "checksum/nginx-config": "9717306fcbf9e33c8f8eaaf101f6a5a2212a2ec7132c973109f6522c6c1aceaf"
+          },
+          "labels": {
+            "app.kubernetes.io/instance": "c8s",
+            "app.kubernetes.io/name": "router"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "image": "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
+              "imagePullPolicy": "Never",
+              "livenessProbe": {
+                "httpGet": {
+                  "path": "/healthz",
+                  "port": "https",
+                  "scheme": "HTTPS"
+                },
+                "initialDelaySeconds": 10,
+                "periodSeconds": 30
+              },
+              "name": "nginx",
+              "ports": [
+                {
+                  "containerPort": 8443,
+                  "hostPort": 443,
+                  "name": "https",
+                  "protocol": "TCP"
+                },
+                {
+                  "containerPort": 8080,
+                  "hostPort": 80,
+                  "name": "http",
+                  "protocol": "TCP"
+                }
+              ],
+              "readinessProbe": {
+                "httpGet": {
+                  "path": "/healthz",
+                  "port": "https",
+                  "scheme": "HTTPS"
+                },
+                "initialDelaySeconds": 5,
+                "periodSeconds": 10
+              },
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true,
+                "runAsGroup": 101,
+                "runAsNonRoot": true,
+                "runAsUser": 101
+              },
+              "volumeMounts": [
+                {
+                  "mountPath": "/tls",
+                  "name": "tls-certs",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/etc/c8s-acme-tls",
+                  "name": "acme-tls",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/discovery",
+                  "name": "discovery",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/etc/nginx/nginx.conf",
+                  "name": "nginx-config",
+                  "readOnly": true,
+                  "subPath": "nginx.conf"
+                },
+                {
+                  "mountPath": "/run/c8s-node",
+                  "name": "node-config",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/etc/nginx/c8s",
+                  "name": "nginx-config",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/var/cache/nginx",
+                  "name": "nginx-cache"
+                },
+                {
+                  "mountPath": "/tmp",
+                  "name": "nginx-tmp"
+                }
+              ]
+            },
+            {
+              "args": [
+                "cds-attest",
+                "--host=127.0.0.1",
+                "--port=8800",
+                "--platform=tdx",
+                "--generation=",
+                "--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
+                "--front-door-mode-file=/run/c8s-node/router/front-door-mode",
+                "--serving-cert-file=/tls/cert.pem",
+                "--acme-serving-cert-file=/etc/c8s-acme-tls/cert.pem",
+                "--mesh-identity-cert-file=/tls/cert.pem",
+                "--mesh-identity-key-file=/tls/key.pem",
+                "--mesh-identity-ca-file=/tls/ca.pem",
+                "--upstream-file=/run/c8s-node/router/upstream"
+              ],
+              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:44ffbfa776980a42aeb543466703217a65d35bd86ed615247fa985c403dca4fd",
+              "imagePullPolicy": "Never",
+              "name": "cds-attest",
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true,
+                "runAsNonRoot": true
+              },
+              "volumeMounts": [
+                {
+                  "mountPath": "/tls",
+                  "name": "tls-certs",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/var/run/nri-image-policy",
+                  "name": "attestation-api-socket",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/etc/c8s-acme-tls",
+                  "name": "acme-tls",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/run/c8s-node",
+                  "name": "node-config",
+                  "readOnly": true
+                }
+              ]
+            },
+            {
+              "args": [
+                "allowlist-proxy",
+                "--host=127.0.0.1",
+                "--port=8801",
+                "--cds-url=https://c8s-cds.c8s-system.svc:8443",
+                "--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
+                "--image-policy-file=/run/c8s-node/cds.json"
+              ],
+              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:44ffbfa776980a42aeb543466703217a65d35bd86ed615247fa985c403dca4fd",
+              "imagePullPolicy": "Never",
+              "name": "allowlist-proxy",
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true,
+                "runAsNonRoot": true
+              },
+              "volumeMounts": [
+                {
+                  "mountPath": "/var/run/nri-image-policy",
+                  "name": "attestation-api-socket",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/run/c8s-node",
+                  "name": "node-config",
+                  "readOnly": true
+                }
+              ]
+            }
+          ],
+          "initContainers": [
+            {
+              "args": [
+                "get-cert",
+                "--cds-url=https://c8s-cds.c8s-system.svc:8443",
+                "--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
+                "--san-file=/run/c8s-node/tls-san",
+                "--out=/tls/cert.pem",
+                "--key-out=/tls/key.pem",
+                "--ca-out=/tls/ca.pem",
+                "--initial-retry-timeout=2m",
+                "--renew-interval=1h",
+                "--reload-nginx=true",
+                "--continue-on-initial-error",
+                "--discovery-out=/discovery/discovery.json",
+                "--discovery-cds-cert-url=/.well-known/cds-cert.pem",
+                "--discovery-public-tls-mode-file=/run/c8s-node/router/front-door-mode",
+                "--discovery-public-tls-hostnames-file=/run/c8s-node/router/hostnames",
+                "--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
+                "--ca-watch-interval=1m",
+                "--image-policy-file=/run/c8s-node/cds.json",
+                "--workload-claims"
+              ],
+              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:44ffbfa776980a42aeb543466703217a65d35bd86ed615247fa985c403dca4fd",
+              "imagePullPolicy": "Never",
+              "name": "c8s-cert",
+              "restartPolicy": "Always",
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true,
+                "runAsGroup": 101,
+                "runAsNonRoot": true,
+                "runAsUser": 101,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "volumeMounts": [
+                {
+                  "mountPath": "/tls",
+                  "name": "tls-certs"
+                },
+                {
+                  "mountPath": "/discovery",
+                  "name": "discovery"
+                },
+                {
+                  "mountPath": "/var/run/nri-image-policy",
+                  "name": "attestation-api-socket",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/run/c8s-node",
+                  "name": "node-config",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/run/c8s/workload-claims",
+                  "name": "workload-claims",
+                  "readOnly": true
+                }
+              ]
+            },
+            {
+              "command": [
+                "/c8s",
+                "probe-file",
+                "--wait",
+                "--timeout=3m",
+                "/tls/cert.pem"
+              ],
+              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:44ffbfa776980a42aeb543466703217a65d35bd86ed615247fa985c403dca4fd",
+              "imagePullPolicy": "Never",
+              "name": "c8s-cert-wait",
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true,
+                "runAsGroup": 101,
+                "runAsNonRoot": true,
+                "runAsUser": 101,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "volumeMounts": [
+                {
+                  "mountPath": "/tls",
+                  "name": "tls-certs"
+                }
+              ]
+            },
+            {
+              "args": [
+                "acme",
+                "--domains-file=/run/c8s-node/router/hostnames",
+                "--acme-email-file=/run/c8s-node/router/acme-email",
+                "--acme-directory-url-file=/run/c8s-node/router/acme-directory-url",
+                "--standby-cert-dir=/tls",
+                "--challenge-port=8402",
+                "--http-port=8080",
+                "--cert-dir=/etc/c8s-acme-tls",
+                "--ready-port=8403"
+              ],
+              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:44ffbfa776980a42aeb543466703217a65d35bd86ed615247fa985c403dca4fd",
+              "imagePullPolicy": "Never",
+              "name": "acme",
+              "ports": [
+                {
+                  "containerPort": 8403,
+                  "name": "acme-ready"
+                }
+              ],
+              "restartPolicy": "Always",
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true,
+                "runAsGroup": 101,
+                "runAsNonRoot": true,
+                "runAsUser": 101,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "startupProbe": {
+                "failureThreshold": 60,
+                "httpGet": {
+                  "path": "/readyz",
+                  "port": "acme-ready"
+                },
+                "periodSeconds": 1
+              },
+              "volumeMounts": [
+                {
+                  "mountPath": "/etc/c8s-acme-tls",
+                  "name": "acme-tls"
+                },
+                {
+                  "mountPath": "/tls",
+                  "name": "tls-certs",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/run/c8s-node",
+                  "name": "node-config",
+                  "readOnly": true
+                }
+              ]
+            }
+          ],
+          "nodeSelector": {
+            "node-role.kubernetes.io/control-plane": "true"
+          },
+          "securityContext": {
+            "fsGroup": 101,
+            "runAsNonRoot": true,
+            "seccompProfile": {
+              "type": "RuntimeDefault"
+            },
+            "supplementalGroups": [
+              65532
+            ]
+          },
+          "shareProcessNamespace": true,
+          "volumes": [
+            {
+              "hostPath": {
+                "path": "/run/c8s-node",
+                "type": "Directory"
+              },
+              "name": "node-config"
+            },
+            {
+              "emptyDir": {
+                "medium": "Memory",
+                "sizeLimit": "1Mi"
+              },
+              "name": "tls-certs"
+            },
+            {
+              "emptyDir": {
+                "medium": "Memory",
+                "sizeLimit": "1Mi"
+              },
+              "name": "acme-tls"
+            },
+            {
+              "emptyDir": {
+                "medium": "Memory",
+                "sizeLimit": "1Mi"
+              },
+              "name": "discovery"
+            },
+            {
+              "emptyDir": {
+                "medium": "Memory",
+                "sizeLimit": "16Mi"
+              },
+              "name": "nginx-cache"
+            },
+            {
+              "emptyDir": {
+                "medium": "Memory",
+                "sizeLimit": "16Mi"
+              },
+              "name": "nginx-tmp"
+            },
+            {
+              "configMap": {
+                "name": "c8s-router-nginx"
+              },
+              "name": "nginx-config"
+            },
+            {
+              "hostPath": {
+                "path": "/var/run/nri-image-policy",
+                "type": "Directory"
+              },
+              "name": "workload-claims"
+            },
+            {
+              "hostPath": {
+                "path": "/var/run/nri-image-policy",
+                "type": "Directory"
+              },
+              "name": "attestation-api-socket"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

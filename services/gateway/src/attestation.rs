@@ -572,7 +572,9 @@ struct EvidenceResolver {
     connect_host: String,
 }
 
-fn evidence_connection(
+/// # Errors
+/// Return an error if the connection address cannot be resolved.
+pub fn evidence_connection(
     builder: reqwest::ClientBuilder,
     url: &Url,
     connect_host: &str,
@@ -750,7 +752,9 @@ fn parse_targets(targets: &str) -> Result<Vec<ReceiptTarget>, String> {
 /// The `get-cert` init container writes it to `/etc/c8s/certs/ca.crt`. An
 /// absent file yields an empty list: a `WebPKI` front door needs no extra root,
 /// and the evidence client only ever ADDS these roots.
-fn mesh_ca_certificates() -> Result<Vec<reqwest::Certificate>, String> {
+/// # Errors
+/// Return an error if the optional CA file cannot be read or parsed.
+pub fn mesh_ca_certificates() -> Result<Vec<reqwest::Certificate>, String> {
     let Ok(mesh_ca_pem) = std::fs::read("/etc/c8s/certs/ca.crt") else {
         return Ok(Vec::new());
     };
@@ -771,7 +775,9 @@ fn mesh_ca_certificates() -> Result<Vec<reqwest::Certificate>, String> {
     Ok(certificates)
 }
 
-fn parse_evidence_base_url(value: &str) -> Result<Url, String> {
+/// # Errors
+/// Return an error if the URL is not a valid HTTPS origin.
+pub fn parse_evidence_base_url(value: &str) -> Result<Url, String> {
     let url = Url::parse(value).map_err(|_| "the c8s evidence URL is invalid".to_owned())?;
     let loopback_http = url.scheme() == "http"
         && url
@@ -860,7 +866,7 @@ mod connection_tests {
     }
 }
 
-fn validate_discovery(value: &Value) -> Result<(), AttestationError> {
+pub(crate) fn validate_discovery(value: &Value) -> Result<(), AttestationError> {
     if value.get("version").and_then(Value::as_str) != Some("v1")
         || value.get("generated_at").and_then(Value::as_str).is_none()
         || value
@@ -894,7 +900,7 @@ fn validate_discovery(value: &Value) -> Result<(), AttestationError> {
     Ok(())
 }
 
-fn validate_allowlist(value: &Value, bytes: &[u8]) -> Result<Vec<u8>, AttestationError> {
+pub(crate) fn validate_allowlist(value: &Value, bytes: &[u8]) -> Result<Vec<u8>, AttestationError> {
     if value.get("schema").and_then(Value::as_str) != Some("c8s.allowlist/v1")
         || !value.get("workloads").is_some_and(Value::is_object)
     {

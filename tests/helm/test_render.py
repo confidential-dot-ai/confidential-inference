@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import tempfile
@@ -30,13 +31,218 @@ def helm(*arguments: str, success: bool = True) -> str:
     return result.stdout
 
 
+def render(*arguments: str) -> list[dict]:
+    """The documents of `helm template example CHART` with the neutral mode and arguments."""
+    output = helm("template", "example", str(CHART), *NEUTRAL_MODE, *arguments)
+    return [item for item in yaml.safe_load_all(output) if item]
+
+
+class Gateway:
+    """The gateway Deployment of rendered documents, its container, env and release identity ConfigMap."""
+
+    def __init__(self, documents: list[dict]) -> None:
+        self.deployment = next(
+            item for item in documents
+            if item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway"
+        )
+        self.container = next(
+            item for item in self.deployment["spec"]["template"]["spec"]["containers"]
+            if item["name"] == "gateway"
+        )
+        self.env = {item["name"]: item["value"] for item in self.container["env"]}
+        self.identity_data = next(
+            item for item in documents
+            if item["kind"] == "ConfigMap" and item["metadata"]["name"] == "gateway-release-identity"
+        )["data"]
+        self.identity = json.loads(self.identity_data["release-identity.json"])
+
+
+def check_cds_policy_pins(url_only: Gateway) -> None:
+    """The CDS origin and the policy paths are environment (so allowlist input);
+    the policy bytes and their pins travel in the release identity ConfigMap."""
+    url = "attestationReceipts.cds.url=https://c8s-cds.c8s-system.svc:8443"
+    assert url_only.env["GATEWAY_C8S_CDS_URL"] == "https://c8s-cds.c8s-system.svc:8443"
+    assert url_only.env["GATEWAY_C8S_IMAGE_POLICY"] == "/mnt/c8s-data/release-identity/..data/cds-image-policy.json"
+    assert url_only.env["GATEWAY_C8S_SERVED_IMAGE_POLICY"] == "/mnt/c8s-data/release-identity/..data/served-image-policy.json"
+    assert "cds-image-policy.json" not in url_only.identity_data
+    assert "cdsImagePolicySha256" not in url_only.identity
+    with tempfile.TemporaryDirectory() as directory:
+        target = Path(directory) / "target.json"
+        served = Path(directory) / "served.json"
+        target.write_text('{"target": 1}\n')
+        served.write_text('{"served": 2}\n')
+        files = (
+            "--set-file", f"attestationReceipts.cds.imagePolicy={target}",
+            "--set-file", f"attestationReceipts.cds.servedImagePolicy={served}",
+        )
+        pinned = Gateway(render("--set", url, *files))
+        assert pinned.identity_data["cds-image-policy.json"] == target.read_text()
+        assert pinned.identity_data["served-image-policy.json"] == served.read_text()
+        assert pinned.identity["cdsImagePolicySha256"] == "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+        assert pinned.identity["cdsServedImagePolicySha256"] == "sha256:" + hashlib.sha256(served.read_bytes()).hexdigest()
+        # The pins are in the file, not the environment.
+        assert "GATEWAY_C8S_IMAGE_POLICY_SHA256" not in pinned.env
+        # One document alone, or documents without the origin, is a mistake.
+        helm("template", "example", str(CHART), *NEUTRAL_MODE, "--set", url, *files[:2], success=False)
+        helm("template", "example", str(CHART), *NEUTRAL_MODE, *files, success=False)
+
+
+def check_cds_routes() -> None:
+    """With cdsRoutes (c8s v0.56.0+), every cds-attest sidecar polls CDS for
+    the route manifest and pins it; an empty pin fails the render."""
+    url = ("--set", "attestationReceipts.cds.url=https://c8s-cds.c8s-system.svc:8443")
+    helm("template", "example", str(CHART), *NEUTRAL_MODE, *url,
+         "--set", "attestationReceipts.cdsRoutes=true", success=False)
+    pin = ("--set", "attestationReceipts.cdsPin.mrtd=" + "a" * 96,
+           "--set", "attestationReceipts.cdsPin.rtmr1=" + "b" * 96,
+           "--set", "attestationReceipts.cdsPin.rtmr2=" + "c" * 96)
+    sidecars = [container for item in render(*url, *pin, "--set", "attestationReceipts.cdsRoutes=true")
+                if item["kind"] in ("Deployment", "StatefulSet")
+                for container in item["spec"]["template"]["spec"]["containers"] if container["name"] == "cds-attest"]
+    assert sidecars
+    for sidecar in sidecars:
+        assert sidecar["args"][-3:] == ["--cds-url=https://c8s-cds.c8s-system.svc:8443",
+                                        "--cds-measurements=" + "a" * 96,
+                                        f"--cds-rtmrs=1={'b' * 96},2={'c' * 96}"]
+
+
+def check_override_replaces_strategy() -> None:
+    """A Recreate override drops the chart's rollingUpdate, which the API server refuses with Recreate."""
+    with tempfile.TemporaryDirectory() as directory:
+        values = Path(directory) / "values.yaml"
+        values.write_text(yaml.safe_dump({"workloadOverridesEnabled": True, "workloadOverrides": {
+            "Deployment/sglang-router": {"spec": {"strategy": {"type": "Recreate"}}}}}))
+        router = next(item for item in render("-f", str(values))
+                      if item["kind"] == "Deployment" and item["metadata"]["name"] == "sglang-router")
+    assert router["spec"]["strategy"] == {"type": "Recreate"}
+
+
+def check_mesh_tls_listener() -> None:
+    """The gateway serves the c8s router over TLS on 9444 with the injected
+    mesh certificate, beside the plaintext 9443, unless meshTls is off."""
+    documents = render()
+    gateway = Gateway(documents)
+    assert gateway.env["GATEWAY_LISTEN"] == "0.0.0.0:9443"
+    assert gateway.env["GATEWAY_TLS_LISTEN"] == "0.0.0.0:9444"
+    assert {"name": "https", "containerPort": 9444} in gateway.container["ports"]
+    # The router dials the pod through the c8s-gateway Service that c8s
+    # makes, so the chart's gateway Service keeps only its plaintext port.
+    service = next(item for item in documents
+                   if item["kind"] == "Service" and item["metadata"]["name"] == "gateway")
+    assert all(port["name"] != "https" for port in service["spec"]["ports"])
+    policy = next(item for item in documents if item["kind"] == "NetworkPolicy"
+                  and item["spec"]["podSelector"].get("matchLabels", {}).get("app.kubernetes.io/component") == "gateway")
+    router_ports = [port["port"] for port in policy["spec"]["ingress"][0]["ports"]]
+    assert router_ports == [9443, 9444]
+    off = render("--set", "gateway.meshTls.enabled=false")
+    plain = Gateway(off)
+    assert "GATEWAY_TLS_LISTEN" not in plain.env
+    assert all(port["name"] != "https" for port in plain.container["ports"])
+    helm("template", "example", str(CHART), *NEUTRAL_MODE,
+         "--set", "gateway.containerPorts.tls=8443", success=False)
+
+
 def main() -> None:
+    # The production release must route to a real Service and use the same
+    # C8s identity in the gateway controller and its evidence sidecar.
+    production = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+        '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+        '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+        '--set', 'attestationReceipts.releaseId=v0.14.18')) if item]
+    gateway = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'gateway-v0-14-18')
+    assert gateway['spec']['template']['metadata']['annotations']['confidential.ai/cw'] == gateway['metadata']['name']
+    main_container = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'gateway')
+    gateway_environment = {item['name']: item['value'] for item in main_container['env']}
+    for name in ('GATEWAY_C8S_IMAGE_POLICY_SHA256', 'GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256',
+                 'GATEWAY_C8S_EVIDENCE_BASE_URL', 'GATEWAY_C8S_EVIDENCE_CONNECT_HOST'):
+        assert name not in gateway_environment
+    with tempfile.TemporaryDirectory() as directory:
+        target = Path(directory) / 'target.json'
+        served = Path(directory) / 'served.json'
+        target.write_text('{"target": 1}\n')
+        served.write_text('{"served": 2}\n')
+        pinned = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+            '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+            '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+            '--set', 'attestationReceipts.releaseId=v0.14.18',
+            '--set-file', f'attestationReceipts.cds.imagePolicy={target}',
+            '--set-file', f'attestationReceipts.cds.servedImagePolicy={served}')) if item]
+        trust = next(item['data'] for item in pinned if item['kind'] == 'ConfigMap'
+                     and item['metadata']['name'] == 'gateway-release-identity')
+        identity = json.loads(trust['release-identity.json'])
+        assert identity['cdsImagePolicySha256'] == 'sha256:' + hashlib.sha256(target.read_bytes()).hexdigest()
+        assert identity['cdsServedImagePolicySha256'] == 'sha256:' + hashlib.sha256(served.read_bytes()).hexdigest()
+        assert trust['cds-image-policy.json'] == target.read_text()
+        assert trust['served-image-policy.json'] == served.read_text()
+        pinned_gateway = next(item for item in pinned if item['kind'] == 'Deployment'
+                              and item['metadata']['name'] == gateway['metadata']['name'])
+        assert pinned_gateway['spec']['template'] == gateway['spec']['template']
+    assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://router-v0-14-18.confidential-inference.svc.cluster.local:30000'
+    evidence = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'cds-attest')
+    assert '--expected-workload='+gateway['metadata']['name'] in evidence['args']
+    service = next(d for d in production if d['kind'] == 'Service' and d['metadata']['name'] == 'router-v0-14-18')
+    router = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'router-v0-14-18')
+    assert all(router['spec']['template']['metadata']['labels'].get(k) == v for k, v in service['spec']['selector'].items())
+    # One model definition produces both views. A release metadata change
+    # must not change the pod templates or add a third gateway identity.
+    runtime_documents = render("--set", "runtimeConfig.enabled=true", "--set",
+        "attestationReceipts.releaseId=v0.14.18-transition", "--set-json",
+        'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}')
+    runtime_gateway = Gateway(runtime_documents)
+    maps = {item['metadata']['name']: item for item in runtime_documents if item['kind'] == 'ConfigMap'}
+    settings = json.loads(maps['gateway-runtime']['data']['settings.json'])
+    routes = json.loads(maps['router-model-routes']['data']['routes.json'])
+    assert settings['catalogModelIds'] == settings['inferenceModelIds'] == sorted(routes['routes'])
+    assert settings['revision'] == routes['revision'] == 1
+    assert settings['routerService'] == 'router-v0-14-18'
+    router_slot = next(item for item in runtime_documents if item['kind'] == 'Service' and item['metadata']['name'] == settings['routerService'])
+    assert router_slot['spec']['clusterIP'] == 'None'
+    assert routes['routes']['public-a'] == ['backend-a']
+    assert settings['evidence'] == {'baseUrl': 'https://api.example.invalid'}
+    assert 'GATEWAY_C8S_EVIDENCE_BASE_URL' not in runtime_gateway.env
+    assert 'GATEWAY_C8S_EVIDENCE_CONNECT_HOST' not in runtime_gateway.env
+    promoted_documents = render("--set", "runtimeConfig.enabled=true", "--set",
+        "attestationReceipts.releaseId=v0.14.18-transition", "--set-json",
+        'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}',
+        "--set", "attestationReceipts.evidenceBaseUrl=https://api.example.test",
+        "--set", "attestationReceipts.evidenceConnectHost=c8s-router.c8s-system.svc.cluster.local",
+        "--set", "runtimeConfig.revision=2")
+    promoted_maps = {item['metadata']['name']: item for item in promoted_documents if item['kind'] == 'ConfigMap'}
+    promoted_settings = json.loads(promoted_maps['gateway-runtime']['data']['settings.json'])
+    assert promoted_settings['evidence'] == {'baseUrl': 'https://api.example.test',
+        'connectHost': 'c8s-router.c8s-system.svc.cluster.local'}
+    assert promoted_settings['revision'] == 2
+    assert Gateway(promoted_documents).deployment['spec']['template'] == runtime_gateway.deployment['spec']['template']
+    assert runtime_gateway.env['GATEWAY_RUNTIME_CONFIG_FILE'] == '/mnt/c8s-data/runtime/settings.json'
+    assert runtime_gateway.env['GATEWAY_RELEASE_SELECTION_FILE'] == '/mnt/c8s-data/release-selection/releases.json'
+    for removed in ('GATEWAY_MODEL', 'GATEWAY_RELEASE_ID', 'GATEWAY_INFERENCE_CONCURRENCY',
+                    'GATEWAY_MAXIMUM_BODY_BYTES', 'GATEWAY_UPSTREAM_TIMEOUT_SECONDS'):
+        assert removed not in runtime_gateway.env
+    assert 'releaseBundleSha256' not in runtime_gateway.identity
+    assert 'gateway-release-selection' not in maps
+    assert not any('subPath' in mount for mount in runtime_gateway.container['volumeMounts'])
+    final_documents = render("--set", "runtimeConfig.enabled=true", "--set",
+        "attestationReceipts.releaseId=v0.14.18", "--set-json",
+        'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}')
+    assert Gateway(final_documents).deployment['spec']['template'] == runtime_gateway.deployment['spec']['template']
+    runtime_router = next(item for item in runtime_documents if item['kind'] == 'Deployment'
+                          and item['metadata']['name'] == 'sglang-router')
+    private_router = next(item for item in runtime_documents if item['kind'] == 'Service'
+                          and item['metadata']['name'] == 'router-v0-14-18')
+    assert private_router['spec']['clusterIP'] == 'None'
+    assert all(runtime_router['spec']['template']['metadata']['labels'].get(key) == value
+               for key, value in private_router['spec']['selector'].items())
+    final_private_router = next(item for item in final_documents if item['kind'] == 'Service'
+                                and item['metadata']['name'] == 'router-v0-14-18')
+    assert private_router == final_private_router
+    router_container = next(item for item in runtime_router['spec']['template']['spec']['containers']
+                            if item['name'] == 'sglang-router')
+    assert router_container['env'] == [{'name':'CI_ROUTER_MODEL_ROUTES_FILE',
+                                     'value':'/mnt/c8s-data/model-routes/routes.json'}]
+    assert router_container['volumeMounts'][0]['readOnly'] is True
+    assert 'subPath' not in router_container['volumeMounts'][0]
     helm("lint", str(CHART), *NEUTRAL_MODE)
-    documents = [
-        item for item in yaml.safe_load_all(
-            helm("template", "example", str(CHART), "--namespace", "inference", *NEUTRAL_MODE)
-        ) if item
-    ]
+    documents = render("--namespace", "inference")
     workloads = [
         item for item in documents
         if item["kind"] in {"Deployment", "StatefulSet", "DaemonSet"}
@@ -70,48 +276,27 @@ def main() -> None:
         and item["spec"].get("type", "ClusterIP") in {"LoadBalancer", "NodePort"}
         for item in documents
     )
-    gateway = next(
-        item for item in documents
-        if item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway"
-    )
-    gateway_container = next(
-        item for item in gateway["spec"]["template"]["spec"]["containers"]
-        if item["name"] == "gateway"
-    )
-    gateway_env = {item["name"]: item["value"] for item in gateway_container["env"]}
-    assert gateway_env["GATEWAY_ENDPOINT_DRAIN_SECONDS"] == "35"
-    assert "GATEWAY_C8S_EVIDENCE_CONNECT_HOST" not in gateway_env
-    local_evidence_documents = [
-        item for item in yaml.safe_load_all(helm(
-            "template", "example", str(CHART), *NEUTRAL_MODE,
-            "--set", "attestationReceipts.evidenceBaseUrl=https://api.example.test",
-            "--set", "attestationReceipts.evidenceConnectHost=c8s-router.c8s-system.svc.cluster.local",
-        )) if item
-    ]
-    local_gateway = next(
-        item for item in local_evidence_documents
-        if item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway"
-    )
-    local_gateway_container = next(
-        item for item in local_gateway["spec"]["template"]["spec"]["containers"]
-        if item["name"] == "gateway"
-    )
-    local_gateway_env = {item["name"]: item["value"] for item in local_gateway_container["env"]}
-    assert local_gateway_env["GATEWAY_C8S_EVIDENCE_BASE_URL"] == "https://api.example.test"
-    assert local_gateway_env["GATEWAY_C8S_EVIDENCE_CONNECT_HOST"] == "c8s-router.c8s-system.svc.cluster.local"
+    gateway = Gateway(documents)
+    assert gateway.env["GATEWAY_ENDPOINT_DRAIN_SECONDS"] == "35"
+    assert "GATEWAY_C8S_EVIDENCE_CONNECT_HOST" not in gateway.env
+    local = Gateway(render(
+        "--set", "attestationReceipts.evidenceBaseUrl=https://api.example.test",
+        "--set", "attestationReceipts.evidenceConnectHost=c8s-router.c8s-system.svc.cluster.local",
+        "--set", "attestationReceipts.cds.url=https://c8s-cds.c8s-system.svc:8443",
+    ))
+    assert local.env["GATEWAY_C8S_EVIDENCE_BASE_URL"] == "https://api.example.test"
+    assert local.env["GATEWAY_C8S_EVIDENCE_CONNECT_HOST"] == "c8s-router.c8s-system.svc.cluster.local"
     # The release identity reaches the gateway through a mounted ConfigMap,
     # not environment variables, so the allowlist can pin the environment.
-    assert "GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256" not in gateway_env
-    identity = next(
-        item for item in documents
-        if item["kind"] == "ConfigMap" and item["metadata"]["name"] == "gateway-release-identity"
-    )
-    identity_values = json.loads(identity["data"]["release-identity.json"])
-    assert identity_values["expectedOperatorKeySetSha256"].startswith("sha256:")
-    assert gateway_env["GATEWAY_RELEASE_IDENTITY_FILE"] == "/mnt/c8s-data/release-identity/..data/release-identity.json"
-    assert gateway_container["readinessProbe"]["httpGet"]["path"] == "/ready"
-    assert gateway_container["livenessProbe"]["httpGet"]["path"] == "/health"
-    assert gateway["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 960
+    assert "GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256" not in gateway.env
+    assert gateway.identity["expectedOperatorKeySetSha256"].startswith("sha256:")
+    assert gateway.env["GATEWAY_RELEASE_IDENTITY_FILE"] == "/mnt/c8s-data/release-identity/..data/release-identity.json"
+    # Without a CDS origin the chart sets no policy metadata settings.
+    assert "GATEWAY_C8S_CDS_URL" not in gateway.env
+    check_cds_policy_pins(local)
+    assert gateway.container["readinessProbe"]["httpGet"]["path"] == "/ready"
+    assert gateway.container["livenessProbe"]["httpGet"]["path"] == "/health"
+    assert gateway.deployment["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 960
     for workload in workloads:
         for container in workload["spec"]["template"]["spec"]["containers"]:
             assert PINNED.fullmatch(container["image"]), container["image"]
@@ -124,37 +309,24 @@ def main() -> None:
     # The gateway state is a c8s mutable encrypted volume. The chart creates
     # no host storage, no cluster-scoped storage objects, and no admission
     # policy for it.
-    stateful = [
-        item for item in yaml.safe_load_all(
-            helm(
-                "template", "example", str(CHART), "--namespace", "inference",
-                *NEUTRAL_MODE, "--set", "gateway.state.enabled=true",
-            )
-        ) if item
-    ]
+    stateful = render("--namespace", "inference", "--set", "gateway.state.enabled=true")
     assert not {
         "PersistentVolume", "PersistentVolumeClaim", "StorageClass",
         "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding",
     } & {item["kind"] for item in stateful}
     assert not any(item["kind"] == "DaemonSet" and "state" in item["metadata"]["name"] for item in stateful)
-    stateful_gateway = next(
-        item for item in stateful
-        if item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway"
-    )
-    assert stateful_gateway["spec"]["strategy"] == {"type": "Recreate"}
-    annotations = stateful_gateway["spec"]["template"]["metadata"]["annotations"]
+    stateful_gateway = Gateway(stateful)
+    assert stateful_gateway.deployment["spec"]["strategy"] == {"type": "Recreate"}
+    annotations = stateful_gateway.deployment["spec"]["template"]["metadata"]["annotations"]
     assert annotations["confidential.ai/c8s-volumes"] == "gwstate=/confidential-inference/volumes/gwstate"
     assert annotations["confidential.ai/c8s-volume-dir"] == "/mnt/c8s-data"
-    stateful_env = {
-        item["name"]: item["value"]
-        for item in stateful_gateway["spec"]["template"]["spec"]["containers"][0]["env"]
-    }
+    stateful_env = stateful_gateway.env
     assert stateful_env["GATEWAY_STATE_VOLUME"] == "c8s"
     assert stateful_env["GATEWAY_STATE_VOLUME_NAME"] == "gwstate"
     assert stateful_env["GATEWAY_STATE_DATABASE"] == "/mnt/c8s-data/gwstate/gateway.sqlite3"
     assert not any(
         "persistentVolumeClaim" in volume
-        for volume in stateful_gateway["spec"]["template"]["spec"]["volumes"]
+        for volume in stateful_gateway.deployment["spec"]["template"]["spec"]["volumes"]
     )
     helm(
         "template", "example", str(CHART), *NEUTRAL_MODE,
@@ -511,6 +683,57 @@ def main() -> None:
             for item in container.get("volumeMounts", [])
         )
 
+    # The staging layer clears production model routes and loads live files.
+    staging_documents = render("--values", "release/values.yaml", "--values",
+                               "release/staging/values.yaml", "--values",
+                               "tests/release-v1/fixtures/release-values.yaml")
+    maps = {item["metadata"]["name"]: item for item in staging_documents
+            if item["kind"] == "ConfigMap"}
+    model = "hf-internal-testing/tiny-random-LlamaForCausalLM"
+    settings = json.loads(maps["gateway-runtime"]["data"]["settings.json"])
+    routes = json.loads(maps["router-model-routes"]["data"]["routes.json"])
+    assert settings["catalogModelIds"] == [model]
+    assert settings["inferenceModelIds"] == [model]
+    assert settings["evidence"]["connectHost"] == "c8s-router.c8s-system.svc.cluster.local"
+    router_slot = next(item for item in staging_documents if item["kind"] == "Service" and item["metadata"]["name"] == settings["routerService"])
+    assert router_slot["spec"]["clusterIP"] == "None"
+    assert routes["routes"] == {model: [model]}
+    assert "gateway-release-selection" not in maps, "deployment owns verified release selection"
+    sidecars = []
+    for document in staging_documents:
+        if document["kind"] not in {"Deployment", "StatefulSet"}:
+            continue
+        pod = document["spec"]["template"]["spec"]
+        for container in pod["containers"]:
+            if container["name"] == "cds-attest":
+                sidecars.append(container)
+                assert "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock" in container["args"]
+                assert not any(item["name"] == "HOST_IP" for item in container.get("env", []))
+                assert not container.get("volumeMounts"), "C8s NRI adds the platform socket mount"
+    assert len(sidecars) == 6
+    agent = next(item for item in staging_documents if item["kind"] == "Deployment"
+                 and item["metadata"]["name"] == "gateway-update-agent")
+    assert agent["spec"]["replicas"] == 1 and agent["spec"]["strategy"]["type"] == "Recreate"
+    client = agent["spec"]["template"]["spec"]["containers"][0]
+    assert client["image"] == yaml.safe_load((ROOT / "tests/release-v1/fixtures/release-values.yaml").read_text())["images"]["rolloutClient"]
+    assert client["args"] == ["-u", "-c", (CHART / "files/staging-validation-agent.py").read_text()]
+    client_env = {item["name"]: item.get("value") for item in client["env"]}
+    assert json.loads(client_env["UPDATE_ROUTER_HOSTS"]) == [settings["routerService"] + ".default.svc.cluster.local"]
+    assert client["securityContext"]["runAsNonRoot"] is True
+    assert client["securityContext"]["readOnlyRootFilesystem"] is True
+    assert agent["spec"]["template"]["spec"]["serviceAccountName"] == "gateway-update-agent"
+    role = next(item for item in staging_documents if item["kind"] == "Role"
+                and item["metadata"]["name"] == "gateway-update-agent")
+    assert role["rules"] == [{"apiGroups": [""], "resources": ["secrets"],
+                              "resourceNames": ["gateway-update-task"], "verbs": ["get"]}]
+    assert not any(item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway-update-agent"
+                   for item in production_documents)
+    helm("template", "example", str(CHART), *NEUTRAL_MODE,
+         "--set", "stagingValidation.enabled=true", success=False)
+
+    check_mesh_tls_listener()
+    check_cds_routes()
+    check_override_replaces_strategy()
     print("Helm neutral-default and safety tests passed.")
 
 

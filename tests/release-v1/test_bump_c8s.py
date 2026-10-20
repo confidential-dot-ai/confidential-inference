@@ -32,6 +32,10 @@ model:
 """
 
 
+# Long enough for git to see the renamed file as a rename after a one-line change.
+TLS_SOURCE = "package ratls\n\n" + "".join(f"func F{index}() {{}}\n" for index in range(20))
+
+
 def git_repo(directory: Path) -> Path:
     repo = directory / "c8s"
     repo.mkdir()
@@ -61,6 +65,59 @@ class BumpTests(unittest.TestCase):
         value.update({"release": "v0.33.7", "sourceCommit": "b" * 40})
         value["coreImages"][0] = "ghcr.io/confidential-dot-ai/cds@sha256:" + "3" * 64
         return value
+
+    def test_new_seed_record_is_written_and_existing_format_is_still_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "new-seed.json"
+            with mock.patch.object(BUMP, "ROOT", path.parent):
+                BUMP.write_json(path, {"allowlist": {"workloads": {}}})
+                self.assertEqual(path.read_text(), '{\n  "allowlist": {\n    "workloads": {}\n  }\n}\n')
+                path.write_text('{"unreviewed":"format"}')
+                with self.assertRaisesRegex(BUMP.BumpError, "expected JSON form"):
+                    BUMP.write_json(path, {})
+
+    def test_shared_module_moves_staging_first_then_production_without_reverting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tool = Path(directory)
+            path = tool / "go.mod"
+            path.write_text("module example\n\nrequire " + BUMP.C8S_MODULE + " v0.43.0\n")
+            with mock.patch.object(BUMP, "CANONICAL_TOOL", tool), mock.patch.object(BUMP, "run") as run:
+                BUMP.bump_module("v0.43.0", "v0.44.6-beta.1")
+                BUMP.bump_module("v0.37.0-beta.1", "v0.44.6-beta.1")
+                self.assertEqual(path.read_text(), "module example\n\nrequire " + BUMP.C8S_MODULE + " v0.44.6-beta.1\n")
+                self.assertEqual(run.call_count, 2)
+
+    def test_modern_core_inventory_adds_new_components_and_uses_chart_nginx_pin(self):
+        chart = {"c8sComponents": [
+            {"valuePath": "image"}, {"valuePath": "nri.image"}, {"valuePath": "volume.image"},
+            {"valuePath": "attest.image", "pinnedDigest": "sha256:" + "7" * 64}],
+            "image": {"repository": BUMP.REGISTRY + "c8s-operator"},
+            "nri": {"image": {"repository": BUMP.REGISTRY + "nri-image-policy"}},
+            "volume": {"image": {"repository": BUMP.REGISTRY + "volumed"}},
+            "attest": {"image": {"repository": BUMP.REGISTRY + "attestation-api"}},
+            "router": {"nginx": {"image": {"repository": "nginxinc/nginx-unprivileged",
+                                                   "digest": "sha256:" + "8" * 64}}}}
+        with mock.patch.object(BUMP, "git_show", return_value=BUMP.yaml.safe_dump(chart).encode()), \
+             mock.patch.object(BUMP, "digest", return_value="sha256:" + "9" * 64) as digest:
+            core = BUMP.modern_core_images(Path("selected-source"), "a" * 40, "v0.44.6-beta.1")
+        self.assertIn(BUMP.REGISTRY + "nri-image-policy@sha256:" + "9" * 64, core)
+        self.assertIn(BUMP.REGISTRY + "volumed@sha256:" + "9" * 64, core)
+        self.assertEqual(core[-1], "nginxinc/nginx-unprivileged@sha256:" + "8" * 64)
+        self.assertFalse(any("attestation-api" in image for image in core))
+        self.assertEqual(digest.call_count, 3)
+
+    def test_core_inventory_growth_preserves_comments_and_other_pins(self):
+        path = self.write(SPEC_TEXT)
+        value = self.new_c8s()
+        value["coreImages"].append(BUMP.REGISTRY + "nri-image-policy@sha256:" + "4" * 64)
+        with mock.patch.object(BUMP, "ROOT", path.parent):
+            BUMP.pin_c8s_mapping(path, value)
+        self.assertEqual(BUMP.yaml.safe_load(path.read_text())["c8s"], value)
+        self.assertTrue(path.read_text().startswith("# A comment that must stay.\n"))
+        self.assertIn("  # The c8s release.\n", path.read_text())
+        original, updated = BUMP.yaml.safe_load(SPEC_TEXT), BUMP.yaml.safe_load(path.read_text())
+        original.pop("c8s"); updated.pop("c8s")
+        self.assertEqual(original, updated)
 
     def test_the_c8s_edit_keeps_every_other_byte(self):
         path = self.write(SPEC_TEXT)
@@ -176,6 +233,42 @@ class BumpTests(unittest.TestCase):
                 self.assertIn("only after a person reviews that diff", manifest["capturedFromNote"])
                 self.assertNotIn("only in Go comments", manifest["capturedFromNote"])
 
+    def source_lock_bump(self, change) -> dict:
+        """Add the lock entry of a commit that applies change() to the pinned tree."""
+        with tempfile.TemporaryDirectory() as directory:
+            repo = git_repo(Path(directory))
+            old = commit(repo, {"pkg/ratls/tls.go": TLS_SOURCE, "cmd/cds/main.go": "package main\n"})
+            change(repo)
+            new = commit(repo, {})
+            lock_path = Path(directory) / "lock.json"
+            entry = {"commit": old, "tag": "v0.33.4", "nodeImage": "node@sha256:" + "1" * 64,
+                     "c8sOperatorImage": "op@sha256:" + "2" * 64,
+                     "files": {"pkg/ratls/tls.go": "sha256:" + "3" * 64, "cmd/cds/main.go": "sha256:" + "4" * 64}}
+            lock_path.write_text(json.dumps({"commits": [entry]}, indent=2) + "\n")
+            core = ["ghcr.io/confidential-dot-ai/c8s-operator@sha256:" + "5" * 64]
+            node = {"reference": "ghcr.io/confidential-dot-ai/node-guest-base", "digest": "sha256:" + "6" * 64}
+            with mock.patch.object(BUMP, "SOURCE_LOCK", lock_path):
+                BUMP.add_source_lock(repo, {"sourceCommit": old},
+                                     {"sourceCommit": new, "release": "v0.33.7", "nodeImage": node, "coreImages": core})
+            added = json.loads(lock_path.read_text())["commits"][1]
+            self.assertEqual(added["commit"], new)
+            return added
+
+    def test_a_renamed_pinned_file_keeps_its_pin_under_the_new_name(self):
+        def rename(repo: Path) -> None:
+            (repo / "pkg/armtls").mkdir()
+            (repo / "pkg/ratls/tls.go").rename(repo / "pkg/armtls/tls.go")
+            (repo / "pkg/armtls/tls.go").write_text(TLS_SOURCE.replace("ratls", "armtls", 1))
+        added = self.source_lock_bump(rename)
+        self.assertEqual(list(added["files"]), ["pkg/armtls/tls.go", "cmd/cds/main.go"])
+        self.assertEqual(added["files"]["pkg/armtls/tls.go"],
+                         BUMP.sha256_bytes(TLS_SOURCE.replace("ratls", "armtls", 1).encode()))
+        self.assertEqual(added["files"]["cmd/cds/main.go"], BUMP.sha256_bytes(b"package main\n"))
+
+    def test_a_deleted_pinned_file_stops_the_bump(self):
+        with self.assertRaisesRegex(BUMP.BumpError, "pkg/ratls/tls.go are gone"):
+            self.source_lock_bump(lambda repo: (repo / "pkg/ratls/tls.go").unlink())
+
     def test_the_staging_fixture_moves_only_with_the_staging_profile(self):
         production, staging = BUMP.release_profiles.load()
         with mock.patch.object(BUMP, "run") as run, mock.patch.object(BUMP.runpy, "run_path") as run_path:
@@ -205,3 +298,75 @@ class BumpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BetaCompatibilityTests(unittest.TestCase):
+    def test_beta_requires_explicit_profile_and_opt_in_before_network(self):
+        for extra in ([], ['--allow-beta'], ['--profile', 'production']):
+            with mock.patch('sys.argv', ['bump-c8s', '--tag', 'v0.37.0-beta.1', '--c8s-repo', '/unused', *extra]), mock.patch.object(BUMP.c8s_release, 'verify_c8s_tag') as verify:
+                self.assertEqual(BUMP.main(), 1)
+                verify.assert_not_called()
+
+    def test_explicit_production_beta_still_requires_signature_verification(self):
+        with mock.patch('sys.argv', ['bump-c8s', '--tag', 'v0.37.0-beta.1', '--c8s-repo', '/unused', '--allow-beta', '--profile', 'production']), mock.patch.object(BUMP.c8s_release, 'verify_c8s_tag', side_effect=BUMP.c8s_release.ReleaseError('invalid signature')) as verify:
+            self.assertEqual(BUMP.main(), 1)
+            verify.assert_called_once_with('v0.37.0-beta.1', allow_beta=True)
+
+    def test_renamed_mesh_uses_the_new_registry_repository(self):
+        old = {
+            'release': 'v0.36.2',
+            'coreImages': ['ghcr.io/confidential-dot-ai/ratls-mesh@sha256:' + '1' * 64],
+            'nodeImage': {'reference': BUMP.REGISTRY + 'node-guest-base', 'tag': 'rke2-tdx-cdi-v0.36.2'},
+            'nodeManifestArtifact': {'tag': 'rke2-tdx-v0.36.2'},
+        }
+        with mock.patch.object(BUMP, 'digest', return_value='sha256:' + '2' * 64) as digest, mock.patch.dict(BUMP.NODE, {'manifest_json_digest': lambda *_: 'sha256:' + '3' * 64}):
+            result = BUMP.new_c8s('v0.37.0-beta.1', 'a' * 40, old, renamed_mesh=True)
+        self.assertEqual(result['coreImages'], ['ghcr.io/confidential-dot-ai/armtls-mesh@sha256:' + '2' * 64])
+        self.assertIn(mock.call('ghcr.io/confidential-dot-ai/armtls-mesh:v0.37.0-beta.1'), digest.call_args_list)
+
+    def test_channel_identity_is_exact_and_beta_orders_below_stable(self):
+        release = BUMP.c8s_release
+        self.assertLess(release.version('v0.37.0-beta.1'), release.version('v0.37.0'))
+        self.assertEqual(release.signer('v0.37.0-beta.1', True), 'https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/beta')
+        with self.assertRaises(ValueError):
+            release.signer('v0.37.0-beta.1')
+
+    def test_signed_beta_requires_branch_prerelease_and_exact_statement(self):
+        tag, commit = 'v0.37.0-beta.1', 'a' * 40
+        release = BUMP.c8s_release
+        statement = {'repository': 'confidential-dot-ai/C8s', 'tag': tag, 'commit': commit}
+        calls = []
+
+        def run(argv, **kwargs):
+            import subprocess
+            calls.append(argv)
+            if argv[0] == 'cosign':
+                self.assertEqual(argv[argv.index('--certificate-identity') + 1], release.signer(tag, True))
+                value = ''
+            elif argv[1] == 'release':
+                directory = Path(argv[argv.index('--dir') + 1])
+                (directory / release.C8S_STATEMENT).write_text(json.dumps(statement))
+                (directory / release.C8S_BUNDLE).write_text('{}')
+                value = ''
+            else:
+                path = argv[2]
+                if '/git/ref/' in path:
+                    value = {'object': {'type': 'commit', 'sha': commit}}
+                elif '/commits/' in path:
+                    value = {'commit': {'verification': {'verified': True}}}
+                elif path.endswith('...beta'):
+                    value = {'status': 'ahead'}
+                elif path.endswith('...main'):
+                    value = {'status': 'diverged'}
+                elif '/releases/tags/' in path:
+                    value = {'prerelease': True, 'assets': [{'name': name} for name in (release.C8S_STATEMENT, release.C8S_BUNDLE)]}
+                else:
+                    raise AssertionError(argv)
+            return subprocess.CompletedProcess(argv, 0, value if isinstance(value, str) else json.dumps(value), '')
+
+        result = release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)
+        self.assertEqual(result['releaseSignature'], 'verified')
+        self.assertFalse(result['onMain'])
+        statement['commit'] = 'b' * 40
+        with self.assertRaisesRegex(release.ReleaseError, 'does not name'):
+            release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)

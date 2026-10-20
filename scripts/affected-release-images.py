@@ -81,6 +81,14 @@ IMAGES = (
         ),
     ),
     Image(
+        "sglang-router",
+        "images/sglang-router",
+        "images/sglang-router/Dockerfile",
+        "Confidential Inference SGLang Router",
+        ("images/sglang-router/Dockerfile", "images/sglang-router/source.lock", "images/sglang-router/patches/**",
+         "images/sglang-router/canonicalize_wheel.py", "images/sglang-router/requirements.in", "images/sglang-router/requirements.lock", "images/sglang-router/Cargo.lock"),
+    ),
+    Image(
         "metrics-collector",
         "images/metrics-collector",
         "images/metrics-collector/Dockerfile",
@@ -88,11 +96,25 @@ IMAGES = (
         ("images/metrics-collector/Dockerfile",),
     ),
     Image(
+        "log-collector",
+        "images/log-collector",
+        "images/log-collector/Dockerfile",
+        "Confidential Inference log collector",
+        ("images/log-collector/Dockerfile", "images/log-collector/config.alloy"),
+    ),
+    Image(
         "kube-state-metrics",
         "images/kube-state-metrics",
         "images/kube-state-metrics/Dockerfile",
         "Confidential Inference kube-state metrics",
         ("images/kube-state-metrics/Dockerfile",),
+    ),
+    Image(
+        "rollout-client",
+        "images/rollout-client",
+        "images/rollout-client/Dockerfile",
+        "Confidential Inference rollout client",
+        ("images/rollout-client/Dockerfile",),
     ),
 )
 
@@ -140,6 +162,9 @@ def main() -> int:
     standard = [entry for entry in matrix if entry["image"] != "sglang"]
     print("matrix=" + json.dumps({"include": matrix}, separators=(",", ":")))
     print("standard_matrix=" + json.dumps({"include": standard}, separators=(",", ":")))
+    # One job per clean build: the audit builds each standard image twice.
+    passes = [{**entry, "pass": number} for entry in standard for number in (1, 2)]
+    print("standard_pass_matrix=" + json.dumps({"include": passes}, separators=(",", ":")))
     print("sglang=" + str(any(image.image == "sglang" for image in selected)).lower())
     print("names=" + ",".join(image.image for image in selected))
     print("standard_names=" + ",".join(entry["image"] for entry in standard))

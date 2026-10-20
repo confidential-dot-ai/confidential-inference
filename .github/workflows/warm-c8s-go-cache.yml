@@ -1,0 +1,95 @@
+name: Warm the c8s Go cache
+
+# Builds the pinned c8s CLI of each release profile on main and saves the Go
+# caches, so that the signed release workflow (release-bundle.yml), which runs
+# on a tag and can restore only caches of main, builds in seconds instead of
+# 108 s. The key equals the one that release-bundle.yml restores.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - release/profiles.json
+      - release/**/spec.yaml
+      - tools/c8s-allowlist-canonical/**
+      - .github/workflows/warm-c8s-go-cache.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pins:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      commits: ${{ steps.pins.outputs.commits }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install the hash-locked YAML parser
+        run: |
+          python3 -m pip install --require-hashes \
+            --requirement scripts/requirements-release-signing.txt
+
+      - name: Read the pinned c8s source commit of each profile
+        id: pins
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          import release_profiles
+          directories = {item["layers"][-1] for item in json.load(open("release/profiles.json"))["profiles"]}
+          commits = sorted({release_profiles.read_spec(release_profiles.for_directory(Path(d)))["c8s"]["sourceCommit"]
+                            for d in directories})
+          print("commits=" + json.dumps(commits))
+          PY
+
+  warm:
+    needs: pins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        commit: ${{ fromJSON(needs.pins.outputs.commits) }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Check out the pinned c8s source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: confidential-dot-ai/c8s
+          ref: ${{ matrix.commit }}
+          path: c8s-source
+          persist-credentials: false
+
+      - name: Set up the Go toolchain of the pinned c8s
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: c8s-source/go.mod
+          cache: false
+
+      - name: Restore or build the Go caches
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: c8s-go-${{ runner.os }}-${{ matrix.commit }}-${{ hashFiles('c8s-source/go.sum', 'tools/c8s-allowlist-canonical/go.sum') }}
+
+      - name: Build the pinned c8s CLI and the canonical allowlist tool
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          GOPRIVATE: github.com/confidential-dot-ai/*
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          (cd c8s-source && go build -o "$RUNNER_TEMP/bin/c8s" ./cmd/c8s)
+          (cd tools/c8s-allowlist-canonical && go build -o "$RUNNER_TEMP/bin/c8s-allowlist-canonical" .)

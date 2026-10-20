@@ -41,10 +41,14 @@ pub struct GatewayMetrics {
 
 #[derive(Default)]
 struct MetricsState {
+    attestation_responses: BTreeMap<u16, u64>,
+    attestation_duration: Histogram,
+    attestation_events: BTreeMap<&'static str, u64>,
     requests: BTreeMap<RequestLabels, u64>,
     rejections: BTreeMap<RejectionLabels, u64>,
     upstream_reachable: bool,
     active_requests: u64,
+    router_requests: BTreeMap<String, u64>,
     queue_depth: u64,
     queue_duration: Histogram,
     request_duration: BTreeMap<RequestDurationLabels, Histogram>,
@@ -173,6 +177,21 @@ impl GatewayMetrics {
         }
     }
 
+    /// Record metadata responses without client or policy labels.
+    pub fn record_attestation_response(&self, status: u16, seconds: f64) {
+        let mut state = recover_lock(&self.state);
+        *state.attestation_responses.entry(status).or_default() += 1;
+        state.attestation_duration.observe(seconds);
+    }
+
+    /// Record a fixed metadata cache or refresh outcome.
+    pub fn record_attestation_event(&self, event: &'static str) {
+        *recover_lock(&self.state)
+            .attestation_events
+            .entry(event)
+            .or_default() += 1;
+    }
+
     /// Every authenticated inference request is counted once, after a status
     /// is known. Authentication failures use [`Self::record_rejection`], so a
     /// fake `key_id` can never enter Prometheus.
@@ -237,6 +256,21 @@ impl GatewayMetrics {
         state.active_requests = state.active_requests.saturating_add(1);
         ActiveRequestGuard {
             metrics: Arc::clone(self),
+        }
+    }
+
+    /// Count an authenticated request from body read through stream close.
+    #[must_use]
+    pub fn router_request(self: &Arc<Self>, router: String) -> RouterRequestGuard {
+        let mut state = recover_lock(&self.state);
+        if state.router_requests.len() >= 1024 {
+            state.router_requests.retain(|_, count| *count > 0);
+        }
+        let count = state.router_requests.entry(router.clone()).or_default();
+        *count = count.saturating_add(1);
+        RouterRequestGuard {
+            metrics: self.clone(),
+            router,
         }
     }
 
@@ -455,6 +489,49 @@ impl MetricsSource for GatewayMetrics {
         let mut output = String::new();
         render_header(
             &mut output,
+            "gateway_attestation_responses_total",
+            "Metadata responses",
+            "counter",
+        );
+        for (status, count) in &state.attestation_responses {
+            render_sample(
+                &mut output,
+                "gateway_attestation_responses_total",
+                &[("status", &status.to_string())],
+                &self.environment,
+                *count,
+            );
+        }
+        render_header(
+            &mut output,
+            "gateway_attestation_events_total",
+            "Metadata cache and refresh outcomes",
+            "counter",
+        );
+        for (event, count) in &state.attestation_events {
+            render_sample(
+                &mut output,
+                "gateway_attestation_events_total",
+                &[("event", event)],
+                &self.environment,
+                *count,
+            );
+        }
+        render_header(
+            &mut output,
+            "gateway_attestation_duration",
+            "Metadata response time in seconds",
+            "histogram",
+        );
+        render_histogram(
+            &mut output,
+            "gateway_attestation_duration",
+            &[],
+            &state.attestation_duration,
+            &self.environment,
+        );
+        render_header(
+            &mut output,
             "gen_ai_server_time_to_first_token",
             "Seconds until the first output token reaches the caller",
             "histogram",
@@ -658,6 +735,21 @@ impl MetricsSource for GatewayMetrics {
         );
         render_header(
             &mut output,
+            "gateway_router_requests_active",
+            "Authenticated requests retaining each router target, including body reads, queues and streams",
+            "gauge",
+        );
+        for (router, count) in &state.router_requests {
+            render_sample(
+                &mut output,
+                "gateway_router_requests_active",
+                &[("router", router.as_str())],
+                &self.environment,
+                *count,
+            );
+        }
+        render_header(
+            &mut output,
             "gateway_inference_queue_depth",
             "Authenticated inference requests waiting for execution",
             "gauge",
@@ -800,6 +892,20 @@ impl MetricsSource for GatewayMetrics {
 }
 
 /// Decrements the active-request gauge when the response body ends or closes.
+pub struct RouterRequestGuard {
+    metrics: Arc<GatewayMetrics>,
+    router: String,
+}
+
+impl Drop for RouterRequestGuard {
+    fn drop(&mut self) {
+        let mut state = recover_lock(&self.metrics.state);
+        if let Some(count) = state.router_requests.get_mut(&self.router) {
+            *count = count.saturating_sub(1);
+        }
+    }
+}
+
 pub struct ActiveRequestGuard {
     metrics: Arc<GatewayMetrics>,
 }
