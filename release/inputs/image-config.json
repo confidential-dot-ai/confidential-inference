@@ -21,27 +21,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:6cd5332f4a9e320cf5ea0c50f959a1b62174a75ef071d5f3f8e076489b400efe": {
-    "cmd": [],
-    "entrypoint": [
-      "/app/c8s",
-      "armtls-mesh"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    ]
-  },
   "ghcr.io/confidential-dot-ai/c8s-operator@sha256:593dea857bfdb2512af5dcfbbec34b10c08de66bbd67f7d33d23a1f8581429b5": {
-    "cmd": [],
-    "entrypoint": [
-      "/c8s"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
-    ]
-  },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:89dab004a6fdc54a94559e7578a27dbb64807fa2fa4b648e07f982ddddf3e68c": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
@@ -62,30 +42,6 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/cds@sha256:df1b44b146690e24dd26b8384ee9879c04960fbce94bcf97c082cba11606b995": {
-    "cmd": [],
-    "entrypoint": [
-      "/c8s",
-      "cds"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
-    ]
-  },
-  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:4228f5d5493c276b5673a87a82ccd9adb2dab7441797a8f1dbce2383e614877f": {
-    "cmd": [
-      "--config",
-      "/etc/nri/conf.d/image-policy.yaml"
-    ],
-    "entrypoint": [
-      "/usr/local/bin/c8s",
-      "nri-image-policy"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    ]
-  },
   "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:9ecc1b70bb93746a6811a95f62b88445407bcb3f20d462dee1788ff4c2cdc4a6": {
     "cmd": [
       "--config",
@@ -100,16 +56,6 @@
     ]
   },
   "ghcr.io/confidential-dot-ai/volumed@sha256:8e8f4a8bb691a8e200b1a54e23da405459223e276ce25049e09833bc8d2dde1f": {
-    "cmd": [],
-    "entrypoint": [
-      "/app/c8s",
-      "volumed"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    ]
-  },
-  "ghcr.io/confidential-dot-ai/volumed@sha256:a98b5a4c85943f9d1f9f469b0523cbd004ed1eb11880a2d4d1d8bdd7a8a2d2d8": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",
