@@ -602,8 +602,7 @@ def resolve_transition_helpers(helpers: Any, images: dict[str, str], tag: str | 
     replacements = {}
     if tag is not None:
         workload_tag = release_profiles.workload_release(tag).replace('.', '-')
-        replacements = {'${GATEWAY_WORKLOAD_ID}': 'gateway-'+workload_tag,
-                        '${ROUTER_WORKLOAD_ID}': 'router-'+workload_tag}
+        replacements = {'${ROUTER_WORKLOAD_ID}': 'router-'+workload_tag}
     for name, entry in result.items():
         require(isinstance(entry, dict), f"transition helper {name} is not a workload definition")
         for container in entry.get("initContainers", []) + entry.get("containers", []):

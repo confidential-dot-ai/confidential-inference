@@ -149,8 +149,13 @@ def main() -> None:
         '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
         '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
         '--set', 'attestationReceipts.releaseId=v0.14.18')) if item]
-    gateway = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'gateway-v0-14-18')
-    assert gateway['spec']['template']['metadata']['annotations']['confidential.ai/cw'] == gateway['metadata']['name']
+    # One gateway workload and state volume per deployment: a release change
+    # replaces the pod (Recreate) and reopens the same key database.
+    gateway = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'gateway')
+    assert gateway['spec']['strategy'] == {'type': 'Recreate'}
+    gateway_annotations = gateway['spec']['template']['metadata']['annotations']
+    assert gateway_annotations['confidential.ai/cw'] == 'gateway'
+    assert gateway_annotations['confidential.ai/c8s-volumes'] == 'gwstate=/confidential-inference/volumes/gwstate'
     main_container = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'gateway')
     gateway_environment = {item['name']: item['value'] for item in main_container['env']}
     for name in ('GATEWAY_C8S_IMAGE_POLICY_SHA256', 'GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256',
@@ -177,6 +182,8 @@ def main() -> None:
         pinned_gateway = next(item for item in pinned if item['kind'] == 'Deployment'
                               and item['metadata']['name'] == gateway['metadata']['name'])
         assert pinned_gateway['spec']['template'] == gateway['spec']['template']
+    assert gateway_environment['GATEWAY_STATE_VOLUME_NAME'] == 'gwstate'
+    assert gateway_environment['GATEWAY_STATE_DATABASE'] == '/mnt/c8s-data/gwstate/gateway.sqlite3'
     assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://router-v0-14-18.confidential-inference.svc.cluster.local:30000'
     evidence = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'cds-attest')
     assert '--expected-workload='+gateway['metadata']['name'] in evidence['args']

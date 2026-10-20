@@ -288,10 +288,10 @@ class TransitionCompositionTests(unittest.TestCase):
 
     def test_helper_hosts_use_final_workload_ids_without_changing_the_program(self):
         entry = copy.deepcopy(self.entry)
-        entry['containers'][0]['env']['values'] = {'HOSTS': '${GATEWAY_WORKLOAD_ID},${ROUTER_WORKLOAD_ID}'}
-        entry['containers'][0]['args'] = {'policy': 'exact', 'argv': ['literal ${GATEWAY_WORKLOAD_ID} in program']}
+        entry['containers'][0]['env']['values'] = {'HOSTS': 'gateway,${ROUTER_WORKLOAD_ID}'}
+        entry['containers'][0]['args'] = {'policy': 'exact', 'argv': ['literal ${ROUTER_WORKLOAD_ID} in program']}
         resolved = MAN.resolve_transition_helpers({'helper': entry}, {}, 'v0.14.18-transition')
-        self.assertEqual(resolved['helper']['containers'][0]['env']['values']['HOSTS'], 'gateway-v0-14-18,router-v0-14-18')
+        self.assertEqual(resolved['helper']['containers'][0]['env']['values']['HOSTS'], 'gateway,router-v0-14-18')
         self.assertEqual(resolved['helper']['containers'][0]['args'], entry['containers'][0]['args'])
         with self.assertRaisesRegex(MAN.ManifestError, 'unresolved environment marker'):
             MAN.resolve_transition_helpers({'helper': entry}, {})

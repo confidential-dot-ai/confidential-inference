@@ -258,7 +258,7 @@ transition:
             PATH: /usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             PYTHON_SHA256: c2c4321961fab0fb999d66e0cecf521c2ab3994c7992873ea99e306c1094fd5a
             PYTHON_VERSION: 3.12.15
-            UPDATE_HOSTS: '["gateway-update-old.confidential-inference.svc.cluster.local", "${GATEWAY_WORKLOAD_ID}.confidential-inference.svc.cluster.local"]'
+            UPDATE_HOSTS: '["gateway-update-old.confidential-inference.svc.cluster.local", "gateway.confidential-inference.svc.cluster.local"]'
             UPDATE_NAMESPACE: confidential-inference
             UPDATE_ROUTER_HOSTS: '["sglang-router.confidential-inference.svc.cluster.local", "${ROUTER_WORKLOAD_ID}.confidential-inference.svc.cluster.local"]'
             UPDATE_SECRET: gateway-update-task
