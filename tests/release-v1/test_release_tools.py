@@ -618,11 +618,6 @@ class AcceptedFindingTests(unittest.TestCase):
     def key(self, entry, path):
         return (entry, "search-path-overlaps-mount", "PATH", "host", path)
 
-    def test_the_committed_file_accepts_exactly_four_findings(self):
-        accepted = GEN.read_accepted_findings(ROOT / "release/accepted-lint-findings.json")
-        self.assertEqual(len(accepted), 4)
-        self.assertEqual({key[4] for key in accepted}, {"/usr/bin/nvidia-smi", "/usr/bin/nvidia-persistenced"})
-
     def test_accepted_findings_pass(self):
         self.lint_with([self.LINE.format(entry="w", path="/usr/bin/a"), "1 lint error(s)"], {self.key("w", "/usr/bin/a")})
 

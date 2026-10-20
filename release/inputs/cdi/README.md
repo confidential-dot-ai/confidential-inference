@@ -10,7 +10,7 @@ One file for each NVIDIA driver version: `nvidia-<driver>.json`.
   "driverInputs": {"confosFetchGpuSha256": "sha256:..."},
   "source": "who captured it, how, and from which node image",
   "env": {"NVIDIA_VISIBLE_DEVICES": "void", "NVIDIA_CTK_LIBCUDA_DIR": "/usr/lib/x86_64-linux-gnu"},
-  "mounts": [{"destination": "...", "kind": "host", "source": "...", "readOnly": true}]
+  "mounts": [{"destination": "...", "kind": "nodeRootFile", "source": "...", "readOnly": true}]
 }
 ```
 
