@@ -227,6 +227,15 @@ def main() -> None:
         assert removed not in runtime_gateway.env
     assert 'releaseBundleSha256' not in runtime_gateway.identity
     assert 'gateway-release-selection' not in maps
+    with tempfile.TemporaryDirectory() as directory:
+        bundle = Path(directory) / 'release-bundle.json'
+        bundle.write_text('{"schema": "confidential.ai/release-manifest/v1"}\n')
+        selected = {item['metadata']['name']: item for item in render(
+            "--set", "runtimeConfig.enabled=true", "--set", "attestationReceipts.releaseId=v0.14.18",
+            "--set-file", f"runtimeConfig.releaseBundle={bundle}") if item['kind'] == 'ConfigMap'}
+        selection = json.loads(selected['gateway-release-selection']['data']['releases.json'])
+        assert selection == {'schemaVersion': 1, 'revision': 1, 'releaseBundles': [bundle.read_text()],
+            'selectedBundleSha256': 'sha256:' + hashlib.sha256(bundle.read_bytes()).hexdigest()}
     assert not any('subPath' in mount for mount in runtime_gateway.container['volumeMounts'])
     final_documents = render("--set", "runtimeConfig.enabled=true", "--set",
         "attestationReceipts.releaseId=v0.14.18", "--set-json",

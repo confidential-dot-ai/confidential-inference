@@ -490,8 +490,6 @@ workloadOverrides:
       selector:
         matchLabels:
           confidential.ai/router-slot: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
-      strategy:
-        type: Recreate
       template:
         metadata:
           annotations:

@@ -137,9 +137,12 @@ runtimeConfig:
   modelRoutes: {}
   gatewayConfigMap: gateway-runtime
   routerConfigMap: router-model-routes
-  # The release tool creates this map after it verifies the signed bundle.
-  # It is not part of Helm's generated configuration data.
   releaseConfigMap: gateway-release-selection
+  # The exact bytes of the release-bundle.json that the deployment verified,
+  # set with --set-file. The chart then renders releaseConfigMap, which selects
+  # this release, so an upgrade or rollback changes it with the release.
+  # Without it the deployment creates releaseConfigMap itself.
+  releaseBundle: ""
   attestationCacheSeconds: 10
 
 gateway:
