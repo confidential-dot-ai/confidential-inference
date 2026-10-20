@@ -330,6 +330,7 @@ def verify_release_signature(
                 "--certificate-github-workflow-ref", workflow["refTemplate"].replace("{release}", release_name),
                 "--certificate-github-workflow-name", workflow["name"],
                 "--certificate-github-workflow-trigger", workflow["trigger"],
+                "--certificate-github-workflow-sha", release["source"]["commit"],
                 str(release_snapshot),
             ]
             result = subprocess.run(

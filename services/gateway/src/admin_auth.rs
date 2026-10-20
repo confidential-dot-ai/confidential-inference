@@ -107,14 +107,20 @@ impl AdminRequestVerifier {
             .map_err(|_| "invalid_signature")?;
 
         let mut nonces = self.nonces.lock().map_err(|_| "nonce_store_unavailable")?;
-        nonces.retain(|_, seen| now.saturating_sub(*seen) <= MAX_CLOCK_SKEW_SECONDS);
+        nonces.retain(|_, expires_at| *expires_at >= now);
         if nonces.contains_key(nonce) {
             return Err("replayed_signature");
         }
         if nonces.len() >= MAX_NONCES {
             return Err("nonce_store_full");
         }
-        nonces.insert(nonce.to_owned(), now);
+        // Keep the nonce for as long as the signed timestamp stays inside
+        // the skew window, which outlives the receive time when the signer's
+        // clock runs ahead.
+        nonces.insert(
+            nonce.to_owned(),
+            timestamp.max(now).saturating_add(MAX_CLOCK_SKEW_SECONDS),
+        );
         Ok(())
     }
 }
@@ -246,6 +252,71 @@ mod tests {
         assert_eq!(
             other.verify(method, path, &headers, b"changed", 1_787_616_000),
             Err("body_hash_mismatch")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_signature_stays_rejected_until_its_timestamp_leaves_the_skew_window()
+    -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let key = directory.path().join("client.key");
+        let certificate = directory.path().join("client.crt");
+        run(Command::new("openssl")
+            .args([
+                "ecparam",
+                "-name",
+                "prime256v1",
+                "-genkey",
+                "-noout",
+                "-out",
+            ])
+            .arg(&key))?;
+        run(Command::new("openssl")
+            .args(["req", "-x509", "-new", "-key"])
+            .arg(&key)
+            .args(["-sha256", "-days", "1", "-subj", "/CN=admin-client", "-out"])
+            .arg(&certificate))?;
+
+        let method = "POST";
+        let path = "/admin/v1/api-keys";
+        // Signed 60s ahead of the gateway clock at first receipt.
+        let timestamp = "1787616060";
+        let nonce = "fedcba9876543210fedcba9876543210";
+        let body = br#"{"name":"test"}"#;
+        let body_hash = hex::encode(Sha256::digest(body));
+        let canonical = canonical_request(method, path, timestamp, nonce, &body_hash);
+        let canonical_path = directory.path().join("canonical");
+        let signature_path = directory.path().join("signature");
+        fs::write(&canonical_path, canonical)?;
+        run(Command::new("openssl")
+            .args(["dgst", "-sha256", "-sign"])
+            .arg(&key)
+            .args(["-out"])
+            .arg(&signature_path)
+            .arg(&canonical_path))?;
+        let signature = URL_SAFE_NO_PAD.encode(fs::read(signature_path)?);
+        let mut headers = HeaderMap::new();
+        for (name, value) in [
+            ("x-admin-signature-version", "v1"),
+            ("x-admin-timestamp", timestamp),
+            ("x-admin-nonce", nonce),
+            ("x-admin-body-sha256", body_hash.as_str()),
+            ("x-admin-signature", signature.as_str()),
+        ] {
+            headers.insert(name, value.parse()?);
+        }
+        let verifier = AdminRequestVerifier::from_certificate_pem(&fs::read(&certificate)?)?;
+        verifier.verify(method, path, &headers, body, 1_787_616_000)?;
+        for now in [1_787_616_061, 1_787_616_120] {
+            assert_eq!(
+                verifier.verify(method, path, &headers, body, now),
+                Err("replayed_signature")
+            );
+        }
+        assert_eq!(
+            verifier.verify(method, path, &headers, body, 1_787_616_121),
+            Err("stale_signature")
         );
         Ok(())
     }
