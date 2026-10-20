@@ -68,7 +68,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: In
-        values: [gateway, sglang-router, inference-worker, metrics-collector, kube-state-metrics]
+        values: [gateway, sglang-router, inference-worker, metrics-collector, kube-state-metrics{{ if .Values.logCollector.enabled }}, log-collector{{ end }}]
   policyTypes: [Egress]
   egress:
     - to:
@@ -387,6 +387,30 @@ spec:
         - {protocol: TCP, port: 443}
         - {protocol: TCP, port: {{ .Values.metricsCollector.kubeApi.port }}}
 ---
+{{- if .Values.logCollector.enabled }}
+# The log collector pushes to the remote-write endpoint with the same client
+# certificate as the metrics collector.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: log-collector-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: log-collector
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.metricsCollector.remoteWrite.destinationCidrs }}
+        - ipBlock: {cidr: {{ . | quote }} }
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 9443}
+    - ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: {{ .Values.metricsCollector.kubeApi.port }}}
+---
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
