@@ -655,6 +655,10 @@ workloadOverrides:
             env:
             - name: HOME
               value: /tmp
+            # Warm about 2K DeepGEMM shapes up to the 4096-token prefill chunk
+            # instead of all 16K. The rest load on first use.
+            - name: SGLANG_JIT_DEEPGEMM_FAST_WARMUP
+              value: '1'
             - name: WORKER_DRAIN_DEADLINE_SECONDS
               value: '570'
             - name: HOSTNAME
@@ -770,6 +774,10 @@ workloadOverrides:
             env:
             - name: HOME
               value: /tmp
+            # Warm about 2K DeepGEMM shapes up to the 4096-token prefill chunk
+            # instead of all 16K. The rest load on first use.
+            - name: SGLANG_JIT_DEEPGEMM_FAST_WARMUP
+              value: '1'
             - name: WORKER_DRAIN_DEADLINE_SECONDS
               value: '570'
             - name: HOSTNAME
