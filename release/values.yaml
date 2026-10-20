@@ -115,7 +115,9 @@ gateway:
   c8sSecrets:
     apiKeyPepper: {name: GATEWAY_API_KEY_PEPPER, sourcePath: /confidential-inference/gateway/api-key-pepper}
   # changed: the state disk is a c8s mutable encrypted volume, gwstate, on
-  # the control-plane CVM. The admin VM holds the real key records.
+  # the control-plane CVM. The admin VM holds the real key records. The name
+  # is stable per deployment, so an upgrade or rollback reopens the same key
+  # database. c8s opens it for one pod, so the gateway rolls with Recreate.
   state:
     enabled: true
     absencePolicy: fail-closed
@@ -179,18 +181,7 @@ workloadOverrides:
     spec:
       progressDeadlineSeconds: 600
       revisionHistoryLimit: 10
-      selector:
-        matchLabels:
-          confidential.ai/gateway-slot: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
       template:
-        metadata:
-          annotations:
-            confidential.ai/cw: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
-            confidential.ai/c8s-volumes: '{{ printf "gw%s" (sha256sum .Values.attestationReceipts.releaseId
-              | trunc 10) }}=/confidential-inference/volumes/{{ printf "gw%s" (sha256sum
-              .Values.attestationReceipts.releaseId | trunc 10) }}'
-          labels:
-            confidential.ai/gateway-slot: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
         spec:
           containers:
           - name: gateway
@@ -231,21 +222,19 @@ workloadOverrides:
               # uses that connection address without trusting its forwarded header.
               value: 10.52.0.0/16
             - name: GATEWAY_C8S_RECEIPT_TARGETS
-              value: gateway|gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}|gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804
+              value: gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804
             - name: GATEWAY_RELEASE_IDENTITY_FILE
               value: /mnt/c8s-data/release-identity/..data/release-identity.json
             - name: GATEWAY_C8S_POLICY_MODE
               value: operator
             - name: GATEWAY_STATE_DATABASE
-              value: /mnt/c8s-data/{{ printf "gw%s" (sha256sum .Values.attestationReceipts.releaseId
-                | trunc 10) }}/gateway.sqlite3
+              value: '{{ .Values.gateway.state.databasePath }}'
             - name: GATEWAY_STATE_ABSENCE_POLICY
               value: fail-closed
             - name: GATEWAY_STATE_VOLUME
               value: c8s
             - name: GATEWAY_STATE_VOLUME_NAME
-              value: '{{ printf "gw%s" (sha256sum .Values.attestationReceipts.releaseId
-                | trunc 10) }}'
+              value: '{{ .Values.gateway.state.volumeName }}'
             - name: GATEWAY_STATE_STARTUP_TIMEOUT_SECONDS
               value: '300'
             - name: GATEWAY_STATE_ENABLED
@@ -261,7 +250,7 @@ workloadOverrides:
             - name: GATEWAY_KEY_REGISTRY_MODE
               value: registry
             - name: GATEWAY_INSTANCE_ID
-              value: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+              value: gateway
             - name: GATEWAY_C8S_CDS_URL
               value: https://c8s-cds.c8s-system.svc.cluster.local:8443
             - name: GATEWAY_RELEASE_URL
@@ -297,7 +286,7 @@ workloadOverrides:
             - --port=8800
             - --platform=tdx
             - --front-door-mode=webpki
-            - --expected-workload=gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
+            - --expected-workload=gateway
             - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
             - --serving-cert-file=/etc/c8s/certs/tls.crt
             - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
@@ -344,8 +333,6 @@ workloadOverrides:
             name: run
           - emptyDir: {}
             name: tmp
-    metadata:
-      name: gateway-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
   Deployment/kube-state-metrics:
     spec:
       progressDeadlineSeconds: 600
