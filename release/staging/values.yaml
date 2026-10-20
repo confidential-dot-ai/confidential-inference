@@ -66,7 +66,7 @@ metricsCollector:
     enabled: false
 
 images:
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:89dab004a6fdc54a94559e7578a27dbb64807fa2fa4b648e07f982ddddf3e68c
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:593dea857bfdb2512af5dcfbbec34b10c08de66bbd67f7d33d23a1f8581429b5
 
 # The simulator uses the staging workload definitions.
 workloadOverridesEnabled: false
