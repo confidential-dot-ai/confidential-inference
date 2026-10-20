@@ -11,7 +11,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:55171cdd01acec5f100e0554e1069ac5c8e6488c37eae8d0f04b8f63d96dbea6": {
+  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:3fce8c123911f7242cab3f323edc11a4e73b764e8475e6e8128d3bd0248423e1": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",
@@ -21,7 +21,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:6cd5332f4a9e320cf5ea0c50f959a1b62174a75ef071d5f3f8e076489b400efe": {
+  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:cdd2d4e0997e958a20fab72f37c887d8a1c042062e41b8520284460813277528": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",
@@ -31,7 +31,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:89dab004a6fdc54a94559e7578a27dbb64807fa2fa4b648e07f982ddddf3e68c": {
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:41b9c901c8a896f68a16ae8ceec60b5f2f88d907142775c50da2e378708e478c": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
@@ -41,7 +41,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:daa439a7e5f1d2859b2edf2c70e68012fc256d513c1fb48d881ebda7fe521881": {
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:593dea857bfdb2512af5dcfbbec34b10c08de66bbd67f7d33d23a1f8581429b5": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
@@ -51,7 +51,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/cds@sha256:6986c33f3d2c5ca0fef2833615cf27760f24231a0414f9ea695f445b923982c4": {
+  "ghcr.io/confidential-dot-ai/cds@sha256:aaf6a581487d27b24228ceb10e4a600e1ae1a4b405d0f6f4b8f95422ae8ba204": {
     "cmd": [],
     "entrypoint": [
       "/c8s",
@@ -62,7 +62,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/cds@sha256:df1b44b146690e24dd26b8384ee9879c04960fbce94bcf97c082cba11606b995": {
+  "ghcr.io/confidential-dot-ai/cds@sha256:d233255dfcafe2178aacc19150a393c0bc74cb6476d874cf7d6db4a6827b0581": {
     "cmd": [],
     "entrypoint": [
       "/c8s",
@@ -73,7 +73,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:4228f5d5493c276b5673a87a82ccd9adb2dab7441797a8f1dbce2383e614877f": {
+  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:1c754b95db0b873f60c176f49b218e7b83dba91a8c5799b2f48d1505938db04a": {
     "cmd": [
       "--config",
       "/etc/nri/conf.d/image-policy.yaml"
@@ -86,7 +86,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:6f46631f2d26066db5b78b572133d54ed35d7452358ee723a669bb5c684d66a4": {
+  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:9ecc1b70bb93746a6811a95f62b88445407bcb3f20d462dee1788ff4c2cdc4a6": {
     "cmd": [
       "--config",
       "/etc/nri/conf.d/image-policy.yaml"
@@ -99,7 +99,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/volumed@sha256:04feb88173aaffdadd6043f1cc2a227ba1c2d22ebc7244667edcd4eae7688ffc": {
+  "ghcr.io/confidential-dot-ai/volumed@sha256:4e9e26e035f53d7350da431808981e84d479b9263618f893d7a801770dfc6414": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",
@@ -109,7 +109,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/volumed@sha256:a98b5a4c85943f9d1f9f469b0523cbd004ed1eb11880a2d4d1d8bdd7a8a2d2d8": {
+  "ghcr.io/confidential-dot-ai/volumed@sha256:8e8f4a8bb691a8e200b1a54e23da405459223e276ce25049e09833bc8d2dde1f": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",

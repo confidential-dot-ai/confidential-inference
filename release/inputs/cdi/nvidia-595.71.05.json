@@ -2,28 +2,13 @@
   "driverVersion": "595.71.05",
   "toolkitVersion": "1.19.1",
   "nodeImages": [
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:1c8a672c5017f6709e36f5a4ab74790a00d02be726b093589f13b69b8671cf46",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:b8692c7d0f012097dbae2aea5615089381633405e1b67f30dfa2fdf3a5c596a7",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:3139a88a67dac769807bad8facef426e7c866f4cc93fad13040e74e875f66718",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:b5adee275c998cc38339354be1068dd5a0ea158397be797e12fd2135d5b3c82a",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:b6652fccc2b7e658ac163a37bc8487bb407a9d1f70caa5cf99ad84095d0261f7",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:e94d50ff0cbe7133f6ba1eeffed796a69c129178bc50b2da5bdb69e670701014",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:77767a09dd86d29d7d76d87c3dfff3f57ceeb98f92bbc8fc3e4a02b0d40cc843",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:7cb709802642c98963c872cbd178727560c961af8e1a4b5138d6c8e78181f587",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:0bacaee0a1b5b758da083e1fde1a8af6be44b197f6d773a1b2c8b004c1089dca",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:ef0115625e45522d7efb471488a24521e384ee8d5f4f24b4c732b4590bdbcd76",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:e971b0522e5523f8bbd2caf47a896685e2769416e194a4b34e70d8cfcb233a7e",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:bf5c5d6296f13785b2bfcbf882dec9e6414dcee4cc3cb2f5abf7fac3e2d97840",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:24d3e5c3bbd951fb34f6a8afe84d81d394e820e3fda15a56ff5b6d1a34f9d852",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:2e10a9e936030a37a58a64885ee6ca1bfd32257782b595dc528a6f09824d18df",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:10ede0d779a7a9b5661133b2ed182abe265c947650af8ef4902055db99b70dd6",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:4099b974a5870f8a3a31990a821e3eea8f13e2e783d0019769339efde7a56002",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:588f792cc7d28a74bc8ad945e83c63b05bd86f5f7113fbb4e3ef7a40e61ac945"
+    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:2073fef8adf5c6bf217d5003b3ff56d233abc1df16d5682b6b8fa2fbc1f28da1",
+    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:f2a17174124233b089b0282e39186266c789fe4b0c85e3095b6dcf9413215867"
   ],
   "driverInputs": {
     "confosFetchGpuSha256": "sha256:df1bf1d3de34089623bc996f56a42e87d0c6d173938a26a80c62811d23e53204"
   },
-  "source": "The CDI data was derived offline with the nvcdi library against the extracted c8s v0.33.2 node image root and recorded in confidential-inference-internal receipts/cdi/node-image-v0.33.2-driver-595.71.05-toolkit-1.19.1.allowlist.json (commit 43c9dcf), sha256:9841d10b5f5897a9653c3f0d428ab2d12ee6f05db45d0cc57da6704941debd4d",
+  "source": "The device-plugin CDI spec of c8s v0.59.1 (C8s #954: CDI_FEATURE_FLAGS=disable-ipc-discoverer, driver root /usr and /etc, firmware_class.path=/usr/lib/firmware). It is nvidia-595.71.05.json as derived offline with the nvcdi library against the extracted c8s v0.33.2 node image root (confidential-inference-internal receipts/cdi/node-image-v0.33.2-driver-595.71.05-toolkit-1.19.1.allowlist.json, commit 43c9dcf, sha256:9841d10b5f5897a9653c3f0d428ab2d12ee6f05db45d0cc57da6704941debd4d) without the nvidia-persistenced socket and with the GSP firmware at /usr/lib/firmware. The 14 mounts equal the spec that the device plugin wrote on both GPU workers of a node image built from the #954 changes (b300-node-3, 2026-10-19).",
   "env": {
     "NVIDIA_CTK_LIBCUDA_DIR": "/usr/lib/x86_64-linux-gnu",
     "NVIDIA_VISIBLE_DEVICES": "void"
@@ -31,90 +16,85 @@
   "mounts": [
     {
       "destination": "/usr/lib/x86_64-linux-gnu/libcuda.so.595.71.05",
-      "kind": "host",
+      "kind": "nodeRootFile",
       "source": "/usr/lib/x86_64-linux-gnu/libcuda.so.595.71.05",
       "readOnly": true
     },
     {
       "destination": "/usr/lib/x86_64-linux-gnu/libcudadebugger.so.595.71.05",
-      "kind": "host",
+      "kind": "nodeRootFile",
       "source": "/usr/lib/x86_64-linux-gnu/libcudadebugger.so.595.71.05",
       "readOnly": true
     },
     {
       "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-allocator.so.595.71.05",
-      "kind": "host",
+      "kind": "nodeRootFile",
       "source": "/usr/lib/x86_64-linux-gnu/libnvidia-allocator.so.595.71.05",
       "readOnly": true
     },
     {
       "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-cfg.so.595.71.05",
-      "kind": "host",
+      "kind": "nodeRootFile",
       "source": "/usr/lib/x86_64-linux-gnu/libnvidia-cfg.so.595.71.05",
       "readOnly": true
     },
     {
       "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-gpucomp.so.595.71.05",
-      "kind": "host",
+      "kind": "nodeRootFile",
       "source": "/usr/lib/x86_64-linux-gnu/libnvidia-gpucomp.so.595.71.05",
       "readOnly": true
     },
     {
       "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.595.71.05",
-      "kind": "host",
+      "kind": "nodeRootFile",
       "source": "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.595.71.05",
       "readOnly": true
     },
     {
       "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-nvvm.so.595.71.05",
-      "kind": "host",
+      "kind": "nodeRootFile",
       "source": "/usr/lib/x86_64-linux-gnu/libnvidia-nvvm.so.595.71.05",
       "readOnly": true
     },
     {
       "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-pkcs11-openssl3.so.595.71.05",
-      "kind": "host",
+      "kind": "nodeRootFile",
       "source": "/usr/lib/x86_64-linux-gnu/libnvidia-pkcs11-openssl3.so.595.71.05",
       "readOnly": true
     },
     {
       "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-pkcs11.so.595.71.05",
-      "kind": "host",
+      "kind": "nodeRootFile",
       "source": "/usr/lib/x86_64-linux-gnu/libnvidia-pkcs11.so.595.71.05",
       "readOnly": true
     },
     {
       "destination": "/usr/lib/x86_64-linux-gnu/libnvidia-ptxjitcompiler.so.595.71.05",
-      "kind": "host",
+      "kind": "nodeRootFile",
       "source": "/usr/lib/x86_64-linux-gnu/libnvidia-ptxjitcompiler.so.595.71.05",
       "readOnly": true
     },
     {
-      "destination": "/run/nvidia-persistenced/socket",
-      "kind": "host",
-      "source": "/run/nvidia-persistenced/socket"
-    },
-    {
-      "destination": "/lib/firmware/nvidia/595.71.05/gsp_ga10x.bin",
-      "kind": "host",
-      "source": "/lib/firmware/nvidia/595.71.05/gsp_ga10x.bin",
+      "destination": "/usr/lib/firmware/nvidia/595.71.05/gsp_ga10x.bin",
+      "kind": "nodeRootFile",
+      "source": "/usr/lib/firmware/nvidia/595.71.05/gsp_ga10x.bin",
       "readOnly": true
     },
     {
-      "destination": "/lib/firmware/nvidia/595.71.05/gsp_tu10x.bin",
-      "kind": "host",
-      "source": "/lib/firmware/nvidia/595.71.05/gsp_tu10x.bin",
+      "destination": "/usr/lib/firmware/nvidia/595.71.05/gsp_tu10x.bin",
+      "kind": "nodeRootFile",
+      "source": "/usr/lib/firmware/nvidia/595.71.05/gsp_tu10x.bin",
       "readOnly": true
     },
     {
       "destination": "/usr/bin/nvidia-smi",
-      "kind": "host",
+      "kind": "nodeRootFile",
       "source": "/usr/bin/nvidia-smi",
       "readOnly": true
     },
     {
       "destination": "/usr/bin/nvidia-persistenced",
-      "kind": "host",
+      "kind": "nodeRootFile",
       "source": "/usr/bin/nvidia-persistenced",
       "readOnly": true
     }
