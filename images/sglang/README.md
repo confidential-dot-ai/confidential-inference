@@ -26,7 +26,9 @@ Each worker starts one local GPU metrics endpoint after the model mount passes.
 The endpoint reads only the four GPUs assigned to that worker. It exports use, memory,
 temperature, and ECC counters. It does not export GPU identifiers or request data.
 The image also defines no role command.
-Kubernetes supplies the router or worker argument list from `source.lock` at launch time.
+Kubernetes supplies the worker command and arguments at launch time.
+The router has a separate image and digest under
+[images/sglang-router](../sglang-router/README.md).
 
 ## GPU-free staging mode
 
@@ -57,23 +59,29 @@ Run these commands from the repository root:
 ```sh
 ./images/sglang/build.sh
 docker run --rm confidential-inference/sglang:local python3 -m sglang.launch_server --help
-docker run --rm confidential-inference/sglang:local python3 -m sglang_router.launch_router --help
 ```
 
 Set `IMAGE_NAME` to select a different local image name.
-Do not publish this local image until the full release checks pass.
+Local builds are for development tests. A production-ready candidate must
+use the approved build and signed release pipeline. Local test results do
+not authorize publication of a locally built release image.
 
 The image is large. Build it on a machine with at least 40 GiB of free Docker storage.
 This repository has no automated Blackwell correctness or performance test.
 After deploy, send a real prompt through the deployed worker inside a TDX inference CVM.
 Confirm that the response is correct.
 
-## Audit the published digest
+## Release publication
 
-The local build above is for development. Normal release builds and publishes
-the image once. After the release set is final, run
-`scripts/rebuild-release-images.py`. It rebuilds this image from the source
-commit in the release bundle and compares the Linux AMD64 platform digest.
+Use the approved `Release images` workflow on public `main`. Publication
+requires two clean builds with equal Linux AMD64 platform digests. SGLang
+is built again for publication and must produce the same verified digest.
+The signed release binds the selected image publication evidence.
+See [release publication](../../release/README.md) for inputs and checks.
 
-Do not replace the read-only build mounts with `COPY`. Git does not store file modification
-times. A `COPY` layer would make the digest depend on the machine that checked out the files.
+`scripts/rebuild-release-images.py` remains an independent audit tool for
+older release inventories. It does not replace the publication audit.
+
+Do not replace the read-only build mounts with `COPY`. Git does not store file
+modification times. A `COPY` layer would make the digest depend on the machine
+that checked out the files.

@@ -1,0 +1,94 @@
+logging {
+  level = "warn"
+  format = "json"
+}
+
+discovery.kubernetes "application" {
+  role = "pod"
+  api_server = sys.env("KUBE_API_URL")
+  bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+  tls_config {
+    ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+  }
+  namespaces {
+    names = [sys.env("LOG_NAMESPACE")]
+  }
+  selectors {
+    role = "pod"
+    label = "app.kubernetes.io/part-of=" + sys.env("LOG_APPLICATION")
+  }
+}
+
+discovery.relabel "application" {
+  targets = discovery.kubernetes.application.targets
+  rule {
+    source_labels = ["__meta_kubernetes_pod_container_name"]
+    regex = "gateway|sglang|sglang-router|prometheus|kube-state-metrics"
+    action = "keep"
+  }
+  rule {
+    target_label = "deployment"
+    replacement = sys.env("DEPLOYMENT_ID")
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_namespace"]
+    target_label = "namespace"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_name"]
+    target_label = "pod"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_container_name"]
+    target_label = "container"
+  }
+  // One target per container, even when it declares several ports.
+  // No caller data can become a Loki label.
+  rule {
+    regex = "__meta_kubernetes_(namespace|pod_(name|uid|container_name))|deployment|namespace|pod|container"
+    action = "labelkeep"
+  }
+}
+
+loki.source.kubernetes "application" {
+  targets = discovery.relabel.application.output
+  client {
+    api_server = sys.env("KUBE_API_URL")
+    bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    tls_config {
+      ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    }
+  }
+  forward_to = [loki.process.application.receiver]
+}
+
+loki.process "application" {
+  stage.label_keep {
+    values = ["deployment", "namespace", "pod", "container"]
+  }
+  stage.decolorize {}
+  // Drop lines with sensitive field markers. This is not a general detector
+  // for secrets in arbitrary text. Application logging must omit payloads.
+  stage.drop {
+    expression = "(?i)\\b(authorization|api[_-]?key|prompt|messages|request_body|response_body)[\"']?\\s*[:=]"
+    drop_counter_reason = "sensitive_field"
+  }
+  stage.replace {
+    expression = "(?i)(Bearer[ \\t]+[A-Za-z0-9._~+/-]+)"
+    replace = "[REDACTED]"
+  }
+  forward_to = [loki.write.admin.receiver]
+}
+
+loki.write "admin" {
+  endpoint {
+    url = sys.env("LOKI_URL")
+    batch_size = "128KiB"
+    batch_wait = "1s"
+    tls_config {
+      cert_file = "/mnt/c8s-data/admin-client/tls.crt"
+      key_file = "/mnt/c8s-data/admin-client/tls.key"
+      min_version = "TLS12"
+    }
+  }
+}

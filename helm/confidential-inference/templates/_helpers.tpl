@@ -29,16 +29,25 @@ app.kubernetes.io/component: {{ .component }}
     - --nvidia-gpu-evidence
     {{- end }}
     - --expected-workload={{ .workload }}
+    {{- if .root.Values.attestationReceipts.attestationApiUrl }}
+    - --attestation-api-url={{ .root.Values.attestationReceipts.attestationApiUrl }}
+    {{- else }}
     - --attestation-api-url=http://$(HOST_IP):{{ .root.Values.attestationReceipts.attestationApiPort }}
+    {{- end }}
     - --serving-cert-file=/etc/c8s/certs/tls.crt
     - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
     - --mesh-identity-key-file=/etc/c8s/certs/tls.key
     - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
+    {{- if .root.Values.attestationReceipts.cdsRoutes }}
+    {{- include "confidential-inference.cdsRouteArgs" .root | nindent 4 }}
+    {{- end }}
+  {{- if not .root.Values.attestationReceipts.attestationApiUrl }}
   env:
     - name: HOST_IP
       valueFrom:
         fieldRef:
           fieldPath: status.hostIP
+  {{- end }}
   {{- if ne .host "127.0.0.1" }}
   ports:
     - name: cds-attest
@@ -116,4 +125,58 @@ layer cannot remove a key of a map, but it replaces a list.
 {{- end -}}
 {{- end -}}
 {{- $files | sortAlpha | toJson -}}
+{{- end }}
+
+{{/* Apply source-controlled workload changes to the same chart used for release generation and deployment. */}}
+{{- define "confidential-inference.applyWorkloadOverrides" -}}
+{{- $root := .root -}}
+{{- range $fragment := splitList "\n---\n" .body -}}
+{{- $document := fromYaml $fragment -}}
+{{- if hasKey $document "Error" -}}{{- fail (get $document "Error") -}}{{- end -}}
+{{- if hasKey $document "kind" -}}
+{{- $key := printf "%s/%s" $document.kind $document.metadata.name -}}
+{{- if and $root.Values.workloadOverridesEnabled (hasKey $root.Values.workloadOverrides $key) -}}
+{{- $override := fromYaml (tpl (toYaml (get $root.Values.workloadOverrides $key)) $root) -}}
+{{- if hasKey $override "Error" -}}{{- fail (get $override "Error") -}}{{- end -}}
+{{- $podOverride := dig "spec" "template" "spec" (dict) $override -}}
+{{- if hasKey $podOverride "containers" -}}
+{{- $containers := list -}}
+{{- $known := dict -}}
+{{- range $container := $document.spec.template.spec.containers -}}
+{{- $_ := set $known $container.name true -}}
+{{- $merged := deepCopy $container -}}
+{{- range $change := $podOverride.containers -}}
+{{- if eq $change.name $container.name -}}{{- $merged = mergeOverwrite $merged $change -}}{{- end -}}
+{{- end -}}
+{{- $containers = append $containers $merged -}}
+{{- end -}}
+{{- range $change := $podOverride.containers -}}
+{{- if not (hasKey $known $change.name) -}}{{- fail (printf "unknown container override %s in %s" $change.name $key) -}}{{- end -}}
+{{- end -}}
+{{- $_ := set $podOverride "containers" $containers -}}
+{{- end -}}
+{{- $document = mergeOverwrite (deepCopy $document) $override -}}
+{{- /* A Deployment strategy is a union: an override replaces it whole, so a
+Recreate override drops the chart's rollingUpdate. */ -}}
+{{- with dig "spec" "strategy" nil $override -}}
+{{- $_ := set $document.spec "strategy" . -}}
+{{- end -}}
+{{- end }}
+---
+{{ toYaml $document }}
+{{ end -}}
+{{ end -}}
+{{- end -}}
+
+{{/*
+The cds-attest flags of c8s v0.56.0 and later (c8s #851): the CDS to poll the
+route manifest from, pinned by the TDX measurements of the node image. The
+operator keys come from that pinned CDS.
+*/}}
+{{- define "confidential-inference.cdsRouteArgs" -}}
+{{- $receipts := .Values.attestationReceipts -}}
+{{- $pin := $receipts.cdsPin -}}
+- --cds-url={{ required "attestationReceipts.cds.url is required with cdsRoutes" $receipts.cds.url }}
+- --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd is required with cdsRoutes" $pin.mrtd }}
+- --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1 is required with cdsRoutes" $pin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2 is required with cdsRoutes" $pin.rtmr2 }}
 {{- end }}

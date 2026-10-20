@@ -1,3 +1,4 @@
+{{- define "confidential-inference.source.gateway" -}}
 {{- if le (int .Values.gateway.terminationGracePeriodSeconds) (add (int .Values.gateway.shutdownGraceSeconds) (int .Values.gateway.endpointDrainSeconds)) }}
 {{- fail "gateway.terminationGracePeriodSeconds must exceed gateway.shutdownGraceSeconds plus gateway.endpointDrainSeconds" }}
 {{- end }}
@@ -9,10 +10,26 @@ metadata:
     {{- include "confidential-inference.labels" . | nindent 4 }}
     app.kubernetes.io/component: gateway
 data:
-  {{- $identity := dict "releaseBundleSha256" .Values.attestationReceipts.releaseBundleSha256 }}
+  {{- $identity := dict }}
+  {{- if not .Values.runtimeConfig.enabled }}
+  {{- $_ := set $identity "releaseBundleSha256" .Values.attestationReceipts.releaseBundleSha256 }}
+  {{- end }}
   {{- if eq .Values.attestationReceipts.policyMode "operator" }}
   {{- $_ := set $identity "expectedOperatorPublicKeySha256" .Values.attestationReceipts.expectedOperatorPublicKeySha256 }}
   {{- $_ := set $identity "expectedOperatorKeySetSha256" .Values.attestationReceipts.expectedOperatorKeySetSha256 }}
+  {{- end }}
+  {{- $cds := .Values.attestationReceipts.cds }}
+  {{- if and (or $cds.imagePolicy $cds.servedImagePolicy) (not (and $cds.imagePolicy $cds.servedImagePolicy $cds.url)) }}
+  {{- fail "attestationReceipts.cds needs url, imagePolicy and servedImagePolicy together" }}
+  {{- end }}
+  {{- if $cds.imagePolicy }}
+  {{- /* The deployment supplies the two c8s image policies; their pins travel
+         in this file, not the environment (services/gateway/ATTESTATION.md,
+         "CDS verification"). */}}
+  {{- $_ := set $identity "cdsImagePolicySha256" (printf "sha256:%s" (sha256sum $cds.imagePolicy)) }}
+  {{- $_ := set $identity "cdsServedImagePolicySha256" (printf "sha256:%s" (sha256sum $cds.servedImagePolicy)) }}
+  cds-image-policy.json: {{ toJson $cds.imagePolicy }}
+  served-image-policy.json: {{ toJson $cds.servedImagePolicy }}
   {{- end }}
   release-identity.json: {{ toJson $identity | quote }}
 ---
@@ -71,7 +88,11 @@ spec:
         # is delivered through the c8s memory-backed secret directory. It
         # never enters a Kubernetes Secret, ConfigMap, image, or persistent
         # volume.
+        {{- if .Values.gateway.usage.enabled }}
+        confidential.ai/c8s-secrets: {{ printf "%s=%s,product-usage=/confidential-inference/gateway/product-usage" .Values.gateway.c8sSecrets.apiKeyPepper.name .Values.gateway.c8sSecrets.apiKeyPepper.sourcePath | quote }}
+        {{- else }}
         confidential.ai/c8s-secrets: {{ printf "%s=%s" .Values.gateway.c8sSecrets.apiKeyPepper.name .Values.gateway.c8sSecrets.apiKeyPepper.sourcePath | quote }}
+        {{- end }}
         confidential.ai/c8s-secret-dir: /run/c8s/secrets
         {{- if .Values.gateway.state.enabled }}
         {{- $state := .Values.gateway.state }}
@@ -114,6 +135,10 @@ spec:
               value: 0.0.0.0:{{ .Values.gateway.containerPorts.public }}
             - name: GATEWAY_METRICS_LISTEN
               value: 0.0.0.0:{{ .Values.gateway.containerPorts.metrics }}
+            {{- if .Values.gateway.meshTls.enabled }}
+            - name: GATEWAY_TLS_LISTEN
+              value: 0.0.0.0:{{ .Values.gateway.containerPorts.tls }}
+            {{- end }}
             - name: GATEWAY_INFERENCE_URL
               {{- if .Values.namedWorkloadProxy.enabled }}
               value: http://127.0.0.1:30001
@@ -128,10 +153,13 @@ spec:
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.maximumHeaderBytes) | quote }}
             - name: GATEWAY_MAXIMUM_URI_BYTES
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.maximumUriBytes) | quote }}
+            {{- if not .Values.runtimeConfig.enabled }}
             - name: GATEWAY_MAXIMUM_BODY_BYTES
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.maximumBodyBytes) | quote }}
+            {{- end }}
             - name: GATEWAY_HEADER_TIMEOUT_SECONDS
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.headerTimeoutSeconds) | quote }}
+            {{- if not .Values.runtimeConfig.enabled }}
             - name: GATEWAY_BODY_TIMEOUT_SECONDS
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.bodyTimeoutSeconds) | quote }}
             - name: GATEWAY_UPSTREAM_TIMEOUT_SECONDS
@@ -154,6 +182,7 @@ spec:
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.attestationConcurrency) | quote }}
             - name: GATEWAY_REQUESTS_PER_ADDRESS_PER_SECOND
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.requestsPerAddressPerSecond) | quote }}
+            {{- end }}
             - name: GATEWAY_SHUTDOWN_GRACE_SECONDS
               value: {{ printf "%.0f" (float64 .Values.gateway.shutdownGraceSeconds) | quote }}
             - name: GATEWAY_ENDPOINT_DRAIN_SECONDS
@@ -162,8 +191,17 @@ spec:
             - name: GATEWAY_TRUSTED_PROXY_CIDRS
               value: {{ join "," .Values.gateway.protection.trustedProxyCidrs | quote }}
             {{- end }}
+            {{- if .Values.runtimeConfig.enabled }}
+            - name: GATEWAY_ROUTER_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: GATEWAY_RUNTIME_CONFIG_FILE
+              value: /mnt/c8s-data/runtime/settings.json
+            - name: GATEWAY_RELEASE_SELECTION_FILE
+              value: /mnt/c8s-data/release-selection/releases.json
+            {{- else }}
             - name: GATEWAY_MODEL
               value: {{ .Values.inference.model.name | quote }}
+            {{- end }}
             {{- $receiptTargets := list }}
             {{- range $item := .Values.attestationReceipts.targets }}
             {{- if $.Values.attestationReceipts.legacyC8s615 }}
@@ -174,20 +212,33 @@ spec:
             {{- end }}
             - name: GATEWAY_C8S_RECEIPT_TARGETS
               value: {{ join "," $receiptTargets | quote }}
+            {{- if not .Values.runtimeConfig.enabled }}
             - name: GATEWAY_C8S_EVIDENCE_BASE_URL
               value: {{ .Values.attestationReceipts.evidenceBaseUrl | quote }}
             {{- with .Values.attestationReceipts.evidenceConnectHost }}
             - name: GATEWAY_C8S_EVIDENCE_CONNECT_HOST
               value: {{ . | quote }}
             {{- end }}
+            {{- end }}
+            {{- if not .Values.runtimeConfig.enabled }}
             - name: GATEWAY_RELEASE_ID
               value: {{ .Values.attestationReceipts.releaseId | quote }}
+            {{- end }}
             # The release manifest hash and the operator key hashes are in a
             # mounted file, so the exact allowlist does not pin them.
-            # A directory mount holds kubelet's symlinks, which the gateway
-            # refuses. The file under ..data is the regular file they point at.
+            # The bounded reader accepts kubelet's symlink only inside the mount.
             - name: GATEWAY_RELEASE_IDENTITY_FILE
               value: /mnt/c8s-data/release-identity/..data/release-identity.json
+            {{- with .Values.attestationReceipts.cds.url }}
+            # The CDS origin and the policy file paths are release constants;
+            # the pins are in the release identity file.
+            - name: GATEWAY_C8S_CDS_URL
+              value: {{ . | quote }}
+            - name: GATEWAY_C8S_IMAGE_POLICY
+              value: /mnt/c8s-data/release-identity/..data/cds-image-policy.json
+            - name: GATEWAY_C8S_SERVED_IMAGE_POLICY
+              value: /mnt/c8s-data/release-identity/..data/served-image-policy.json
+            {{- end }}
             - name: GATEWAY_C8S_POLICY_MODE
               value: {{ .Values.attestationReceipts.policyMode | quote }}
             {{- if eq .Values.attestationReceipts.policyMode "static" }}
@@ -196,6 +247,10 @@ spec:
             {{- end }}
             - name: GATEWAY_STATE_DATABASE
               value: {{ .Values.gateway.state.databasePath | quote }}
+            {{- if .Values.gateway.usage.enabled }}
+            - name: GATEWAY_USAGE_CONFIG_FILE
+              value: /run/c8s/secrets/product-usage
+            {{- end }}
             - name: GATEWAY_STATE_ABSENCE_POLICY
               value: {{ .Values.gateway.state.absencePolicy | quote }}
             - name: GATEWAY_STATE_VOLUME
@@ -221,6 +276,10 @@ spec:
               containerPort: {{ .Values.gateway.containerPorts.public }}
             - name: metrics
               containerPort: {{ .Values.gateway.containerPorts.metrics }}
+            {{- if .Values.gateway.meshTls.enabled }}
+            - name: https
+              containerPort: {{ .Values.gateway.containerPorts.tls }}
+            {{- end }}
           resources:
             requests:
               cpu: {{ .Values.gateway.resources.cpu | quote }}
@@ -249,6 +308,14 @@ spec:
             - name: release-identity
               mountPath: /mnt/c8s-data/release-identity
               readOnly: true
+            {{- if .Values.runtimeConfig.enabled }}
+            - name: runtime-config
+              mountPath: /mnt/c8s-data/runtime
+              readOnly: true
+            - name: release-selection
+              mountPath: /mnt/c8s-data/release-selection
+              readOnly: true
+            {{- end }}
             - name: run
               mountPath: /run/confidential-gateway
             - name: tmp
@@ -292,7 +359,18 @@ spec:
         - name: release-identity
           configMap:
             name: gateway-release-identity
+        {{- if .Values.runtimeConfig.enabled }}
+        - name: runtime-config
+          configMap:
+            name: {{ .Values.runtimeConfig.gatewayConfigMap }}
+        - name: release-selection
+          configMap:
+            name: {{ .Values.runtimeConfig.releaseConfigMap }}
+        {{- end }}
         - name: run
           emptyDir: {}
         - name: tmp
           emptyDir: {}
+
+{{- end -}}
+{{- include "confidential-inference.applyWorkloadOverrides" (dict "root" . "body" (include "confidential-inference.source.gateway" .)) }}

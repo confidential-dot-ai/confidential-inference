@@ -16,7 +16,8 @@ It holds no deployment value: no mesh CA, no operator key, no node name.
 
 The release tag is the version. The tag selects the profile
 (release/profiles.json), and the build sets the release name and the chart
-value attestationReceipts.releaseId to it. A release needs no commit that
+value attestationReceipts.releaseId to its final tag. Transition and final
+tags use the same replacement definitions. A release needs no commit that
 changes a version.
 
 The repository holds no digest of an image that it builds. The build takes
@@ -44,7 +45,18 @@ The build writes three files to --output-dir:
   the chart rendered with these digests. The manifest binds its SHA-256;
 - release-values.yaml: the Helm values file with the repository image
   digests and the release ID. Apply it after the profile values files. The
-  manifest binds its SHA-256 (releaseValues).
+  manifest binds its SHA-256 (releaseValues);
+- <chart>-<X.Y.Z>.tgz, for a staging release: the chart package, version
+  X.Y.Z (the tag without v and -staging). The manifest binds its SHA-256
+  (chart.archiveSha256) and the OCI reference the publish job pushes it to
+  (chart.reference). A production release of the same commit packages
+  nothing: it binds the package of its staging release, so production
+  promotes what staging verified. The build writes the archive itself with
+  fixed metadata (not helm package, whose output carries file times), so a
+  rebuild gives the same bytes, as for every other release file.
+
+The manifest also binds each profile values file (profileValues), which the
+release publishes as assets, so a deploy needs no checkout to apply them.
 
 The release workflow builds them at the tag, signs the manifest, and attaches
 all three to the GitHub release. Anyone can build them again from the tagged
@@ -55,7 +67,9 @@ existing file differs from a new build.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
+import io
 import json
 import os
 import re
@@ -63,6 +77,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.request
 from pathlib import Path
@@ -85,7 +100,7 @@ REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 IMAGE_SELECTOR = runpy.run_path(str(ROOT / "scripts/affected-release-images.py"))
 ALLOWLIST_GENERATOR = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
 PUBLICATION = runpy.run_path(str(ROOT / "scripts/image-publication-manifest.py"))
-C8S_VERSION = re.compile(f"^{release_profiles.VERSION}$")
+C8S_VERSION = re.compile(rf"^{release_profiles.VERSION}(?:-beta\.([1-9][0-9]*))?$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
@@ -136,13 +151,14 @@ def read_spec(profile: release_profiles.Profile) -> dict[str, Any]:
 def validate_spec(spec: Any) -> dict[str, Any]:
     require(isinstance(spec, dict), "the release specification is not a mapping")
     require(
-        set(spec) == {"c8s", "model", "publicHostnames"},
-        "the release specification must hold exactly c8s, model, and publicHostnames; the tag is the version",
+        {"c8s", "model", "publicHostnames"} <= set(spec)
+        and set(spec) <= {"c8s", "model", "publicHostnames", "transition"},
+        "the release specification needs c8s, model, and publicHostnames, with optional transition inputs; the tag is the version",
     )
     c8s = spec["c8s"]
     require(isinstance(c8s, dict), "c8s must be a mapping")
     require(isinstance(c8s.get("release"), str) and C8S_VERSION.fullmatch(c8s["release"]) is not None,
-            "c8s.release must be vX.Y.Z")
+            "c8s.release must be vX.Y.Z or vX.Y.Z-beta.N")
     require(isinstance(c8s.get("sourceCommit"), str) and COMMIT.fullmatch(c8s["sourceCommit"]) is not None,
             "c8s.sourceCommit must be a full Git commit")
     node = c8s.get("nodeImage", {})
@@ -185,8 +201,10 @@ def render_chart(
     return [item for item in yaml.safe_load_all(result.stdout) if isinstance(item, dict)]
 
 
-def read_allowlist_policy(path: Path) -> dict[str, Any]:
+def read_allowlist_policy(path: Path, release_id: str = "") -> dict[str, Any]:
     policy = read_json(path)
+    if release_id:
+        policy = release_profiles.policy_for_release(policy, release_id)
     require(isinstance(policy, dict) and policy.get("schema") == ALLOWLIST_GENERATOR["POLICY_SCHEMA"],
             f"{path.name} has the wrong schema")
     chart = policy.get("chart")
@@ -251,19 +269,37 @@ def require_allowlist_contract(
     core_images: list[str],
     documents: list[dict[str, Any]],
     image_configs: dict[str, Any],
+    c8s_release: str | None = None,
+    core_seed: dict[str, Any] | None = None,
+    native_core: dict[str, Any] | None = None,
 ) -> None:
     rendered = ALLOWLIST_GENERATOR["controllers"](documents)
     policy_controllers = {item["controller"] for item in policy["workloads"]}
     require(set(rendered) == policy_controllers,
             f"rendered controllers differ from allowlist policy: rendered={sorted(rendered)} policy={sorted(policy_controllers)}")
     expected_names = {item["name"] for item in policy["workloads"]}
-    expected_names |= {ALLOWLIST_GENERATOR["floor_entry"](image)[0] for image in core_images}
+    if ALLOWLIST_GENERATOR["c8s_at_least"](c8s_release, ALLOWLIST_GENERATOR["SEED_PINS_COMPONENTS_SINCE"]):
+        expected_names |= set(core_seed or {})
+    else:
+        expected_names |= {ALLOWLIST_GENERATOR["floor_entry"](image)[0] for image in core_images}
+    expected_names |= set(native_core or {})
     workloads = allowlist.get("workloads")
     require(isinstance(workloads, dict) and set(workloads) == expected_names,
             "the allowlist entries differ from the profile allowlist policy")
     core_digests = {OCI.fullmatch(image).group(2) for image in core_images}
-    injected = ALLOWLIST_GENERATOR["INJECTED_ENTRYPOINTS"]
     effective_process = ALLOWLIST_GENERATOR["effective_process"]
+    if ALLOWLIST_GENERATOR["c8s_at_least"](c8s_release, (0, 44, 0)):
+        expected_core = ALLOWLIST_GENERATOR["core_entries"](core_images, image_configs, c8s_release, core_seed or {})
+        for name, expected in expected_core.items():
+            require(workloads[name] == expected,
+                    f"core entry {name} differs from the component ENTRYPOINT pin or baked seed")
+    # CDS sorts process rules when it makes canonical policy bytes.
+    # Compare the exact native rules in the same pinned canonical form.
+    canonical_native = json.loads(ALLOWLIST_GENERATOR["canonicalize"](
+        {"schema": "c8s.allowlist/v1", "workloads": native_core}, None))["workloads"] if native_core else {}
+    for name, expected in canonical_native.items():
+        require(workloads[name] == expected,
+                f"native entry {name} differs from the pinned node integration render")
     for item in policy["workloads"]:
         pod = rendered[item["controller"]]["spec"]["template"]["spec"]
         expected_processes = []
@@ -276,7 +312,7 @@ def require_allowlist_contract(
             except ALLOWLIST_GENERATOR["GenerationError"] as error:
                 raise ManifestError(f"{item['controller']}: {error}") from error
             command, args = process["command"], process.get("args", [])
-            if match.group(2) in core_digests and command and command[0] in injected:
+            if ALLOWLIST_GENERATOR["is_carved_out"](process, core_digests, c8s_release):
                 continue
             expected_processes.append((match.group(2), command, args))
         actual_processes = []
@@ -293,7 +329,10 @@ def require_allowlist_contract(
                 command_policy.get("argv"),
                 args_policy.get("argv", []) if args_policy.get("policy") == "exact" else [],
             ))
-        require(actual_processes == expected_processes,
+        # C8s canonicalization sorts rules by digest. Compare all exact
+        # processes with duplicate counts, independent of chart order.
+        process_key = lambda process: json.dumps(process, sort_keys=True)
+        require(sorted(actual_processes, key=process_key) == sorted(expected_processes, key=process_key),
                 f"allowlist workload {item['name']} process differs from the rendered profile")
 
 
@@ -330,6 +369,62 @@ def chart_identity(chart: Path) -> dict[str, str]:
     return {"name": meta["name"], "version": str(meta["version"]), "treeSha256": "sha256:" + digest.hexdigest()}
 
 
+CHART_REPOSITORY = "ghcr.io/confidential-dot-ai/confidential-inference/charts"
+# The profile whose release packages the chart. The other profile's release of
+# the same source commit binds that package (staging_chart_binding).
+PACKAGING_PROFILE = "staging"
+
+
+def chart_version(tag: str, profile: release_profiles.Profile) -> str:
+    """The package version: the tag without `v` and without the profile suffix.
+
+    One package per source commit: vX.Y.Z-staging and vX.Y.Z share version
+    X.Y.Z. The tag has the form release_profiles.for_tag accepted.
+    """
+    require(release_profiles.for_tag(tag).name == profile.name, f"tag {tag} does not fit profile {profile.name}")
+    final_tag = release_profiles.workload_release(tag)
+    return final_tag[1:len(final_tag) - len(profile.tag_suffix)]
+
+
+def chart_reference(name: str, version: str) -> str:
+    """The OCI reference of the chart package, by version. The archive digest identifies its bytes."""
+    return f"{CHART_REPOSITORY}/{name}:{version}"
+
+
+def chart_metadata(chart_yaml: bytes, version: str) -> bytes:
+    """Chart.yaml of the package: the chart's file with its version line set to `version`.
+
+    A text substitution, not a YAML dump, so the bytes depend on the tagged file alone.
+    """
+    text = chart_yaml.decode()
+    lines = [line for line in text.splitlines(keepends=True) if re.match(r"^version:", line)]
+    require(len(lines) == 1, "Chart.yaml must set version once at the top level")
+    return text.replace(lines[0], f"version: {version}\n", 1).encode()
+
+
+def package_chart(chart: Path, name: str, version: str) -> bytes:
+    """The chart package `<name>-<version>.tgz` of the tree at `chart`.
+
+    The package is a function of the tagged tree and the version alone: entries
+    in sorted path order with TarInfo's fixed metadata (mode 0644, uid and gid
+    0, mtime 0, no names), gzip without a name or time. helm package rewrites
+    Chart.yaml and records file times, so its archive is not reproducible; this
+    one is, so the local build and the signed release have the same bytes, as
+    every other release file does. Helm reads it like any chart archive.
+    """
+    files = {p.relative_to(chart).as_posix(): p.read_bytes() for p in chart.rglob("*") if p.is_file()}
+    require("Chart.yaml" in files, "the chart has no Chart.yaml")
+    files["Chart.yaml"] = chart_metadata(files["Chart.yaml"], version)
+    out = io.BytesIO()
+    with gzip.GzipFile(fileobj=out, mode="wb", mtime=0) as gz, \
+            tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for path in sorted(files):
+            info = tarfile.TarInfo(f"{name}/{path}")
+            info.size = len(files[path])
+            tar.addfile(info, io.BytesIO(files[path]))
+    return out.getvalue()
+
+
 def source_lock_entry(lock: dict[str, Any], commit: str) -> dict[str, Any]:
     entries = [lock, *lock.get("commits", [])]
     matches = [entry for entry in entries if entry.get("commit") == commit]
@@ -359,8 +454,16 @@ def node_measurements(path: Path, spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def image_names(values: dict[str, Any], images: list[str]) -> dict[str, str]:
-    """Name each rendered image by its key in the values `images` map."""
-    named = {key: value for key, value in values.get("images", {}).items() if value in images}
+    """Name rendered images and registered product artifacts in the values map.
+
+    A private deployment can install a collector separately from this chart.
+    Its image still needs a signed release pin and verified publication evidence.
+    """
+    registered = {f"{release_profiles.REPOSITORY_IMAGES}{image.image}"
+                  for image in IMAGE_SELECTOR["IMAGES"]}
+    named = {key: value for key, value in values.get("images", {}).items()
+             if value in images or (isinstance(value, str) and OCI.fullmatch(value)
+                                    and value.rsplit("@", 1)[0] in registered)}
     unnamed = sorted(set(images) - set(named.values()))
     require(not unnamed, f"rendered images with no name in values.images: {unnamed}")
     return dict(sorted(named.items()))
@@ -427,6 +530,153 @@ def download_base_release(tag: str, directory: Path) -> tuple[Path, Path]:
     return paths
 
 
+def signed_release(tag: str, directory: Path, what: str) -> dict[str, Any]:
+    """Return the manifest of release `tag` after verifying its signature.
+
+    The build downloads the manifest and its Sigstore bundle into `directory`
+    (download_base_release), requires a valid release signature, and requires
+    the manifest to be of the schema and to name `tag`. `what` names the
+    release in errors.
+    """
+    manifest_path, signature_path = download_base_release(tag, directory)
+    cosign = shutil.which("cosign")
+    require(cosign is not None, f"verifying {what} needs cosign")
+    try:
+        release_signature.verify_release_signature(manifest_path, signature_path, Path(cosign).resolve(), 60)
+    except (OSError, release_signature.ReleaseSignatureError) as error:
+        raise ManifestError(f"{what} signature: {error}") from error
+    manifest = read_json(manifest_path)
+    validate_schema(manifest)
+    require(manifest["release"]["name"] == tag, f"the manifest of {what} {tag} names a different release")
+    return manifest
+
+
+def signed_allowlist(tag: str, directory: Path) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Verify the source release and its exact policy asset before composition."""
+    manifest = signed_release(tag, directory, "the transition input release")
+    path = directory / "allowlist.json"
+    if not path.is_file():
+        path.write_bytes(fetch(f"{REPOSITORY}/releases/download/{tag}/allowlist.json"))
+    raw = path.read_bytes()
+    require(sha256(raw) == manifest["allowlist"]["sha256"],
+            f"{tag} allowlist bytes differ from its signed manifest")
+    document = json.loads(raw)
+    require(document.get("schema") == "c8s.allowlist/v1" and isinstance(document.get("workloads"), dict),
+            f"{tag} has an invalid allowlist")
+    return manifest, document, sha256((directory / "release-bundle.json").read_bytes())
+
+
+def compose_transition_policy(old: dict[str, Any], new: dict[str, Any],
+                              helpers: dict[str, Any],
+                              permitted_images: set[str]) -> dict[str, Any]:
+    """Compose all reviewed states once. Never rename a conflicting identity."""
+    result: dict[str, Any] = {"schema": "c8s.allowlist/v1", "workloads": {}}
+    require(isinstance(helpers, dict), "transition helpers must be named workload definitions")
+    for document in (old, new):
+        require(set(document) == {"schema", "workloads"} and document["schema"] == "c8s.allowlist/v1"
+                and isinstance(document["workloads"], dict), "unsupported transition policy shape")
+    require(not set(helpers) & (set(old["workloads"]) | set(new["workloads"])),
+            "transition helpers must have separate workload identities")
+    for source in (old["workloads"], new["workloads"], helpers):
+        for name, entry in source.items():
+            require(name not in result["workloads"] or result["workloads"][name] == entry,
+                    f"transition workload {name} has conflicting definitions; use distinct replacement identities")
+            for container in entry.get("initContainers", []) + entry.get("containers", []):
+                require(container.get("image") in permitted_images,
+                        f"transition workload {name} has no approved release image: {container.get('image')}")
+                match = OCI.fullmatch(container["image"])
+                require(match is not None and container.get("digest") == match.group(2),
+                        f"transition workload {name} image and digest differ")
+                if source is helpers:
+                    require(all(container.get(field, {}).get("policy") in {"exact", "deny"}
+                                for field in ("command", "args", "env", "mounts")),
+                            f"transition helper {name} must have exact process, environment and mount policies")
+            result["workloads"][name] = entry
+    return result
+
+
+def resolve_transition_helpers(helpers: Any, images: dict[str, str], tag: str | None = None) -> dict[str, Any]:
+    """Resolve helper image keys through the verified release image inventory."""
+    require(isinstance(helpers, dict), "transition helpers must be a mapping")
+    result = json.loads(json.dumps(helpers))
+    replacements = {}
+    if tag is not None:
+        workload_tag = release_profiles.workload_release(tag).replace('.', '-')
+        replacements = {'${GATEWAY_WORKLOAD_ID}': 'gateway-'+workload_tag,
+                        '${ROUTER_WORKLOAD_ID}': 'router-'+workload_tag}
+    for name, entry in result.items():
+        require(isinstance(entry, dict), f"transition helper {name} is not a workload definition")
+        for container in entry.get("initContainers", []) + entry.get("containers", []):
+            values = container.get('env', {}).get('values', {})
+            for variable, value in values.items():
+                require(isinstance(value, str), f"transition helper {name} has a non-string environment value")
+                for marker, replacement in replacements.items():
+                    value = value.replace(marker, replacement)
+                require('${' not in value, f"transition helper {name} has an unresolved environment marker")
+                values[variable] = value
+            key = container.pop("imageKey", None)
+            if key is None:
+                continue
+            require(isinstance(key, str) and key in images,
+                    f"transition helper {name} has an unknown release image key")
+            require("image" not in container and "digest" not in container,
+                    f"transition helper {name} mixes an image key with a manual digest")
+            match = OCI.fullmatch(images[key])
+            require(match is not None, f"transition helper {name} has an unpinned release image")
+            container["image"] = images[key]
+            container["digest"] = match.group(2)
+    return result
+
+
+def transition_policy(tag: str, spec: dict[str, Any], source_commit: str,
+                      generated: bytes, images: dict[str, str], canonical_tool: Path | None,
+                      directory: Path, c8s: Path, profile: release_profiles.Profile
+                      ) -> tuple[bytes, dict[str, Any], dict[str, str]]:
+    """Bind old, final, replacement and helper policy inputs to a transition release."""
+    inputs = spec.get("transition")
+    require(isinstance(inputs, dict) and set(inputs) == {"fromRelease", "helpers"},
+            "a transition release needs fromRelease and exact helper definitions")
+    final_tag = release_profiles.workload_release(tag)
+    require(inputs["fromRelease"] == release_profiles.workload_release(inputs["fromRelease"]),
+            "the prior release must be a final release")
+    require(release_profiles.for_tag(inputs["fromRelease"]).environment == release_profiles.for_tag(tag).environment,
+            "transition input releases belong to different environments")
+    old_manifest, old, old_hash = signed_allowlist(inputs["fromRelease"], directory / "transition-old")
+    new_manifest, new, new_hash = signed_allowlist(final_tag, directory / "transition-final")
+    require(new_manifest["source"]["commit"] == source_commit,
+            "the final and transition releases must use the same source commit")
+    require(old_manifest["c8s"] == new_manifest["c8s"]
+            and old_manifest["nodeImage"] == new_manifest["nodeImage"],
+            "this transition changes a node image or C8s; use a separate reviewed procedure")
+    require(set(images.values()) <= set(new_manifest["images"].values()),
+            "transition replacement images differ from the verified final release")
+    permitted = set(old_manifest["images"].values()) | set(new_manifest["images"].values())
+    for document in (old, new):
+        for entry in document["workloads"].values():
+            permitted.update(c["image"] for c in entry.get("initContainers", []) + entry.get("containers", []))
+    require(json.loads(generated) == new,
+            "transition replacement definitions differ from the signed final policy")
+    helpers = resolve_transition_helpers(inputs["helpers"], images, tag)
+    combined = compose_transition_policy(old, new, helpers, permitted)
+    raw = ALLOWLIST_GENERATOR["canonicalize"](combined, canonical_tool)
+    candidate = directory / "transition-allowlist.json"
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_bytes(raw)
+    ALLOWLIST_GENERATOR["lint"](c8s, candidate,
+                               ALLOWLIST_GENERATOR["read_accepted_findings"](profile.accepted_findings))
+    binding = {
+        "fromRelease": {"name": inputs["fromRelease"], "bundleSha256": old_hash,
+                        "allowlistSha256": old_manifest["allowlist"]["sha256"]},
+        "finalRelease": {"name": final_tag, "bundleSha256": new_hash,
+                         "allowlistSha256": new_manifest["allowlist"]["sha256"]},
+        "helperWorkloads": sorted(helpers),
+    }
+    inventory = dict(images)
+    for index, image in enumerate(sorted(permitted - set(inventory.values()))):
+        inventory[f"transitionInput{index}"] = image
+    return raw, binding, inventory
+
+
 def base_release_images(
     publication: dict[str, Any],
     download_dir: Path,
@@ -446,17 +696,7 @@ def base_release_images(
     source = publication["source"]
     if release_profiles.tag_pattern().fullmatch(source["baseRef"]) is None:
         return {}
-    base_path, signature_path = download_base_release(source["baseRef"], download_dir)
-    cosign = shutil.which("cosign")
-    require(cosign is not None, "verifying the base release needs cosign")
-    try:
-        release_signature.verify_release_signature(base_path, signature_path, Path(cosign).resolve(), 60)
-    except (OSError, release_signature.ReleaseSignatureError) as error:
-        raise ManifestError(f"the base release signature: {error}") from error
-    base = read_json(base_path)
-    validate_schema(base)
-    require(base["release"]["name"] == source["baseRef"],
-            "the base release manifest names a different release than the image publication base")
+    base = signed_release(source["baseRef"], download_dir, "the base release")
     require(base["source"]["commit"] == source["baseRefCommit"],
             "the base release source commit differs from the image publication base commit")
     changed = changed_paths(source["baseRefCommit"], source["commit"], repo)
@@ -467,9 +707,13 @@ def base_release_images(
             "image build inputs changed after the base release, and the publication has no new digest: "
             + ", ".join(unpublished))
     images: dict[str, str] = {}
-    for image in base["images"].values():
+    for key, image in base["images"].items():
+        if "transition" in base and re.fullmatch(r"transitionInput[0-9]+", key):
+            continue
         name, digest = image.rsplit("@", 1)
         if name.startswith(release_profiles.REPOSITORY_IMAGES):
+            require(name not in images or images[name] == digest,
+                    "the base release has ambiguous component image digests")
             images[name] = digest
     return images
 
@@ -538,14 +782,15 @@ def verify_image_source_boundary(
     """Require that no image build input changed from the image source to the release commit.
 
     The release commit is the image source commit, or a later commit that
-    changes no image.
+    changes no image. The selector of the release commit decides what an
+    image input is, here and for the base-to-source check of the build, so
+    a change of the selector itself needs no new images: the whole diff from
+    the base release to the release commit is re-read with the new selector.
     """
     try:
         paths = changed_paths(image_source_commit, release_source_commit, repo)
     except ManifestError as error:
         raise ManifestError(f"the image source commit must be an ancestor of the release commit: {error}") from error
-    require("scripts/affected-release-images.py" not in paths,
-            "the image selector changed after the image source commit")
     affected = IMAGE_SELECTOR["affected_images"](paths)
     require(not affected,
             "image build inputs changed after the image source commit: "
@@ -562,24 +807,29 @@ def build(
     c8s: Path,
     canonical_tool: Path | None,
 ) -> dict[str, bytes]:
-    """Return the release files by name: the manifest, the allowlist, and the values overlay."""
+    """Return the release files by name: the manifest, the allowlist, the values overlay, the
+    profile values files under their asset names and, for a staging release, the chart package."""
     try:
         profile = release_profiles.for_tag(tag)
     except release_profiles.ProfileError as error:
         raise ManifestError(str(error)) from error
     chart = chart.resolve()
+    identity = chart_identity(chart)
+    version = chart_version(tag, profile)
     require(COMMIT.fullmatch(source_commit) is not None, "--source-commit must be a full Git commit")
     spec = read_spec(profile)
     publication_bytes, publication = read_publication(publication_path)
     verify_image_source_boundary(publication["source"]["commit"], source_commit)
     with tempfile.TemporaryDirectory(prefix="base-release-") as directory:
         base = base_release_images(publication, download_dir or Path(directory))
-    policy = read_allowlist_policy(profile.policy)
+    policy = read_allowlist_policy(profile.policy, tag)
     values = release_profiles.read_values(profile)
     require(isinstance(values, dict) and bool(values), "the profile values are not a mapping")
+    node = node_measurements(release_profiles.node_manifest(profile), spec)
     overlay = {
         "images": release_images(values, publication, base),
-        "attestationReceipts": {"releaseId": tag},
+        # cds-attest pins CDS, which runs on the pinned node image (c8s #851).
+        "attestationReceipts": {"releaseId": release_profiles.workload_release(tag), "cdsPin": node["tdx"]},
     }
     overlay_bytes = yaml.safe_dump(overlay, sort_keys=True).encode()
     values = release_profiles.merge_values(values, overlay)
@@ -593,18 +843,23 @@ def build(
         unresolved = [image for image in images if image.startswith(release_profiles.REPOSITORY_IMAGES)
                       and image not in overlay["images"].values()]
         require(not unresolved, f"rendered repository images without a published digest: {unresolved}")
-        configs = image_configs(images)
+        config_images = set(images)
+        if ALLOWLIST_GENERATOR["c8s_at_least"](spec["c8s"]["release"], (0, 44, 0)):
+            config_images.update(spec["c8s"]["coreImages"])
+        configs = image_configs(sorted(config_images))
         try:
             allowlist_bytes = ALLOWLIST_GENERATOR["generate"](
                 profile, c8s, canonical_tool, overlay=overlay_path, image_env=configs,
-            ) + b"\n"
+            )
         except ALLOWLIST_GENERATOR["GenerationError"] as error:
             raise ManifestError(str(error)) from error
     allowlist_path = profile.allowlist
     allowlist = json.loads(allowlist_bytes)
     require(allowlist.get("schema") == "c8s.allowlist/v1", "the allowlist has the wrong schema")
     require_model_files(spec, documents)
-    require_allowlist_contract(allowlist, policy, spec["c8s"]["coreImages"], documents, configs)
+    require_allowlist_contract(allowlist, policy, spec["c8s"]["coreImages"], documents, configs,
+                              spec["c8s"]["release"], ALLOWLIST_GENERATOR["core_seed"](spec["c8s"]),
+                              ALLOWLIST_GENERATOR["native_core_entries"](spec["c8s"], configs))
     allowlisted = {
         container["digest"]
         for entry in allowlist["workloads"].values()
@@ -616,9 +871,27 @@ def build(
     require(lock.get("tag") == spec["c8s"]["release"], "the source lock tag differs from c8s.release")
     node_reference = f"{spec['c8s']['nodeImage']['reference']}@{spec['c8s']['nodeImage']['digest']}"
     require(lock["nodeImage"] == node_reference, "the source lock node image differs from c8s.nodeImage")
-    node = node_measurements(release_profiles.node_manifest(profile), spec)
     named_images = image_names(values, images)
     publication = publication_binding(publication_bytes, publication, named_images)
+    transition_binding = None
+    if "-transition" in tag:
+        with tempfile.TemporaryDirectory(prefix="transition-policy-") as directory:
+            allowlist_bytes, transition_binding, named_images = transition_policy(
+                tag, spec, source_commit, allowlist_bytes, named_images, canonical_tool,
+                download_dir or Path(directory), c8s, profile)
+    files: dict[str, bytes] = {}
+    if profile.name == PACKAGING_PROFILE:
+        archive = package_chart(chart, identity["name"], version)
+        files[f"{identity['name']}-{version}.tgz"] = archive
+        chart_binding = {"archiveSha256": sha256(archive), "reference": chart_reference(identity["name"], version)}
+    else:
+        with tempfile.TemporaryDirectory(prefix="staging-release-") as directory:
+            chart_binding = staging_chart_binding(tag, source_commit, identity["treeSha256"], download_dir or Path(directory))
+    profile_values = []
+    for path in profile.values_files:
+        asset = profile_values_asset(profile.relative(path))
+        files[asset] = path.read_bytes()
+        profile_values.append({"path": profile.relative(path), "sha256": sha256(files[asset]), "asset": asset})
     manifest = {
         "schema": SCHEMA,
         "release": {
@@ -634,9 +907,10 @@ def build(
         "imagePublication": publication,
         "images": named_images,
         "chart": {
-            "name": chart_identity(chart)["name"],
-            "version": chart_identity(chart)["version"],
-            "sha256": chart_identity(chart)["treeSha256"],
+            "name": identity["name"],
+            "version": identity["version"],
+            "sha256": identity["treeSha256"],
+            **chart_binding,
         },
         "c8s": {"release": spec["c8s"]["release"], "sourceCommit": spec["c8s"]["sourceCommit"]},
         # The SHA-256 of release/node-manifest.json, the c8s manifest.json that
@@ -660,14 +934,44 @@ def build(
             "path": profile.release_values.relative_to(ROOT).as_posix(),
             "sha256": sha256(overlay_bytes),
         },
+        "profileValues": profile_values,
         "publicHostnames": spec["publicHostnames"],
     }
+    if transition_binding is not None:
+        manifest["transition"] = transition_binding
     validate_schema(manifest)
     return {
         "release-bundle.json": encode(manifest),
         "allowlist.json": allowlist_bytes,
         "release-values.yaml": overlay_bytes,
+        **files,
     }
+
+
+def profile_values_asset(path: str) -> str:
+    """The release asset name of a profile values file: its repository path with / as -."""
+    return "profile-values-" + path.replace("/", "-")
+
+
+def staging_chart_binding(tag: str, source_commit: str, tree_sha256: str, download_dir: Path) -> dict[str, str]:
+    """Return the chart package that the signed staging release of this source commit binds.
+
+    A production release packages nothing: it promotes the package that
+    staging verified. The build downloads the staging manifest and its
+    Sigstore bundle like a base release, verifies the signature, and requires
+    the same source commit and chart tree.
+    """
+    packaging = next(p for p in release_profiles.load() if p.name == PACKAGING_PROFILE)
+    staging_tag = release_profiles.workload_release(tag) + packaging.tag_suffix
+    try:
+        staging = signed_release(staging_tag, download_dir / "staging-release", "the staging release")
+    except ManifestError as error:
+        raise ManifestError(f"{staging_tag}, the staging release of this commit, is needed for the chart package: {error}") from error
+    require(staging["source"]["commit"] == source_commit, f"{staging_tag} is not a release of source commit {source_commit}")
+    require(staging["chart"]["sha256"] == tree_sha256, f"{staging_tag} packaged another chart tree")
+    require("archiveSha256" in staging["chart"] and "reference" in staging["chart"],
+            f"{staging_tag} binds no chart package; the staging release predates the package. Release it again first.")
+    return {"archiveSha256": staging["chart"]["archiveSha256"], "reference": staging["chart"]["reference"]}
 
 
 def validate_schema(manifest: dict[str, Any]) -> None:
@@ -700,7 +1004,8 @@ def main() -> int:
     parser.add_argument("--canonical-tool", type=Path,
                         help="a built tools/c8s-allowlist-canonical binary")
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--check", action="store_true",
+                        help="fail when a file in --output-dir differs from a new build")
     args = parser.parse_args()
     try:
         files = build(

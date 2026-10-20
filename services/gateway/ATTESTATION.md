@@ -1,94 +1,215 @@
-# Gateway c8s evidence collector
+# Public attestation metadata
 
-The gateway accepts one canonical 32-byte base64url nonce. It rejects padding,
-duplicate nonce sources, reuse, malformed values, and incorrect lengths.
+`GET /attestation` and `GET /v1/attestation` use the same handler.
+They need no API key or nonce. The current response format is version 3.
+The schema also accepts version 2 during gateway replacement.
 
-Each reported workload pod runs the pinned standard `c8s cds-attest` sidecar.
-The sidecar reads the c8s certificate files. Its `--expected-workload` option
-requires the exact admitted workload identity before it becomes ready.
+## Response fields
 
-`GATEWAY_C8S_RECEIPT_TARGETS` supplies the complete target set. Each item has
-this form:
+| Field | Source and purpose |
+| --- | --- |
+| `schemaVersion` | Gateway format version: `3`. |
+| `release.id` | Selected release identifier. |
+| `release.url` | Public release URL. |
+| `release.bundleSha256` | Digest of the release bundle. |
+| `releaseSelection` | Desired release and its match with the reported CDS policy, when runtime selection is enabled. |
+| `c8s.activeAllowlist.document` | Parsed JSON from CDS `/allowlist`. |
+| `c8s.activeAllowlist.sha256` | SHA-256 of the exact CDS response bytes. |
+| `c8s.activeAllowlist.url` | Public allowlist download URL. |
+| `c8s.discovery` | Native C8s discovery, passed through unchanged. |
+| `c8s.operatorKeys` | Active operator public keys, in PEM format. |
 
-```text
-target-name|c8s-workload-name=http://internal-host:port
+When `GATEWAY_INSTANCE_ID` is set, public responses include the
+`X-Confidential-Gateway` header. The rollout monitor uses it to identify the
+answering gateway. It is an operational identifier, not an attestation proof.
+It adds no fields to the JSON response.
+
+There are no workload receipts, GPU fields, nonce, worker list, or separate
+front-door evidence fields. The handler does not contact inference workers,
+SGLang Router, or monitoring pods.
+
+This response helps a client select and review its policy. It does not replace
+verification of the inference connection. Clients that require fail-closed
+enforcement pin their reviewed policy and verify connections through
+TEErminator. Direct HTTPS with periodic verification
+is also possible, but does not enforce those pins on each inference connection.
+See [client verification](../../docs/verification.md) for commands and trust inputs.
+
+For a dynamic deployment, the reviewed live policy can differ from the initial
+policy in the signed software release. Use `--metadata-only --release-allowlist`
+with the signed release's `allowlist.json`. Give the separately reviewed live
+policy to `--allowlist`. The verifier still checks the release signature, node
+measurements, source lock, and signed initial policy. It checks the live
+response against the exact reviewed live policy bytes. It does not claim that
+the release signature covers later policy changes. Without this explicit
+option, the live policy must equal the signed initial policy.
+
+## CDS verification
+
+`GATEWAY_C8S_CDS_URL` selects the CDS HTTPS origin.
+`GATEWAY_C8S_IMAGE_POLICY` selects the control-node-only image-policy file.
+`GATEWAY_C8S_IMAGE_POLICY_SHA256` pins its exact bytes in the admitted inputs.
+`GATEWAY_C8S_SERVED_IMAGE_POLICY` selects the full policy that CDS enforces.
+`GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256` pins that file.
+The two pins may instead come from the release identity file
+(`cdsImagePolicySha256` and `cdsServedImagePolicySha256`, both or neither,
+and not together with the environment). A deployment whose served policy
+carries a per-rebuild launch anchor cannot pin the files in its exact
+allowlist; the identity file already carries its operator-key pins, so the
+policy pins are then as trusted as those.
+The target policy must contain one reviewed control-node identity. Agent keys
+must not identify CDS. Both files have byte limits. The verifier reads private
+copies of the checked bytes. A later ConfigMap change cannot change those pins.
+The gateway rejects changed files before it starts the verifier.
+
+The gateway uses the pinned C8s verifier to verify CDS hardware evidence and
+the image policy. It reads policy and public keys only over a connection whose
+TLS certificate equals the verified CDS certificate. Redirects are refused.
+The public-key fingerprints must equal the set read by the verifier.
+A missing key set is accepted only when CDS reports that writes are disabled.
+A connection or verification error is not an empty key set.
+
+The runtime `evidence` object selects the front door for native discovery.
+`baseUrl` is an HTTPS origin. Its hostname remains the expected TLS name.
+The optional `connectHost` selects a connection address without changing that
+name or the TLS port. Omitting `connectHost` uses normal DNS for the origin.
+Discovery keeps certificate checks enabled and refuses redirects.
+
+Without runtime `evidence`, `GATEWAY_C8S_EVIDENCE_BASE_URL` and
+`GATEWAY_C8S_EVIDENCE_CONNECT_HOST` remain startup fallbacks for existing
+installations. If no startup URL is set, runtime `evidence` is required and
+cannot be removed by a later update. CDS addresses and trust pins remain
+startup inputs.
+
+## Load protection
+
+The handler reuses the gateway request-rate, address-concurrency, and
+attestation-concurrency limits. Its cache lasts 10 seconds by default, with a
+maximum of 30 seconds. Concurrent requests share one refresh. A failed refresh
+has a one-second cooldown. Expired successful data is never returned on error.
+Refresh waits, upstream requests, verifier output, policy files, and response
+bodies have limits. A failed refresh returns 503 with `Retry-After: 1`.
+The response has `Cache-Control: no-store, max-age=0`.
+
+## Runtime release selection
+
+`GATEWAY_RELEASE_SELECTION_FILE` selects a mounted configuration file.
+It contains `schemaVersion: 1`, an increasing `revision`,
+`selectedBundleSha256`, and `releaseBundles`. Each bundle is a JSON string
+that preserves the exact bytes of its signed release asset. Deployment tools
+verify signatures and build evidence before they write this configuration.
+The gateway derives the release name, public URL, bundle hash, and policy hash
+from these bytes. It does not download an asset during a request.
+
+The selected bundle takes precedence when several releases share a policy.
+If the reported CDS policy matches another unique configured bundle, the
+gateway reports that release and marks the desired selection as pending.
+If no unique bundle matches, `release` is null and `releaseSelection.status`
+is `pending`. The client verifier rejects that state. The CDS allowlist stays
+in the response. A desired release is not a claim that its policy is enforced.
+
+The file watcher watches the mount directory. A five-second polling fallback
+handles missed events. Configuration status is available at `/release-config`
+on the private metrics listener. It shows desired and accepted revisions,
+hashes, and errors. These fields are operational information, not TEE evidence.
+Invalid updates retain the accepted configuration. Invalid startup data stops
+startup. A rollback writes the previous contents with a new revision.
+
+`GATEWAY_RUNTIME_CONFIG_FILE` selects the gateway settings file. It controls
+the model catalog and admitted models, body limit, request timeouts, capacity
+and queue limits, request rate, attestation cache duration, and evidence addresses. The accepted
+status is at `/runtime-config` on the same private listener. Each request
+keeps its model and timeout snapshot. A capacity decrease preserves active
+permits and blocks new admission until usage falls. Queued requests keep
+their deadline and use the current execution capacity. HTTP clients, rate
+windows, and request counters are not replaced on reload.
+
+To change the evidence address during candidate promotion, update the existing
+runtime ConfigMap. Keep all other settings and increase `revision`. For example,
+the `settings.json` document can contain:
+
+```json
+"evidence": {
+  "baseUrl": "https://candidate.api.example.test",
+  "connectHost": "c8s-router.c8s-system.svc.cluster.local"
+}
 ```
 
-The gateway sorts targets by name. It fails closed when a target is missing,
-unready, malformed, or bound to another nonce. A release bundle records the
-same target-to-workload bindings. The independent verifier compares the full
-response with those bindings.
+After the front door has a valid certificate for the production hostname,
+change `baseUrl` to `https://api.example.test` with another increased revision.
+Use the existing Kubernetes API access to apply the ConfigMap. Do not put the
+file under a `subPath` mount. Check the accepted revision and errors at the
+private `/runtime-config` endpoint, then check public `/attestation`.
+No reload request or temporary pod is needed.
 
-`GATEWAY_C8S_EVIDENCE_BASE_URL` names the c8s TLS-LB front door. The gateway
-reads `/v1/discovery` and `/allowlist` from this URL. These routes must be
-served by the c8s evidence front door. The gateway does not read pod
-status or other Kubernetes control-plane claims.
+The next metadata request after an accepted address change drops the old
+successful cache or failure cooldown and creates a client for the new address.
+Later refreshes reuse that client. A refresh already in progress finishes with
+its old address snapshot. A change to another setting retains the client and
+cache. Invalid configuration retains the last accepted settings. An unreachable
+address or a TLS failure returns 503; it does not disable verification or
+silently use the old address. The runtime status reports configuration
+acceptance, not a successful network or attestation check. CDS trust pins and
+startup TLS roots do not change with these addresses.
 
-The gateway accepts both c8s allowlist document shapes. The branch-pinned c8s
-serves a top-level `digests` floor map; c8s main line (c8s#551) folds those
-digests into per-workload entries and serves no `digests` key. In both shapes
-the static policy digest commits to the exact served document, and each
-admitted launch is read from the per-workload entries.
+The optional `routerService` setting selects `sglang-router` or a Service
+whose name starts with `router-`. It needs the fixed startup input
+`GATEWAY_ROUTER_NAMESPACE` and direct-router mode. It cannot select another
+namespace, port, or external URL. New requests use the new Service hostname.
+Active requests keep their old target and HTTP connection. The HTTP client
+keeps separate connection pools for the two hostnames.
+The target keeps the startup protocol and port.
 
-The response also includes:
+`gateway_router_requests_active` counts authenticated requests that retain
+each router target. This includes body reads, queued requests, and open
+streams. Deployment must check this counter as well as the old router's
+active-request counter before removal. A ready new router alone does not
+prove that the old route has drained.
 
-- The selected public release identifier and bundle digest.
-- The exact active allowlist and its canonical digest.
-- The exact admitted image and command policy for each receipt.
-- The mesh CA fingerprint carried by each nonce-bound receipt.
-- The active policy mode: `operator` or `static`.
-- Operator public-key evidence when operator policy is active.
-- The expected and active allowlist digests when static policy is active.
-- The GPU evidence status exposed by the selected c8s protocol.
+Runtime status also reports `retiredSnapshotReaders`. Old requests and streams
+keep their configuration snapshot until they close. When removing a model,
+stop new gateway admission first. Wait until the previous snapshot readers
+reach zero before removing its router alias. This allows traffic for other
+models to continue. Reload waits if 64 old snapshots still have readers; the
+polling fallback retries after requests drain.
 
-Set `GATEWAY_C8S_POLICY_MODE` to `static` for the sealed production policy.
-Set `GATEWAY_EXPECTED_STATIC_ALLOWLIST_SHA256` to the canonical digest of the
-allowlist that is sealed into the measured c8s node image. In this mode, c8s
-has no operator key for admission policy and does not permit policy updates.
-The node still measures the published operator public key into RTMR3 at
-launch, and the offline verifier still pins RTMR3 to that key's hash. This
-proves the node launched bound to that key and no other, even though the
-key plays no role in admission decisions.
+Secrets, CDS trust pins, authentication settings, listener settings, and
+worker initialization remain startup inputs. Mount configuration directories
+without `subPath`. Use `<mount>/file.json`, not a timestamp directory, as the
+configured path. ConfigMap contents are not C8s image measurements. Clients
+must still verify the signed release and the inference connection.
 
-Legacy operator mode remains available. Set
-`GATEWAY_EXPECTED_OPERATOR_PUBLIC_KEY_SHA256` to the expected member key's
-SPKI digest and `GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256` to the release's
-canonical key-set digest. Both values are required. They are public policy
-identifiers, not private keys.
+The existing metrics endpoint reports attestation response counts, response
+duration, cache hits, refresh results, and failure cooldowns. Rejections use the
+existing rejection counters. No client keys or policy bytes are metric labels.
+These controls limit gateway load. They do not prevent network saturation.
 
-The response carries raw evidence. It is not a verification result. Use
-`scripts/verify-public-attestation.py` with separately held release data.
-The verifier runs the exact pinned c8s verifier. It parses and checks MRTD,
-RTMR1, RTMR2, RTMR3, the debug flag, the mesh chain, and each workload stamp.
+## Metadata verification
 
-For `public_tls.mode: acme`, c8s creates the TLS key inside the TEE and gets a
-public certificate through ACME. c8s binds the serving certificate and the
-front-door mode into a separate `/.well-known/c8s/attest-lb` receipt. The
-gateway keeps this receipt separate from each workload receipt. The offline
-verifier compares this evidence with the TLS certificate from the live
-connection. The older `cds` and `tee-webpki` modes use the same receipt path.
+Use `scripts/verify-public-attestation.py --metadata-only` with the trusted
+release and exact policy bytes to check version 3 metadata. The tool verifies
+the release signature and compares the reported release and policy with the
+held inputs. Operator-key pins are optional client inputs.
 
-In static policy mode, the c8s verifier checks that the mesh CA contains the
-expected sealed allowlist digest and valid TEE evidence. In operator mode, the
-gateway also checks the same operator key set in every receipt. It calculates
-the key-set digest as `SHA256("c8s-operator-key-set-v1\\0" || sorted unique
-SHA256(SPKI-DER))`.
+The output reports `metadataMatchesTrustedInputs: true` and
+`connectionVerified: false`. A metadata match is not proof of an inference
+connection. Use TEErminator for that separate check. The tool refuses version
+3 in its old receipt-verification mode. It does not report a missing receipt
+as a successful cryptographic verification.
 
-A GPU release target must declare `gpu` in its release workload. The source
-lock states how its c8s version enforces that policy.
+## Version 2 overlap
 
-Older c8s entries use `receipt-evidence`. The gateway copies `gpu_attested`
-and `nvidia_gpu` from each worker receipt. The offline verifier calls the c8s
-GPU verifier with the CPU-report-derived nonce. It requires `gpu_verified` and
-`nonce_binding_ok`.
+The contract retains version 2 for checks against an old gateway during an
+update. That format includes nonce-bound workload receipts. The new process
+uses version 3 only. Rollout checks must select verification by response
+version and must keep inference-connection verification independent of the
+metadata response.
 
-c8s v0.26.5 uses `measured-boot-gate`. The measured node image checks every
-passed-through GPU before RKE2 starts. The required systemd unit blocks RKE2
-and powers off the node if the check fails. The verdict stays inside the node,
-so the gateway reports `not-exposed-by-c8s`. The offline verifier verifies the
-measured node image and does not require raw NVIDIA evidence or an external
-GPU attestation CLI for this mode. The c8s source lock pins the boot-gate
-script, unit, and preset.
+## Customer procedure
 
-The response proves launch or admission facts. It does not prove current
-liveness, request routing, mounts, environment values, or model use.
+Read [client verification](../../docs/verification.md) for release downloads,
+metadata checks, full allowlist pinning, Intel collateral policy, and the GPU
+boot gate. A workload certificate binds the policy at issuance. The metadata
+cache and fresh connection proof do not make policy updates instantaneous.
+The current contract retains operator-managed updates; it does not promise
+zero Kubernetes API rights.

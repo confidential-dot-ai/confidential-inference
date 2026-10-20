@@ -1,3 +1,5 @@
+FROM ghcr.io/confidential-dot-ai/c8s-operator@sha256:0b86d0541d101e259e7879706bc68acf32fd084603b6180577bc53bdc99a796c AS c8s-verifier
+
 FROM docker.io/library/rust@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55 AS build
 
 WORKDIR /workspace
@@ -35,6 +37,7 @@ LABEL ai.confidential.build.rust.digest="sha256:6ae102bdbf528294bc79ad6e1fae682f
 LABEL ai.confidential.build.source-date-epoch="${SOURCE_DATE_EPOCH}"
 
 COPY --from=build --chown=65532:65532 /out/confidential-gateway /usr/local/bin/confidential-gateway
+COPY --from=c8s-verifier --chown=65532:65532 /c8s /usr/local/bin/c8s
 
 USER 65532:65532
 EXPOSE 9443 9090

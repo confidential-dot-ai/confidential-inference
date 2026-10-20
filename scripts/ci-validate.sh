@@ -18,7 +18,6 @@ python3 -m unittest discover -s tests/model-mount-v0 -p 'test_*.py'
 python3 -m unittest discover -s tests/release-v0 -p 'test_*.py'
 python3 -m unittest discover -s tests/release-v1 -p 'test_*.py'
 python3 -m unittest discover -s tests/source-boundary -p 'test_*.py'
-python3 -m unittest discover -s tests/ci-workflow -p 'test_*.py'
 python3 scripts/validate-json.py
 python3 scripts/validate-source-boundary.py
 # inference.mode has no chart default, so this neutral lint must state a

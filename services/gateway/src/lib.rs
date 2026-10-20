@@ -27,9 +27,16 @@ use uuid::Uuid;
 pub mod admin_auth;
 pub mod api_keys;
 pub mod attestation;
+pub mod attestation_metadata;
+mod capacity;
 pub mod key_registry;
 pub mod metrics;
+mod model_response;
 pub mod protection;
+pub mod release_settings;
+pub mod runtime_config;
+pub mod runtime_settings;
+pub mod usage;
 
 use metrics::GatewayMetrics;
 use protection::{ProtectionConfig, ProtectionState};
@@ -130,6 +137,10 @@ pub struct GatewayConfig {
 #[derive(Clone)]
 struct AppState {
     config: GatewayConfig,
+    runtime: Option<Arc<runtime_config::MountedConfig<runtime_settings::GatewaySettings>>>,
+    router_namespace: Option<String>,
+    fixed_router_label: String,
+    router_origin: Option<(String, u16)>,
     http: reqwest::Client,
     keys: Arc<dyn ApiKeyVerifier>,
     audit: Arc<dyn AuditSink>,
@@ -138,10 +149,15 @@ struct AppState {
     attestation_provider: Arc<dyn AttestationProvider>,
     nonces: Arc<Mutex<NonceStore>>,
     protection: Arc<ProtectionState>,
+    usage: Option<Arc<usage::Recorder>>,
 }
 
 #[async_trait::async_trait]
 pub trait AttestationProvider: Send + Sync + 'static {
+    /// Legacy evidence needs a caller nonce; policy metadata does not.
+    fn requires_nonce(&self) -> bool {
+        true
+    }
     /// Create evidence for one caller nonce.
     ///
     /// # Errors
@@ -150,7 +166,7 @@ pub trait AttestationProvider: Send + Sync + 'static {
     async fn response(&self, nonce: &[u8; 32]) -> Result<Value, AttestationError>;
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum AttestationError {
     /// The producer could not reach or read an upstream evidence source. The
     /// string names the step that failed and carries no evidence bytes.
@@ -211,10 +227,81 @@ pub fn router(
     attestation_provider: Arc<dyn AttestationProvider>,
     http: reqwest::Client,
 ) -> Router {
-    let maximum_body_bytes = config.maximum_body_bytes;
-    let protection = Arc::new(ProtectionState::new(config.protection.clone()));
+    router_with_runtime(
+        config,
+        keys,
+        audit,
+        metrics,
+        availability,
+        attestation_provider,
+        http,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn router_with_runtime(
+    config: GatewayConfig,
+    keys: Arc<dyn ApiKeyVerifier>,
+    audit: Arc<dyn AuditSink>,
+    metrics: Arc<GatewayMetrics>,
+    availability: GatewayAvailability,
+    attestation_provider: Arc<dyn AttestationProvider>,
+    http: reqwest::Client,
+    runtime: Option<Arc<runtime_config::MountedConfig<runtime_settings::GatewaySettings>>>,
+    router_namespace: Option<String>,
+) -> Router {
+    router_with_runtime_and_usage(
+        config,
+        keys,
+        audit,
+        metrics,
+        availability,
+        attestation_provider,
+        http,
+        runtime,
+        router_namespace,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn router_with_runtime_and_usage(
+    config: GatewayConfig,
+    keys: Arc<dyn ApiKeyVerifier>,
+    audit: Arc<dyn AuditSink>,
+    metrics: Arc<GatewayMetrics>,
+    availability: GatewayAvailability,
+    attestation_provider: Arc<dyn AttestationProvider>,
+    http: reqwest::Client,
+    runtime: Option<Arc<runtime_config::MountedConfig<runtime_settings::GatewaySettings>>>,
+    router_namespace: Option<String>,
+    usage: Option<Arc<usage::Recorder>>,
+) -> Router {
+    let maximum_body_bytes = if runtime.is_some() {
+        8 * 1024 * 1024
+    } else {
+        config.maximum_body_bytes
+    };
+    let protection =
+        Arc::new(ProtectionState::new(config.protection.clone()).with_runtime(runtime.clone()));
+    let fixed_router_label = url::Url::parse(&config.upstream_base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "fixed-router".into());
+    let router_origin = url::Url::parse(&config.upstream_base_url)
+        .ok()
+        .and_then(|url| {
+            url.port_or_known_default()
+                .map(|port| (url.scheme().to_owned(), port))
+        });
     let state = Arc::new(AppState {
         config,
+        runtime,
+        router_namespace,
+        fixed_router_label,
+        router_origin,
         http,
         keys,
         audit,
@@ -223,6 +310,7 @@ pub fn router(
         attestation_provider,
         nonces: Arc::new(Mutex::new(NonceStore::default())),
         protection: protection.clone(),
+        usage,
     });
     Router::new()
         .route("/health", get(health))
@@ -290,10 +378,103 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response<Body> {
     (StatusCode::OK, Json(json!({"status":"ready"}))).into_response()
 }
 
+struct RequestConfig<'a> {
+    base: &'a GatewayConfig,
+    runtime: Option<Arc<runtime_settings::GatewaySettings>>,
+    router_namespace: Option<&'a str>,
+    fixed_router_label: &'a str,
+    router_origin: Option<(&'a str, u16)>,
+}
+
+impl RequestConfig<'_> {
+    fn router_label(&self) -> String {
+        match (
+            self.runtime
+                .as_ref()
+                .and_then(|settings| settings.router_service.as_ref()),
+            self.router_namespace,
+        ) {
+            (Some(service), Some(namespace)) => format!("{service}.{namespace}.svc.cluster.local"),
+            _ => self.fixed_router_label.to_owned(),
+        }
+    }
+    fn upstream_url(&self, route: &str) -> Option<String> {
+        if let Some(service) = self
+            .runtime
+            .as_ref()
+            .and_then(|settings| settings.router_service.as_ref())
+        {
+            let namespace = self.router_namespace?;
+            let (scheme, port) = self.router_origin?;
+            // The namespace and port are startup trust inputs. Runtime data
+            // can select only a router Service in this namespace.
+            return Some(format!(
+                "{scheme}://{service}.{namespace}.svc.cluster.local:{port}{route}"
+            ));
+        }
+        Some(format!("{}{route}", self.base.upstream_base_url))
+    }
+    fn catalog_model_ids(&self) -> &[String] {
+        self.runtime
+            .as_ref()
+            .map_or(&self.base.catalog_model_ids, |value| {
+                &value.catalog_model_ids
+            })
+    }
+    fn inference_model_ids(&self) -> &[String] {
+        self.runtime
+            .as_ref()
+            .map_or(&self.base.inference_model_ids, |value| {
+                &value.inference_model_ids
+            })
+    }
+    fn maximum_body_bytes(&self) -> usize {
+        self.runtime
+            .as_ref()
+            .map_or(self.base.maximum_body_bytes, |value| {
+                value.maximum_body_bytes
+            })
+    }
+    fn upstream_timeout(&self) -> Duration {
+        self.runtime
+            .as_ref()
+            .map_or(self.base.upstream_timeout, |value| {
+                Duration::from_secs(value.upstream_timeout_seconds)
+            })
+    }
+    fn body_timeout(&self) -> Duration {
+        self.runtime
+            .as_ref()
+            .map_or(self.base.protection.body_timeout, |value| {
+                Duration::from_secs(value.body_timeout_seconds)
+            })
+    }
+    fn stream_idle_timeout(&self) -> Duration {
+        self.runtime
+            .as_ref()
+            .map_or(self.base.protection.stream_idle_timeout, |value| {
+                Duration::from_secs(value.stream_idle_timeout_seconds)
+            })
+    }
+}
+
+fn request_config(state: &AppState) -> RequestConfig<'_> {
+    RequestConfig {
+        base: &state.config,
+        runtime: state.runtime.as_ref().map(|source| source.snapshot()),
+        router_namespace: state.router_namespace.as_deref(),
+        fixed_router_label: &state.fixed_router_label,
+        router_origin: state
+            .router_origin
+            .as_ref()
+            .map(|(scheme, port)| (scheme.as_str(), *port)),
+    }
+}
+
 async fn models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response<Body> {
-    let models: Vec<_> = state
-        .config
-        .catalog_model_ids
+    let config = request_config(&state);
+    let models: Vec<_> = config
+        .catalog_model_ids()
         .iter()
         .map(|id| json!({"id":id,"object":"model","owned_by":"confidential.ai"}))
         .collect();
@@ -320,6 +501,8 @@ async fn proxy_inference(
     request: Request,
     route: &'static str,
 ) -> Response<Body> {
+    // Capture once. An accepted update cannot change an active request or stream.
+    let config = request_config(&state);
     let request_id = request
         .extensions()
         .get::<String>()
@@ -347,9 +530,10 @@ async fn proxy_inference(
         Authentication::Invalid => return unauthorized(&state),
     };
     let started = Instant::now();
+    let router_request = state.metrics.router_request(config.router_label());
     let body = match tokio::time::timeout(
-        state.config.protection.body_timeout,
-        axum::body::to_bytes(request.into_body(), state.config.maximum_body_bytes),
+        config.body_timeout(),
+        axum::body::to_bytes(request.into_body(), config.maximum_body_bytes()),
     )
     .await
     {
@@ -359,22 +543,53 @@ async fn proxy_inference(
         }
         Err(_) => return client_error(StatusCode::REQUEST_TIMEOUT, "request_body_timeout"),
     };
-    let payload: Value = match serde_json::from_slice(&body) {
+    let mut payload: Value = match serde_json::from_slice(&body) {
         Ok(payload) => payload,
         Err(_) => return client_error(StatusCode::BAD_REQUEST, "invalid_json"),
     };
-    let Some(model) = payload.get("model").and_then(Value::as_str) else {
+    let Some(model) = payload
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
         return client_error(StatusCode::BAD_REQUEST, "model_required");
     };
-    if !state
-        .config
-        .inference_model_ids
+    if !config
+        .inference_model_ids()
         .iter()
-        .any(|candidate| candidate == model)
+        .any(|candidate| candidate == &model)
     {
         state.metrics.record_rejection("model_not_authorized");
         return client_error(StatusCode::UNAUTHORIZED, "model_not_authorized");
     }
+    let model = model.as_str();
+    let mut usage_request = match &state.usage {
+        Some(recorder) => match recorder.reserve(&key_id, model) {
+            Ok(guard) => Some(guard),
+            Err(_) => return protection::overload("usage_capacity"),
+        },
+        None => None,
+    };
+    let internal_stream_usage =
+        usage_request.is_some() && payload.get("stream").and_then(Value::as_bool) == Some(true);
+    let hide_final_usage = internal_stream_usage
+        && payload
+            .get("stream_options")
+            .and_then(|v| v.get("include_usage"))
+            .and_then(Value::as_bool)
+            != Some(true);
+    let body = if internal_stream_usage {
+        if !payload.get("stream_options").is_some_and(Value::is_object) {
+            payload["stream_options"] = json!({});
+        }
+        payload["stream_options"]["include_usage"] = json!(true);
+        match serde_json::to_vec(&payload) {
+            Ok(body) => axum::body::Bytes::from(body),
+            Err(_) => return client_error(StatusCode::BAD_REQUEST, "invalid_json"),
+        }
+    } else {
+        body
+    };
     let queue_started = Instant::now();
     state.metrics.enter_queue();
     let permits = state.protection.inference_permits(&key_id).await;
@@ -382,19 +597,29 @@ async fn proxy_inference(
         .metrics
         .leave_queue(queue_started.elapsed().as_secs_f64());
     let Ok(permits) = permits else {
+        if let Some(usage) = &mut usage_request {
+            usage.finish(usage::Outcome::Failed);
+        }
         state.metrics.record_rejection("inference_capacity");
         return protection::overload("inference_capacity");
     };
     let active_request = state.metrics.active_request();
+    let Some(upstream_url) = config.upstream_url(route) else {
+        return inference_unavailable();
+    };
     let upstream = state
         .http
-        .post(format!("{}{route}", state.config.upstream_base_url))
+        .post(upstream_url)
+        .timeout(config.upstream_timeout())
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-request-id", &request_id)
         .body(body)
         .send()
         .await;
     let Ok(upstream) = upstream else {
+        if let Some(usage) = &mut usage_request {
+            usage.finish(usage::Outcome::Failed);
+        }
         state.metrics.set_upstream_reachable(false);
         state.metrics.record_request(model, &key_id, 503);
         state
@@ -411,6 +636,9 @@ async fn proxy_inference(
     state.metrics.set_upstream_reachable(true);
     let status = upstream.status();
     if status == StatusCode::SERVICE_UNAVAILABLE {
+        if let Some(usage) = &mut usage_request {
+            usage.finish(usage::Outcome::Failed);
+        }
         state.metrics.set_upstream_reachable(false);
         state.metrics.record_request(model, &key_id, 503);
         state
@@ -429,18 +657,29 @@ async fn proxy_inference(
         .as_ref()
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.starts_with("text/event-stream"));
+    let rewrite_model = status.is_success()
+        && (is_event_stream
+            || content_type
+                .as_ref()
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("application/json")));
     let retry_after = safe_retry_after(upstream.headers());
-    let idle_timeout = state.config.protection.stream_idle_timeout;
+    let idle_timeout = config.stream_idle_timeout();
     let metrics = Arc::clone(&state.metrics);
     let metric_model = model.to_owned();
     let metric_key_id = key_id.clone();
     let stream = async_stream::stream! {
+        let mut usage_request = usage_request;
         let _permits = permits;
         let _active_request = active_request;
+        let _router_request = router_request;
+        let runtime_snapshot = config.runtime;
         let mut upstream_stream = upstream.bytes_stream();
         let mut stream_metrics = StreamMetrics::default();
         let mut json_metrics = Vec::new();
         let mut json_metrics_overflow = false;
+        let expected_model = usage_request.as_ref().map(|usage| usage.served_model().to_owned());
+        let mut model_response = model_response::ModelResponse::new(metric_model.clone(), is_event_stream).hide_final_usage(hide_final_usage).expected_model(expected_model);
         loop {
             match tokio::time::timeout(idle_timeout, upstream_stream.next()).await {
                 Ok(Some(Ok(chunk))) => {
@@ -460,14 +699,42 @@ async fn proxy_inference(
                             json_metrics_overflow = true;
                         }
                     }
-                    yield Ok::<_, std::io::Error>(chunk)
+                    if rewrite_model {
+                        match model_response.push(&chunk) {
+                            Ok(output) => {
+                                if let Some(usage) = &mut usage_request { usage.observation = model_response.observation(); if model_response.stream_done() { usage.finish(usage::Outcome::Completed); } }
+                                if !output.is_empty() { yield Ok::<_, std::io::Error>(axum::body::Bytes::from(output)); }
+                            },
+                            Err(error) => { if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); } yield Err(error); break; }
+                        }
+                    } else {
+                        yield Ok::<_, std::io::Error>(chunk);
+                    }
                 },
                 Ok(Some(Err(_))) => {
+                    if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); }
                     yield Err(std::io::Error::other("upstream response failed"));
                     break;
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    if rewrite_model {
+                        match model_response.finish() {
+                            Ok(output) => {
+                                if let Some(usage) = &mut usage_request {
+                                    usage.observation = model_response.observation();
+                                    usage.finish(if !is_event_stream || model_response.stream_done() { usage::Outcome::Completed } else { usage::Outcome::Interrupted });
+                                }
+                                if !output.is_empty() { yield Ok(axum::body::Bytes::from(output)); }
+                            },
+                            Err(error) => { if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); } yield Err(error); },
+                        }
+                    } else if let Some(usage) = &mut usage_request {
+                        usage.finish(if status.is_success() { usage::Outcome::Completed } else { usage::Outcome::Failed });
+                    }
+                    break;
+                },
                 Err(_) => {
+                    if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); }
                     yield Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "upstream stream timed out"));
                     break;
                 }
@@ -478,6 +745,7 @@ async fn proxy_inference(
         } else if is_event_stream {
             stream_metrics.finish(&metrics, &metric_model, &metric_key_id);
         }
+        drop(runtime_snapshot);
     };
     let mut response = Response::builder()
         .status(status)
@@ -681,6 +949,29 @@ async fn attestation_response(
         state.metrics.record_rejection("attestation_capacity");
         return protection::overload("attestation_capacity");
     };
+    if !state.attestation_provider.requires_nonce() {
+        let started = Instant::now();
+        let result = state.attestation_provider.response(&[0; 32]).await;
+        let status = if result.is_ok() { 200 } else { 503 };
+        state
+            .metrics
+            .record_attestation_response(status, started.elapsed().as_secs_f64());
+        return if let Ok(document) = result {
+            let mut response = Json(document).into_response();
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("no-store, max-age=0"),
+            );
+            response
+        } else {
+            let mut response =
+                client_error(StatusCode::SERVICE_UNAVAILABLE, "attestation_unavailable");
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            response
+        };
+    }
     let header_values = headers.get_all("x-attestation-nonce");
     if header_values.iter().count() > 1 {
         return client_error(StatusCode::BAD_REQUEST, "ambiguous_nonce");
@@ -941,6 +1232,48 @@ mod tests {
 
     fn authorization() -> (&'static str, &'static str) {
         ("authorization", "Bearer accepted")
+    }
+
+    #[tokio::test]
+    async fn metadata_attestation_needs_no_key_nonce_or_live_inference_upstream() {
+        struct Metadata;
+        #[async_trait::async_trait]
+        impl AttestationProvider for Metadata {
+            fn requires_nonce(&self) -> bool {
+                false
+            }
+            async fn response(&self, _: &[u8; 32]) -> Result<Value, AttestationError> {
+                Ok(json!({"schemaVersion": 3, "c8s": {"operatorKeys": []}}))
+            }
+        }
+        // The configured inference address has no listener. Attestation must
+        // still work, even when inference readiness is false.
+        for path in ["/attestation", "/v1/attestation"] {
+            let availability = GatewayAvailability::default();
+            availability.set_available(false);
+            let response = app_with_attestation(availability, Arc::new(Metadata))
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap_or_else(|error| panic!("{error:?}")),
+                )
+                .await
+                .unwrap_or_else(|error| panic!("{error:?}"));
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "no-store, max-age=0"
+            );
+            let body = to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap_or_else(|error| panic!("{error:?}"));
+            let document: Value =
+                serde_json::from_slice(&body).unwrap_or_else(|error| panic!("{error:?}"));
+            assert_eq!(document["schemaVersion"], 3);
+            assert!(document.get("nonce").is_none());
+            assert!(document.get("receipts").is_none());
+        }
     }
 
     #[tokio::test]

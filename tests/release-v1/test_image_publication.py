@@ -75,13 +75,19 @@ class ImagePublicationTests(unittest.TestCase):
         images = (ROOT / ".github/workflows/release-images.yml").read_text()
         bundle = (ROOT / ".github/workflows/release-bundle.yml").read_text()
         self.assertIn("needs: [select-images, reproducibility]\n", images)
+        self.assertIn("needs: [select-images, reproducibility-compare]\n", images)
+        # Each clean build has its own runner; the first upload is what publish pushes.
+        audit = images[images.index("  reproducibility:"):images.index("  reproducibility-compare:")]
+        self.assertEqual(audit.count("docker/build-push-action"), 1)
+        self.assertIn("if: inputs.publish && matrix.pass == 1", audit)
+        self.assertIn("standard_pass_matrix", audit)
         self.assertIn("needs: [select-images, reproducibility-sglang-compare]\n", images)
         self.assertIn("needs: [select-images, publish-standard, publish-sglang]\n", images)
         self.assertEqual(images.count("--reproducibility-digest"), 2)
         self.assertEqual(images.count("--pushed-digest"), 2)
         self.assertIn("name: release-image-publication-${{ github.sha }}", images)
         self.assertNotIn("inputs.release_version", images)
-        self.assertIn('--release-commit "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"', bundle)
+        self.assertIn('--release-commit "$(git rev-parse HEAD)" \\\n            --tag "$RELEASE_TAG" >> "$GITHUB_OUTPUT"', bundle)
         self.assertIn("scripts/find-image-publication-run.py", bundle)
         self.assertIn("name: ${{ steps.publication.outputs.artifact_name }}", bundle)
         self.assertIn("run-id: ${{ steps.publication.outputs.run_id }}", bundle)
@@ -92,6 +98,16 @@ class ImagePublicationTests(unittest.TestCase):
         self.assertNotIn("--base-release", bundle)
         build = bundle[bundle.index("- name: Build the release at the tag commit"):]
         self.assertIn("GH_TOKEN: ${{ github.token }}", build[:build.index("run: |")])
+
+    def test_build_requests_have_no_shared_cancellation_or_pending_slot(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT / ".github/workflows/release-images.yml").read_text())
+        # A shared group with cancel-in-progress false still replaces pending
+        # runs. Every dispatch, including one from staging, must be independent.
+        self.assertNotIn("concurrency", workflow)
+        for name, job in workflow["jobs"].items():
+            self.assertNotIn("concurrency", job, name)
+        self.assertIn("github.run_id", workflow["jobs"]["reproducibility"]["steps"][2]["with"]["name"])
 
     def test_standard_images_publish_the_audited_archive(self):
         images = (ROOT / ".github/workflows/release-images.yml").read_text()
@@ -108,9 +124,16 @@ class ImagePublicationTests(unittest.TestCase):
         jsonschema.Draft202012Validator.check_schema(schema)
 
 
-def run_response(runs: dict[int, str], artifacts: dict[str, list[int]]):
-    """A GitHub API stub: successful release-images runs on main by id and head commit."""
+def run_response(runs: dict[int, str], artifacts: dict[str, list[int]], tag_message: str | None = None):
+    """A GitHub API stub: successful release-images runs on main by id and head commit.
+
+    With tag_message, the release tag is annotated with that message.
+    """
     def response(url, _token):
+        if "/git/ref/tags/" in url:
+            return {"object": {"type": "tag" if tag_message is not None else "commit", "sha": "1" * 40}}
+        if "/git/tags/" in url:
+            return {"message": tag_message}
         if "actions/artifacts" in url:
             name = url.split("name=", 1)[1].split("&", 1)[0]
             return {"artifacts": [
@@ -174,10 +197,47 @@ class PublicationRunLookupTests(unittest.TestCase):
         with self.assertRaisesRegex(FINDER.LookupError, "changes an image build input"):
             self.find({}, {})
 
+    def test_a_selector_change_alone_keeps_the_earlier_evidence(self):
+        selector = self.commit("scripts/affected-release-images.py", "# changed\n")
+        name = FINDER.artifact_name(self.image)
+        FINDER.request_json = run_response({73: self.image}, {name: [73]})
+        self.assertEqual(FINDER.find_nearest("https://api.github.test", "confidential-dot-ai/confidential-inference",
+                                             "token", selector, self.repo), (self.image, 73))
+
     def test_duplicate_publication_runs_fail_closed(self):
         name = FINDER.artifact_name(self.docs)
         with self.assertRaisesRegex(FINDER.LookupError, "more than one"):
             self.find({73: self.docs, 74: self.docs}, {name: [73, 74]})
+
+    def named(self, runs, artifacts, message):
+        FINDER.request_json = run_response(runs, artifacts, message)
+        api, repository = "https://api.github.test", "confidential-dot-ai/confidential-inference"
+        selected = FINDER.named_run(api, repository, "token", "v0.14.6-staging")
+        return FINDER.find_nearest(api, repository, "token", self.head, self.repo, selected_run=selected)
+
+    def test_the_tag_selects_one_of_duplicate_runs(self):
+        # Staging run 37609539592: a run by hand and a staging run of one
+        # commit, with other bases.
+        name = FINDER.artifact_name(self.docs)
+        message = "Release v0.14.6-staging\n\nImage-Publication-Run: 74\n"
+        self.assertEqual(self.named({73: self.docs, 74: self.docs}, {name: [73, 74]}, message), (self.docs, 74))
+
+    def test_the_tag_cannot_name_an_untrusted_run(self):
+        name = FINDER.artifact_name(self.docs)
+        for runs, artifacts in (({73: self.docs, 74: self.docs}, {name: [73, 74]}),
+                                ({73: self.docs, 75: self.image}, {name: [73, 75]})):
+            with self.subTest(runs=runs), self.assertRaisesRegex(FINDER.LookupError, "not a trusted"):
+                self.named(runs, artifacts, "Release\n\nImage-Publication-Run: 75\n")
+
+    def test_a_tag_without_the_trailer_keeps_duplicates_closed(self):
+        name = FINDER.artifact_name(self.docs)
+        for message in ("Release v0.14.6-staging", None):
+            with self.subTest(message=message), self.assertRaisesRegex(FINDER.LookupError, "more than one"):
+                self.named({73: self.docs, 74: self.docs}, {name: [73, 74]}, message)
+
+    def test_a_tag_that_names_two_runs_is_refused(self):
+        with self.assertRaisesRegex(FINDER.LookupError, "more than one image publication run"):
+            self.named({}, {}, "Release\n\nImage-Publication-Run: 73\nImage-Publication-Run: 74\n")
 
     def test_a_run_at_another_commit_is_ignored(self):
         name = FINDER.artifact_name(self.head)

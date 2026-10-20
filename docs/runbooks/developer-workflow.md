@@ -46,16 +46,46 @@ authentication, attestation evidence, release schemas, and operator interfaces.
 Internal implementation changes do not require a major version when these
 interfaces remain compatible.
 
-Only `vX.Y.Z` and `vX.Y.Z-staging` are valid new release tags. The staging tag
-uses the reviewed simulator profile. A fix to either profile uses a new patch
+New release tags are `vX.Y.Z`, `vX.Y.Z-staging`, `vX.Y.Z-transition`, or
+`vX.Y.Z-transition-staging`. The staging tag uses the reviewed simulator
+profile. A fix to either profile uses a new patch
 version. The tag is the version: no commit changes a version, and a staging
 tag needs no production tag. The tag must point to a commit on `main`. After
 publication, the tag must never move or be deleted.
 
-C8s, TEEriminator, and other release dependencies are exact release inputs. A
+A transition release binds the prior release, the final release, and the
+required test workloads. Publish the final definition first. Publish the
+transition definition from the same source commit. The transition policy
+contains the exact final workload rules, the prior workload rules, and the
+test rules. It does not require another gateway image for a release name.
+The runtime release selection changes after the enforced policy changes.
+The gateway reports a release only when its policy matches the evidence in
+that response. Clients still verify the release and its build evidence.
+
+C8s, TEEriminator, and other release dependencies are exact release inputs.
+A production release can pin a C8s beta version. It must bind the exact
+source commit, node image, measurements, and core image digests. The normal
+release verification checks still apply. A
 dependency update enters a cluster only through a new Confidential Inference
 release. Classify its version change by its effect on clients, verifiers, and
 operators, not by the dependency's own version number.
+
+### Image build requests
+
+`Release images` builds the exact public `main` commit selected by a dispatch.
+Staging and production release tools can request these builds. A request does
+not deploy a cluster, and it does not require a staging deployment first.
+
+Each request runs independently. Do not add a shared workflow or job
+concurrency group. GitHub can cancel a running request with
+`cancel-in-progress: true`. A shared group with that option set to `false`
+can still replace an older pending request. Staging must not stop a public
+`main` build in either state.
+
+Each audit uses isolated runners. Builder names include the run ID. Keep the
+clean rebuild audit, digest checks, and publication evidence. If several
+successful runs publish evidence for the same source commit, select one
+explicitly with `Image-Publication-Run` in the release tag annotation.
 
 ## 4. Repository boundary
 

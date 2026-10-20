@@ -314,6 +314,53 @@ class ReleaseManifestVerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.VerificationError, "allowlist differs from the one"):
             self.run_verify()
 
+    def dynamic_metadata_inputs(self):
+        policy = copy.deepcopy(self.allowlist)
+        policy['workloads']['reviewed-replacement'] = {'containers': []}
+        raw = json.dumps(policy, separators=(',', ':')).encode() + b'\n'
+        path = self.write('reviewed-live-policy.json', raw)
+        response = json.loads((ROOT / 'tests/contracts/fixtures/workload-attestation.v3.valid.json').read_text())
+        response['release'] = {
+            'id': 'v0.14.0',
+            'url': 'https://github.com/confidential-dot-ai/confidential-inference/releases/tag/v0.14.0',
+            'bundleSha256': digest(self.manifest_bytes),
+        }
+        response['c8s']['activeAllowlist'].update(document=policy, sha256=digest(raw))
+        return self.args(metadata_only=True, allowlist=path,
+                         release_allowlist=self.allowlist_path), response
+
+    def test_dynamic_policy_requires_explicit_separate_signed_asset(self):
+        args, response = self.dynamic_metadata_inputs()
+        args.release_allowlist = None
+        with self.assertRaisesRegex(self.module.VerificationError, 'allowlist differs from the one'):
+            self.run_verify(args, response)
+
+    def test_reviewed_dynamic_policy_matches_without_claiming_a_connection_proof(self):
+        args, response = self.dynamic_metadata_inputs()
+        result = self.run_verify(args, response)
+        self.assertTrue(result['metadataMatchesTrustedInputs'])
+        self.assertFalse(result['connectionVerified'])
+        self.assertEqual(result['releaseAllowlistSha256'], self.manifest['allowlist']['sha256'])
+        self.assertNotEqual(result['allowlistSha256'], result['releaseAllowlistSha256'])
+
+    def test_dynamic_mode_still_rejects_a_changed_signed_initial_policy(self):
+        args, response = self.dynamic_metadata_inputs()
+        self.allowlist_path.write_bytes(self.allowlist_path.read_bytes() + b'\n')
+        with self.assertRaisesRegex(self.module.VerificationError, 'allowlist differs from the one'):
+            self.run_verify(args, response)
+
+    def test_dynamic_mode_rejects_unreviewed_live_policy_bytes(self):
+        args, response = self.dynamic_metadata_inputs()
+        args.allowlist.write_bytes(args.allowlist.read_bytes() + b'\n')
+        with self.assertRaisesRegex(self.module.VerificationError, 'trusted exact bytes'):
+            self.run_verify(args, response)
+
+    def test_dynamic_policy_option_cannot_change_receipt_verification(self):
+        args, response = self.dynamic_metadata_inputs()
+        args.metadata_only = False
+        with self.assertRaisesRegex(self.module.VerificationError, 'requires --metadata-only'):
+            self.run_verify(args, response)
+
     def test_node_image_registers_must_match(self):
         self.manifest["rtmr2"] = "d" * 96
         self.write_manifest()

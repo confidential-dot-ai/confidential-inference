@@ -8,28 +8,28 @@
 
 c8s:
   # The c8s release. It fixes the node image and its measurements.
-  release: v0.33.7
-  sourceCommit: fd905adaec03b618eb9cce0ba99341dee2623234
+  release: v0.59.1
+  sourceCommit: 4c916ecea7221e506988ff9e37725a314a64b562
   nodeImage:
     reference: ghcr.io/confidential-dot-ai/node-guest-base
-    tag: rke2-tdx-cdi-v0.33.7
-    digest: sha256:1c8a672c5017f6709e36f5a4ab74790a00d02be726b093589f13b69b8671cf46
-  # The c8s core images. The allowlist gives each one an unrestricted entry,
-  # as the c8s bootstrap seed does.
+    tag: rke2-tdx-cdi-v0.59.1
+    digest: sha256:2073fef8adf5c6bf217d5003b3ff56d233abc1df16d5682b6b8fa2fbc1f28da1
+  # The C8s core images. The generated policy preserves the measured
+  # node's component command pins.
   coreImages:
-    - ghcr.io/confidential-dot-ai/c8s-operator@sha256:f0ea51f52efcf7fecdbdec00fffb8585e026a0f7d78276e79f3ee52cf0aa8a5a
-    - ghcr.io/confidential-dot-ai/cds@sha256:2216259e47eff27eba7d0e35c3aef3e4e749d68d5da7e4efb2a5a02ddc985606
-    - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:305e1a18c7c8573b384728b1e1c1069579330ad18c1091a7469b18f52246e754
-    - ghcr.io/confidential-dot-ai/ratls-mesh@sha256:cbcf4c68c2d72fc01d1dc0cd9ddef0311f2db073d1cea2d4486645d1c5044b95
-    - ghcr.io/confidential-dot-ai/volumed@sha256:c4a3e581e9e6063c98448a4455bbfdc11efc0d63c2596fd12cf87ac20f46acf0
-    - nginxinc/nginx-unprivileged@sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348
+    - ghcr.io/confidential-dot-ai/c8s-operator@sha256:593dea857bfdb2512af5dcfbbec34b10c08de66bbd67f7d33d23a1f8581429b5
+    - ghcr.io/confidential-dot-ai/cds@sha256:aaf6a581487d27b24228ceb10e4a600e1ae1a4b405d0f6f4b8f95422ae8ba204
+    - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:3fce8c123911f7242cab3f323edc11a4e73b764e8475e6e8128d3bd0248423e1
+    - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:9ecc1b70bb93746a6811a95f62b88445407bcb3f20d462dee1788ff4c2cdc4a6
+    - ghcr.io/confidential-dot-ai/volumed@sha256:8e8f4a8bb691a8e200b1a54e23da405459223e276ce25049e09833bc8d2dde1f
+    - nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0
   # The artifact that c8s publishes with the node image. It holds the TDX
   # measurements MRTD, RTMR1, and RTMR2.
   nodeManifestArtifact:
-    tag: rke2-tdx-v0.33.7
-    digest: sha256:fc81bdd46c7441064188e3090fe77188593edcaa918318f7fc0547f8f332e459
+    tag: rke2-tdx-v0.59.1
+    digest: sha256:8840a408d93f143e115a4027e6db5ddde256b965c7c8529017aa81313e89f4e7
     # The SHA-256 of the manifest.json layer, which is node-manifest.json.
-    manifestJson: sha256:bf2364e9104890d8f755e2aaf124985535f3013a99e3904ce50cdf4d6d1b276e
+    manifestJson: sha256:83605d4415a75985c6eb2a347360419166ecb80f3ee54c84c5276323d6ed57c9
 
 model:
   repository: deepseek-ai/DeepSeek-V4-Flash-0731
@@ -41,3 +41,225 @@ model:
 publicHostnames:
   - api.confidential.ai
   - candidate.api.confidential.ai
+
+# Keep the test program and its exact rules in the reviewed release source.
+transition:
+  fromRelease: v0.14.17
+  helpers:
+    gateway-update-agent:
+      initContainers: []
+      containers:
+      - command:
+          policy: exact
+          argv:
+          - /usr/local/bin/python3
+        args:
+          policy: exact
+          argv:
+          - -u
+          - -c
+          - |
+            """Run reviewed gateway checks inside the C8s mesh.
+
+            The operator submits signed admin packets through one namespaced Secret.
+            The service account can read only that Secret. No signer private key enters
+            this process. Responses exclude request headers, tokens, and snapshot bodies.
+            """
+            import base64
+            import concurrent.futures
+            import json
+            import os
+            import re
+            import ssl
+            import socket
+            import time
+            import urllib.error
+            import urllib.parse
+            import urllib.request
+
+
+            PATHS = {
+                "/health", "/ready", "/metrics", "/runtime-config", "/release-config", "/attestation",
+                "/v1/chat/completions", "/admin/v1/api-keys/source",
+                "/admin/v1/api-keys/snapshot",
+                "/.well-known/c8s/attest-pq",
+            }
+
+
+            class NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, request, fp, code, message, headers, new_url):
+                    raise ValueError("Redirects are not permitted for signed gateway requests.")
+
+
+            def validate_action(action, allowed_hosts, router_hosts=(), *, worker_hosts=(), worker_control=False):
+                parsed = urllib.parse.urlsplit(action["url"])
+                if parsed.hostname in worker_hosts:
+                    if parsed.hostname in allowed_hosts or parsed.hostname in router_hosts:
+                        raise ValueError('A worker target must be separate from other targets.')
+                    paths = {'/health': 'GET', '/v1/models': 'GET', '/get_model_info': 'GET',
+                             '/v1/chat/completions': 'POST'}
+                    if (parsed.scheme != 'http' or parsed.username or parsed.password or parsed.fragment
+                            or parsed.query or parsed.port != 30000 or parsed.path not in paths
+                            or action.get('method', 'GET') != paths[parsed.path]):
+                        raise ValueError('The worker action is not approved.')
+                    checked_body(action)
+                    return parsed
+                if parsed.hostname in router_hosts:
+                    if parsed.hostname in allowed_hosts:
+                        raise ValueError('A router target cannot also be a gateway target.')
+                    paths = {'/health': 'GET', '/readiness': 'GET', '/workers': 'GET',
+                             '/v1/chat/completions': 'POST', '/metrics': 'GET',
+                             '/model-routes': 'GET', '/model-routes/status': 'GET'}
+                    methods = {path: {method} for path, method in paths.items()}
+                    if worker_control:
+                        methods['/model-routes'] = {'GET'}
+                        methods['/model-routes/status'] = {'GET'}
+                        if re.fullmatch(r'/workers/[a-zA-Z0-9_-]{1,128}/drain', parsed.path):
+                            methods[parsed.path] = {'GET', 'POST', 'DELETE'}
+                    expected_port = 29000 if parsed.path == '/metrics' else 30000
+                    if (parsed.scheme != 'http' or parsed.username or parsed.password
+                            or parsed.fragment or parsed.query or parsed.path not in methods
+                            or parsed.port != expected_port
+                            or action.get('method', 'GET') not in methods[parsed.path]):
+                        raise ValueError('The router action is not approved.')
+                    checked_body(action)
+                    return parsed
+                if (parsed.scheme != "http" or parsed.hostname not in allowed_hosts
+                        or parsed.port not in (9443, 9090, 8800) or parsed.username
+                        or parsed.password or parsed.fragment or parsed.path not in PATHS):
+                    raise ValueError("The action destination is not approved.")
+                method = action.get("method", "GET")
+                expected = "PUT" if parsed.path.endswith("/snapshot") else (
+                    "POST" if parsed.path == "/v1/chat/completions" else "GET")
+                if method != expected or (parsed.query and parsed.path not in ('/attestation', '/.well-known/c8s/attest-pq')):
+                    raise ValueError("The action method or query is not approved.")
+                if parsed.path in ("/metrics", "/runtime-config", "/release-config") and parsed.port != 9090:
+                    raise ValueError("Metrics must use the metrics port.")
+                if parsed.path == '/.well-known/c8s/attest-pq' and parsed.port != 8800:
+                    raise ValueError('Workload evidence must use the evidence port.')
+                if parsed.path not in ('/metrics', '/runtime-config', '/release-config', '/.well-known/c8s/attest-pq') and parsed.port != 9443:
+                    raise ValueError("Gateway checks must use the gateway port.")
+                checked_body(action)
+                return parsed
+
+
+            def checked_body(action):
+                body = action.get("body")
+                if body is not None and (not isinstance(body, str) or len(body.encode()) > 4 * 1024 * 1024):
+                    raise ValueError("The request body exceeds the limit.")
+                if action.get('method', 'GET') == "GET" and body is not None:
+                    raise ValueError("A GET action cannot have a body.")
+
+
+            def perform(action, allowed_hosts, router_hosts=(), *, worker_hosts=(), worker_control=False):
+                parsed = validate_action(action, allowed_hosts, router_hosts,
+                                         worker_hosts=worker_hosts, worker_control=worker_control)
+                body = action.get("body")
+                data = None if body is None else body.encode()
+                request = urllib.request.Request(action["url"], data=data,
+                                                headers=action.get("headers", {}),
+                                                method=action.get("method", "GET"))
+                start = time.monotonic()
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+                try:
+                    with opener.open(request, timeout=45) as response:
+                        status = response.status
+                        instance = response.headers.get('X-Confidential-Gateway')
+                        raw = response.read(4 * 1024 * 1024 + 1)
+                except urllib.error.HTTPError as error:
+                    status, raw = error.code, error.read(8192)
+                    instance = error.headers.get('X-Confidential-Gateway')
+                if len(raw) > 4 * 1024 * 1024:
+                    raise ValueError("The response exceeds the limit.")
+                result = {"name": action["name"], "status": status,
+                          "durationSeconds": round(time.monotonic() - start, 3)}
+                if instance:
+                    result['gatewayIdentity'] = instance
+                if parsed.path == "/metrics":
+                    result["metrics"] = raw.decode()
+                else:
+                    try:
+                        document = json.loads(raw)
+                    except (ValueError, UnicodeDecodeError):
+                        document = {"code": "non_json_response"}
+                    if parsed.path == "/v1/chat/completions":
+                        result["validCompletion"] = isinstance(document.get("choices"), list) and bool(document["choices"])
+                        result["requestId"] = document.get("id")
+                        result['responseModel'] = document.get('model')
+                    else:
+                        # These endpoints return public evidence or safe key-source state.
+                        result["response"] = document
+                return result
+
+
+            def main():
+                namespace = os.environ["UPDATE_NAMESPACE"]
+                secret = os.environ["UPDATE_SECRET"]
+                hosts = json.loads(os.environ["UPDATE_HOSTS"])
+                router_hosts = json.loads(os.environ.get('UPDATE_ROUTER_HOSTS', '[]'))
+                worker_hosts = json.loads(os.environ.get('UPDATE_WORKER_HOSTS', '[]'))
+                worker_control = os.environ.get('UPDATE_WORKER_CONTROL', 'false') == 'true'
+                account = "/var/run/secrets/kubernetes.io/serviceaccount/"
+                context = ssl.create_default_context(cafile=account + "ca.crt")
+                url = f"https://kubernetes.default.svc/api/v1/namespaces/{namespace}/secrets/{secret}"
+                last = None
+                while True:
+                    try:
+                        with open(account + "token") as stream:
+                            token = stream.read().strip()
+                        request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+                        with urllib.request.urlopen(request, context=context, timeout=10) as response:
+                            record = json.load(response)
+                        packet = json.loads(base64.b64decode(record["data"]["task.json"]))
+                        if not isinstance(packet.get("actions"), list) or not 1 <= len(packet["actions"]) <= 32:
+                            raise ValueError("The task must have one to 32 actions.")
+                        if packet["id"] != last:
+                            results = []
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                                futures = [pool.submit(perform, action, hosts, router_hosts,
+                                                      worker_hosts=worker_hosts, worker_control=worker_control)
+                                           for action in packet["actions"]]
+                                for action, future in zip(packet["actions"], futures):
+                                    try:
+                                        results.append(future.result())
+                                    except Exception as error:
+                                        results.append({"name": action["name"], "status": 0,
+                                                        "error": type(error).__name__,
+                                                        "cause": type(getattr(error, "reason", error)).__name__,
+                                                        "errno": getattr(getattr(error, "reason", error), "errno", None)})
+                            print(json.dumps({"taskId": packet["id"], "results": results}), flush=True)
+                            last = packet["id"]
+                    except Exception as error:
+                        print(json.dumps({"agentError": type(error).__name__}), flush=True)
+                    time.sleep(0.5)
+
+
+            if __name__ == "__main__":
+                main()
+        mounts:
+          policy: exact
+          rules:
+          - destination: /etc/c8s/certs
+            kind: emptyDir
+        env:
+          policy: exact
+          values:
+            GPG_KEY: 7169605F62C751356D054A26A821E680E5FA6305
+            HOSTNAME: gateway-update-agent
+            KUBERNETES_PORT: tcp://10.53.0.1:443
+            KUBERNETES_PORT_443_TCP: tcp://10.53.0.1:443
+            KUBERNETES_PORT_443_TCP_ADDR: 10.53.0.1
+            KUBERNETES_PORT_443_TCP_PORT: '443'
+            KUBERNETES_PORT_443_TCP_PROTO: tcp
+            KUBERNETES_SERVICE_HOST: 10.53.0.1
+            KUBERNETES_SERVICE_PORT: '443'
+            KUBERNETES_SERVICE_PORT_HTTPS: '443'
+            LANG: C.UTF-8
+            PATH: /usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            PYTHON_SHA256: c2c4321961fab0fb999d66e0cecf521c2ab3994c7992873ea99e306c1094fd5a
+            PYTHON_VERSION: 3.12.15
+            UPDATE_HOSTS: '["gateway-update-old.confidential-inference.svc.cluster.local", "${GATEWAY_WORKLOAD_ID}.confidential-inference.svc.cluster.local"]'
+            UPDATE_NAMESPACE: confidential-inference
+            UPDATE_ROUTER_HOSTS: '["sglang-router.confidential-inference.svc.cluster.local", "${ROUTER_WORKLOAD_ID}.confidential-inference.svc.cluster.local"]'
+            UPDATE_SECRET: gateway-update-task
+        imageKey: rolloutClient

@@ -14,22 +14,31 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 CHART = ROOT / "helm/confidential-inference"
-# The internal staging values file lives in the confidential-inference-internal
-# repository. Set CONFIDENTIAL_INFERENCE_INTERNAL to the path of a checkout of
-# that repository. There is no default path: a maintainer path must not become
-# a default in this repository. The overlay test below skips when the variable
-# is unset.
+# Set this to a private checkout to test the current Workflow 3 target overlay.
+# The request selects the values file, namespace, and Helm release. The old
+# environments/values-staging.yaml belongs to an earlier cluster.
 INTERNAL_REPO_ENV = "CONFIDENTIAL_INFERENCE_INTERNAL"
-INTERNAL_VALUES_RELATIVE_PATH = "environments/values-staging.yaml"
+INTERNAL_REQUEST_ENV = "CONFIDENTIAL_INFERENCE_STAGING_REQUEST"
+INTERNAL_REQUEST_RELATIVE_PATH = "deploy/requests/staging-20260926.yaml"
 
 
-def internal_staging_values() -> Path | None:
-    """Return the internal staging values file, or None when it is absent."""
+def internal_staging_request() -> tuple[Path, dict] | None:
+    """Read Workflow 3 inputs without executing a deployment."""
     configured = os.environ.get(INTERNAL_REPO_ENV)
     if not configured:
         return None
-    candidate = Path(configured) / INTERNAL_VALUES_RELATIVE_PATH
-    return candidate if candidate.is_file() else None
+    checkout = Path(configured).resolve()
+    request_path = checkout / os.environ.get(INTERNAL_REQUEST_ENV, INTERNAL_REQUEST_RELATIVE_PATH)
+    request = yaml.safe_load(request_path.read_text())
+    assert request["environment"] == "staging"
+    section = request["applicationDeploy"]
+    assert section["releaseProfile"] == "staging"
+    values = (checkout / section["values"]).resolve()
+    assert values.is_relative_to(checkout), "target values must belong to the internal checkout"
+    assert values.is_file(), f"Workflow 3 target values are missing: {values}"
+    return values, section
+
+
 # The chart has no default for inference.mode. This constant marks a render
 # that only needs a chart to succeed, not a specific mode, so it picks the
 # GPU-free simulator backend.
@@ -339,20 +348,48 @@ def test_active_staging_allowlist_uses_one_simulator_worker() -> None:
 
 
 def test_internal_volume_overlay_renders_if_present() -> None:
-    values = internal_staging_values()
-    if values is None:
+    selected = internal_staging_request()
+    if selected is None:
         print(
-            f"skip: no internal staging values; set {INTERNAL_REPO_ENV} to the "
+            f"skip: no internal staging checkout; set {INTERNAL_REPO_ENV} to the "
             "path of a confidential-inference-internal checkout"
         )
         return
+    values, section = selected
+    profiles = json.loads((ROOT / "release/profiles.json").read_text())["profiles"]
+    profile = next(item for item in profiles if item["name"] == section["releaseProfile"])
+    release_values = [ROOT / layer / "values.yaml" for layer in profile["layers"]]
+    # Match Workflow 3: public profile layers, release image overlay, target.
+    # The image overlay is the approved test fixture, not live release data.
+    overlays = [*release_values, ROOT / "tests/release-v1/fixtures/release-values.yaml", values]
     result = subprocess.run(
-        ["helm", "template", "staging", str(CHART), "--namespace", "inference", "--values", str(values)],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
+        ["helm", "template", section["helmRelease"], str(CHART), "--namespace", section["namespace"],
+         *[arg for path in overlays for arg in ("--values", str(path))]],
+        cwd=ROOT, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
+    documents = [item for item in yaml.safe_load_all(result.stdout) if item]
+    gateway = next(item for item in documents if item["kind"] == "Deployment"
+                   and item["metadata"]["name"] == "gateway")
+    router = next(item for item in documents if item["kind"] == "Deployment"
+                  and item["metadata"]["name"] == "sglang-router")
+    proxy_enabled = yaml.safe_load((CHART / "values.yaml").read_text())["namedWorkloadProxy"]["enabled"]
+    for path in overlays:
+        layer = yaml.safe_load(path.read_text()) or {}
+        proxy_enabled = layer.get("namedWorkloadProxy", {}).get("enabled", proxy_enabled)
+    gateway_names = {item["name"] for item in gateway["spec"]["template"]["spec"]["containers"]}
+    router_names = {item["name"] for item in router["spec"]["template"]["spec"]["containers"]}
+    assert ("router-workload-proxy" in gateway_names) == proxy_enabled
+    assert ("gateway-workload-proxy" in router_names) == proxy_enabled
+    if proxy_enabled:
+        assert container(gateway, "router-workload-proxy")["args"] == ["workload-proxy", *PROXY_ARGS["client"]]
+        assert container(router, "gateway-workload-proxy")["args"] == ["workload-proxy", *PROXY_ARGS["server"]]
+    assert gateway["spec"]["template"]["metadata"]["annotations"]["confidential.ai/c8s-secrets"]
+    workers = [item for item in documents if item["kind"] == "StatefulSet"
+               and item["metadata"]["name"].startswith("inference-worker-")]
+    assert len(workers) == 2
+    assert all(item["spec"]["template"]["metadata"]["annotations"]["confidential.ai/c8s-volumes"]
+               for item in workers)
 
 
 def main() -> None:
