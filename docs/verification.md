@@ -30,38 +30,27 @@ with backoff. Do not accept a partial response as verification.
 
 ## 2. Select and verify a release
 
-The `release.id` from step 1 is the release that the endpoint serves. Verify
-that release, and approve it only after your review. The server's report is
-not an automatic approval. Each release has its own pins: node image
-measurements, allowlist, front-door workload name, and the TEErminator release
-that can check it. Take every pin from the release that the endpoint serves.
-When the endpoint moves to a new release, repeat this guide for the new
-release.
+This guide covers release `v0.15.15`. It pins C8s `v0.59.1` and needs
+TEErminator `v0.0.4`. Check that `release.id` from step 1 is `v0.15.15`. If the
+endpoint serves another release, use the guide at that release's tag and take
+every pin from that release. Approve a release only after your review. The
+server's report is not an automatic approval.
 
-| Release | C8s | TEErminator | Front-door workload |
-|---|---|---|---|
-| `v0.14.29` | `v0.44.6` | `v0.0.2` or `v0.0.3` | `c8s-router` |
-| `v0.15.15` | `v0.59.1` | `v0.0.4` | `c8s-router-fb21f5cac23c` |
-
-TEErminator `v0.0.4` requires a front door that attests a route digest.
-`v0.14.29` does not, so `v0.0.4` rejects it with `bundle carries no
-route_digest`. TEErminator `v0.0.3` rejects `v0.15.15`.
-
-You need `git`, the GitHub CLI `gh`, Python 3.11 or later, Go, and
+You need `git`, `curl`, Python 3.11 or later, Go, and
 [Cosign](https://github.com/sigstore/cosign) v3. The default `python3` on
 macOS 13 is 3.9. Use a newer Python, for example from python.org or Homebrew.
 
 ```sh
-RELEASE=v0.15.15   # the release.id from step 1, after you approve it
+RELEASE=v0.15.15
 git clone https://github.com/confidential-dot-ai/confidential-inference.git
 cd confidential-inference
 git checkout "$RELEASE"
 mkdir -p client-review
-gh release download "$RELEASE" \
-  --repo confidential-dot-ai/confidential-inference \
-  --pattern release-bundle.json --pattern release-bundle.sigstore.json \
-  --pattern allowlist.json --pattern image-publication-manifest.json \
-  --pattern release-tag-commit.txt --dir client-review
+for asset in release-bundle.json release-bundle.sigstore.json allowlist.json \
+  image-publication-manifest.json release-tag-commit.txt; do
+  curl --fail --silent --show-error --location -o "client-review/$asset" \
+    "https://github.com/confidential-dot-ai/confidential-inference/releases/download/$RELEASE/$asset"
+done
 shasum -a 256 client-review/release-bundle.json
 ```
 
@@ -170,12 +159,12 @@ A successful result contains `metadataMatchesTrustedInputs: true` and
 
 ## 4. Enforce the policy with TEErminator
 
-Use the TEErminator release from the table in step 2, or a later release that
-you review and that supports your selected release. Download the archive for
-your platform and check it against the published `checksums.txt`:
+Use [TEErminator v0.0.4](https://github.com/confidential-dot-ai/TEErminator/releases/tag/v0.0.4)
+or a later release that you review. Download the archive for your platform and
+check it against the published `checksums.txt`:
 
 ```sh
-TEERMINATOR_VERSION=v0.0.4   # v0.0.3 for v0.14.29
+TEERMINATOR_VERSION=v0.0.4
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"   # darwin or linux
 case "$(uname -m)" in
   x86_64 | amd64) ARCH=amd64 ;;
@@ -213,12 +202,12 @@ PIN
 ```
 
 Read the front-door workload name from the signed release allowlist. C8s names
-the public front door `c8s-router`. Newer C8s releases add an image digest
-suffix, for example `c8s-router-fb21f5cac23c` in `v0.15.15`. Do not substitute
+the public front door `c8s-router-<image digest prefix>`. In `v0.15.15` it is
+`c8s-router-fb21f5cac23c`. Do not substitute
 an inference-worker or `router-*` name for the public front door.
 
 ```sh
-WORKLOAD="$(python3 -c 'import json; names = [n for n in json.load(open("client-review/allowlist.json"))["workloads"] if n == "c8s-router" or n.startswith("c8s-router-")]; assert len(names) == 1, names; print(names[0])')"
+WORKLOAD="$(python3 -c 'import json; names = [n for n in json.load(open("client-review/allowlist.json"))["workloads"] if n.startswith("c8s-router-")]; assert len(names) == 1, names; print(names[0])')"
 echo "$WORKLOAD"
 ```
 
@@ -280,6 +269,9 @@ security add-certificates -k ~/Library/Keychains/login.keychain-db \
 
 The script must print `CN=AAA Certificate Services,...` and the SHA-256
 fingerprint `ce75580bc6796d3b3ea2c3e74259d0d403072408e960c77139c2fb5a3d9419e4`.
+It can also print a warning that the file was parsed as BER; that is harmless.
+If the certificate is already in the keychain, `security` reports
+`already in` and exits with status 1; that is also fine.
 Then run `teerminator status` again. To remove the certificate later, run
 `security delete-certificate -Z B84733486BA4F61D833FCD3F2C81804989373118 ~/Library/Keychains/login.keychain-db`.
 
@@ -309,17 +301,14 @@ TEErminator `v0.0.4` also reports the route digest that the front door
 attests. Without `--route-digest` or `--route-operator-key`, it accepts any
 digest and reports it as `unverified`.
 
-**Deployment checks, 2026-10-21, from macOS 13 (arm64):**
+**Deployment check, 2026-10-21, from macOS 13 (arm64):**
+`candidate.api.confidential.ai`, a test deployment, reported `v0.15.15`. The
+live policy matched the signed initial policy. TEErminator `v0.0.4` passed with
+the complete node-image tuple, exact policy bytes, the
+`c8s-router-fb21f5cac23c` workload, the endpoint's TLS name, and an online
+Intel policy accepting only `UpToDate`.
 
-- `api.confidential.ai` reported `v0.14.29`. The live policy matched the
-  signed initial policy. TEErminator `v0.0.3` passed with the complete
-  node-image tuple, exact policy bytes, the `c8s-router` workload, the
-  production TLS name, and an online Intel policy accepting only `UpToDate`.
-- `candidate.api.confidential.ai`, a test deployment, reported `v0.15.15`.
-  TEErminator `v0.0.4` passed the same checks with the
-  `c8s-router-fb21f5cac23c` workload.
-
-These are dated connection checks, not permanent assertions about an endpoint.
+This is a dated connection check, not a permanent assertion about the endpoint.
 
 ### Send requests through the proxy
 
