@@ -73,10 +73,10 @@ Do not drop a pin or accept more TCB statuses just to get `Verified`. If the
 endpoint serves another release, or its live policy differs from the signed
 `allowlist.json`, the check fails.
 
-> **macOS 13:** if the status shows `unable to receive tcbInfo: ... context
-> deadline exceeded`, your Mac lacks the Sectigo R46 root that Intel's server
-> uses. Add Sectigo's cross-certificate (R46 signed by `AAA Certificate
-> Services`, which macOS trusts) to your login keychain, then check again:
+> **macOS:** if the TCB check times out (`unable to receive tcbInfo: ...
+> context deadline exceeded`), your system may be missing the Sectigo R46
+> intermediate certificate that Intel's PCS uses. Add it to your login
+> keychain, then check again:
 >
 > ```sh
 > curl -fsSLO http://crt.sectigo.com/SectigoPublicServerAuthenticationRootR46_AAA.crt
@@ -87,8 +87,6 @@ endpoint serves another release, or its live policy differs from the signed
 > The fingerprint must be
 > `CE:75:58:0B:C6:79:6D:3B:3E:A2:C3:E7:42:59:D0:D4:03:07:24:08:E9:60:C7:71:39:C2:FB:5A:3D:94:19:E4`.
 > This adds an intermediate certificate only; it changes no trust setting.
-> `SSL_CERT_FILE` does not help, because TEErminator `v0.0.4` is built with
-> Go 1.26, which ignores it on macOS.
 
 ## 4. Send requests through TEErminator
 
