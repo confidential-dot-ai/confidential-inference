@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import runpy
 import subprocess
 import tempfile
@@ -257,10 +258,17 @@ class ReleaseSignatureTests(unittest.TestCase):
 
     def test_release_signing_dependencies_are_exact_and_hash_locked(self) -> None:
         lock = LOCK.read_text()
-        requirements = [line for line in lock.splitlines() if line and not line.startswith(" ")]
-        self.assertGreaterEqual(len(requirements), 6)
-        self.assertTrue(all("==" in line for line in requirements))
-        self.assertEqual(lock.count("--hash=sha256:"), len(requirements))
+        entries = [
+            entry
+            for entry in re.split(r"\n(?! )", lock)
+            if entry.strip() and not entry.startswith("#")
+        ]
+        self.assertGreaterEqual(len(entries), 6)
+        for entry in entries:
+            requirement, *hashes = entry.splitlines()
+            self.assertIn("==", requirement)
+            self.assertTrue(hashes)
+            self.assertTrue(all(line.strip().startswith("--hash=sha256:") for line in hashes))
 
     def test_verifier_bounds_release_input_and_rejects_a_cosign_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
