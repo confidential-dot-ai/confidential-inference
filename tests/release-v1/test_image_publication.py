@@ -82,9 +82,9 @@ class ImagePublicationTests(unittest.TestCase):
         self.assertIn("if: inputs.publish && matrix.pass == 1", audit)
         self.assertIn("standard_pass_matrix", audit)
         self.assertIn("needs: [select-images, reproducibility-sglang-compare]\n", images)
-        self.assertIn("needs: [select-images, publish-standard, publish-sglang]\n", images)
-        self.assertEqual(images.count("--reproducibility-digest"), 2)
-        self.assertEqual(images.count("--pushed-digest"), 2)
+        self.assertIn("needs: [select-images, publish-standard, publish-sglang, publish-single]\n", images)
+        self.assertEqual(images.count("--reproducibility-digest"), 3)
+        self.assertEqual(images.count("--pushed-digest"), 3)
         self.assertIn("name: release-image-publication-${{ github.sha }}", images)
         self.assertNotIn("inputs.release_version", images)
         self.assertIn('select=(--tag "$RELEASE_TAG")', bundle)
@@ -103,11 +103,18 @@ class ImagePublicationTests(unittest.TestCase):
     def test_an_unsigned_branch_build_signs_and_publishes_no_release(self):
         import yaml
         workflow = yaml.safe_load((ROOT / ".github/workflows/release-bundle.yml").read_text())
-        steps = {step["name"]: step for job in workflow["jobs"].values() for step in job["steps"]}
+        steps = {step["name"]: step for job in workflow["jobs"].values() for step in job.get("steps", [])}
         for name in ("Validate the release tag", "Create the keyless Sigstore bundle",
                      "Verify the release without network trust lookup", "Publish new GitHub Release assets"):
             self.assertEqual(steps[name].get("if"), "github.event_name == 'push'", name)
         self.assertIn("v0.0.{0}-staging", workflow["env"]["RELEASE_TAG"])
+
+    def test_only_a_caller_can_skip_the_rebuild_audit(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT / ".github/workflows/release-images.yml").read_text())
+        triggers = workflow[True]
+        self.assertNotIn("single_build", triggers["workflow_dispatch"]["inputs"])
+        self.assertIn("single_build", triggers["workflow_call"]["inputs"])
 
     def test_build_requests_have_no_shared_cancellation_or_pending_slot(self):
         import yaml

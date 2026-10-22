@@ -5,8 +5,10 @@ on:
     tags:
       - "v[0-9]*"
   # An unsigned build of the dispatched branch, for a staging target with
-  # RELEASE_POLICY=unsigned (internal bin/deploy). It builds the same files
-  # as a staging release from the same steps, signs nothing, and creates no
+  # RELEASE_POLICY=unsigned (internal bin/deploy --build). In the same run it
+  # builds each image that changed since the nearest staging release tag once
+  # (release-images.yml single_build, no audit), then the same files as a
+  # staging release from the same steps. It signs nothing and creates no
   # tag and no GitHub Release: the files stay a workflow artifact
   # (unsigned-release-<name>, for `gh run download`), and the chart package
   # goes to GHCR. Its name is v0.0.<run number>-staging, a version that no
@@ -45,8 +47,19 @@ jobs:
           python3 scripts/release_profiles.py resolve --tag "$RELEASE_TAG" --format github \
             >> "$GITHUB_OUTPUT"
 
+  images:
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/release-images.yml
+    with:
+      single_build: true
+
   sign-release-bundle:
-    needs: select-profile
+    needs: [select-profile, images]
+    # A tag push skips the images job.
+    if: ${{ !cancelled() && needs.select-profile.result == 'success' && needs.images.result != 'failure' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
@@ -126,12 +139,18 @@ jobs:
 
       # The release names the image publication of the nearest main commit at
       # or before the tag commit. No image build input may change in between.
-      # An unsigned branch build also takes a release-images run on its branch.
+      # An unsigned branch build takes the images it built itself, else a
+      # release-images run on its branch.
       - name: Find the image publication evidence
         id: publication
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          BUILT_IMAGES: ${{ needs.images.outputs.names }}
         run: |
+          if [ -n "$BUILT_IMAGES" ]; then
+            printf 'artifact_name=release-image-publication-%s\nrun_id=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           select=(--tag "$RELEASE_TAG")
           [ "$GITHUB_EVENT_NAME" = push ] || select=(--branch "$GITHUB_REF_NAME")
           python3 scripts/find-image-publication-run.py \
