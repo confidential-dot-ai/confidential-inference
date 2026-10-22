@@ -36,7 +36,7 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: c8s-system
+              kubernetes.io/metadata.name: {{ .Values.c8s.frontDoorNamespace }}
           podSelector:
             matchLabels:
               app.kubernetes.io/name: {{ .Values.c8s.frontDoorPodLabelName }}
@@ -145,7 +145,7 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: c8s-system
+              kubernetes.io/metadata.name: {{ .Values.c8s.frontDoorNamespace }}
           podSelector:
             matchLabels:
               app.kubernetes.io/name: {{ .Values.c8s.frontDoorPodLabelName }}

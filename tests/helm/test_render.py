@@ -142,6 +142,19 @@ def check_mesh_tls_listener() -> None:
          "--set", "gateway.containerPorts.tls=8443", success=False)
 
 
+def check_front_door_namespace() -> None:
+    # From c8s v0.66.0 the router runs in its own namespace, c8s-router.
+    documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+        '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+        '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+        '--set', 'attestationReceipts.releaseId=v0.14.18', '--set', 'c8s.frontDoorNamespace=c8s-router')) if item]
+    policies = {d['metadata']['name']: d for d in documents if d['kind'] == 'NetworkPolicy'}
+    peer = policies['gateway-ingress']['spec']['ingress'][0]['from'][0]
+    assert peer['namespaceSelector']['matchLabels'] == {'kubernetes.io/metadata.name': 'c8s-router'}
+    assert any(peer.get('namespaceSelector', {}).get('matchLabels') == {'kubernetes.io/metadata.name': 'c8s-router'}
+               for rule in policies['gateway-to-router']['spec']['egress'] for peer in rule.get('to', []))
+
+
 def main() -> None:
     # The production release must route to a real Service and use the same
     # C8s identity in the gateway controller and its evidence sidecar.
@@ -750,6 +763,7 @@ def main() -> None:
     check_mesh_tls_listener()
     check_cds_routes()
     check_override_replaces_strategy()
+    check_front_door_namespace()
     print("Helm neutral-default and safety tests passed.")
 
 
