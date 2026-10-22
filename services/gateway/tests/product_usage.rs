@@ -20,9 +20,10 @@ use confidential_gateway::{
     admin_client::{self, AdminClient, Config},
     api_keys::KeyStore,
     metrics::GatewayMetrics,
+    metrics::MetricsSource,
     protection::ProtectionConfig,
     router_with_runtime_and_usage,
-    usage::{MAX_PENDING_EVENTS, Model, Recorder},
+    usage::{MAX_PENDING_EVENTS, Model, Outcome, Recorder},
 };
 use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
@@ -41,6 +42,8 @@ impl AuditSink for Audit {
 struct Admin {
     events: Mutex<Vec<Value>>,
     failing: Mutex<bool>,
+    /// Answer 413 for a larger batch (0: no limit).
+    max_batch: Mutex<usize>,
 }
 
 fn snapshot() -> Value {
@@ -110,6 +113,13 @@ async fn start_admin(
                         return StatusCode::SERVICE_UNAVAILABLE.into_response();
                     }
                     let events = body["events"].as_array().cloned().unwrap_or_default();
+                    let max_batch = *admin.max_batch.lock().unwrap_or_else(|_| unreachable!());
+                    if max_batch > 0 && events.len() > max_batch {
+                        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+                    }
+                    if events.iter().any(|event| event["key_id"] == "key_poison") {
+                        return StatusCode::BAD_REQUEST.into_response();
+                    }
                     let count = events.len();
                     admin
                         .events
@@ -281,4 +291,55 @@ fn the_admin_endpoint_must_be_https() {
     assert!(AdminClient::new(&config).is_ok());
     config.token = "short".into();
     assert!(AdminClient::new(&config).is_err());
+}
+
+#[tokio::test]
+async fn a_refused_batch_is_split_and_only_the_refused_event_is_dropped()
+-> Result<(), Box<dyn std::error::Error>> {
+    let admin = Arc::new(Admin::default());
+    *admin.max_batch.lock().unwrap_or_else(|_| unreachable!()) = 3;
+    let (address, ca) = start_admin(admin.clone()).await?;
+    let client = AdminClient::new(&client_config(address, &ca))?;
+    let metrics = Arc::new(GatewayMetrics::new("staging"));
+    let models = BTreeMap::from([(
+        "model-a".to_owned(),
+        Model {
+            served_model: "model-a".into(),
+            model_revision: "revision-1".into(),
+        },
+    )]);
+    let recorder = Recorder::new("gateway-test", models, MAX_PENDING_EVENTS, metrics.clone());
+    for key in [
+        "key_1",
+        "key_2",
+        "key_poison",
+        "key_3",
+        "key_4",
+        "key_5",
+        "key_6",
+    ] {
+        let mut request = recorder.reserve(key, "model-a").ok_or("unknown model")?;
+        request.finish(Outcome::Completed);
+    }
+    // 413 for more than 3 events, 400 for a batch with the poison event:
+    // neither blocks the queue.
+    recorder.send_pending(&client).await?;
+    assert_eq!(recorder.pending(), 0);
+    let stored: Vec<_> = admin
+        .events
+        .lock()
+        .unwrap_or_else(|_| unreachable!())
+        .iter()
+        .map(|event| event["key_id"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(
+        stored,
+        ["key_1", "key_2", "key_3", "key_4", "key_5", "key_6"]
+    );
+    let rendered = metrics.render_prometheus();
+    assert!(
+        rendered.contains("gateway_usage_events_rejected_total{status=\"400\",env=\"staging\"} 1"),
+        "{rendered}"
+    );
+    Ok(())
 }

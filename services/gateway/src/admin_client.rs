@@ -49,6 +49,15 @@ pub struct Config {
     pub models: BTreeMap<String, Model>,
 }
 
+/// Why a usage batch was not delivered.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SendError {
+    /// The admin refused this batch (status code); it must not be sent again.
+    Rejected(u16),
+    /// A failure that can pass later (reason code).
+    Retry(&'static str),
+}
+
 pub struct AdminClient {
     http: reqwest::Client,
     events_url: url::Url,
@@ -134,8 +143,11 @@ impl AdminClient {
     ///
     /// # Errors
     ///
-    /// Returns a short reason code for a transport error or a non-2xx status.
-    pub async fn send_events(&self, events: &[Event]) -> Result<(), &'static str> {
+    /// `SendError::Rejected` when the admin refuses the batch itself (400,
+    /// 413, 422): sending it again cannot succeed. `SendError::Retry` for a
+    /// transport error or any other status, such as 5xx, 429 or a wrong
+    /// token (401), which can succeed later.
+    pub async fn send_events(&self, events: &[Event]) -> Result<(), SendError> {
         let response = self
             .http
             .post(self.events_url.clone())
@@ -143,11 +155,17 @@ impl AdminClient {
             .json(&serde_json::json!({ "events": events }))
             .send()
             .await
-            .map_err(|_| "unreachable")?;
-        if !response.status().is_success() {
-            return Err("http_status");
+            .map_err(|_| SendError::Retry("unreachable"))?;
+        let status = response.status();
+        if matches!(status.as_u16(), 400 | 413 | 422) {
+            return Err(SendError::Rejected(status.as_u16()));
         }
-        bounded_body(response, MAX_RESPONSE_BYTES).await?;
+        if !status.is_success() {
+            return Err(SendError::Retry("http_status"));
+        }
+        bounded_body(response, MAX_RESPONSE_BYTES)
+            .await
+            .map_err(SendError::Retry)?;
         Ok(())
     }
 }
