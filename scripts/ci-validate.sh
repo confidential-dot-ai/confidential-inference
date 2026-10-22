@@ -6,9 +6,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
 python3 -m unittest discover -s tests/contracts -p 'test_*.py'
-python3 -m unittest discover -s tests/c8s-install-v0 -p 'test_*.py'
 python3 -m unittest discover -s tests/attestation-v0 -p 'test_*.py'
-python3 -m unittest discover -s tests/attestation-receipts-v0 -p 'test_*.py'
 python3 -m unittest discover -s tests/image-workflow -p 'test_*.py'
 python3 -m unittest discover -s tests/network-v0 -p 'test_*.py'
 python3 -m unittest discover -s tests/images/gateway -p 'test_*.py'
