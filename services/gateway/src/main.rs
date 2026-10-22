@@ -11,16 +11,11 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use axum::middleware;
-use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use confidential_gateway::{
     GatewayConfig, TracingAuditSink,
     admin_auth::{AdminRequestVerifier, MAX_CERTIFICATE_BYTES, require_signed_admin_request},
     api_keys::{GatewayState, StateError, admin_router},
-    attestation::{
-        C8S_ATTESTATION_PROTOCOL, C8S_ATTESTATION_PROTOCOL_COMMIT, C8sAttestationConfig,
-        C8sAttestationProvider,
-    },
     key_registry::KeyRegistryMode,
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
@@ -50,25 +45,6 @@ struct Args {
     listen: SocketAddr,
     #[arg(long, env = "GATEWAY_METRICS_LISTEN", default_value = "0.0.0.0:9090")]
     metrics_listen: SocketAddr,
-    // The c8s router (v0.56.0 and later) dials its route backends over TLS
-    // 1.3 and requires the get-cert leaf of the named workload, so the
-    // gateway also serves the public router on this listener with the
-    // certificate c8s injects into the pod. The plaintext listener stays for
-    // older c8s routers.
-    #[arg(long, env = "GATEWAY_TLS_LISTEN")]
-    tls_listen: Option<SocketAddr>,
-    #[arg(
-        long,
-        env = "GATEWAY_TLS_CERT_FILE",
-        default_value = "/etc/c8s/certs/tls.crt"
-    )]
-    tls_cert_file: PathBuf,
-    #[arg(
-        long,
-        env = "GATEWAY_TLS_KEY_FILE",
-        default_value = "/etc/c8s/certs/tls.key"
-    )]
-    tls_key_file: PathBuf,
     #[arg(
         long,
         env = "GATEWAY_INFERENCE_URL",
@@ -83,8 +59,6 @@ struct Args {
     allow_direct_inference_url: bool,
     #[arg(long, env = "GATEWAY_MODEL", default_value = "")]
     model: String,
-    #[arg(long, env = "GATEWAY_C8S_RECEIPT_TARGETS", default_value = "")]
-    c8s_receipt_targets: String,
     #[arg(long, env = "GATEWAY_C8S_EVIDENCE_BASE_URL", default_value = "")]
     c8s_evidence_base_url: String,
     #[arg(long, env = "GATEWAY_C8S_EVIDENCE_CONNECT_HOST")]
@@ -92,7 +66,7 @@ struct Args {
     #[arg(long, env = "GATEWAY_RELEASE_ID", default_value = "")]
     release_id: String,
     #[arg(long, env = "GATEWAY_C8S_CDS_URL")]
-    cds_url: Option<String>,
+    cds_url: String,
     #[arg(long, env = "GATEWAY_C8S_IMAGE_POLICY")]
     cds_image_policy: Option<PathBuf>,
     #[arg(long, env = "GATEWAY_C8S_IMAGE_POLICY_SHA256", default_value = "")]
@@ -138,25 +112,6 @@ struct Args {
         default_value = ""
     )]
     expected_operator_key_set_sha256: String,
-    #[arg(long, env = "GATEWAY_C8S_POLICY_MODE", default_value = "operator")]
-    c8s_policy_mode: String,
-    // The gateway and c8s run in lockstep on one attestation protocol. c8s
-    // serves the same receipt `version` string in both protocols, so the
-    // gateway cannot detect the protocol from a receipt and must not probe.
-    // This flag exists to make the pin explicit in the deployment, not to
-    // select a second protocol: only the pinned value is accepted.
-    #[arg(
-        long,
-        env = "GATEWAY_C8S_ATTESTATION_PROTOCOL",
-        default_value = "v1-xwing"
-    )]
-    c8s_attestation_protocol: String,
-    #[arg(
-        long,
-        env = "GATEWAY_EXPECTED_STATIC_ALLOWLIST_SHA256",
-        default_value = ""
-    )]
-    expected_static_allowlist_sha256: String,
     #[arg(
         long,
         env = "GATEWAY_ATTESTATION_TIMEOUT_SECONDS",
@@ -405,12 +360,7 @@ async fn main() -> Result<()> {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("build the internal inference client")?;
-    let attestation: Arc<dyn confidential_gateway::AttestationProvider> = if args.cds_url.is_some()
-    {
-        metadata_provider_with_runtime(&args, metrics.clone(), runtime.clone())?
-    } else {
-        bail!("GATEWAY_C8S_CDS_URL is required for policy metadata")
-    };
+    let attestation = metadata_provider_with_runtime(&args, metrics.clone(), runtime.clone())?;
     let attestation: Arc<dyn confidential_gateway::AttestationProvider> = match &releases {
         Some(releases) => Arc::new(
             confidential_gateway::release_settings::ReleaseMetadataProvider {
@@ -538,37 +488,15 @@ async fn main() -> Result<()> {
         signal_handle.graceful_shutdown(Some(shutdown_grace));
     });
 
-    let mut public_server = axum_server::bind(args.listen).handle(shutdown_handle.clone());
+    let mut public_server = axum_server::bind(args.listen).handle(shutdown_handle);
     limits.apply(public_server.http_builder());
-    let plaintext = public_server.serve(
-        app.clone()
-            .into_make_service_with_connect_info::<SocketAddr>(),
-    );
-    let Some(tls_listen) = args.tls_listen else {
-        return plaintext.await.context("serve the public gateway");
-    };
-    let tls_config = RustlsConfig::from_pem_file(&args.tls_cert_file, &args.tls_key_file)
+    public_server
+        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await
-        .context("read the mesh TLS certificate and key")?;
-    tokio::spawn(reload_tls_certificate(
-        tls_config.clone(),
-        args.tls_cert_file.clone(),
-        args.tls_key_file.clone(),
-        TLS_RELOAD_INTERVAL,
-    ));
-    tracing::info!(listen = %tls_listen, "the gateway serves TLS with the mesh certificate");
-    let mut tls_server = axum_server::bind_rustls(tls_listen, tls_config).handle(shutdown_handle);
-    limits.apply(tls_server.http_builder());
-    let tls = tls_server.serve(app.into_make_service_with_connect_info::<SocketAddr>());
-    // Either listener stopping ends the process; Kubernetes restarts it.
-    tokio::try_join!(
-        async { plaintext.await.context("serve the public gateway") },
-        async { tls.await.context("serve the public gateway over TLS") },
-    )?;
-    Ok(())
+        .context("serve the public gateway")
 }
 
-/// HTTP limits shared by the plaintext and the TLS listener.
+/// HTTP limits of the public listener.
 struct HttpLimits {
     header_timeout: Duration,
     maximum_headers: usize,
@@ -601,48 +529,6 @@ impl HttpLimits {
             .http2()
             .max_concurrent_streams(self.h2_streams)
             .max_header_list_size(self.h2_header_bytes);
-    }
-}
-
-const TLS_RELOAD_INTERVAL: Duration = Duration::from_secs(30);
-
-fn modified(path: &Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
-}
-
-/// Reload the mesh certificate when get-cert renews it. A failed reload
-/// keeps the certificate in use, and `seen` does not advance, so the next
-/// tick retries. That retry matters: get-cert writes the key and then the
-/// certificate, each atomically, so a tick between the two writes sees a
-/// new key with the old certificate and fails. c8s signals only nginx on
-/// renewal, so the gateway polls. The plaintext listener and this one stay
-/// side by side only until production runs a c8s router of v0.56.0 or later.
-async fn reload_tls_certificate(
-    config: RustlsConfig,
-    cert: PathBuf,
-    key: PathBuf,
-    interval: Duration,
-) {
-    let mut seen = (modified(&cert), modified(&key));
-    let mut tick = tokio::time::interval(interval);
-    tick.tick().await;
-    loop {
-        tick.tick().await;
-        let now = (modified(&cert), modified(&key));
-        if now == seen {
-            continue;
-        }
-        match config.reload_from_pem_file(&cert, &key).await {
-            Ok(()) => {
-                tracing::info!("the gateway reloaded the mesh TLS certificate");
-                seen = now;
-            }
-            Err(error) => {
-                tracing::error!(%error, "the gateway could not reload the mesh TLS certificate");
-            }
-        }
     }
 }
 
@@ -690,9 +576,6 @@ fn protection_config(args: &Args) -> ProtectionConfig {
         trusted_proxy_cidrs: args.trusted_proxy_cidrs.clone(),
     }
 }
-
-/// The only value `GATEWAY_C8S_ATTESTATION_PROTOCOL` accepts.
-const PINNED_C8S_ATTESTATION_PROTOCOL: &str = "v1-xwing";
 
 fn with_instance_header(app: axum::Router, identity: Option<&str>) -> Result<axum::Router> {
     let Some(identity) = identity else {
@@ -806,11 +689,7 @@ fn metadata_provider_with_runtime(
         .map_or(args.c8s_evidence_connect_host.as_deref(), |settings| {
             settings.connect_host.as_deref()
         });
-    let cds_url = url::Url::parse(
-        args.cds_url
-            .as_deref()
-            .context("GATEWAY_C8S_CDS_URL is required")?,
-    )?;
+    let cds_url = url::Url::parse(&args.cds_url)?;
     if cds_url.scheme() != "https"
         || cds_url.host_str().is_none()
         || !cds_url.username().is_empty()
@@ -922,10 +801,7 @@ fn validate_args(args: &Args) -> Result<()> {
     {
         bail!("DEPLOYMENT_ENVIRONMENT must be a DNS label");
     }
-    if args.listen.port() != 9443
-        || args.metrics_listen.port() != 9090
-        || args.tls_listen.is_some_and(|listen| listen.port() != 9444)
-    {
+    if args.listen.port() != 9443 || args.metrics_listen.port() != 9090 {
         bail!("the gateway listeners do not match the Kubernetes port contract");
     }
     if !args.allow_direct_inference_url && args.inference_url != INFERENCE_UPSTREAM_URL {
@@ -978,32 +854,7 @@ fn validate_args(args: &Args) -> Result<()> {
     if args.runtime_config_file.is_none() && (args.model.is_empty() || args.model.len() > 256) {
         bail!("GATEWAY_MODEL must identify one configured model");
     }
-    if args.cds_url.is_some() {
-        metadata_provider(args, Arc::new(GatewayMetrics::new("validation")))?;
-        return Ok(());
-    }
-    if args.c8s_attestation_protocol != PINNED_C8S_ATTESTATION_PROTOCOL {
-        bail!(
-            "GATEWAY_C8S_ATTESTATION_PROTOCOL must be {PINNED_C8S_ATTESTATION_PROTOCOL}: this build speaks {C8S_ATTESTATION_PROTOCOL} and runs in lockstep with c8s {C8S_ATTESTATION_PROTOCOL_COMMIT}"
-        );
-    }
-    C8sAttestationProvider::from_config_with_connect_host(
-        C8sAttestationConfig {
-            targets: &args.c8s_receipt_targets,
-            evidence_base_url: &args.c8s_evidence_base_url,
-            release_id: &args.release_id,
-            release_bundle_sha256: &args.release_bundle_sha256,
-            expected_operator_public_key_sha256: &args.expected_operator_public_key_sha256,
-            expected_operator_key_set_sha256: &args.expected_operator_key_set_sha256,
-            policy_mode: &args.c8s_policy_mode,
-            expected_static_allowlist_sha256: &args.expected_static_allowlist_sha256,
-            timeout: Duration::from_secs(args.attestation_timeout_seconds),
-            maximum_receipt_bytes: args.attestation_maximum_evidence_bytes,
-        },
-        args.c8s_evidence_connect_host.as_deref(),
-    )
-    .map_err(anyhow::Error::msg)
-    .context("validate the c8s receipt targets")?;
+    metadata_provider(args, Arc::new(GatewayMetrics::new("validation")))?;
     Ok(())
 }
 
@@ -1175,27 +1026,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metadata_configuration_does_not_require_receipt_targets() {
+    fn metadata_configuration_requires_policy_pins() {
         let mut value = args();
-        value.cds_url = Some("https://cds.c8s-system.svc.cluster.local:8443".into());
-        value.cds_image_policy = Some(PathBuf::from("/mnt/c8s-data/image-policy/policy.json"));
-        value.cds_image_policy_sha256 = format!("sha256:{}", "0".repeat(64));
-        value.cds_served_image_policy = value.cds_image_policy.clone();
-        value.cds_served_image_policy_sha256 = value.cds_image_policy_sha256.clone();
-        value.c8s_receipt_targets.clear();
         assert!(validate_args(&value).is_ok());
         value.cds_image_policy_sha256 = "untrusted".into();
         assert!(validate_args(&value).is_err());
     }
 
     #[test]
+    fn the_cds_url_must_be_an_https_origin() {
+        let mut value = args();
+        for invalid in [
+            "http://cds.c8s-system.svc.cluster.local:8443",
+            "https://cds.c8s-system.svc.cluster.local:8443/path",
+            "https://user@cds.c8s-system.svc.cluster.local:8443",
+            "",
+        ] {
+            value.cds_url = invalid.to_owned();
+            assert!(validate_args(&value).is_err(), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
     fn runtime_evidence_can_supply_the_only_startup_url() -> Result<()> {
         let mut value = args();
-        value.cds_url = Some("https://cds.c8s-system.svc.cluster.local:8443".into());
-        value.cds_image_policy = Some(PathBuf::from("/mnt/c8s-data/image-policy/policy.json"));
-        value.cds_image_policy_sha256 = format!("sha256:{}", "0".repeat(64));
-        value.cds_served_image_policy = value.cds_image_policy.clone();
-        value.cds_served_image_policy_sha256 = value.cds_image_policy_sha256.clone();
         value.c8s_evidence_base_url.clear();
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("settings.json");
@@ -1252,22 +1106,18 @@ mod tests {
             runtime_config_file: None,
             listen: "0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()),
             metrics_listen: "0.0.0.0:9090".parse().unwrap_or_else(|_| unreachable!()),
-            tls_listen: None,
-            tls_cert_file: PathBuf::from("/etc/c8s/certs/tls.crt"),
-            tls_key_file: PathBuf::from("/etc/c8s/certs/tls.key"),
             inference_url: INFERENCE_UPSTREAM_URL.to_owned(),
             allow_direct_inference_url: false,
             model: "deepseek-ai/DeepSeek-V4-Flash-0731".to_owned(),
-            cds_url: None,
-            cds_image_policy: None,
-            cds_image_policy_sha256: String::new(),
-            cds_served_image_policy: None,
-            cds_served_image_policy_sha256: String::new(),
+            cds_url: "https://cds.c8s-system.svc.cluster.local:8443".to_owned(),
+            cds_image_policy: Some(PathBuf::from("/mnt/c8s-data/image-policy/policy.json")),
+            cds_image_policy_sha256: format!("sha256:{}", "0".repeat(64)),
+            cds_served_image_policy: Some(PathBuf::from("/mnt/c8s-data/image-policy/policy.json")),
+            cds_served_image_policy_sha256: format!("sha256:{}", "0".repeat(64)),
             c8s_verifier: PathBuf::from("/usr/local/bin/c8s"),
             attestation_cache_seconds: 10,
             release_url: None,
             gateway_instance_id: None,
-            c8s_receipt_targets: "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804".to_owned(),
             c8s_evidence_base_url: "https://api.example.test".to_owned(),
             c8s_evidence_connect_host: None,
             release_id: "test-release".to_owned(),
@@ -1275,9 +1125,6 @@ mod tests {
             release_bundle_sha256: format!("sha256:{}", "1".repeat(64)),
             expected_operator_public_key_sha256: format!("sha256:{}", "2".repeat(64)),
             expected_operator_key_set_sha256: format!("sha256:{}", "3".repeat(64)),
-            c8s_policy_mode: "operator".to_owned(),
-            c8s_attestation_protocol: PINNED_C8S_ATTESTATION_PROTOCOL.to_owned(),
-            expected_static_allowlist_sha256: String::new(),
             attestation_timeout_seconds: 30,
             attestation_maximum_evidence_bytes: 1_048_576,
             environment: "production".to_owned(),
@@ -1289,9 +1136,7 @@ mod tests {
             state_enabled: false,
             api_key_pepper_file: PathBuf::from("/run/c8s/secrets/GATEWAY_API_KEY_PEPPER"),
             state_startup_timeout_seconds: 60,
-            admin_signer_certificate_file: PathBuf::from(
-                "/mnt/c8s-data/admin-auth/client.crt",
-            ),
+            admin_signer_certificate_file: PathBuf::from("/mnt/c8s-data/admin-auth/client.crt"),
             maximum_body_bytes: 2_097_152,
             upstream_timeout_seconds: 900,
             maximum_headers: 64,
@@ -1320,92 +1165,6 @@ mod tests {
         assert!(validate_args(&args()).is_ok());
     }
 
-    fn write_certificate(directory: &Path, name: &str) -> Result<Vec<u8>> {
-        let certificate = rcgen::generate_simple_self_signed(vec![name.to_owned()])?;
-        std::fs::write(directory.join("tls.crt"), certificate.cert.pem())?;
-        std::fs::write(
-            directory.join("tls.key"),
-            certificate.signing_key.serialize_pem(),
-        )?;
-        Ok(certificate.cert.der().to_vec())
-    }
-
-    async fn served_certificate(port: u16) -> Result<Vec<u8>> {
-        // The router pins the leaf itself, so the client here only reads it.
-        let client = reqwest::Client::builder()
-            .tls_danger_accept_invalid_certs(true)
-            .tls_version_min(reqwest::tls::Version::TLS_1_3)
-            .tls_info(true)
-            .build()?;
-        let response = client
-            .get(format!("https://localhost:{port}/"))
-            .send()
-            .await?;
-        let info = response
-            .extensions()
-            .get::<reqwest::tls::TlsInfo>()
-            .context("no TLS info")?;
-        Ok(info
-            .peer_certificate()
-            .context("no peer certificate")?
-            .to_vec())
-    }
-
-    #[tokio::test]
-    async fn the_tls_listener_serves_and_reloads_the_mesh_certificate() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let first = write_certificate(directory.path(), "gateway-first")?;
-        let (cert, key) = (
-            directory.path().join("tls.crt"),
-            directory.path().join("tls.key"),
-        );
-        let config = RustlsConfig::from_pem_file(&cert, &key).await?;
-        tokio::spawn(reload_tls_certificate(
-            config.clone(),
-            cert.clone(),
-            key.clone(),
-            Duration::from_millis(50),
-        ));
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
-        let handle = axum_server::Handle::new();
-        let serve_handle = handle.clone();
-        tokio::spawn(async move {
-            axum_server::from_tcp_rustls(listener, config)
-                .handle(serve_handle)
-                .serve(
-                    axum::Router::new()
-                        .fallback(|| async { "ok" })
-                        .into_make_service(),
-                )
-                .await
-        });
-        assert_eq!(served_certificate(port).await?, first);
-        let second = write_certificate(directory.path(), "gateway-second")?;
-        let mut served = Vec::new();
-        for _ in 0..100 {
-            served = served_certificate(port).await?;
-            if served == second {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        handle.shutdown();
-        assert_eq!(served, second, "the renewed certificate was not served");
-        Ok(())
-    }
-
-    #[test]
-    fn the_tls_listener_must_use_its_kubernetes_port() {
-        let mut value = args();
-        value.tls_listen = Some("0.0.0.0:9444".parse().unwrap_or_else(|_| unreachable!()));
-        assert!(validate_args(&value).is_ok());
-        value.tls_listen = Some("0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()));
-        assert!(validate_args(&value).is_err());
-        value.tls_listen = Some("0.0.0.0:8443".parse().unwrap_or_else(|_| unreachable!()));
-        assert!(validate_args(&value).is_err());
-    }
-
     #[test]
     fn only_the_pinned_internal_upstream_is_accepted() {
         let mut value = args();
@@ -1424,19 +1183,10 @@ mod tests {
     }
 
     #[test]
-    fn custom_environment_and_receipt_target_contract_pass() {
+    fn custom_environment_and_model_pass() {
         let mut value = args();
         value.environment = "staging".to_owned();
         value.model = "staging-simulator".to_owned();
-        value.c8s_receipt_targets = "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802".to_owned();
-        assert!(validate_args(&value).is_ok());
-    }
-
-    #[test]
-    fn configured_environment_accepts_its_explicit_model() {
-        let mut value = args();
-        value.environment = "staging".to_owned();
-        value.c8s_receipt_targets = "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802".to_owned();
         assert!(validate_args(&value).is_ok());
     }
 
@@ -1448,16 +1198,6 @@ mod tests {
         value.allow_direct_inference_url = true;
         assert!(validate_args(&value).is_ok());
         value.inference_url = "sglang-router:30000".to_owned();
-        assert!(validate_args(&value).is_err());
-    }
-
-    #[test]
-    fn only_the_pinned_c8s_attestation_protocol_is_accepted() {
-        let mut value = args();
-        assert!(validate_args(&value).is_ok());
-        value.c8s_attestation_protocol = "v1-session-pubkey".to_owned();
-        assert!(validate_args(&value).is_err());
-        value.c8s_attestation_protocol = String::new();
         assert!(validate_args(&value).is_err());
     }
 
@@ -1474,8 +1214,7 @@ mod tests {
         value.state_absence_policy = "create-empty".to_owned();
         assert!(validate_args(&value).is_err());
         value.state_absence_policy = "fail-closed".to_owned();
-        value.c8s_receipt_targets =
-            "gateway|gateway|gateway=https://attestation.example:8800".to_owned();
+        value.attestation_timeout_seconds = 0;
         assert!(validate_args(&value).is_err());
     }
 

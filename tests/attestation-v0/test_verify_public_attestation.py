@@ -1378,10 +1378,9 @@ print(json.dumps(result))
     def test_the_key_set_formula_matches_the_gateway_test_vector(self):
         """The Python formula must reproduce c8s pkg/operatorauth.KeySetDigest.
 
-        This vector is the gateway's own committed test vector
-        (`services/gateway/tests/attestation_producer.rs`,
-        TEST_OPERATOR_KEY_SHA256 / TEST_OPERATOR_KEY_SET_SHA256), so the two
-        implementations are checked against one another byte for byte.
+        This vector was the gateway's committed test vector
+        (TEST_OPERATOR_KEY_SHA256 / TEST_OPERATOR_KEY_SET_SHA256 in the
+        deleted gateway receipt producer tests).
         """
         sys.path.insert(0, str(SCRIPT.parent))
         try:

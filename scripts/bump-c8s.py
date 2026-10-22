@@ -549,7 +549,6 @@ def regenerate_staging_fixture(c8s_repo: Path, moved: list[release_profiles.Prof
 def check(c8s_repo: Path, commit: str) -> None:
     run([sys.executable, "scripts/verify-c8s-admission-source.py", "--repository", str(c8s_repo),
          "--commit", commit], cwd=ROOT)
-    run([sys.executable, "scripts/check-c8s-protocol-lockstep.py"], cwd=ROOT)
     run([sys.executable, "-m", "unittest", "discover", "-s", "tests/release-v1", "-p", "test_*.py"], cwd=ROOT)
 
 

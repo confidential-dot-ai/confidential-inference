@@ -156,10 +156,9 @@ def rendered_proxy_peer_workload(
 def validate_proxy_identity_bindings(
     policies: dict[str, Any],
     targets: list[dict[str, str]],
-    rendered_targets: dict[str, str] | None = None,
     rendered_workloads: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Bind proxies and Helm receipt targets to active target identities."""
+    """Bind proxies to active target identities."""
     by_target: dict[str, dict[str, str]] = {}
     for item in targets:
         if not isinstance(item, dict):
@@ -192,13 +191,6 @@ def validate_proxy_identity_bindings(
                 f"missing={missing}"
             )
         return
-    if rendered_targets is not None and set(rendered_targets) != set(by_target):
-        missing = sorted(set(by_target) - set(rendered_targets))
-        extra = sorted(set(rendered_targets) - set(by_target))
-        raise BundleError(
-            "the rendered attestation targets differ from the active targets; "
-            f"missing={missing}, extra={extra}"
-        )
     for source, peer in (("gateway", "sglang-router"), ("sglang-router", "gateway")):
         source_target = by_target[source]
         peer_target = by_target[peer]
@@ -214,12 +206,6 @@ def validate_proxy_identity_bindings(
             raise BundleError(
                 f"the {source} receipt identity is not its exact c8s workload name"
             )
-        if rendered_targets is not None:
-            rendered_identity = rendered_targets.get(source)
-            if rendered_identity != source_target["identity"]:
-                raise BundleError(
-                    f"the {source} attestation target identity does not match the active allowlist"
-                )
         # The peer binding applies only when the topology actually runs the
         # workload proxy: with namedWorkloadProxy off (e.g. conf-inference-prod,
         # whose main-line c8s images ship no workload-proxy binary) there is no
@@ -981,43 +967,6 @@ def render(args: argparse.Namespace) -> str:
     return run(command)
 
 
-def rendered_attestation_target_identities(rendered: str) -> dict[str, str]:
-    """Read stable target identities from the rendered gateway contract."""
-    documents = [item for item in yaml.safe_load_all(rendered) if isinstance(item, dict)]
-    gateway = next(
-        (
-            item for item in documents
-            if item.get("kind") == "Deployment"
-            and item.get("metadata", {}).get("name") == "gateway"
-        ),
-        None,
-    )
-    if gateway is None:
-        return {}
-    containers = gateway.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
-    application = next((item for item in containers if item.get("name") == "gateway"), None)
-    if application is None:
-        raise BundleError("the rendered gateway has no gateway container")
-    values = {
-        item.get("name"): item.get("value")
-        for item in application.get("env", [])
-        if isinstance(item, dict)
-    }
-    encoded = values.get("GATEWAY_C8S_RECEIPT_TARGETS")
-    if not isinstance(encoded, str) or not encoded:
-        raise BundleError("the rendered gateway has no c8s receipt target identities")
-    result: dict[str, str] = {}
-    for entry in encoded.split(","):
-        left, separator, _url = entry.partition("=")
-        fields = left.split("|")
-        if not separator or len(fields) != 3 or any(not field for field in fields):
-            raise BundleError("the rendered c8s receipt target identity format is invalid")
-        target, _workload, identity = fields
-        if target in result:
-            raise BundleError(f"the rendered c8s receipt target {target} is duplicated")
-        result[target] = identity
-    return result
-
 
 def source_lock_node_image(
     source_lock: dict[str, Any], environment: str
@@ -1176,8 +1125,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     validate_proxy_identity_bindings(
         active_allowlist["workloads"],
         bundle["c8s"]["attestationTargets"],
-        rendered_attestation_target_identities(rendered),
-        workloads,
+        rendered_workloads=workloads,
     )
     validate_rendered_allowlist(
         rendered, install_input, active_allowlist, configs, args.strict

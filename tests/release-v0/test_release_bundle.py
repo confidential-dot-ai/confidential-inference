@@ -525,13 +525,6 @@ class ReleaseBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing=.*sglang-router"):
             validate(policies, targets)
 
-    def test_rendered_target_identity_mismatch_fails_closed(self) -> None:
-        validate = runpy.run_path(str(SCRIPT))["validate_proxy_identity_bindings"]
-        policies, targets = self.proxy_bindings()
-        rendered = {"gateway": "wrong-gateway", "sglang-router": "sglang-router"}
-        with self.assertRaisesRegex(ValueError, "gateway attestation target identity"):
-            validate(policies, targets, rendered)
-
     def test_rendered_proxy_identity_mismatch_fails_closed(self) -> None:
         validate = runpy.run_path(str(SCRIPT))["validate_proxy_identity_bindings"]
         policies, targets = self.proxy_bindings()
@@ -643,13 +636,6 @@ class ReleaseBundleTests(unittest.TestCase):
             }},
         }
         module["validate_rendered_allowlist"](rendered, install, allowlist, configs, False)
-
-    def test_extra_rendered_attestation_target_fails_closed(self) -> None:
-        validate = runpy.run_path(str(SCRIPT))["validate_proxy_identity_bindings"]
-        policies, targets = self.proxy_bindings()
-        rendered = {"gateway": "gateway", "sglang-router": "sglang-router", "extra": "extra"}
-        with self.assertRaisesRegex(ValueError, "extra=.*extra"):
-            validate(policies, targets, rendered)
 
     def test_node_socket_capability_is_required(self) -> None:
         require = runpy.run_path(str(SCRIPT))["require_attestation_transport"]
