@@ -218,11 +218,11 @@ class PublicationRunLookupTests(unittest.TestCase):
     def test_a_branch_run_is_trusted_only_by_a_build_of_that_branch(self):
         name = FINDER.artifact_name(self.head)
         api, repository = "https://api.github.test", "confidential-dot-ai/confidential-inference"
-        FINDER.request_json = run_response({73: self.head}, {name: [73]}, branch="chart/x")
+        FINDER.request_json = run_response({73: self.head}, {name: [73]}, branch="conf-inf-integration")
         with self.assertRaisesRegex(FINDER.LookupError, "changes an image build input"):
             FINDER.find_nearest(api, repository, "token", self.head, self.repo)
         self.assertEqual(FINDER.find_nearest(api, repository, "token", self.head, self.repo,
-                                             branches=("main", "chart/x")), (self.head, 73))
+                                             branches=("main", "conf-inf-integration")), (self.head, 73))
 
     def test_duplicate_publication_runs_fail_closed(self):
         name = FINDER.artifact_name(self.docs)
