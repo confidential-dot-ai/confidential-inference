@@ -307,7 +307,7 @@
         },
         "secrets": {
           "type": "object",
-          "required": ["adminSigner"],
+          "required": ["adminSigner", "adminApiKey"],
           "additionalProperties": false,
           "properties": {
             "adminSigner": {
@@ -317,6 +317,14 @@
               "properties": {
                 "secretName": {"$ref": "#/definitions/kubernetesName"},
                 "certificateKey": {"const": "client.crt"}
+              }
+            },
+            "adminApiKey": {
+              "type": "object",
+              "required": ["secretName"],
+              "additionalProperties": false,
+              "properties": {
+                "secretName": {"$ref": "#/definitions/kubernetesName"}
               }
             }
           }

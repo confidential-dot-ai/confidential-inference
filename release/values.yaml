@@ -243,6 +243,8 @@ workloadOverrides:
               value: /run/c8s/secrets/GATEWAY_API_KEY_PEPPER
             - name: GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE
               value: /mnt/c8s-data/admin-auth/..data/client.crt
+            - name: GATEWAY_ADMIN_API_KEY_HASHES_FILE
+              value: /mnt/c8s-data/admin-api-key/..data/sha256
             - name: DEPLOYMENT_ENVIRONMENT
               value: production
             - name: GATEWAY_METRICS_API_KEY_LABEL_ALLOWLIST
@@ -325,6 +327,14 @@ workloadOverrides:
               - key: client.crt
                 path: client.crt
               secretName: gateway-admin-mtls
+          - name: admin-api-key
+            secret:
+              defaultMode: 420
+              items:
+              - key: sha256
+                path: sha256
+              optional: true
+              secretName: gateway-admin-api-key
           - configMap:
               defaultMode: 420
               name: gateway-release-identity
