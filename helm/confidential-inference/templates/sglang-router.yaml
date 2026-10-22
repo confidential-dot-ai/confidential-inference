@@ -95,10 +95,12 @@ spec:
               drop: ["ALL"]
           command: ["python3", "-m", "sglang_router.launch_router"]
           args:
-            - --service-discovery
-            - --service-discovery-namespace={{ .Release.Namespace }}
-            - --service-discovery-port={{ .Values.inference.port }}
-            - --selector=app.kubernetes.io/component=inference-worker
+            # c8s >= v0.64: a mesh member pod cannot reach the Kubernetes API,
+            # so the router gets its workers by name instead of by discovery.
+            - --worker-urls
+            {{- range $index := until (int .Values.inference.replicas) }}
+            - http://inference-worker-{{ $index }}-0.inference-workers:{{ $.Values.inference.port }}
+            {{- end }}
             - --policy=cache_aware
             - --cache-threshold=0.3
             - --balance-abs-threshold=64
