@@ -36,6 +36,8 @@ image digests. The release commit is the image source commit.
 | `profiles.json` | A person | The release profiles and their layers |
 | `inputs/image-config.json` | `generate-release-allowlist.py --refresh-image-config` | The `ENV`, `ENTRYPOINT`, and `CMD` of every image that a profile renders and this repository does not build. All profiles share it. Review the diff by hand |
 | `inputs/cdi/nvidia-<driver>.json` | A person, from a reviewed record | The NVIDIA CDI environment variables and driver mounts of one driver version |
+| `inputs/c8s-source-lock.json` | `bump-c8s.py` | The pinned c8s commits and source hashes. The signed manifest records its path and digest. All profiles share it |
+| `inputs/c8s-attestation-protocols/<commit>.json` | `bump-c8s.py` | The attestation protocol of each c8s commit. `check-c8s-protocol-lockstep.py` compares them with the source lock |
 | `node-manifest.json` | `fetch-node-manifest.py` | The c8s `manifest.json` of the node image. It holds MRTD, RTMR1, and RTMR2 |
 | `accepted-lint-findings.json` | A reviewer | The `c8s allowlist lint --strict` findings that the release accepts, each with its reason and issue |
 
