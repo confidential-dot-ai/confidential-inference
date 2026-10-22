@@ -29,8 +29,7 @@ on an operator-supplied persistent volume.
 `attestationReceipts.cds` configures schema 3 metadata: the CDS origin and
 policy documents supplied by the deployment and pinned through release identity.
 The gateway verifies CDS before reading the active policy and operator keys.
-The current gateway does not collect `attestationReceipts.targets` receipts.
-Those target settings remain for historical releases. Read
+Read
 [the gateway contract](../../services/gateway/ATTESTATION.md) and
 [client verification](../../docs/verification.md).
 

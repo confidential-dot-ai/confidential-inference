@@ -19,11 +19,6 @@ spec:
     - name: inference
       port: {{ .Values.inference.port }}
       targetPort: inference
-    {{- if .Values.attestationReceipts.enabled }}
-    - name: cds-attest
-      port: {{ .Values.attestationReceipts.firstWorkerPort }}
-      targetPort: cds-attest
-    {{- end }}
 {{- $cache := .Values.inference.model.cache }}
 {{- if $cache.enabled }}
 {{- $manifestPin := "" }}
@@ -300,9 +295,6 @@ spec:
               mountPath: {{ $modelPath }}
               readOnly: true
             {{- end }}
-        {{- if $.Values.attestationReceipts.enabled }}
-        {{- include "confidential-inference.cdsAttestSidecar" (dict "root" $ "workload" $attestedWorkload "host" "0.0.0.0" "port" $.Values.attestationReceipts.firstWorkerPort "gpuEvidence" (gt (int $.Values.inference.gpusPerReplica) 0)) | nindent 8 }}
-        {{- end }}
       volumes:
         - name: shm
           emptyDir:

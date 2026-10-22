@@ -54,18 +54,11 @@ images:
   # c8s.coreImages, which scripts/bump-c8s.py moves together.
   c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:593dea857bfdb2512af5dcfbbec34b10c08de66bbd67f7d33d23a1f8581429b5
 
-namedWorkloadProxy:
-  enabled: false
-
 c8s:
   # c8s labels the front-door pod `router`.
   frontDoorPodLabelName: router
 
 attestationReceipts:
-  attestationApiUrl: unix:///run/c8s/workload-claims/attestation-api.sock
-  enabled: true
-  gpuEvidenceFlagEnabled: false
-  legacyC8s615: false
   evidenceBaseUrl: https://api.confidential.ai   # changed: the production hostname
   # The release build sets releaseId to the release tag.
   # These three values reach the gateway through the gateway-release-identity
@@ -76,29 +69,10 @@ attestationReceipts:
   # gateway-release-identity. Keep the CDS origin in the signed workload.
   cds:
     url: https://c8s-cds.c8s-system.svc.cluster.local:8443
-  # c8s v0.56.0+ (#851): cds-attest polls the route manifest from cds.url. The
-  # workload overrides below restate the same flags.
-  cdsRoutes: true
   expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  targets:
-    - {target: gateway, workload: gateway, identity: gateway, url: http://127.0.0.1:8800}
-    - {target: sglang-router, workload: sglang-router, identity: sglang-router, url: http://sglang-router:8801}
-    - {target: inference-worker-0, workload: inference-worker-0, identity: inference-worker-0, url: http://inference-worker-0-0.inference-workers:8802}
-    - {target: inference-worker-1, workload: inference-worker-1, identity: inference-worker-1, url: http://inference-worker-1-0.inference-workers:8802}
-    - {target: metrics-collector, workload: metrics-collector, identity: metrics-collector, url: http://metrics-collector:8803}
-    - {target: kube-state-metrics, workload: kube-state-metrics, identity: kube-state-metrics, url: http://kube-state-metrics:8804}
   certificateRenewInterval: 30s
-  gatewayPort: 8800
-  routerPort: 8801
-  firstWorkerPort: 8802
-  metricsCollectorPort: 8803
-  kubeStateMetricsPort: 8804
-  platform: tdx
   attestationApiPort: 8400
-  resources:
-    requests: {cpu: 25m, memory: 32Mi}
-    limits: {cpu: 250m, memory: 128Mi}
 
 gateway:
   attestedWorkload: gateway
@@ -204,10 +178,6 @@ workloadOverrides:
               value: 0.0.0.0:9443
             - name: GATEWAY_METRICS_LISTEN
               value: 0.0.0.0:9090
-            # The c8s v0.56.0+ router dials the gateway over TLS with the
-            # get-cert leaf in /etc/c8s/certs (#172).
-            - name: GATEWAY_TLS_LISTEN
-              value: 0.0.0.0:9444
             - name: GATEWAY_RUNTIME_CONFIG_FILE
               value: /mnt/c8s-data/runtime/settings.json
             - name: GATEWAY_ROUTER_NAMESPACE
@@ -235,8 +205,6 @@ workloadOverrides:
               # A mesh relay can use a different outer node address. The gateway
               # uses that connection address without trusting its forwarded header.
               value: 10.52.0.0/16
-            - name: GATEWAY_C8S_RECEIPT_TARGETS
-              value: gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804
             - name: GATEWAY_RELEASE_IDENTITY_FILE
               value: /mnt/c8s-data/release-identity/..data/release-identity.json
             - name: GATEWAY_C8S_POLICY_MODE
@@ -287,39 +255,8 @@ workloadOverrides:
             - containerPort: 9090
               name: metrics
               protocol: TCP
-            - containerPort: 9444
-              name: https
-              protocol: TCP
             readinessProbe:
               failureThreshold: 3
-              successThreshold: 1
-            terminationMessagePath: /dev/termination-log
-            terminationMessagePolicy: File
-          - name: cds-attest
-            args:
-            - cds-attest
-            - --host=0.0.0.0
-            - --port=8800
-            - --platform=tdx
-            - --front-door-mode=webpki
-            - --expected-workload=gateway
-            - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
-            - --serving-cert-file=/etc/c8s/certs/tls.crt
-            - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
-            - --mesh-identity-key-file=/etc/c8s/certs/tls.key
-            - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-            - --cds-url={{ required "attestationReceipts.cds.url" .Values.attestationReceipts.cds.url }}
-            - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd" .Values.attestationReceipts.cdsPin.mrtd }}
-            - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1" .Values.attestationReceipts.cdsPin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2" .Values.attestationReceipts.cdsPin.rtmr2 }}
-            env: []
-            image: '{{ .Values.images.c8sOperator }}'
-            livenessProbe:
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            readinessProbe:
-              httpGet:
-                scheme: HTTP
               successThreshold: 1
             terminationMessagePath: /dev/termination-log
             terminationMessagePolicy: File
@@ -387,34 +324,6 @@ workloadOverrides:
               timeoutSeconds: 1
             terminationMessagePath: /dev/termination-log
             terminationMessagePolicy: File
-          - name: cds-attest
-            args:
-            - cds-attest
-            - --host=0.0.0.0
-            - --port=8804
-            - --platform=tdx
-            - --front-door-mode=webpki
-            - --expected-workload=kube-state-metrics
-            - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
-            - --serving-cert-file=/etc/c8s/certs/tls.crt
-            - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
-            - --mesh-identity-key-file=/etc/c8s/certs/tls.key
-            - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-            - --cds-url={{ required "attestationReceipts.cds.url" .Values.attestationReceipts.cds.url }}
-            - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd" .Values.attestationReceipts.cdsPin.mrtd }}
-            - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1" .Values.attestationReceipts.cdsPin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2" .Values.attestationReceipts.cdsPin.rtmr2 }}
-            env: []
-            image: '{{ .Values.images.c8sOperator }}'
-            livenessProbe:
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            readinessProbe:
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            terminationMessagePath: /dev/termination-log
-            terminationMessagePolicy: File
           dnsPolicy: ClusterFirst
           restartPolicy: Always
           schedulerName: default-scheduler
@@ -452,34 +361,6 @@ workloadOverrides:
               periodSeconds: 10
               successThreshold: 1
               timeoutSeconds: 1
-            terminationMessagePath: /dev/termination-log
-            terminationMessagePolicy: File
-          - name: cds-attest
-            args:
-            - cds-attest
-            - --host=0.0.0.0
-            - --port=8803
-            - --platform=tdx
-            - --front-door-mode=webpki
-            - --expected-workload=metrics-collector
-            - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
-            - --serving-cert-file=/etc/c8s/certs/tls.crt
-            - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
-            - --mesh-identity-key-file=/etc/c8s/certs/tls.key
-            - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-            - --cds-url={{ required "attestationReceipts.cds.url" .Values.attestationReceipts.cds.url }}
-            - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd" .Values.attestationReceipts.cdsPin.mrtd }}
-            - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1" .Values.attestationReceipts.cdsPin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2" .Values.attestationReceipts.cdsPin.rtmr2 }}
-            env: []
-            image: '{{ .Values.images.c8sOperator }}'
-            livenessProbe:
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            readinessProbe:
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
             terminationMessagePath: /dev/termination-log
             terminationMessagePolicy: File
           dnsPolicy: ClusterFirst
@@ -547,34 +428,6 @@ workloadOverrides:
             - mountPath: /mnt/c8s-data/model-routes
               name: model-routes
               readOnly: true
-          - name: cds-attest
-            args:
-            - cds-attest
-            - --host=0.0.0.0
-            - --port=8801
-            - --platform=tdx
-            - --front-door-mode=webpki
-            - --expected-workload=router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
-            - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
-            - --serving-cert-file=/etc/c8s/certs/tls.crt
-            - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
-            - --mesh-identity-key-file=/etc/c8s/certs/tls.key
-            - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-            - --cds-url={{ required "attestationReceipts.cds.url" .Values.attestationReceipts.cds.url }}
-            - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd" .Values.attestationReceipts.cdsPin.mrtd }}
-            - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1" .Values.attestationReceipts.cdsPin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2" .Values.attestationReceipts.cdsPin.rtmr2 }}
-            env: []
-            image: '{{ .Values.images.c8sOperator }}'
-            livenessProbe:
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            readinessProbe:
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            terminationMessagePath: /dev/termination-log
-            terminationMessagePolicy: File
           dnsPolicy: ClusterFirst
           restartPolicy: Always
           schedulerName: default-scheduler
@@ -667,34 +520,6 @@ workloadOverrides:
               successThreshold: 1
             terminationMessagePath: /dev/termination-log
             terminationMessagePolicy: File
-          - name: cds-attest
-            args:
-            - cds-attest
-            - --host=0.0.0.0
-            - --port=8802
-            - --platform=tdx
-            - --front-door-mode=webpki
-            - --expected-workload=inference-worker-0-u200b5c252a
-            - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
-            - --serving-cert-file=/etc/c8s/certs/tls.crt
-            - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
-            - --mesh-identity-key-file=/etc/c8s/certs/tls.key
-            - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-            - --cds-url={{ required "attestationReceipts.cds.url" .Values.attestationReceipts.cds.url }}
-            - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd" .Values.attestationReceipts.cdsPin.mrtd }}
-            - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1" .Values.attestationReceipts.cdsPin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2" .Values.attestationReceipts.cdsPin.rtmr2 }}
-            env: []
-            image: '{{ .Values.images.c8sOperator }}'
-            livenessProbe:
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            readinessProbe:
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            terminationMessagePath: /dev/termination-log
-            terminationMessagePolicy: File
           dnsPolicy: ClusterFirst
           restartPolicy: Always
           schedulerName: default-scheduler
@@ -777,34 +602,6 @@ workloadOverrides:
               requests:
                 nvidia.com/gpu: '4'
             startupProbe:
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            terminationMessagePath: /dev/termination-log
-            terminationMessagePolicy: File
-          - name: cds-attest
-            args:
-            - cds-attest
-            - --host=0.0.0.0
-            - --port=8802
-            - --platform=tdx
-            - --front-door-mode=webpki
-            - --expected-workload=inference-worker-1-u5f71fa321d
-            - --attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock
-            - --serving-cert-file=/etc/c8s/certs/tls.crt
-            - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
-            - --mesh-identity-key-file=/etc/c8s/certs/tls.key
-            - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-            - --cds-url={{ required "attestationReceipts.cds.url" .Values.attestationReceipts.cds.url }}
-            - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd" .Values.attestationReceipts.cdsPin.mrtd }}
-            - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1" .Values.attestationReceipts.cdsPin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2" .Values.attestationReceipts.cdsPin.rtmr2 }}
-            env: []
-            image: '{{ .Values.images.c8sOperator }}'
-            livenessProbe:
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            readinessProbe:
               httpGet:
                 scheme: HTTP
               successThreshold: 1
