@@ -142,6 +142,31 @@ def check_mesh_tls_listener() -> None:
          "--set", "gateway.containerPorts.tls=8443", success=False)
 
 
+def g7_violations(documents: list[dict], secret_reads: dict[str, list[str]]) -> list[str]:
+    """Controllers that mount a hostPath volume and read c8s secrets.
+
+    c8s allowlist rule G7 refuses a secrets grant on an entry with a host
+    mount. An entry reads secrets through the c8s-volumes or c8s-secrets
+    annotation, or through secretReads in its workload policy.
+    """
+    found = []
+    for item in documents:
+        if item["kind"] not in {"Deployment", "StatefulSet", "DaemonSet"}:
+            continue
+        controller = f"{item['kind']}/{item['metadata']['name']}"
+        template = item["spec"]["template"]
+        pod = template["spec"]
+        host = {volume["name"] for volume in pod.get("volumes", []) if "hostPath" in volume}
+        mounted = any(mount["name"] in host for field in ("initContainers", "containers")
+                      for container in pod.get(field, []) for mount in container.get("volumeMounts", []))
+        annotations = template.get("metadata", {}).get("annotations", {})
+        reads = (secret_reads.get(controller) or "confidential.ai/c8s-volumes" in annotations
+                 or "confidential.ai/c8s-secrets" in annotations)
+        if mounted and reads:
+            found.append(controller)
+    return found
+
+
 def check_model_cache() -> None:
     """The plain model cache: fetch-model fills a hostPath, the gate reads it read-only."""
     manifest = '{"files":[]}\n'
@@ -172,6 +197,11 @@ def check_model_cache() -> None:
         egress = next(item for item in documents if item["kind"] == "NetworkPolicy"
                       and item["metadata"]["name"] == "inference-worker-model-download")
         assert egress["spec"]["egress"][0]["ports"] == [{"protocol": "TCP", "port": 443}]
+        # G7: the cache worker mounts a host path, so it drops the model volume
+        # read, and its workload policy must list no secretReads.
+        assert g7_violations(documents, {}) == []
+        assert g7_violations(documents, {"StatefulSet/inference-worker-0": ["/confidential-inference/volumes/dsv4"]}) == [
+            "StatefulSet/inference-worker-0"]
         helm("template", "example", str(CHART), *NEUTRAL_MODE, "--values", values.name,
              "--set", "inference.model.cache.manifest=other", success=False)
     default = render()
@@ -698,6 +728,9 @@ def main() -> None:
         and item["metadata"]["name"].startswith("inference-worker-")
     ]
     assert len(production_workers) == 2
+    production_policy = json.loads((ROOT / "c8s/production-policy.json").read_text())
+    assert g7_violations(production_documents, {
+        item["controller"]: item.get("secretReads", []) for item in production_policy["workloads"]}) == []
     for worker in production_workers:
         sglang_args = next(
             container["args"]
