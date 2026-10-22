@@ -16,7 +16,8 @@ def router_controller(documents):
     matches = [item for item in documents if isinstance(item, dict)
                and item.get("kind") == "Deployment"
                and item.get("metadata", {}).get("name") == "c8s-router"
-               and item.get("metadata", {}).get("namespace") == "c8s-system"]
+               # c8s-system before c8s v0.66.0, c8s-router from then on (c8s #814).
+               and item.get("metadata", {}).get("namespace") in ("c8s-system", "c8s-router")]
     if len(matches) != 1:
         raise NativeRuleError("the pinned node render must contain one native c8s-router")
     return copy.deepcopy(matches[0])

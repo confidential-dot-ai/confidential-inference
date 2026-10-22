@@ -67,8 +67,14 @@ telemetry:
 logCollector:
   enabled: false
 
+# c8s v0.66.0+ runs the router in its own namespace (c8s #814; chart value
+# from confidential-inference #203).
+c8s:
+  frontDoorPodLabelName: router
+  frontDoorNamespace: c8s-router
+
 images:
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:97f6f5ac2e35cd635787ec95aaad842c321eb8c0f6df5a63de34c574ddae2d6e
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2
 
 # The simulator uses the staging workload definitions.
 workloadOverridesEnabled: false
