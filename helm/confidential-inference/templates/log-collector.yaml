@@ -14,10 +14,10 @@ metadata:
 data:
   deployment: {{ .deployment | quote }}
   logs-url: {{ .logsUrl | quote }}
-  username: {{ .auth.username | quote }}
-  client-id: {{ .auth.clientId | quote }}
-  token-url: {{ .auth.tokenUrl | quote }}
-  scopes.json: {{ toJson .auth.scopes | quote }}
+  username: {{ .logsAuth.username | quote }}
+  client-id: {{ .logsAuth.clientId | quote }}
+  token-url: {{ .logsAuth.tokenUrl | quote }}
+  scopes.json: {{ toJson .logsAuth.scopes | quote }}
 {{- end }}
 ---
 apiVersion: apps/v1
@@ -66,7 +66,7 @@ spec:
             - name: LOG_APPLICATION
               value: {{ include "confidential-inference.name" . }}
             - name: TELEMETRY_AUTH
-              value: {{ .Values.telemetry.auth.type }}
+              value: {{ .Values.telemetry.logsAuth.type }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -97,6 +97,6 @@ spec:
             name: log-collector-telemetry
         - name: telemetry-auth
           secret:
-            secretName: {{ .Values.telemetry.auth.secretName }}
+            secretName: {{ .Values.telemetry.logsAuth.secretName }}
             defaultMode: 0440
 {{- end }}

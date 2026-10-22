@@ -159,9 +159,10 @@ def main() -> None:
     collector = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'log-collector')
     alloy = collector['spec']['template']['spec']['containers'][0]
     assert {item['name'] for item in alloy['env']} == {'KUBE_API_URL', 'LOG_NAMESPACE', 'LOG_APPLICATION', 'TELEMETRY_AUTH'}
-    for auth in (['--set', 'telemetry.auth.type=basic', '--set', 'telemetry.auth.username=collector'],
-                 ['--set', 'telemetry.auth.type=oauth2', '--set', 'telemetry.auth.clientId=collector',
-                  '--set', 'telemetry.auth.tokenUrl=https://login.example.invalid/token']):
+    for kind, extra in (('basic', ['username=collector']),
+                        ('oauth2', ['clientId=collector', 'tokenUrl=https://login.example.invalid/token'])):
+        # Each receiver has its own credentials: here metrics use `kind`, logs stay mtls.
+        auth = [arg for setting in [f'type={kind}', *extra] for arg in ('--set', f'telemetry.metricsAuth.{setting}')]
         documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
             '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
             '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
@@ -169,11 +170,19 @@ def main() -> None:
         config = yaml.safe_load(next(d for d in documents if d['kind'] == 'ConfigMap'
                                      and d['metadata']['name'] == 'metrics-collector')['data']['prometheus.yml'])
         remote = config['remote_write'][0]
-        assert ('basic_auth' in remote) == (auth[1] == 'telemetry.auth.type=basic')
-        assert ('oauth2' in remote) == (auth[1] == 'telemetry.auth.type=oauth2')
+        assert ('basic_auth' in remote) == (kind == 'basic')
+        assert ('oauth2' in remote) == (kind == 'oauth2')
         assert 'cert_file' not in remote['tls_config']
         assert next(d for d in documents if d['kind'] == 'Deployment' and d['metadata']['name'] == 'log-collector'
-                    )['spec']['template'] != collector['spec']['template']
+                    )['spec']['template'] == collector['spec']['template']
+        logs = [arg for setting in [f'type={kind}', *extra] for arg in ('--set', f'telemetry.logsAuth.{setting}')]
+        documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+            '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+            '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+            '--set', 'attestationReceipts.releaseId=v0.14.18', *logs)) if item]
+        alloy = next(d for d in documents if d['kind'] == 'Deployment' and d['metadata']['name'] == 'log-collector'
+                     )['spec']['template']['spec']['containers'][0]
+        assert {'name': 'TELEMETRY_AUTH', 'value': kind} in alloy['env']
     # One gateway workload and state volume per deployment: a release change
     # replaces the pod (Recreate) and reopens the same key database.
     gateway = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'gateway')

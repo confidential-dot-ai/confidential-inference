@@ -23,20 +23,20 @@ data:
         enable_http2: true
         tls_config:
           min_version: TLS12
-          {{- if eq .auth.type "mtls" }}
+          {{- if eq .metricsAuth.type "mtls" }}
           cert_file: /mnt/c8s-data/telemetry-auth/tls.crt
           key_file: /mnt/c8s-data/telemetry-auth/tls.key
           {{- end }}
-        {{- if eq .auth.type "basic" }}
+        {{- if eq .metricsAuth.type "basic" }}
         basic_auth:
-          username: {{ .auth.username | quote }}
+          username: {{ .metricsAuth.username | quote }}
           password_file: /mnt/c8s-data/telemetry-auth/password
-        {{- else if eq .auth.type "oauth2" }}
+        {{- else if eq .metricsAuth.type "oauth2" }}
         oauth2:
-          client_id: {{ .auth.clientId | quote }}
+          client_id: {{ .metricsAuth.clientId | quote }}
           client_secret_file: /mnt/c8s-data/telemetry-auth/client-secret
-          token_url: {{ .auth.tokenUrl | quote }}
-          {{- with .auth.scopes }}
+          token_url: {{ .metricsAuth.tokenUrl | quote }}
+          {{- with .metricsAuth.scopes }}
           scopes: {{ toJson . }}
           {{- end }}
         {{- end }}

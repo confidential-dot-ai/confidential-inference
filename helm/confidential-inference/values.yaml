@@ -368,7 +368,7 @@ logCollector:
 # Where the collectors send telemetry: Prometheus remote_write for metrics and
 # the Loki push API for logs. The URLs, the deployment label and the
 # credentials are deployment values: the collectors read them from mounted
-# files, so they are not in the c8s allowlist. auth.type is part of the log
+# files, so they are not in the c8s allowlist. logsAuth.type is part of the log
 # collector's environment, so it is a release value.
 telemetry:
   enabled: true
@@ -381,11 +381,20 @@ telemetry:
     - 192.0.2.1/32
   # Optional fixed addresses for the URL hostnames (pod hostAliases).
   hostAliases: []
-  auth:
-    # mtls:   client certificate; Secret keys tls.crt and tls.key.
-    # basic:  HTTP basic auth as `username`; Secret key password.
-    # oauth2: OAuth 2.0 client credentials as `clientId` from `tokenUrl`;
-    #         Secret key client-secret.
+  # The credentials of each receiver: metricsAuth for metricsUrl, logsAuth
+  # for logsUrl. Each one is:
+  # mtls:   client certificate; Secret keys tls.crt and tls.key.
+  # basic:  HTTP basic auth as `username`; Secret key password.
+  # oauth2: OAuth 2.0 client credentials as `clientId` from `tokenUrl`;
+  #         Secret key client-secret.
+  metricsAuth:
+    type: mtls
+    secretName: telemetry-auth
+    username: ""
+    clientId: ""
+    tokenUrl: ""
+    scopes: []
+  logsAuth:
     type: mtls
     secretName: telemetry-auth
     username: ""

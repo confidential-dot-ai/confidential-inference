@@ -125,6 +125,9 @@ telemetry:
   hostAliases:
     - ip: 20.163.209.126
       hostnames: [admin.api.confidential.ai]
-  auth:
+  metricsAuth:
+    type: mtls
+    secretName: metrics-remote-write-mtls
+  logsAuth:
     type: mtls
     secretName: metrics-remote-write-mtls

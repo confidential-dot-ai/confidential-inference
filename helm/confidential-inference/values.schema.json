@@ -410,7 +410,7 @@
     "telemetry": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "deployment", "metricsUrl", "logsUrl", "destinationCidrs", "hostAliases", "auth"],
+      "required": ["enabled", "deployment", "metricsUrl", "logsUrl", "destinationCidrs", "hostAliases", "metricsAuth", "logsAuth"],
       "properties": {
         "enabled": {"type": "boolean"},
         "deployment": {"type": "string", "pattern": "^([a-z0-9][a-z0-9-]{0,62})?$"},
@@ -432,23 +432,8 @@
             }
           }
         },
-        "auth": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type", "secretName", "username", "clientId", "tokenUrl", "scopes"],
-          "properties": {
-            "type": {"enum": ["mtls", "basic", "oauth2"]},
-            "secretName": {"$ref": "#/definitions/kubernetesName"},
-            "username": {"type": "string"},
-            "clientId": {"type": "string"},
-            "tokenUrl": {"type": "string", "pattern": "^(|https://[^/?#]+/[^#]*)$"},
-            "scopes": {"type": "array", "items": {"type": "string"}}
-          },
-          "allOf": [
-            {"if": {"properties": {"type": {"const": "basic"}}}, "then": {"properties": {"username": {"minLength": 1}}}},
-            {"if": {"properties": {"type": {"const": "oauth2"}}}, "then": {"properties": {"clientId": {"minLength": 1}, "tokenUrl": {"minLength": 1}}}}
-          ]
-        }
+        "metricsAuth": {"$ref": "#/definitions/telemetryAuth"},
+        "logsAuth": {"$ref": "#/definitions/telemetryAuth"}
       }
     },
     "kubeStateMetrics": {
@@ -499,6 +484,23 @@
     }
   },
   "definitions": {
+    "telemetryAuth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "secretName", "username", "clientId", "tokenUrl", "scopes"],
+      "properties": {
+        "type": {"enum": ["mtls", "basic", "oauth2"]},
+        "secretName": {"$ref": "#/definitions/kubernetesName"},
+        "username": {"type": "string"},
+        "clientId": {"type": "string"},
+        "tokenUrl": {"type": "string", "pattern": "^(|https://[^/?#]+/[^#]*)$"},
+        "scopes": {"type": "array", "items": {"type": "string"}}
+      },
+      "allOf": [
+        {"if": {"properties": {"type": {"const": "basic"}}}, "then": {"properties": {"username": {"minLength": 1}}}},
+        {"if": {"properties": {"type": {"const": "oauth2"}}}, "then": {"properties": {"clientId": {"minLength": 1}, "tokenUrl": {"minLength": 1}}}}
+      ]
+    },
     "tdxMeasurementOrEmpty": {"type": "string", "pattern": "^(|[0-9a-f]{96})$"},
     "workloadPolicyName": {
       "type": "string",

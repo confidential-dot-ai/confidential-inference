@@ -185,7 +185,7 @@ operator keys come from that pinned CDS.
      the metrics, logs and token URLs (443 when a URL names no port). */}}
 {{- define "confidential-inference.telemetryEgress" -}}
 {{- $ports := dict -}}
-{{- range $url := list .Values.telemetry.metricsUrl .Values.telemetry.logsUrl .Values.telemetry.auth.tokenUrl -}}
+{{- range $url := list .Values.telemetry.metricsUrl .Values.telemetry.logsUrl .Values.telemetry.metricsAuth.tokenUrl .Values.telemetry.logsAuth.tokenUrl -}}
 {{- if $url -}}
 {{- $host := (urlParse $url).host -}}
 {{- $_ := set $ports (ternary (last (splitList ":" $host)) "443" (contains ":" $host)) true -}}
