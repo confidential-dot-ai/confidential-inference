@@ -214,7 +214,7 @@ spec:
               port: inference
             periodSeconds: 15
             failureThreshold: 240
-            timeoutSeconds: 10
+            timeoutSeconds: 5
           readinessProbe:
             tcpSocket:
               port: inference

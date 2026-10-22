@@ -126,7 +126,8 @@ spec:
       ports: [{protocol: TCP, port: 8443}]
     # DNS uses allow-dns. C8s redirects workload TCP to its node mesh.
     # The Kubernetes API is a host endpoint after Service DNAT.
-    - ports: [{protocol: TCP, port: 15001}, {protocol: TCP, port: 6443}]
+    # c8s >= v0.66: credential clients dial the node's CDS NodePort 30808.
+    - ports: [{protocol: TCP, port: 15001}, {protocol: TCP, port: 6443}, {protocol: TCP, port: 30808}]
     - to:
         - ipBlock: {cidr: 10.53.0.1/32}
       ports: [{protocol: TCP, port: 443}]

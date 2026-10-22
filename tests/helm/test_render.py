@@ -155,6 +155,28 @@ def check_front_door_namespace() -> None:
                for rule in policies['gateway-to-router']['spec']['egress'] for peer in rule.get('to', []))
 
 
+def check_cds_nodeport_and_probe_budget() -> None:
+    # c8s >= v0.66: credential clients dial the node's CDS NodePort, and the
+    # per-pod mesh gives every probe 5 s (C8s #1027).
+    documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+        '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+        '-f', str(ROOT/'release/staging/values.yaml'),
+        '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+        '--set', 'attestationReceipts.releaseId=v0.14.18-staging')) if item]
+    policies = {d['metadata']['name']: d for d in documents if d['kind'] == 'NetworkPolicy'}
+    for name in ('workloads-to-c8s-cds', 'gateway-update-agent'):
+        assert any('to' not in rule and {'protocol': 'TCP', 'port': 30808} in rule['ports']
+                   for rule in policies[name]['spec']['egress']), name
+    for document in documents:
+        if document['kind'] not in {'Deployment', 'StatefulSet'}:
+            continue
+        pod = document['spec']['template']['spec']
+        for container in pod.get('initContainers', []) + pod['containers']:
+            for probe in ('startupProbe', 'readinessProbe', 'livenessProbe'):
+                if probe in container:
+                    assert container[probe].get('timeoutSeconds', 1) <= 5, (document['metadata']['name'], container['name'], probe)
+
+
 def main() -> None:
     # The production release must route to a real Service and use the same
     # C8s identity in the gateway controller and its evidence sidecar.
@@ -764,6 +786,7 @@ def main() -> None:
     check_cds_routes()
     check_override_replaces_strategy()
     check_front_door_namespace()
+    check_cds_nodeport_and_probe_budget()
     print("Helm neutral-default and safety tests passed.")
 
 
