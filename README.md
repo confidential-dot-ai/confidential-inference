@@ -19,7 +19,6 @@ receipts in a separate private repository.
 - `images/sglang-router`: the separate router image and build inputs.
 - `services/maintenance-gateway`: the fallback API.
 - `helm/confidential-inference`: the generic Kubernetes application chart.
-- `scripts/regenerate-c8s-allowlist.py`: c8s policy generation.
 - `scripts/verify-public-attestation.py`: policy metadata checks and historical receipt verification.
 - `contracts`: public API, attestation, release, network, and metrics contracts.
 
