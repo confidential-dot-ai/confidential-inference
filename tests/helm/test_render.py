@@ -142,6 +142,42 @@ def check_mesh_tls_listener() -> None:
          "--set", "gateway.containerPorts.tls=8443", success=False)
 
 
+def check_model_cache() -> None:
+    """The plain model cache: fetch-model fills a hostPath, the gate reads it read-only."""
+    manifest = '{"files":[]}\n'
+    pin = hashlib.sha256(manifest.encode()).hexdigest()
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml") as values:
+        yaml.safe_dump({"inference": {"simulator": {"validateModelMount": True}, "model": {
+            "mountVerification": {"expectedFiles": {".model-lock-local-manifest.json": pin}},
+            "cache": {"enabled": True, "manifest": manifest}}}}, values)
+        values.flush()
+        documents = render("--values", values.name)
+        maps = {item["metadata"]["name"]: item for item in documents if item["kind"] == "ConfigMap"}
+        assert maps["model-manifest"]["data"]["manifest.json"] == manifest
+        worker = next(item for item in documents if item["kind"] == "StatefulSet"
+                      and item["metadata"]["name"] == "inference-worker-0")
+        pod = worker["spec"]["template"]["spec"]
+        assert "confidential.ai/c8s-volumes" not in worker["spec"]["template"]["metadata"]["annotations"]
+        fetch, = pod["initContainers"]
+        assert fetch["command"] == ["/usr/local/bin/fetch-model"]
+        assert "--path=/mnt/c8s-data/models/cache" in fetch["args"]
+        assert f"--manifest-sha256={pin}" in fetch["args"]
+        assert {"name": "model-cache", "mountPath": "/mnt/c8s-data/models/cache"} in fetch["volumeMounts"]
+        sglang = next(item for item in pod["containers"] if item["name"] == "sglang")
+        assert "--plain-cache" in sglang["args"] and "--path=/mnt/c8s-data/models/cache" in sglang["args"]
+        assert f"--expected-file=.model-lock-local-manifest.json={pin}" in sglang["args"]
+        assert {"name": "model-cache", "mountPath": "/mnt/c8s-data/models/cache", "readOnly": True} in sglang["volumeMounts"]
+        volume = next(item for item in pod["volumes"] if item["name"] == "model-cache")
+        assert volume["hostPath"] == {"path": "/var/lib/models/model", "type": "DirectoryOrCreate"}
+        egress = next(item for item in documents if item["kind"] == "NetworkPolicy"
+                      and item["metadata"]["name"] == "inference-worker-model-download")
+        assert egress["spec"]["egress"][0]["ports"] == [{"protocol": "TCP", "port": 443}]
+        helm("template", "example", str(CHART), *NEUTRAL_MODE, "--values", values.name,
+             "--set", "inference.model.cache.manifest=other", success=False)
+    default = render()
+    assert not any(item["metadata"]["name"] in {"model-manifest", "inference-worker-model-download"} for item in default)
+
+
 def main() -> None:
     # The production release must route to a real Service and use the same
     # C8s identity in the gateway controller and its evidence sidecar.
@@ -750,6 +786,7 @@ def main() -> None:
     check_mesh_tls_listener()
     check_cds_routes()
     check_override_replaces_strategy()
+    check_model_cache()
     print("Helm neutral-default and safety tests passed.")
 
 
