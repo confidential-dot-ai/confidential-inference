@@ -143,7 +143,11 @@ def check_c8s_admission() -> None:
                "--set", "attestationReceipts.releaseId=v0.14.18-staging")
     for profile in ((), release, (*release, "-f", "release/staging/values.yaml"),
                     ("--values", "tests/contracts/values-sglang.yaml")):
-        assert admission["refusals"](render(*profile)) == [], profile
+        # The release profiles' log collector (release/values.yaml) takes its
+        # egress policy from the target's inner.yaml until #181 renders it.
+        found = [line for line in admission["refusals"](render(*profile))
+                 if not line.startswith("Deployment/log-collector: no NetworkPolicy allows egress")]
+        assert found == [], (profile, found)
     # The refusals of 2026-10-22 staging: a tcpSocket probe, the credential
     # directory in an app container, a probe over the 5 s budget, no CDS egress.
     pod = {"kind": "Pod", "metadata": {"name": "p", "annotations": {"confidential.ai/cw": "p"}, "labels": {"a": "b"}},
