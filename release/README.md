@@ -185,3 +185,32 @@ manifest `release.name` and the chart value `attestationReceipts.releaseId`
 are the tag. Each profile is released on its own: `vX.Y.Z-staging` needs no
 `vX.Y.Z`, and the two numbers can differ. Tags never move, so a failed
 release uses the next patch number.
+
+## Unsigned branch builds
+
+A staging target can deploy a branch before it is merged. The internal
+`bin/deploy` takes such a build when the target has `RELEASE_POLICY=unsigned`,
+which it refuses for production and for any target that serves
+`api.confidential.ai`.
+
+1. If the branch changes an image, run `release-images` on the branch with
+   `publish` and `rebuild_audit` enabled and the latest staging release as
+   `base_ref`. A signed release never uses these images: it takes the
+   evidence of runs on main only.
+2. Run `release-bundle.yml` on the branch (workflow dispatch). It runs the
+   release build at the branch head with the staging profile and the name
+   `v0.0.<run number>-staging`, pushes the chart package, and keeps the files
+   as the workflow artifact `unsigned-release-<name>`. It signs nothing and
+   creates no tag and no GitHub Release. The run summary shows the
+   `target.env` lines for `bin/deploy`.
+
+```sh
+git rev-parse v0.15.17-staging^{commit}   # the base_ref_commit
+gh workflow run release-images.yml --ref <branch> -f publish=true -f rebuild_audit=true \
+  -f base_ref=v0.15.17-staging -f base_ref_commit=<commit>
+gh workflow run release-bundle.yml --ref <branch>
+```
+
+Both workflows run from the branch, so the branch must contain this
+workflow version (merge main into it first).
+
