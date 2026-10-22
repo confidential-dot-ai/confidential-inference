@@ -117,6 +117,9 @@ def check_plain_http_behind_the_mesh() -> None:
         for container in document["spec"]["template"]["spec"]["containers"]:
             assert container["name"] not in {"cds-attest", "router-workload-proxy", "gateway-workload-proxy"}
             assert "/etc/c8s/certs" not in json.dumps(container), (document["metadata"]["name"], container["name"])
+            # The mesh forwards only HTTP probes.
+            for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
+                assert not {"tcpSocket", "grpc"} & set(container.get(probe, {})), (document["metadata"]["name"], probe)
 
 def check_front_door_namespace() -> None:
     # From c8s v0.66.0 the router runs in its own namespace, c8s-router.
