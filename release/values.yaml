@@ -54,18 +54,11 @@ images:
   # c8s.coreImages, which scripts/bump-c8s.py moves together.
   c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:593dea857bfdb2512af5dcfbbec34b10c08de66bbd67f7d33d23a1f8581429b5
 
-namedWorkloadProxy:
-  enabled: false
-
 c8s:
   # c8s labels the front-door pod `router`.
   frontDoorPodLabelName: router
 
 attestationReceipts:
-  attestationApiUrl: unix:///run/c8s/workload-claims/attestation-api.sock
-  enabled: true
-  gpuEvidenceFlagEnabled: false
-  legacyC8s615: false
   evidenceBaseUrl: https://api.confidential.ai   # changed: the production hostname
   # The release build sets releaseId to the release tag.
   # These three values reach the gateway through the gateway-release-identity
@@ -76,29 +69,10 @@ attestationReceipts:
   # gateway-release-identity. Keep the CDS origin in the signed workload.
   cds:
     url: https://c8s-cds.c8s-system.svc.cluster.local:8443
-  # c8s v0.56.0+ (#851): cds-attest polls the route manifest from cds.url. The
-  # workload overrides below restate the same flags.
-  cdsRoutes: true
   expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  targets:
-    - {target: gateway, workload: gateway, identity: gateway, url: http://127.0.0.1:8800}
-    - {target: sglang-router, workload: sglang-router, identity: sglang-router, url: http://sglang-router:8801}
-    - {target: inference-worker-0, workload: inference-worker-0, identity: inference-worker-0, url: http://inference-worker-0-0.inference-workers:8802}
-    - {target: inference-worker-1, workload: inference-worker-1, identity: inference-worker-1, url: http://inference-worker-1-0.inference-workers:8802}
-    - {target: metrics-collector, workload: metrics-collector, identity: metrics-collector, url: http://metrics-collector:8803}
-    - {target: kube-state-metrics, workload: kube-state-metrics, identity: kube-state-metrics, url: http://kube-state-metrics:8804}
   certificateRenewInterval: 30s
-  gatewayPort: 8800
-  routerPort: 8801
-  firstWorkerPort: 8802
-  metricsCollectorPort: 8803
-  kubeStateMetricsPort: 8804
-  platform: tdx
   attestationApiPort: 8400
-  resources:
-    requests: {cpu: 25m, memory: 32Mi}
-    limits: {cpu: 250m, memory: 128Mi}
 
 gateway:
   attestedWorkload: gateway

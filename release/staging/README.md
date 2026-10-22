@@ -69,11 +69,10 @@ model name and the worker route. Helm creates `gateway-runtime` and
 create `gateway-release-selection` from verified signed release assets before
 it starts the gateway. Do not copy release metadata from a running pod.
 
-Application `cds-attest` containers use the node attestation Unix socket. The
-C8s NRI plugin supplies its read-only platform mount. The chart must not add a
-hostPath mount or a node-dependent `HOST_IP` value. Declare each authored
-attestation sidecar in the workload policy. Keep exact environment and mount
-rules, the gateway pepper secret grant, and encrypted-volume inputs.
+Applications serve plain HTTP inside their pods. The c8s per-pod mesh
+(c8s v0.64 and later) carries every pod-to-pod connection over mutual TLS and
+mounts `/etc/c8s/certs` only into its own sidecars. Keep exact environment and
+mount rules, the gateway pepper secret grant, and encrypted-volume inputs.
 
 For C8s 0.44 and later, core policy entries pin the complete image ENTRYPOINT.
 The nginx pin also includes its `nginx` command.

@@ -132,6 +132,7 @@ spec:
             requests:
               cpu: {{ .Values.router.resources.cpu | quote }}
               memory: {{ .Values.router.resources.memory }}
+          # c8s v0.33 seals exec, so the kubelet probes over HTTP.
           readinessProbe:
             httpGet:
               path: /readiness
