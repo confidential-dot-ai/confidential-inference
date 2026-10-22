@@ -216,6 +216,18 @@
                   }
                 }
               }
+            },
+            "cache": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["enabled", "hostPath", "manifest", "endpoint", "egressCidrs"],
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "hostPath": {"type": "string", "pattern": "^/var/lib/models/[A-Za-z0-9._-]+$"},
+                "manifest": {"type": "string"},
+                "endpoint": {"type": "string", "pattern": "^https://[^/]+$"},
+                "egressCidrs": {"type": "array", "items": {"type": "string", "minLength": 1}}
+              }
             }
           }
         },
