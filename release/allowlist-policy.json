@@ -25,7 +25,7 @@
       "controller": "Deployment/kube-state-metrics"
     },
     {
-      "name": "log-collector-ua59410a16b",
+      "name": "log-collector",
       "controller": "Deployment/log-collector"
     },
     {

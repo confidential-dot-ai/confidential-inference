@@ -1,0 +1,39 @@
+// OAuth 2.0 client credentials (Secret key client-secret).
+declare "writer" {
+  local.file "url" {
+    filename = "/mnt/c8s-data/telemetry/logs-url"
+  }
+  local.file "client_id" {
+    filename = "/mnt/c8s-data/telemetry/client-id"
+  }
+  local.file "token_url" {
+    filename = "/mnt/c8s-data/telemetry/token-url"
+  }
+  local.file "scopes" {
+    filename = "/mnt/c8s-data/telemetry/scopes.json"
+  }
+
+  loki.write "out" {
+    endpoint {
+      url = string.trim_space(local.file.url.content)
+      batch_size = "128KiB"
+      batch_wait = "1s"
+      oauth2 {
+        client_id = string.trim_space(local.file.client_id.content)
+        client_secret_file = "/mnt/c8s-data/telemetry-auth/client-secret"
+        token_url = string.trim_space(local.file.token_url.content)
+        scopes = encoding.from_json(local.file.scopes.content)
+        tls_config {
+          min_version = "TLS12"
+        }
+      }
+      tls_config {
+        min_version = "TLS12"
+      }
+    }
+  }
+
+  export "receiver" {
+    value = loki.write.out.receiver
+  }
+}
