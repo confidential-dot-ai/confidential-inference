@@ -97,15 +97,15 @@ class ImagePublicationTests(unittest.TestCase):
         self.assertIn("dist/allowlist.json#c8s allowlist", bundle)
         self.assertIn("dist/release-values.yaml#Release image values", bundle)
         self.assertNotIn("--base-release", bundle)
-        build = bundle[bundle.index("- name: Build the release at the tag commit"):]
+        build = bundle[bundle.index("- name: build release"):]
         self.assertIn("GH_TOKEN: ${{ github.token }}", build[:build.index("run: |")])
 
     def test_an_unsigned_branch_build_signs_and_publishes_no_release(self):
         import yaml
         workflow = yaml.safe_load((ROOT / ".github/workflows/release-bundle.yml").read_text())
         steps = {step["name"]: step for job in workflow["jobs"].values() for step in job.get("steps", [])}
-        for name in ("Validate the release tag", "Create the keyless Sigstore bundle",
-                     "Verify the release without network trust lookup", "Publish new GitHub Release assets"):
+        for name in ("validate tag", "sign bundle",
+                     "verify signature offline", "publish github release"):
             self.assertEqual(steps[name].get("if"), "github.event_name == 'push'", name)
         self.assertIn("v0.0.{0}-staging", workflow["env"]["RELEASE_TAG"])
 
