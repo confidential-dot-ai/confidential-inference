@@ -90,8 +90,7 @@ explicitly with `Image-Publication-Run` in the release tag annotation.
 ## 4. Repository boundary
 
 Keep product software, workload definitions, public contracts, build inputs,
-and release definitions in this repository. The maintenance gateway is part of
-this public product boundary.
+and release definitions in this repository.
 
 Keep private topology, DNS state, secret references, traffic state, deployment
 receipts, the admin system, and private infrastructure controls in

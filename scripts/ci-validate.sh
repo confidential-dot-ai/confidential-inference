@@ -23,12 +23,8 @@ python3 scripts/validate-source-boundary.py
 # inference.mode has no chart default, so this neutral lint must state a
 # mode. The choice does not matter here; it only proves the chart lints.
 helm lint helm/confidential-inference --set inference.mode=simulator
-helm lint helm/maintenance-gateway
-helm template maintenance helm/maintenance-gateway --namespace maintenance >/dev/null
 bash tests/helm/run.sh
 scripts/validate-kubernetes.sh
 bash tests/router-v0/test_sglang_router.sh
 cargo test --locked --package confidential-gateway
 cargo clippy --locked --package confidential-gateway --all-targets -- -D warnings
-cargo test --locked --package maintenance-gateway
-cargo clippy --locked --package maintenance-gateway --all-targets -- -D warnings

@@ -102,9 +102,8 @@ one it fails and says so.
 1. Merge the change to main. A release needs no other commit.
 2. Run `release-images` on main with `publish` and `rebuild_audit` enabled and
    the newest release tag as `base_ref`. The workflow selects every changed
-   repository image. This includes release images such as
-   `maintenance-gateway` even when the application chart does not deploy
-   them. It builds each selected image twice and requires equal platform
+   repository image. This includes release images that the
+   application chart does not deploy. It builds each selected image twice and requires equal platform
    digests. It then pushes the first audited OCI archive, so the pushed
    digest is the audited digest. The sglang archive is too large to pass
    between jobs, so sglang is built a third time and must give the same

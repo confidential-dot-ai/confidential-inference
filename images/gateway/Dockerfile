@@ -13,8 +13,6 @@ RUN case "${SOURCE_REVISION}" in *[!0-9a-f]*|'') exit 64 ;; esac && \
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY services/gateway/Cargo.toml services/gateway/Cargo.toml
 COPY services/gateway/src services/gateway/src
-COPY services/maintenance-gateway/Cargo.toml services/maintenance-gateway/Cargo.toml
-COPY services/maintenance-gateway/src services/maintenance-gateway/src
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/workspace/target,sharing=locked \

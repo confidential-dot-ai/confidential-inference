@@ -9,6 +9,3 @@ kubeconform_image="ghcr.io/yannh/kubeconform@sha256:85dbef6b4b312b99133decc9c6fc
 # mode. The choice does not matter here; it only proves the manifests validate.
 helm template example "$chart" --set inference.mode=simulator |
   docker run --rm --interactive "$kubeconform_image" -strict -summary
-
-helm template maintenance "$repo_root/helm/maintenance-gateway" --namespace maintenance |
-  docker run --rm --interactive "$kubeconform_image" -strict -summary
