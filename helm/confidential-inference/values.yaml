@@ -32,14 +32,17 @@ namedWorkloadProxy:
   enabled: true
 
 c8s:
-  # The `app.kubernetes.io/name` label on the c8s front-door pod in the
-  # `c8s-system` namespace. The network policies select the front door by this
+  # The `app.kubernetes.io/name` label on the c8s front-door pod. The network policies select the front door by this
   # label. c8s renamed the component from `tls-lb` to `router` in c8s PR #606
   # (2026-09-14). Keep `tls-lb` for a c8s pin from before that commit. Set
   # `router` for a c8s pin from that commit or later. A wrong value makes the
   # front door -> gateway hop time out, because the namespace default-deny
   # policy drops it.
   frontDoorPodLabelName: tls-lb
+  # The namespace of the c8s front-door pod: `c8s-system` before c8s v0.66.0,
+  # `c8s-router` from v0.66.0 (c8s #814 runs the router as a mesh member in
+  # its own namespace).
+  frontDoorNamespace: c8s-system
 
 attestationReceipts:
   enabled: true
