@@ -85,6 +85,12 @@ spec:
     # host identity, so this rule names no peer either.
     - ports:
         - {protocol: TCP, port: 15001}
+    # c8s >= v0.66 (C8s #806): the node hands its injected credential clients
+    # (c8s-cert, c8s-secret, c8s-volume) the CDS NodePort on the address the
+    # target launched with, outside the inner cluster. The node's pod ruleset
+    # admits only that endpoint, so this rule names no peer.
+    - ports:
+        - {protocol: TCP, port: 30808}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
