@@ -180,3 +180,23 @@ operator keys come from that pinned CDS.
 - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd is required with cdsRoutes" $pin.mrtd }}
 - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1 is required with cdsRoutes" $pin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2 is required with cdsRoutes" $pin.rtmr2 }}
 {{- end }}
+
+{{/* Egress to the telemetry endpoints: the destination CIDRs on the ports of
+     the metrics, logs and token URLs (443 when a URL names no port). */}}
+{{- define "confidential-inference.telemetryEgress" -}}
+{{- $ports := dict -}}
+{{- range $url := list .Values.telemetry.metricsUrl .Values.telemetry.logsUrl .Values.telemetry.auth.tokenUrl -}}
+{{- if $url -}}
+{{- $host := (urlParse $url).host -}}
+{{- $_ := set $ports (ternary (last (splitList ":" $host)) "443" (contains ":" $host)) true -}}
+{{- end -}}
+{{- end -}}
+- to:
+    {{- range .Values.telemetry.destinationCidrs }}
+    - ipBlock: {cidr: {{ . | quote }} }
+    {{- end }}
+  ports:
+    {{- range keys $ports | sortAlpha }}
+    - {protocol: TCP, port: {{ . }} }
+    {{- end }}
+{{- end }}

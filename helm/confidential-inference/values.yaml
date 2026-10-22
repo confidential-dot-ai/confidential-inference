@@ -327,19 +327,12 @@ metricsCollector:
   attestedWorkload: metrics-collector
   kubeApi:
     port: 6443
-  remoteWrite:
-    enabled: true
-    url: https://metrics.example.invalid/api/v1/write
-    address: 192.0.2.1
-    serverName: metrics.example.invalid
-    secretName: metrics-remote-write-mtls
-    destinationCidrs:
-      - 192.0.2.1/32
-    queue:
-      capacity: 10000
-      maxShards: 4
-      maxSamplesPerSend: 2000
-      sampleAgeLimit: 1h
+  # Prometheus remote_write queue to telemetry.metricsUrl.
+  queue:
+    capacity: 10000
+    maxShards: 4
+    maxSamplesPerSend: 2000
+    sampleAgeLimit: 1h
   tls:
     enabled: false
     secretName: prometheus-server-tls
@@ -366,10 +359,39 @@ nodeExporter:
     cpu: 100m
     memory: 128Mi
 
-# The release profile can add the log collector as an additional workload.
-# Then the chart renders its service account, log read access and egress.
+# The log collector (images/log-collector) sends the application containers'
+# logs to telemetry.logsUrl.
 logCollector:
   enabled: false
+  attestedWorkload: log-collector
+
+# Where the collectors send telemetry: Prometheus remote_write for metrics and
+# the Loki push API for logs. The URLs, the deployment label and the
+# credentials are deployment values: the collectors read them from mounted
+# files, so they are not in the c8s allowlist. auth.type is part of the log
+# collector's environment, so it is a release value.
+telemetry:
+  enabled: true
+  # The `deployment` label on every series and log line (none when empty).
+  deployment: ""
+  metricsUrl: https://telemetry.example.invalid/api/v1/write
+  logsUrl: https://telemetry.example.invalid/loki/api/v1/push
+  # Egress to the URLs (and auth.tokenUrl) on their ports.
+  destinationCidrs:
+    - 192.0.2.1/32
+  # Optional fixed addresses for the URL hostnames (pod hostAliases).
+  hostAliases: []
+  auth:
+    # mtls:   client certificate; Secret keys tls.crt and tls.key.
+    # basic:  HTTP basic auth as `username`; Secret key password.
+    # oauth2: OAuth 2.0 client credentials as `clientId` from `tokenUrl`;
+    #         Secret key client-secret.
+    type: mtls
+    secretName: telemetry-auth
+    username: ""
+    clientId: ""
+    tokenUrl: ""
+    scopes: []
 
 kubeStateMetrics:
   enabled: true

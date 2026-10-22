@@ -153,7 +153,27 @@ def main() -> None:
     rendered = {(d['kind'], d['metadata']['name']) for d in production}
     assert {('ServiceAccount', 'log-collector'), ('Role', 'confidential-inference-log-reader'),
             ('RoleBinding', 'confidential-inference-log-reader'),
-            ('NetworkPolicy', 'log-collector-egress')} <= rendered
+            ('NetworkPolicy', 'log-collector-egress'), ('Deployment', 'log-collector'),
+            ('ConfigMap', 'log-collector-telemetry')} <= rendered
+    # Telemetry endpoints and credentials are files, not allowlisted env.
+    collector = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'log-collector')
+    alloy = collector['spec']['template']['spec']['containers'][0]
+    assert {item['name'] for item in alloy['env']} == {'KUBE_API_URL', 'LOG_NAMESPACE', 'LOG_APPLICATION', 'TELEMETRY_AUTH'}
+    for auth in (['--set', 'telemetry.auth.type=basic', '--set', 'telemetry.auth.username=collector'],
+                 ['--set', 'telemetry.auth.type=oauth2', '--set', 'telemetry.auth.clientId=collector',
+                  '--set', 'telemetry.auth.tokenUrl=https://login.example.invalid/token']):
+        documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+            '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+            '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+            '--set', 'attestationReceipts.releaseId=v0.14.18', *auth)) if item]
+        config = yaml.safe_load(next(d for d in documents if d['kind'] == 'ConfigMap'
+                                     and d['metadata']['name'] == 'metrics-collector')['data']['prometheus.yml'])
+        remote = config['remote_write'][0]
+        assert ('basic_auth' in remote) == (auth[1] == 'telemetry.auth.type=basic')
+        assert ('oauth2' in remote) == (auth[1] == 'telemetry.auth.type=oauth2')
+        assert 'cert_file' not in remote['tls_config']
+        assert next(d for d in documents if d['kind'] == 'Deployment' and d['metadata']['name'] == 'log-collector'
+                    )['spec']['template'] != collector['spec']['template']
     # One gateway workload and state volume per deployment: a release change
     # replaces the pod (Recreate) and reopens the same key database.
     gateway = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'gateway')
