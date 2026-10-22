@@ -359,13 +359,8 @@ spec:
         - {protocol: TCP, port: {{ .Values.dcgmExporter.port }}}
         - {protocol: TCP, port: {{ .Values.nodeExporter.port }}}
         - {protocol: TCP, port: {{ .Values.kubeStateMetrics.port }}}
-    {{- if .Values.metricsCollector.remoteWrite.enabled }}
-    - to:
-        {{- range .Values.metricsCollector.remoteWrite.destinationCidrs }}
-        - ipBlock: {cidr: {{ . | quote }} }
-        {{- end }}
-      ports:
-        - {protocol: TCP, port: 9443}
+    {{- if .Values.telemetry.enabled }}
+    {{- include "confidential-inference.telemetryEgress" . | nindent 4 }}
     {{- end }}
     # Cilium can enforce either the Service port or the translated API-server
     # port. Standard NetworkPolicy cannot select the kube-apiserver entity.
@@ -388,8 +383,6 @@ spec:
         - {protocol: TCP, port: {{ .Values.metricsCollector.kubeApi.port }}}
 ---
 {{- if .Values.logCollector.enabled }}
-# The log collector pushes to the remote-write endpoint with the same client
-# certificate as the metrics collector.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -400,12 +393,7 @@ spec:
       app.kubernetes.io/component: log-collector
   policyTypes: [Egress]
   egress:
-    - to:
-        {{- range .Values.metricsCollector.remoteWrite.destinationCidrs }}
-        - ipBlock: {cidr: {{ . | quote }} }
-        {{- end }}
-      ports:
-        - {protocol: TCP, port: 9443}
+    {{- include "confidential-inference.telemetryEgress" . | nindent 4 }}
     - ports:
         - {protocol: TCP, port: 443}
         - {protocol: TCP, port: {{ .Values.metricsCollector.kubeApi.port }}}
