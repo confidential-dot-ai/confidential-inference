@@ -87,6 +87,9 @@ CLAIMS_SOCKET_CONSUMERS = {"c8s-cert", "c8s-secret", "c8s-volume", "cds-attest"}
 # as a read-only host mount, which an exact policy must list; from this one a
 # host rule for it refuses the secrets grant, and no rule names it.
 CLAIMS_SOCKET_PLATFORM_SINCE = (0, 50, 0)
+# The first c8s release with the per-pod mesh (C8s #809): the webhook mounts the
+# certificate volume only into its own sidecars, so no workload container has it.
+PER_POD_MESH_SINCE = (0, 64, 0)
 # The first c8s release whose chart seed names one entry per component shape
 # (`<image>-<digest>-<shape>`), pins its args and mounts, and seeds the router
 # pod's composition (c8s #876, #878). From it the release mirrors the seed as
@@ -334,7 +337,10 @@ def container_mounts(
             raise GenerationError(f"{label}: mount {mount['name']} has a volume type the release cannot classify")
     # c8s adds these to every container of an opted-in pod.
     if "confidential.ai/cw" in annotations:
-        rules.append({"destination": annotations.get("confidential.ai/c8s-cert-dir", DEFAULT_CERT_DIR), "kind": "emptyDir"})
+        # c8s >= v0.64.0 (C8s #809, per-pod mesh) mounts the certificate
+        # volume only into its own sidecars.
+        if not c8s_at_least(c8s_release, PER_POD_MESH_SINCE):
+            rules.append({"destination": annotations.get("confidential.ai/c8s-cert-dir", DEFAULT_CERT_DIR), "kind": "emptyDir"})
         if annotations.get("confidential.ai/c8s-secrets"):
             rules.append({"destination": annotations.get("confidential.ai/c8s-secret-dir", DEFAULT_SECRET_DIR), "kind": "emptyDir"})
         if annotations.get("confidential.ai/c8s-volumes"):

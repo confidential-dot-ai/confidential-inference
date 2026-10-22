@@ -42,9 +42,6 @@ spec:
               app.kubernetes.io/name: {{ .Values.c8s.frontDoorPodLabelName }}
       ports:
         - {protocol: TCP, port: {{ .Values.gateway.containerPorts.public }}}
-        {{- if .Values.gateway.meshTls.enabled }}
-        - {protocol: TCP, port: {{ .Values.gateway.containerPorts.tls }}}
-        {{- end }}
     - from:
         - podSelector:
             matchLabels:
@@ -116,28 +113,8 @@ spec:
             matchLabels:
               app.kubernetes.io/component: sglang-router
       ports:
-        - {protocol: TCP, port: {{ ternary .Values.router.proxyPort .Values.router.port .Values.namedWorkloadProxy.enabled }}}
+        - {protocol: TCP, port: {{ .Values.router.port }}}
     {{- if .Values.attestationReceipts.enabled }}
-    - to:
-        - podSelector:
-            matchExpressions:
-              - key: app.kubernetes.io/component
-                operator: In
-                values: [inference-worker]
-      ports:
-        - {protocol: TCP, port: {{ .Values.attestationReceipts.firstWorkerPort }}}
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/component: metrics-collector
-      ports:
-        - {protocol: TCP, port: {{ .Values.attestationReceipts.metricsCollectorPort }}}
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/component: kube-state-metrics
-      ports:
-        - {protocol: TCP, port: {{ .Values.attestationReceipts.kubeStateMetricsPort }}}
     {{- range .Values.attestationReceipts.evidenceEgressCidrs }}
     - to:
         - ipBlock:
@@ -174,7 +151,7 @@ spec:
             matchLabels:
               app.kubernetes.io/component: gateway
       ports:
-        - {protocol: TCP, port: {{ ternary .Values.router.proxyPort .Values.router.port .Values.namedWorkloadProxy.enabled }}}
+        - {protocol: TCP, port: {{ .Values.router.port }}}
     - from:
         - podSelector:
             matchLabels:
@@ -198,44 +175,6 @@ spec:
         - {protocol: TCP, port: 443}
         - {protocol: TCP, port: {{ .Values.metricsCollector.kubeApi.port }}}
 ---
-{{- if .Values.attestationReceipts.enabled }}
-# Receipt collection is a separate control path. Inference uses only the
-# authenticated proxy on 9443 and never the router application port.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: gateway-to-router-attestation
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/component: gateway
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/component: sglang-router
-      ports:
-        - {protocol: TCP, port: {{ .Values.attestationReceipts.routerPort }}}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: router-attestation-ingress
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/component: sglang-router
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/component: gateway
-      ports:
-        - {protocol: TCP, port: {{ .Values.attestationReceipts.routerPort }}}
----
-{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -265,14 +204,6 @@ spec:
         - {protocol: TCP, port: {{ .Values.inference.port }}}
         - {protocol: TCP, port: {{ .Values.inference.metricsPort }}}
         {{- end }}
-    {{- if .Values.attestationReceipts.enabled }}
-    - from:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/component: gateway
-      ports:
-        - {protocol: TCP, port: {{ .Values.attestationReceipts.firstWorkerPort }}}
-    {{- end }}
 ---
 {{- if .Values.dcgmExporter.enabled }}
 apiVersion: networking.k8s.io/v1
@@ -329,14 +260,6 @@ spec:
               app.kubernetes.io/component: metrics-collector
       ports:
         - {protocol: TCP, port: {{ .Values.kubeStateMetrics.port }}}
-    {{- if .Values.attestationReceipts.enabled }}
-    - from:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/component: gateway
-      ports:
-        - {protocol: TCP, port: {{ .Values.attestationReceipts.kubeStateMetricsPort }}}
-    {{- end }}
 ---
 {{- end }}
 apiVersion: networking.k8s.io/v1
@@ -409,11 +332,3 @@ spec:
         {{- end }}
       ports:
         - {protocol: TCP, port: 9090}
-    {{- if .Values.attestationReceipts.enabled }}
-    - from:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/component: gateway
-      ports:
-        - {protocol: TCP, port: {{ .Values.attestationReceipts.metricsCollectorPort }}}
-    {{- end }}

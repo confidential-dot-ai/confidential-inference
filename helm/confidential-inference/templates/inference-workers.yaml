@@ -19,11 +19,6 @@ spec:
     - name: inference
       port: {{ .Values.inference.port }}
       targetPort: inference
-    {{- if .Values.attestationReceipts.enabled }}
-    - name: cds-attest
-      port: {{ .Values.attestationReceipts.firstWorkerPort }}
-      targetPort: cds-attest
-    {{- end }}
 {{- range $index := until (int .Values.inference.replicas) }}
 {{- $simulatorMode := eq $.Values.inference.mode "simulator" }}
 {{- $modelMount := or (not $simulatorMode) $.Values.inference.simulator.validateModelMount }}
@@ -228,9 +223,6 @@ spec:
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
-        {{- if $.Values.attestationReceipts.enabled }}
-        {{- include "confidential-inference.cdsAttestSidecar" (dict "root" $ "workload" $attestedWorkload "host" "0.0.0.0" "port" $.Values.attestationReceipts.firstWorkerPort "gpuEvidence" (gt (int $.Values.inference.gpusPerReplica) 0)) | nindent 8 }}
-        {{- end }}
       volumes:
         - name: shm
           emptyDir:
