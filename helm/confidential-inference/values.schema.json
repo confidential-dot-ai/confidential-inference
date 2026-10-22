@@ -414,7 +414,7 @@
       "properties": {
         "enabled": {"type": "boolean"},
         "deployment": {"type": "string", "pattern": "^([a-z0-9][a-z0-9-]{0,62})?$"},
-        "metricsUrl": {"type": "string", "pattern": "^https://[^/?#]+/[^?#]*$"},
+        "metricsUrl": {"type": "string", "pattern": "^https://[^/?#]+/[^#]*$"},
         "logsUrl": {"type": "string", "pattern": "^https://[^/?#]+/[^?#]*$"},
         "destinationCidrs": {
           "type": "array",
