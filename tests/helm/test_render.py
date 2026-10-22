@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import runpy
 import subprocess
 import tempfile
 from pathlib import Path
@@ -134,26 +135,27 @@ def check_front_door_namespace() -> None:
                for rule in policies['gateway-to-router']['spec']['egress'] for peer in rule.get('to', []))
 
 
-def check_cds_nodeport_and_probe_budget() -> None:
-    # c8s >= v0.66: credential clients dial the node's CDS NodePort, and the
-    # per-pod mesh gives every probe 5 s (C8s #1027).
-    documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
-        '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
-        '-f', str(ROOT/'release/staging/values.yaml'),
-        '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
-        '--set', 'attestationReceipts.releaseId=v0.14.18-staging')) if item]
-    policies = {d['metadata']['name']: d for d in documents if d['kind'] == 'NetworkPolicy'}
-    for name in ('workloads-to-c8s-cds', 'gateway-update-agent'):
-        assert any('to' not in rule and {'protocol': 'TCP', 'port': 30808} in rule['ports']
-                   for rule in policies[name]['spec']['egress']), name
-    for document in documents:
-        if document['kind'] not in {'Deployment', 'StatefulSet'}:
-            continue
-        pod = document['spec']['template']['spec']
-        for container in pod.get('initContainers', []) + pod['containers']:
-            for probe in ('startupProbe', 'readinessProbe', 'livenessProbe'):
-                if probe in container:
-                    assert container[probe].get('timeoutSeconds', 1) <= 5, (document['metadata']['name'], container['name'], probe)
+def check_c8s_admission() -> None:
+    """Every profile renders pods the c8s webhook admits (scripts/check-c8s-admission.py)."""
+    admission = runpy.run_path(str(ROOT / "scripts/check-c8s-admission.py"))
+    release = ("--namespace", "confidential-inference", "-f", "release/values.yaml",
+               "-f", "tests/release-v1/fixtures/release-values.yaml",
+               "--set", "attestationReceipts.releaseId=v0.14.18-staging")
+    for profile in ((), release, (*release, "-f", "release/staging/values.yaml"),
+                    ("--values", "tests/contracts/values-sglang.yaml")):
+        assert admission["refusals"](render(*profile)) == [], profile
+    # The refusals of 2026-10-22 staging: a tcpSocket probe, the credential
+    # directory in an app container, a probe over the 5 s budget, no CDS egress.
+    pod = {"kind": "Pod", "metadata": {"name": "p", "annotations": {"confidential.ai/cw": "p"}, "labels": {"a": "b"}},
+           "spec": {"containers": [{"name": "app", "readinessProbe": {"tcpSocket": {"port": 1}},
+                                    "livenessProbe": {"httpGet": {"port": 8080, "path": "/health"}, "timeoutSeconds": 10},
+                                    "volumeMounts": [{"name": "certs", "mountPath": "/etc/c8s/certs"}]}]}}
+    deny = {"kind": "NetworkPolicy", "metadata": {"name": "deny"},
+            "spec": {"podSelector": {}, "policyTypes": ["Egress"], "egress": [{"ports": [{"port": 443}]}]}}
+    found = admission["refusals"]([pod, deny])
+    assert len(found) == 4, found
+    for expected, line in zip(("/etc/c8s/certs", "tcpSocket", "timeoutSeconds 10", "TCP 30808"), found):
+        assert expected in line, (expected, line)
 
 
 def main() -> None:
@@ -557,7 +559,7 @@ def main() -> None:
     check_plain_http_behind_the_mesh()
     check_override_replaces_strategy()
     check_front_door_namespace()
-    check_cds_nodeport_and_probe_budget()
+    check_c8s_admission()
     print("Helm neutral-default and safety tests passed.")
 
 
