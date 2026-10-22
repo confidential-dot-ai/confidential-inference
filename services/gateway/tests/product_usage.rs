@@ -348,7 +348,8 @@ async fn a_refused_batch_is_split_and_only_the_refused_event_is_dropped()
 async fn with_no_egress_a_push_makes_the_gateway_ready_and_failed_pulls_keep_it()
 -> Result<(), Box<dyn std::error::Error>> {
     // Nothing listens at the admin address: every pull and send fails, as
-    // under the c8s per-pod mesh without declared egress.
+    // under the c8s per-pod mesh before declared egress (C8s#1047). The
+    // gateway is not ready until a snapshot lands.
     let closed = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
     let ca = rcgen::generate_simple_self_signed(vec!["admin.test".to_owned()])?
         .cert
@@ -363,7 +364,6 @@ async fn with_no_egress_a_push_makes_the_gateway_ready_and_failed_pulls_keep_it(
     ));
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(!keys.is_ready());
-    assert!(!keys.passes_readiness());
 
     let response = admin_router(keys.clone())
         .oneshot(
@@ -376,7 +376,6 @@ async fn with_no_egress_a_push_makes_the_gateway_ready_and_failed_pulls_keep_it(
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
     assert!(keys.is_ready());
-    assert!(keys.passes_readiness());
 
     // The next pull fails too; the pushed keys stay and the gateway stays ready.
     tokio::time::sleep(Duration::from_millis(5_500)).await;
@@ -391,7 +390,6 @@ async fn with_no_egress_a_push_makes_the_gateway_ready_and_failed_pulls_keep_it(
         keys.verify("synthetic-key").as_deref(),
         Some("key_admin_exact_id")
     );
-    assert!(keys.passes_readiness());
 
     // Usage cannot leave: the queue keeps the newest events up to its bound.
     let models = BTreeMap::from([(

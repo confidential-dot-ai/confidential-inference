@@ -13,7 +13,7 @@
 
 use std::{
     sync::{Arc, RwLock},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -64,20 +64,7 @@ pub struct KeyStore {
     environment: String,
     metrics: Option<Arc<GatewayMetrics>>,
     snapshot: RwLock<Option<Snapshot>>,
-    created: Instant,
 }
-
-/// How long `/ready` waits for the first snapshot before it passes without
-/// one. Under the c8s per-pod mesh (c8s >= v0.64) a gateway pod has no egress
-/// to the admin until C8s#1047 adds declared egress, so the pull fails and
-/// only the admin's push can bring keys. The admin reaches gateway pods
-/// through the headless `c8s-gateway` Service, which lists ready pods only:
-/// a readiness gate without this limit would never let a push reach a new
-/// pod. After the limit the pod is Ready, inference answers 503
-/// `key_registry_not_ready` until a push or pull lands, and the next admin
-/// repair pass (every 30 s) pushes the keys. When the pull works, keys arrive
-/// within seconds and the limit never applies.
-pub const KEYLESS_READY_AFTER: Duration = Duration::from_secs(60);
 
 /// The body of `GET /admin/v1/api-keys/source`.
 #[derive(Debug, Serialize)]
@@ -112,7 +99,6 @@ impl KeyStore {
             environment: environment.to_owned(),
             metrics: None,
             snapshot: RwLock::new(None),
-            created: Instant::now(),
         })
     }
 
@@ -329,10 +315,6 @@ impl ApiKeyVerifier for KeyStore {
 
     fn is_ready(&self) -> bool {
         self.cached_revision().is_some()
-    }
-
-    fn passes_readiness(&self) -> bool {
-        self.is_ready() || self.created.elapsed() >= KEYLESS_READY_AFTER
     }
 }
 

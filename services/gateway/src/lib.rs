@@ -58,13 +58,6 @@ pub trait ApiKeyVerifier: Send + Sync + 'static {
     fn is_ready(&self) -> bool {
         true
     }
-
-    /// Return whether `/ready` passes. The key store also passes a while
-    /// after start without keys, so the admin's push can reach the pod
-    /// (`api_keys::KEYLESS_READY_AFTER`).
-    fn passes_readiness(&self) -> bool {
-        self.is_ready()
-    }
 }
 
 pub trait AuditSink: Send + Sync + 'static {
@@ -330,7 +323,7 @@ async fn health() -> impl IntoResponse {
 }
 
 async fn ready(State(state): State<Arc<AppState>>) -> Response<Body> {
-    if !state.keys.passes_readiness() {
+    if !state.keys.is_ready() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({"status":"key_registry_not_ready"})),
