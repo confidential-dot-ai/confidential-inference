@@ -366,6 +366,11 @@ nodeExporter:
     cpu: 100m
     memory: 128Mi
 
+# The release profile can add the log collector as an additional workload.
+# Then the chart renders its service account, log read access and egress.
+logCollector:
+  enabled: false
+
 kubeStateMetrics:
   enabled: true
   attestedWorkload: kube-state-metrics

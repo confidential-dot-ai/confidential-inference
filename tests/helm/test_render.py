@@ -149,6 +149,11 @@ def main() -> None:
         '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
         '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
         '--set', 'attestationReceipts.releaseId=v0.14.18')) if item]
+    # The release profile's log collector gets its account, log access and egress.
+    rendered = {(d['kind'], d['metadata']['name']) for d in production}
+    assert {('ServiceAccount', 'log-collector'), ('Role', 'confidential-inference-log-reader'),
+            ('RoleBinding', 'confidential-inference-log-reader'),
+            ('NetworkPolicy', 'log-collector-egress')} <= rendered
     # One gateway workload and state volume per deployment: a release change
     # replaces the pod (Recreate) and reopens the same key database.
     gateway = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'gateway')

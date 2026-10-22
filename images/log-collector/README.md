@@ -9,9 +9,11 @@ Application logging must omit customer payloads. The filter does not detect
 all possible secrets in arbitrary text.
 
 The approved `Release images` workflow builds and compares this image twice.
-The signed release records it as `images.logCollector`. Private deployment
-operations install the collector with their existing workload, access rules,
-and encrypted client credentials. The application chart does not install it.
+The signed release records it as `images.logCollector`. The release profile
+adds the collector workload in `additionalWorkloads`. With
+`logCollector.enabled`, the application chart renders its service account, log
+read access and network egress. The deployment provides the encrypted client
+credentials.
 Changing this pipeline does not require rebuilding gateway or worker images.
 
 After publication, run the pipeline test against that image by digest:
