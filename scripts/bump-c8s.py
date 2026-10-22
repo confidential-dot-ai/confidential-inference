@@ -64,7 +64,7 @@ import release_profiles
 import c8s_release
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
+SOURCE_LOCK = ROOT / "release/inputs/c8s-source-lock.json"
 PROTOCOLS = ROOT / "release/inputs/c8s-attestation-protocols"
 CDI_DIR = ROOT / "release/inputs/cdi"
 CANONICAL_TOOL = ROOT / "tools/c8s-allowlist-canonical"

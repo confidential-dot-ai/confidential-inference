@@ -26,7 +26,7 @@ from cryptography.x509.oid import NameOID
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/verify-public-attestation.py"
-SOURCE_LOCK = json.loads((ROOT / "contracts/c8s-admission-source-lock.json").read_text())
+SOURCE_LOCK = json.loads((ROOT / "release/inputs/c8s-source-lock.json").read_text())
 TARGETS = {
     "production": (
         ("gateway", "gateway", "gateway"),

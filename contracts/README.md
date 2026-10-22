@@ -11,8 +11,6 @@ endpoint and [release documentation](../release/README.md) for publication.
 - `workload-attestation.schema.json`: schema 3 release and active-policy
   metadata. It also retains schema 2 for historical responses. Schema 3
   requires no API key or nonce and has no aggregate workload receipts.
-- `c8s-admission-source-lock.json`: pinned c8s commits and source hashes.
-  The signed release identifies the selected commit and lock digest.
 - `environment-spec.schema.json`: deployment environment input format.
 
 The gateway reads the active policy and operator public keys through verified
@@ -45,5 +43,9 @@ and expires after ten minutes.
 The network port and observability references moved to
 [docs/network-ports.yaml](../docs/network-ports.yaml) and
 [docs/observability-metrics.yaml](../docs/observability-metrics.yaml). The c8s
-attestation protocol captures moved to
+source lock (pinned c8s commits and source hashes) moved to
+[release/inputs/c8s-source-lock.json](../release/inputs/c8s-source-lock.json),
+and the c8s attestation protocol captures to
 [release/inputs/c8s-attestation-protocols](../release/inputs/c8s-attestation-protocols).
+The signed release still records the lock path and digest; releases before
+the move name `contracts/c8s-admission-source-lock.json`.

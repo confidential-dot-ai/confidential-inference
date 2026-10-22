@@ -1,5 +1,5 @@
 # STUB, not vendored from c8s: attestation-api.service is baked by a lower
-# image layer (node-guest-base, see contracts/c8s-admission-source-lock.json
+# image layer (node-guest-base, see release/inputs/c8s-source-lock.json
 # nodeImage) that this repository does not check out, so its unit text
 # cannot be hash-verified here. This stub exists only so
 # systemd-analyze verify can resolve cred-release.service's

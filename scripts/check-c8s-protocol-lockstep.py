@@ -8,7 +8,7 @@ speaking to the wrong one; it must know the protocol in advance. This script
 is the deploy-time guard: it reads the c8s route table and receipt field set
 this repo already captured, read-only, into
 `release/inputs/c8s-attestation-protocols/<commit>.json` for each protocol c8s has
-ever spoken, and compares them against `contracts/c8s-admission-source-lock.json`
+ever spoken, and compares them against `release/inputs/c8s-source-lock.json`
 (which pins one protocol per environment) and the gateway's own Rust test
 fixtures (which is the only place the gateway commits to a wire shape).
 
@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
+SOURCE_LOCK = ROOT / "release/inputs/c8s-source-lock.json"
 PROTOCOLS_DIR = ROOT / "release/inputs/c8s-attestation-protocols"
 GATEWAY_TESTS = ROOT / "services/gateway/tests"
 
