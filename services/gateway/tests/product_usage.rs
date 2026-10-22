@@ -18,7 +18,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use confidential_gateway::{
     ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig, UnavailableAttestation,
     admin_client::{self, AdminClient, Config},
-    api_keys::KeyStore,
+    api_keys::{KeyStore, admin_router},
     metrics::GatewayMetrics,
     metrics::MetricsSource,
     protection::ProtectionConfig,
@@ -339,6 +339,78 @@ async fn a_refused_batch_is_split_and_only_the_refused_event_is_dropped()
     let rendered = metrics.render_prometheus();
     assert!(
         rendered.contains("gateway_usage_events_rejected_total{status=\"400\",env=\"staging\"} 1"),
+        "{rendered}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn with_no_egress_a_push_makes_the_gateway_ready_and_failed_pulls_keep_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Nothing listens at the admin address: every pull and send fails, as
+    // under the c8s per-pod mesh without declared egress.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let ca = rcgen::generate_simple_self_signed(vec!["admin.test".to_owned()])?
+        .cert
+        .pem();
+    let client = Arc::new(AdminClient::new(&client_config(closed, &ca))?);
+    let metrics = Arc::new(GatewayMetrics::new("staging"));
+    let keys = Arc::new(KeyStore::new(PEPPER.to_vec(), "staging").map_err(|e| format!("{e:?}"))?);
+    tokio::spawn(admin_client::sync_keys(
+        client.clone(),
+        keys.clone(),
+        metrics.clone(),
+    ));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!keys.is_ready());
+    assert!(!keys.passes_readiness());
+
+    let response = admin_router(keys.clone())
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/admin/v1/api-keys/snapshot")
+                .header("content-type", "application/json")
+                .body(Body::from(snapshot().to_string()))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(keys.is_ready());
+    assert!(keys.passes_readiness());
+
+    // The next pull fails too; the pushed keys stay and the gateway stays ready.
+    tokio::time::sleep(Duration::from_millis(5_500)).await;
+    let rendered = metrics.render_prometheus();
+    assert!(
+        rendered.contains(
+            "gateway_key_registry_fetch_failed_total{reason=\"unreachable\",env=\"staging\"} 2"
+        ),
+        "{rendered}"
+    );
+    assert_eq!(
+        keys.verify("synthetic-key").as_deref(),
+        Some("key_admin_exact_id")
+    );
+    assert!(keys.passes_readiness());
+
+    // Usage cannot leave: the queue keeps the newest events up to its bound.
+    let models = BTreeMap::from([(
+        "model-a".to_owned(),
+        Model {
+            served_model: "model-a".into(),
+            model_revision: "revision-1".into(),
+        },
+    )]);
+    let recorder = Recorder::new("gateway-test", models, 3, metrics.clone());
+    for key in ["key_1", "key_2", "key_3", "key_4", "key_5"] {
+        let mut request = recorder.reserve(key, "model-a").ok_or("unknown model")?;
+        request.finish(Outcome::Completed);
+    }
+    assert_eq!(recorder.send_pending(&client).await, Err("unreachable"));
+    assert_eq!(recorder.pending(), 3);
+    let rendered = metrics.render_prometheus();
+    assert!(
+        rendered.contains("gateway_usage_events_dropped_total{env=\"staging\"} 2"),
         "{rendered}"
     );
     Ok(())
