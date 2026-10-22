@@ -48,14 +48,6 @@ class GatewayImageRecipeTests(unittest.TestCase):
         self.assertIn("COPY services/gateway/Cargo.toml services/gateway/Cargo.toml", DOCKERFILE)
         self.assertIn("COPY services/gateway/src services/gateway/src", DOCKERFILE)
         self.assertIn(
-            "COPY services/maintenance-gateway/Cargo.toml services/maintenance-gateway/Cargo.toml",
-            DOCKERFILE,
-        )
-        self.assertIn(
-            "COPY services/maintenance-gateway/src services/maintenance-gateway/src",
-            DOCKERFILE,
-        )
-        self.assertIn(
             "cargo build --locked --release --package confidential-gateway --bin confidential-gateway",
             DOCKERFILE,
         )
@@ -78,10 +70,6 @@ class GatewayImageRecipeTests(unittest.TestCase):
                 "!services/gateway/Cargo.toml",
                 "!services/gateway/src/",
                 "!services/gateway/src/**",
-                "!services/maintenance-gateway/",
-                "!services/maintenance-gateway/Cargo.toml",
-                "!services/maintenance-gateway/src/",
-                "!services/maintenance-gateway/src/**",
             ],
             DOCKERIGNORE.splitlines(),
         )

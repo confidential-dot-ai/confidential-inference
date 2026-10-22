@@ -17,7 +17,6 @@ receipts in a separate private repository.
 - `images/sglang`: the pinned SGLang worker build. The same image
   runs a real model in production and a GPU-free simulator in staging.
 - `images/sglang-router`: the separate router image and build inputs.
-- `services/maintenance-gateway`: the fallback API.
 - `images/control-plane-node`: historical consumer node profiles. Current
   releases pin the c8s node image through `release/spec.yaml`.
 - `helm/confidential-inference`: the generic Kubernetes application chart.

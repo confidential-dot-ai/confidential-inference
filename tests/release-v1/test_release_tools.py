@@ -992,10 +992,10 @@ class ManifestTests(unittest.TestCase):
 
     def test_manifest_records_a_published_image_outside_the_application_chart(self):
         gateway = "ghcr.io/confidential-dot-ai/confidential-inference/gateway"
-        maintenance = "ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway"
-        result = MAN.publication_binding(b"{}", publication({maintenance: "sha256:" + "2" * 64}),
+        rollout_client = "ghcr.io/confidential-dot-ai/confidential-inference/rollout-client"
+        result = MAN.publication_binding(b"{}", publication({rollout_client: "sha256:" + "2" * 64}),
                                          {"gateway": f"{gateway}@sha256:{'1' * 64}"})
-        self.assertEqual(result["images"][maintenance], "sha256:" + "2" * 64)
+        self.assertEqual(result["images"][rollout_client], "sha256:" + "2" * 64)
 
     def test_manifest_names_separately_installed_registered_image(self):
         gateway = "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64

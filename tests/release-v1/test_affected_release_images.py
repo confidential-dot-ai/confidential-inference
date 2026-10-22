@@ -16,11 +16,8 @@ def names(paths: list[str]) -> list[str]:
 
 
 class AffectedReleaseImagesTests(unittest.TestCase):
-    def test_rust_source_change_selects_both_rust_images(self) -> None:
-        self.assertEqual(
-            names(["services/gateway/src/main.rs"]),
-            ["gateway", "maintenance-gateway"],
-        )
+    def test_rust_source_change_selects_the_gateway(self) -> None:
+        self.assertEqual(names(["services/gateway/src/main.rs"]), ["gateway"])
 
     def test_image_change_selects_only_its_image(self) -> None:
         self.assertEqual(names(["images/gateway/Dockerfile"]), ["gateway"])
@@ -36,11 +33,8 @@ class AffectedReleaseImagesTests(unittest.TestCase):
         self.assertEqual(names(["images/log-collector/config.alloy"]), ["log-collector"])
         self.assertEqual(names(["images/log-collector/Dockerfile"]), ["log-collector"])
 
-    def test_shared_rust_input_selects_both_rust_images(self) -> None:
-        self.assertEqual(
-            names(["Cargo.lock"]),
-            ["gateway", "maintenance-gateway"],
-        )
+    def test_shared_rust_input_selects_the_gateway(self) -> None:
+        self.assertEqual(names(["Cargo.lock"]), ["gateway"])
 
     def test_unrelated_change_selects_no_image(self) -> None:
         self.assertEqual(

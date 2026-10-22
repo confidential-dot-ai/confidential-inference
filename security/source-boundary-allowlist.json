@@ -170,12 +170,6 @@
       "reason": "The chart's generic pod and service network defaults, 10.52.0.0/16 and 10.53.0.0/16. Every Kubernetes cluster uses a private range here. These two values name no real host and identify no deployment."
     },
     {
-      "rule": "private-ip-address",
-      "path": "helm/maintenance-gateway/values.yaml",
-      "line_sha256": "49b4cc671ccac54b8788c856345868e595a667e3f9669b9c11ace548e579e9d8",
-      "reason": "The chart's generic pod and service network defaults, 10.52.0.0/16 and 10.53.0.0/16. Every Kubernetes cluster uses a private range here. These two values name no real host and identify no deployment."
-    },
-    {
       "rule": "tailnet-service-traffic",
       "path": "c8s/staging-policy.json",
       "line_sha256": "6a3cc56e74801dd19aa7a6fc6214db8ee5e237366d9ea010b3cfadf772a7c259",

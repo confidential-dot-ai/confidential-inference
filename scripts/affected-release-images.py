@@ -39,8 +39,6 @@ RUST_IMAGE_INPUTS = (
     "rust-toolchain.toml",
     "services/gateway/Cargo.toml",
     "services/gateway/src/**",
-    "services/maintenance-gateway/Cargo.toml",
-    "services/maintenance-gateway/src/**",
 )
 # A base is a commit, a release tag, or a legacy release candidate tag.
 BASE_REF = re.compile(
@@ -58,13 +56,6 @@ IMAGES = (
             "images/gateway/Dockerfile",
             "images/gateway/Dockerfile.dockerignore",
         ),
-    ),
-    Image(
-        "maintenance-gateway",
-        ".",
-        "images/maintenance-gateway/Dockerfile",
-        "Confidential Inference maintenance gateway",
-        (*RUST_IMAGE_INPUTS, "images/maintenance-gateway/Dockerfile"),
     ),
     Image(
         "sglang",
