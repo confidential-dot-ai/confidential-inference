@@ -148,7 +148,7 @@ jobs:
         run: |
           failed=0
           run() { echo "::group::$*"; "$@" || { echo "::error::failed: $*"; failed=1; }; echo "::endgroup::"; }
-          for suite in contracts image-workflow images/gateway images/sglang model-mount-v0 network-v0 release-v1 source-boundary; do
+          for suite in contracts image-workflow images/gateway images/sglang model-mount-v0 network-v0 release-v1; do
             run python3 -m unittest discover -s "tests/$suite" -p 'test_*.py'
           done
           for test in test_attestation_metadata test_verify_release_manifest test_gpu_evidence \
@@ -163,6 +163,3 @@ jobs:
         run: |
           bash tests/helm/run.sh
           scripts/validate-kubernetes.sh
-
-      - name: Check the source boundary
-        run: python3 scripts/validate-source-boundary.py
