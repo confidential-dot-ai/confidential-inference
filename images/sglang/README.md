@@ -79,9 +79,6 @@ is built again for publication and must produce the same verified digest.
 The signed release binds the selected image publication evidence.
 See [release publication](../../release/README.md) for inputs and checks.
 
-`scripts/rebuild-release-images.py` remains an independent audit tool for
-older release inventories. It does not replace the publication audit.
-
 Do not replace the read-only build mounts with `COPY`. Git does not store file
 modification times. A `COPY` layer would make the digest depend on the machine
 that checked out the files.
