@@ -43,6 +43,7 @@ env:
 
 jobs:
   select-images:
+    name: select images
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -56,12 +57,12 @@ jobs:
       base_ref: ${{ steps.base.outputs.base_ref }}
       base_ref_commit: ${{ steps.base.outputs.base_ref_commit }}
     steps:
-      - name: Check out main with release history
+      - name: checkout main with history
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
-      - name: Require the audit for publication
+      - name: require audit
         env:
           PUBLISH: ${{ inputs.publish }}
           REBUILD_AUDIT: ${{ inputs.rebuild_audit }}
@@ -71,7 +72,7 @@ jobs:
             exit 1
           fi
 
-      - name: Select affected images
+      - name: select images
         id: select
         env:
           BASE_REF: ${{ inputs.base_ref }}
@@ -81,7 +82,7 @@ jobs:
           --head "$GITHUB_SHA"
           >> "$GITHUB_OUTPUT"
 
-      - name: Verify the immutable base reference
+      - name: verify base ref
         id: base
         env:
           BASE_REF: ${{ inputs.base_ref }}
@@ -93,7 +94,7 @@ jobs:
           printf 'base_ref=%s\n' "$BASE_REF" >> "$GITHUB_OUTPUT"
           printf 'base_ref_commit=%s\n' "$BASE_REF_COMMIT" >> "$GITHUB_OUTPUT"
 
-      - name: Require an image for publication
+      - name: require an image
         if: inputs.publish
         env:
           AFFECTED_IMAGES: ${{ steps.select.outputs.names }}
@@ -103,7 +104,7 @@ jobs:
             exit 1
           fi
 
-      - name: Report the selection
+      - name: report selection
         env:
           AFFECTED_IMAGES: ${{ steps.select.outputs.names }}
           BASE_REF: ${{ inputs.base_ref }}
@@ -115,6 +116,7 @@ jobs:
   # builds below do. One job that built twice in sequence took twice as long
   # (run 37609914612: 128 s + 128 s for the gateway).
   reproducibility:
+    name: 'rebuild ${{ matrix.image }} #${{ matrix.pass }}'
     if: >-
       inputs.rebuild_audit &&
       needs.select-images.outputs.standard_names != ''
@@ -125,17 +127,17 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select-images.outputs.standard_pass_matrix) }}
     steps:
-      - name: Check out the repository
+      - name: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Prove clean source and get its epoch
+      - name: check clean source
         id: source
         run: |
           test -z "$(git status --porcelain --untracked-files=all)"
           test -f "${{ matrix.dockerfile }}"
           printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
-      - name: Set up an isolated builder
+      - name: setup buildx
         id: builder
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
         with:
@@ -144,7 +146,7 @@ jobs:
           version: ${{ env.BUILDX_VERSION }}
           driver-opts: image=${{ env.BUILDKIT_IMAGE }}
 
-      - name: Run a clean build
+      - name: build image
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           builder: ${{ steps.builder.outputs.name }}
@@ -165,7 +167,7 @@ jobs:
           provenance: false
           sbom: false
 
-      - name: Record the platform manifest
+      - name: record manifest
         run: |
           python3 scripts/verify-reproducible-oci.py \
             /tmp/${{ matrix.image }}-${{ matrix.pass }}.tar \
@@ -176,7 +178,7 @@ jobs:
           digest=$(python3 -c "import json;print(json.load(open('/tmp/${{ matrix.image }}-${{ matrix.pass }}.record.json'))['digest'])")
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
 
-      - name: Save the recorded manifest
+      - name: upload manifest record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-record-${{ matrix.image }}-${{ matrix.pass }}
@@ -185,7 +187,7 @@ jobs:
           retention-days: 1
 
       # The publish job pushes these audited bytes. It does not build again.
-      - name: Save the audited OCI archive for publication
+      - name: upload oci archive
         if: inputs.publish && matrix.pass == 1
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -196,6 +198,7 @@ jobs:
           compression-level: 0
 
   reproducibility-compare:
+    name: 'compare ${{ matrix.image }}'
     if: >-
       inputs.rebuild_audit &&
       needs.select-images.outputs.standard_names != ''
@@ -206,22 +209,22 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select-images.outputs.standard_matrix) }}
     steps:
-      - name: Check out the repository
+      - name: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Download the first recorded manifest
+      - name: 'download record #1'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-record-${{ matrix.image }}-1
           path: /tmp/record-1
 
-      - name: Download the second recorded manifest
+      - name: 'download record #2'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-record-${{ matrix.image }}-2
           path: /tmp/record-2
 
-      - name: Prove equal platform manifests
+      - name: compare manifests
         run: |
           digest=$(python3 scripts/verify-reproducible-oci.py \
             --compare-records \
@@ -230,7 +233,7 @@ jobs:
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           printf '%s\n' "$digest" > /tmp/${{ matrix.image }}.platform-digest
 
-      - name: Save the verified platform digest
+      - name: upload digest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-platform-digest-${{ matrix.image }}
@@ -248,6 +251,7 @@ jobs:
   # instead: two independent jobs record a small manifest/digest each,
   # and a third job compares the two recordings.
   reproducibility-sglang-build:
+    name: 'rebuild sglang #${{ matrix.pass }}'
     if: >-
       inputs.rebuild_audit &&
       needs.select-images.outputs.sglang == 'true'
@@ -262,17 +266,17 @@ jobs:
       TMPDIR: /mnt/tmp
       DOCKER_TMPDIR: /mnt/tmp
     steps:
-      - name: Check out the repository
+      - name: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Prove clean source and get its epoch
+      - name: check clean source
         id: source
         run: |
           test -z "$(git status --porcelain --untracked-files=all)"
           test -f "images/sglang/Dockerfile"
           printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
-      - name: Free runner storage for SGLang
+      - name: free disk space
         run: |
           echo "--- disk before cleanup ---"
           df -h / /mnt || true
@@ -304,7 +308,7 @@ jobs:
           echo "DockerRootDir=$root_dir"
           test "$root_dir" = /mnt/docker-data
 
-      - name: Set up an isolated builder
+      - name: setup buildx
         id: builder
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
         with:
@@ -313,7 +317,7 @@ jobs:
           version: ${{ env.BUILDX_VERSION }}
           driver-opts: image=${{ env.BUILDKIT_IMAGE }}
 
-      - name: Watch disk usage during the build
+      - name: watch disk usage
         run: |
           (while true; do
             printf '\n--- %s ---\n' "$(date -u +%FT%TZ)"
@@ -323,7 +327,7 @@ jobs:
           echo "watcher_pid=$!" >> "$GITHUB_OUTPUT"
         id: disk-watch
 
-      - name: Run a clean build
+      - name: build image
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           builder: ${{ steps.builder.outputs.name }}
@@ -344,11 +348,11 @@ jobs:
           provenance: false
           sbom: false
 
-      - name: Stop the disk usage watcher
+      - name: stop disk watcher
         if: always()
         run: kill "${{ steps.disk-watch.outputs.watcher_pid }}" 2>/dev/null || true
 
-      - name: Save the disk usage log
+      - name: upload disk log
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -357,7 +361,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
-      - name: Record the platform manifest
+      - name: record manifest
         run: |
           python3 scripts/verify-reproducible-oci.py \
             /mnt/release-oci/sglang-${{ matrix.pass }}.tar \
@@ -368,7 +372,7 @@ jobs:
           digest=$(python3 -c "import json;print(json.load(open('/tmp/sglang-${{ matrix.pass }}.record.json'))['digest'])")
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
 
-      - name: Save the recorded manifest
+      - name: upload manifest record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-sglang-record-${{ matrix.pass }}
@@ -377,6 +381,7 @@ jobs:
           retention-days: 1
 
   reproducibility-sglang-compare:
+    name: compare sglang
     if: >-
       inputs.rebuild_audit &&
       needs.select-images.outputs.sglang == 'true'
@@ -384,22 +389,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Check out the repository
+      - name: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Download the first recorded manifest
+      - name: 'download record #1'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-sglang-record-1
           path: /tmp/sglang-1
 
-      - name: Download the second recorded manifest
+      - name: 'download record #2'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-sglang-record-2
           path: /tmp/sglang-2
 
-      - name: Prove equal platform manifests
+      - name: compare manifests
         run: |
           digest=$(python3 scripts/verify-reproducible-oci.py \
             --compare-records \
@@ -408,7 +413,7 @@ jobs:
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           printf '%s\n' "$digest" > /tmp/sglang.platform-digest
 
-      - name: Save the verified platform digest
+      - name: upload digest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-platform-digest-sglang
@@ -420,6 +425,7 @@ jobs:
   # and proved, so the pushed digest is the audited digest by construction.
   # It starts as soon as the standard audit ends, without the sglang audit.
   publish-standard:
+    name: 'publish ${{ matrix.image }}'
     if: >-
       always() &&
       inputs.publish &&
@@ -437,26 +443,26 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select-images.outputs.standard_matrix) }}
     steps:
-      - name: Check out the repository
+      - name: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Get the stable source epoch
+      - name: get source epoch
         id: source
         run: printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
-      - name: Download the verified reproducibility digest
+      - name: download digest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-platform-digest-${{ matrix.image }}
           path: /tmp/verified-digest
 
-      - name: Download the audited OCI archive
+      - name: download oci archive
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-oci-${{ matrix.image }}
           path: /tmp/audited
 
-      - name: Prove the archive holds the audited digest
+      - name: verify archive digest
         run: |
           python3 scripts/verify-reproducible-oci.py \
             /tmp/audited/${{ matrix.image }}-1.tar \
@@ -467,7 +473,7 @@ jobs:
           mkdir -p /tmp/layout
           tar -xf /tmp/audited/${{ matrix.image }}-1.tar -C /tmp/layout
 
-      - name: Install the pinned crane
+      - name: install crane
         run: |
           curl -fsSL -o /tmp/crane.tar.gz \
             https://github.com/google/go-containerregistry/releases/download/v0.21.6/go-containerregistry_Linux_x86_64.tar.gz
@@ -476,14 +482,14 @@ jobs:
           tar -xzf /tmp/crane.tar.gz -C /tmp crane
           sudo install -m 0755 /tmp/crane /usr/local/bin/crane
 
-      - name: Log in to GHCR
+      - name: login ghcr
         uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish the audited image
+      - name: push image
         id: push
         env:
           IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}
@@ -493,7 +499,7 @@ jobs:
           test "${reference%@*}" = "$IMAGE_NAME"
           printf 'digest=%s\n' "${reference#*@}" >> "$GITHUB_OUTPUT"
 
-      - name: Prove and record the immutable image digest
+      - name: record image digest
         env:
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
           IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}
@@ -511,7 +517,7 @@ jobs:
             --output /tmp/${{ matrix.image }}.publication.json
           printf "### %s\n\n\`%s@%s\`\n" "$IMAGE_NAME" "$IMAGE_NAME" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Save the verified publication record
+      - name: upload publication record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-image-publication-record-${{ matrix.image }}
@@ -523,6 +529,7 @@ jobs:
   # publish job builds it once more and pushes only a digest equal to the
   # audited one. No unaudited sglang bytes reach the registry.
   publish-sglang:
+    name: publish sglang
     if: >-
       always() &&
       inputs.publish &&
@@ -537,29 +544,29 @@ jobs:
       contents: read
       packages: write
     steps:
-      - name: Check out the repository
+      - name: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Get the stable source epoch
+      - name: get source epoch
         id: source
         run: printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
       # The publish title comes from the image selector, as it does for the
       # standard images, so the workflow holds one SGLang title literal.
-      - name: Get the image title
+      - name: get image title
         id: title
         run: >-
           python3 -c 'import runpy; m = runpy.run_path("scripts/affected-release-images.py");
           print("title=" + next(i.title for i in m["IMAGES"] if i.image == "sglang"))'
           >> "$GITHUB_OUTPUT"
 
-      - name: Download the verified reproducibility digest
+      - name: download digest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-platform-digest-sglang
           path: /tmp/verified-digest
 
-      - name: Free runner storage for SGLang
+      - name: free disk space
         run: |
           echo "--- disk before cleanup ---"
           df -h / /mnt || true
@@ -578,20 +585,20 @@ jobs:
           echo "--- disk after cleanup ---"
           df -h / /mnt
 
-      - name: Set up Docker Buildx
+      - name: setup buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
         with:
           version: ${{ env.BUILDX_VERSION }}
           driver-opts: image=${{ env.BUILDKIT_IMAGE }}
 
-      - name: Log in to GHCR
+      - name: login ghcr
         uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish the image
+      - name: build and push image
         id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
@@ -614,7 +621,7 @@ jobs:
           provenance: false
           sbom: false
 
-      - name: Prove and record the immutable image digest
+      - name: record image digest
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/sglang
@@ -632,7 +639,7 @@ jobs:
             --output /tmp/sglang.publication.json
           printf "### %s\n\n\`%s@%s\`\n" "$IMAGE_NAME" "$IMAGE_NAME" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Save the verified publication record
+      - name: upload publication record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-image-publication-record-sglang
@@ -643,6 +650,7 @@ jobs:
   # The evidence names the image source commit, so every release profile that
   # pins this commit uses the same artifact.
   publication-manifest:
+    name: publication manifest
     if: >-
       always() &&
       inputs.publish &&
@@ -655,17 +663,17 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Check out the published source
+      - name: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Download all verified publication records
+      - name: download publication records
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: release-image-publication-record-*
           path: /tmp/publication-records
           merge-multiple: true
 
-      - name: Build the machine-readable publication manifest
+      - name: build publication manifest
         env:
           SELECTED_IMAGES: ${{ needs.select-images.outputs.names }}
         run: |
@@ -681,7 +689,7 @@ jobs:
           python3 scripts/image-publication-manifest.py merge "${args[@]}" \
             --output dist/image-publication-manifest.json
 
-      - name: Save the image publication evidence
+      - name: upload publication manifest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-image-publication-${{ github.sha }}

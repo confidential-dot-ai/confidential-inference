@@ -96,7 +96,7 @@ class ImagePublicationTests(unittest.TestCase):
         self.assertIn("dist/allowlist.json#c8s allowlist", bundle)
         self.assertIn("dist/release-values.yaml#Release image values", bundle)
         self.assertNotIn("--base-release", bundle)
-        build = bundle[bundle.index("- name: Build the release at the tag commit"):]
+        build = bundle[bundle.index("- name: build release"):]
         self.assertIn("GH_TOKEN: ${{ github.token }}", build[:build.index("run: |")])
 
     def test_build_requests_have_no_shared_cancellation_or_pending_slot(self):

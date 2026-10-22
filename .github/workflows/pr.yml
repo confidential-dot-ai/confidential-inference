@@ -17,12 +17,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Check out the repository
+      - name: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
-      - name: Classify changed files
+      - name: classify changes
         id: changes
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -75,40 +75,40 @@ jobs:
             echo "config=$config"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Set up Rust
+      - name: install rust
         if: steps.changes.outputs.gateway == 'true' || steps.changes.outputs.maintenance == 'true'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-04
         with:
           toolchain: stable
           components: rustfmt, clippy
 
-      - name: Check Rust formatting
+      - name: rustfmt
         if: steps.changes.outputs.gateway == 'true' || steps.changes.outputs.maintenance == 'true'
         run: cargo fmt --all -- --check
 
-      - name: Check and test the gateway
+      - name: test gateway
         if: steps.changes.outputs.gateway == 'true'
         run: |
           cargo clippy --locked --package confidential-gateway --all-targets -- -D warnings
           cargo test --locked --package confidential-gateway
 
-      - name: Check and test the maintenance gateway
+      - name: test maintenance gateway
         if: steps.changes.outputs.maintenance == 'true'
         run: |
           cargo clippy --locked --package maintenance-gateway --all-targets -- -D warnings
           cargo test --locked --package maintenance-gateway
 
-      - name: Check Python syntax
+      - name: check python syntax
         if: steps.changes.outputs.python == 'true'
         run: python3 -m compileall -q scripts images
 
-      - name: Install hash-locked release test dependencies
+      - name: install release test deps
         if: steps.changes.outputs.release == 'true'
         run: |
           python3 -m pip install --user --break-system-packages --require-hashes \
             --requirement scripts/requirements-release-signing.txt
 
-      - name: Test release rules
+      - name: test release rules
         if: steps.changes.outputs.release == 'true'
         run: |
           python3 -m unittest tests/release-v1/test_release_tag.py
@@ -119,21 +119,21 @@ jobs:
           python3 -m unittest discover -s tests/contracts -p test_contracts.py -k WorkloadAttestationFixtureTests
           python3 -m unittest discover -s tests/contracts -p test_contracts.py -k GatewayInferenceContractTests
 
-      - name: Set up Helm
+      - name: install helm
         if: steps.changes.outputs.helm_app == 'true' || steps.changes.outputs.helm_maintenance == 'true'
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: v3.18.6
 
-      - name: Lint the application chart
+      - name: lint app chart
         if: steps.changes.outputs.helm_app == 'true'
         run: helm lint helm/confidential-inference --set inference.mode=simulator
 
-      - name: Lint the maintenance chart
+      - name: lint maintenance chart
         if: steps.changes.outputs.helm_maintenance == 'true'
         run: helm lint helm/maintenance-gateway
 
-      - name: Parse changed configuration
+      - name: parse changed config
         if: steps.changes.outputs.config == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
