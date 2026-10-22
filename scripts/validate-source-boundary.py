@@ -97,39 +97,6 @@ NAMED_SECRET_RE = re.compile(
 )
 KUBECONFIG_MARKERS = ("clusters:", "contexts:", "current-context:", "users:")
 SYSTEMD_SUFFIXES = (".service", ".socket", ".timer", ".target", ".mount")
-REVIEWED_SYSTEMD_FILES = {
-    "images/control-plane-node/profile/control-plane-state/mkosi.extra/etc/systemd/system/control-plane-state-disk.service",
-    "images/control-plane-node/profile/control-plane-state/mkosi.extra/etc/systemd/system/rke2-server.service.d/zz-control-plane-state.conf",
-    # Writes the profile's remaining measured units (cred-release identities,
-    # the bootstrap-window scheduler) as literal, reviewed heredocs, and
-    # loads them with systemctl at boot. See
-    # images/control-plane-node/README.md, "Profile packaging".
-    "images/control-plane-node/profile/control-plane-state/mkosi.extra/usr/local/libexec/confidential-inference/control-plane-state-disk.sh",
-    # Layer 1 (test_boot_units.py) and layer 2 (boot-sim/) test fixtures:
-    # verbatim c8s units hash-checked against the pinned commit
-    # (fixtures/c8s-base/), hand-written stubs for units genuinely outside
-    # the c8s tree (fixtures/external-stubs/), and the boot-sim container's
-    # fake base image units (boot-sim/fixtures/base/). See
-    # images/control-plane-node/README.md, "Testing the profile".
-    "tests/images/control-plane-node/fixtures/c8s-base/etc/systemd/system/cred-release.service",
-    "tests/images/control-plane-node/fixtures/c8s-base/etc/systemd/system/gpu-cc-enforce.service",
-    "tests/images/control-plane-node/fixtures/c8s-base/etc/systemd/system/rke2-role.service",
-    "tests/images/control-plane-node/fixtures/c8s-base/etc/systemd/system/scratch-enforce.service",
-    "tests/images/control-plane-node/fixtures/c8s-base/etc/systemd/system/rke2-agent.service.d/20-role.conf",
-    "tests/images/control-plane-node/fixtures/c8s-base/etc/systemd/system/rke2-agent.service.d/no-modprobe.conf",
-    "tests/images/control-plane-node/fixtures/c8s-base/etc/systemd/system/rke2-server.service.d/20-role.conf",
-    "tests/images/control-plane-node/fixtures/c8s-base/etc/systemd/system/rke2-server.service.d/no-modprobe.conf",
-    "tests/images/control-plane-node/fixtures/external-stubs/etc/systemd/system/attestation-api.service",
-    "tests/images/control-plane-node/fixtures/external-stubs/etc/systemd/system/rke2-agent.service",
-    "tests/images/control-plane-node/fixtures/external-stubs/etc/systemd/system/rke2-server.service",
-    "tests/images/control-plane-node/boot-sim/fixtures/base/etc/systemd/system/attestation-api.service",
-    "tests/images/control-plane-node/boot-sim/fixtures/base/etc/systemd/system/boot-sim-prep.service",
-    "tests/images/control-plane-node/boot-sim/fixtures/base/etc/systemd/system/cred-release.service",
-    "tests/images/control-plane-node/boot-sim/fixtures/base/etc/systemd/system/cred-release.service.d/10-platform.conf",
-    "tests/images/control-plane-node/boot-sim/fixtures/base/etc/systemd/system/rke2-agent.service",
-    "tests/images/control-plane-node/boot-sim/fixtures/base/etc/systemd/system/rke2-role.service",
-    "tests/images/control-plane-node/boot-sim/fixtures/base/etc/systemd/system/rke2-server.service",
-}
 SECRET_ARTIFACT_NAMES = {
     ".env",
     "agent-token",
@@ -303,11 +270,6 @@ def is_public_attestation_record(path: str) -> bool:
     ) and path.endswith(".json")
 
 
-def is_reviewed_systemd(path: str) -> bool:
-    """Allow only system services that are part of a public base image."""
-    return path in REVIEWED_SYSTEMD_FILES
-
-
 def contains_unpinned_remote_fetch(line: str) -> bool:
     if not REMOTE_FETCH_RE.search(line):
         return False
@@ -331,7 +293,7 @@ def scan_file(root: Path, path: Path) -> list[Finding]:
         add(findings, "infisical-local-config", relative, 0, relative, "the public tree contains an Infisical local configuration")
     if pure.name.lower() in {"kubeconfig", "config.kubeconfig"} or ".kube" in pure.parts:
         add(findings, "kubeconfig", relative, 0, relative, "the public tree contains a kubeconfig path")
-    if pure.suffix.lower() in SYSTEMD_SUFFIXES and not is_reviewed_systemd(relative):
+    if pure.suffix.lower() in SYSTEMD_SUFFIXES:
         add(findings, "systemd-unit", relative, 0, relative, "the public tree contains a systemd unit")
     if is_secret_artifact(pure):
         add(findings, "secret-artifact", relative, 0, relative, "the public tree contains a secret artifact")
@@ -352,7 +314,6 @@ def scan_file(root: Path, path: Path) -> list[Finding]:
     if (
         re.search(r"(?mi)^\s*\[Unit\]\s*$", text)
         and re.search(r"(?mi)^\s*\[Service\]\s*$", text)
-        and not is_reviewed_systemd(relative)
     ):
         add(findings, "systemd-unit", relative, 1, text.splitlines()[0] if text else "", "the file contains a systemd unit")
 
@@ -377,7 +338,6 @@ def scan_file(root: Path, path: Path) -> list[Finding]:
         if (
             SYSTEMD_RE.search(line)
             and relative != POLICY_IMPLEMENTATION
-            and not is_reviewed_systemd(relative)
         ):
             add(findings, "systemd-unit", relative, number, line, "the file contains a systemd runtime dependency")
         if relative != POLICY_IMPLEMENTATION:
