@@ -78,11 +78,14 @@ impl AdminRequestVerifier {
     ///
     /// Returns an error when the file is empty or a line is not one SHA-256.
     pub fn with_api_key_hashes(mut self, bytes: &[u8]) -> Result<Self, String> {
-        let text = std::str::from_utf8(bytes).map_err(|_| "the admin API key hashes are not UTF-8")?;
+        let text =
+            std::str::from_utf8(bytes).map_err(|_| "the admin API key hashes are not UTF-8")?;
         let mut hashes = Vec::new();
         for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
             let valid = line.len() == 64
-                && line.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+                && line
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
             let mut hash = [0_u8; 32];
             if !valid || hex::decode_to_slice(line, &mut hash).is_err() {
                 return Err("an admin API key hash is not a lowercase hex SHA-256".to_owned());
@@ -90,7 +93,9 @@ impl AdminRequestVerifier {
             hashes.push(hash);
         }
         if hashes.is_empty() || hashes.len() > MAX_API_KEYS {
-            return Err(format!("the admin API key file must list 1 to {MAX_API_KEYS} hashes"));
+            return Err(format!(
+                "the admin API key file must list 1 to {MAX_API_KEYS} hashes"
+            ));
         }
         self.api_key_hashes = Arc::new(hashes);
         Ok(self)
@@ -400,15 +405,24 @@ mod tests {
         let verifier = key_only_verifier(&format!("{old}\n{new}\n"))?;
         verifier.verify_api_key("Bearer cia_old")?;
         verifier.verify_api_key("Bearer cia_new")?;
-        assert_eq!(verifier.verify_api_key("Bearer cia_other"), Err("invalid_api_key"));
-        assert_eq!(verifier.verify_api_key("cia_new"), Err("invalid_authorization"));
+        assert_eq!(
+            verifier.verify_api_key("Bearer cia_other"),
+            Err("invalid_api_key")
+        );
+        assert_eq!(
+            verifier.verify_api_key("cia_new"),
+            Err("invalid_authorization")
+        );
 
         let without_keys = AdminRequestVerifier {
             public_key: Arc::new(Vec::new()),
             nonces: Arc::new(Mutex::new(BTreeMap::new())),
             api_key_hashes: Arc::new(Vec::new()),
         };
-        assert_eq!(without_keys.verify_api_key("Bearer cia_new"), Err("invalid_api_key"));
+        assert_eq!(
+            without_keys.verify_api_key("Bearer cia_new"),
+            Err("invalid_api_key")
+        );
         Ok(())
     }
 
