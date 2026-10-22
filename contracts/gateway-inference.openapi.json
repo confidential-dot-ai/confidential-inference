@@ -73,11 +73,11 @@
       "get": {
         "operationId": "getReady",
         "tags": ["health"],
-        "summary": "Report whether the gateway can serve its local API routes",
-        "description": "When the gateway state store failed to open, the gateway runs in outage-only mode and reports 503. Otherwise it reports 200 without calling the inference upstream. Inference availability does not control gateway readiness (services/gateway/src/lib.rs, `ready`).",
+        "summary": "Report whether the gateway holds a key snapshot",
+        "description": "The gateway reports 503 until it has applied its first key snapshot from the admin, then 200. It does not call the inference upstream. Inference availability does not control gateway readiness (services/gateway/src/lib.rs, `ready`).",
         "responses": {
           "200": {
-            "description": "The gateway can serve its local API routes.",
+            "description": "The gateway holds a key snapshot.",
             "content": {
               "application/json": {
                 "schema": {
@@ -91,16 +91,16 @@
             }
           },
           "503": {
-            "description": "The gateway runs in outage-only mode (`status: outage_only`).",
+            "description": "The gateway holds no key snapshot yet (`status: key_registry_not_ready`).",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "additionalProperties": false,
                   "required": ["status"],
-                  "properties": {"status": {"const": "outage_only"}}
+                  "properties": {"status": {"const": "key_registry_not_ready"}}
                 },
-                "example": {"status": "outage_only"}
+                "example": {"status": "key_registry_not_ready"}
               }
             }
           }
@@ -670,11 +670,11 @@
         }
       },
       "InferenceCapacity": {
-        "description": "The gateway rejected the request because a concurrency, queue, or per-key limit was full (`inference_capacity`), or because the gateway state store is unavailable and the gateway runs in outage-only mode (`gateway_state_unavailable`, `Retry-After: 30`).",
+        "description": "The gateway rejected the request because a concurrency, queue, or per-key limit was full (`inference_capacity`), or because the usage configuration does not name the requested model (`usage_capacity`).",
         "headers": {
           "Retry-After": {
-            "description": "1 second for `inference_capacity`; 30 seconds for `gateway_state_unavailable`.",
-            "schema": {"type": "string"}
+            "description": "The number of seconds to wait before a retry.",
+            "schema": {"const": "1"}
           }
         },
         "content": {
@@ -682,23 +682,26 @@
             "schema": {"$ref": "#/components/schemas/GatewayError"},
             "examples": {
               "inferenceCapacity": {"value": {"error": {"code": "inference_capacity", "message": "Too Many Requests"}}},
-              "gatewayUnavailable": {"value": {"error": {"code": "gateway_state_unavailable", "message": "Inference is temporarily unavailable."}}}
+              "usageCapacity": {"value": {"error": {"code": "usage_capacity", "message": "Too Many Requests"}}}
             }
           }
         }
       },
       "InferenceUnavailable": {
-        "description": "The gateway could not reach the inference router, or the router reported that inference was unavailable.",
+        "description": "The gateway could not reach the inference router, or the router reported that inference was unavailable (`inference_unavailable`, `Retry-After: 30`). A gateway that has not yet applied its first key snapshot from the admin answers `key_registry_not_ready` without `Retry-After`.",
         "headers": {
           "Retry-After": {
-            "description": "The number of seconds to wait before a retry.",
+            "description": "The number of seconds to wait before a retry. Sent with `inference_unavailable`.",
             "schema": {"const": "30"}
           }
         },
         "content": {
           "application/json": {
             "schema": {"$ref": "#/components/schemas/GatewayError"},
-            "example": {"error": {"code": "inference_unavailable", "message": "Inference is temporarily unavailable."}}
+            "examples": {
+              "inferenceUnavailable": {"value": {"error": {"code": "inference_unavailable", "message": "Inference is temporarily unavailable."}}},
+              "keyRegistryNotReady": {"value": {"error": {"code": "key_registry_not_ready", "message": "Service Unavailable"}}}
+            }
           }
         }
       },
