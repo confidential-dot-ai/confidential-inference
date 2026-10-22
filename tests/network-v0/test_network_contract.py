@@ -75,7 +75,8 @@ class NetworkContractTests(unittest.TestCase):
 
     def test_gateway_ingress_accepts_the_front_door_and_metrics_only(self) -> None:
         ingress = named(self.documents, "NetworkPolicy", "gateway-ingress")["spec"]["ingress"]
-        self.assertEqual(ingress[0]["ports"], [{"protocol": "TCP", "port": 9443}])
+        # 9444 is the gateway's mesh-certificate TLS listener (#172).
+        self.assertEqual(ingress[0]["ports"], [{"protocol": "TCP", "port": 9443}, {"protocol": "TCP", "port": 9444}])
         self.assertEqual(
             ingress[0]["from"][0]["podSelector"]["matchLabels"],
             {"app.kubernetes.io/name": "tls-lb"},
