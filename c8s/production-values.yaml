@@ -58,14 +58,6 @@ gateway:
   terminationGracePeriodSeconds: 960
   c8sSecrets:
     apiKeyPepper: {name: GATEWAY_API_KEY_PEPPER, sourcePath: /confidential-inference/gateway/api-key-pepper}
-  state:
-    enabled: true
-    absencePolicy: fail-closed
-    startupTimeoutSeconds: 300
-    volumeName: gwstate
-    c8sVolumeSource: /confidential-inference/volumes/gwstate
-    volumeDirectory: /mnt/c8s-data
-    databasePath: /mnt/c8s-data/gwstate/gateway.sqlite3
 
 inference:
   enabled: true

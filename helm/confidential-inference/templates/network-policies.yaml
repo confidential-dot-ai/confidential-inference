@@ -99,14 +99,13 @@ spec:
       app.kubernetes.io/component: gateway
   policyTypes: [Egress]
   egress:
-    {{- if .Values.gateway.usage.enabled }}
-    {{- range .Values.gateway.usage.destinationCidrs }}
+    # The admin: key snapshot pull and usage events.
+    {{- range .Values.gateway.admin.destinationCidrs }}
     - to:
         - ipBlock:
             cidr: {{ . | quote }}
       ports:
-        - {protocol: TCP, port: {{ $.Values.gateway.usage.destinationPort }}}
-    {{- end }}
+        - {protocol: TCP, port: {{ $.Values.gateway.admin.destinationPort }}}
     {{- end }}
     - to:
         - podSelector:

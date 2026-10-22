@@ -18,8 +18,8 @@ use confidential_gateway::{
         AdminRequestVerifier, MAX_API_KEY_HASHES_BYTES, MAX_CERTIFICATE_BYTES,
         require_signed_admin_request,
     },
-    api_keys::{GatewayState, StateError, admin_router},
-    key_registry::KeyRegistryMode,
+    admin_client::{self, AdminClient},
+    api_keys::{KeyStore, admin_router},
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
     router_with_runtime_and_usage,
@@ -32,12 +32,21 @@ use hyper_util::rt::{TokioExecutor, TokioTimer};
 // workload-proxy client owns this loopback port and provides the authenticated
 // hop to the named router workload.
 const INFERENCE_UPSTREAM_URL: &str = "http://127.0.0.1:30001";
+// Inside the termination grace the chart leaves after the HTTP drain.
+const USAGE_FLUSH_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Parser, Debug)]
 #[command(name = "confidential-gateway")]
 struct Args {
-    #[arg(long, env = "GATEWAY_USAGE_CONFIG_FILE")]
-    usage_config_file: Option<PathBuf>,
+    // The admin client configuration: a CDS secret (`crate::admin_client`).
+    #[arg(
+        long,
+        env = "GATEWAY_ADMIN_CONFIG_FILE",
+        default_value = "/run/c8s/secrets/product-usage"
+    )]
+    admin_config_file: PathBuf,
+    #[arg(long, env = "GATEWAY_USAGE_ENABLED", default_value_t = false)]
+    usage_enabled: bool,
     #[arg(long, env = "GATEWAY_ROUTER_NAMESPACE")]
     router_namespace: Option<String>,
     #[arg(long, env = "GATEWAY_RELEASE_SELECTION_FILE")]
@@ -131,47 +140,13 @@ struct Args {
     environment: String,
     #[arg(
         long,
-        env = "GATEWAY_STATE_DATABASE",
-        default_value = "/var/lib/confidential-gateway/gateway.sqlite3"
-    )]
-    state_database: PathBuf,
-    #[arg(
-        long,
-        env = "GATEWAY_STATE_ABSENCE_POLICY",
-        default_value = "fail-closed"
-    )]
-    state_absence_policy: String,
-    #[arg(long, env = "GATEWAY_STATE_ENABLED", default_value_t = false)]
-    state_enabled: bool,
-    // The serial the state-volume marker must name. Compiled as a constant
-    // for every deployment to date; confai-attached disks get their serials
-    // from the volume name (c8s-vol-<name>), so those clusters set this.
-    #[arg(
-        long,
-        env = "GATEWAY_STATE_DISK_SERIAL",
-        default_value = "confai-gateway-state"
-    )]
-    state_disk_serial: String,
-    // Where the state lives. "disk" is the legacy host disk with a root-owned
-    // marker. "c8s" is a c8s mutable encrypted volume that c8s volumed mounts
-    // after the pod starts.
-    #[arg(long, env = "GATEWAY_STATE_VOLUME", default_value = "disk")]
-    state_volume: String,
-    // The c8s volume name. Used only when GATEWAY_STATE_VOLUME is "c8s".
-    #[arg(long, env = "GATEWAY_STATE_VOLUME_NAME", default_value = "gwstate")]
-    state_volume_name: String,
-    #[arg(
-        long,
         env = "GATEWAY_API_KEY_PEPPER_FILE",
         default_value = "/run/c8s/secrets/GATEWAY_API_KEY_PEPPER"
     )]
     api_key_pepper_file: PathBuf,
-    #[arg(
-        long,
-        env = "GATEWAY_STATE_STARTUP_TIMEOUT_SECONDS",
-        default_value_t = 60
-    )]
-    state_startup_timeout_seconds: u64,
+    // c8s writes the secrets after the container starts.
+    #[arg(long, env = "GATEWAY_SECRET_WAIT_SECONDS", default_value_t = 300)]
+    secret_wait_seconds: u64,
     #[arg(
         long,
         env = "GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE",
@@ -237,14 +212,6 @@ struct Args {
     endpoint_drain_seconds: u64,
     #[arg(long, env = "GATEWAY_TRUSTED_PROXY_CIDRS", value_delimiter = ',')]
     trusted_proxy_cidrs: Vec<ipnet::IpNet>,
-    /// How the gateway answers an API key check. `local` reads the
-    /// `api_keys` table alone. `dual` reads that table first, then the
-    /// pushed snapshot. `registry` reads the pushed snapshot alone and
-    /// disables the local mint. The admin VM pushes every snapshot; the
-    /// gateway never calls the admin VM, so this needs no URL and no
-    /// token.
-    #[arg(long, env = "GATEWAY_KEY_REGISTRY_MODE", default_value = "local")]
-    key_registry_mode: KeyRegistryMode,
 }
 
 #[tokio::main]
@@ -324,47 +291,26 @@ async fn main() -> Result<()> {
     });
     tracing::info!("gateway configuration validated");
 
-    let gateway_state = if args.state_enabled {
-        let state_result = (|| -> Result<GatewayState> {
-            let pepper = wait_for_bounded_file(
-                &args.api_key_pepper_file,
-                4_096,
-                Duration::from_secs(args.state_startup_timeout_seconds),
-            )?;
-            if args.state_volume == "c8s" {
-                open_c8s_state(
-                    &args.state_database,
-                    &pepper,
-                    &args.state_volume_name,
-                    Duration::from_secs(args.state_startup_timeout_seconds),
-                )
-            } else {
-                GatewayState::open_persistent(
-                    &args.state_database,
-                    pepper,
-                    &args.environment,
-                    &args.state_disk_serial,
-                )
-                .map_err(anyhow::Error::from)
-            }
-        })();
-        match state_result {
-            Ok(state) => state,
-            Err(error) => {
-                tracing::error!(error = %error, "the gateway entered outage-only mode");
-                GatewayState::outage_only().context("create the outage-only gateway state")?
-            }
-        }
-    } else {
-        tracing::warn!("the gateway state feature is disabled; the gateway uses outage-only mode");
-        GatewayState::outage_only().context("create the outage-only gateway state")?
-    };
-    let availability = gateway_state.availability_handle();
+    let secret_wait = Duration::from_secs(args.secret_wait_seconds);
     let metrics = Arc::new(GatewayMetrics::new(args.environment.clone()));
-    let gateway_state = gateway_state
-        .with_mode(args.key_registry_mode)
-        .with_environment(&args.environment)
-        .with_metrics(metrics.clone());
+    let pepper = wait_for_bounded_file(&args.api_key_pepper_file, 4_096, secret_wait)?;
+    let keys = Arc::new(
+        KeyStore::new(pepper, &args.environment)
+            .map_err(|_| anyhow::anyhow!("the API key pepper must be at least 32 bytes"))?
+            .with_metrics(metrics.clone()),
+    );
+    let admin_config: admin_client::Config = serde_json::from_slice(&wait_for_bounded_file(
+        &args.admin_config_file,
+        65_536,
+        secret_wait,
+    )?)
+    .context("invalid admin client configuration")?;
+    let admin = Arc::new(AdminClient::new(&admin_config).map_err(anyhow::Error::msg)?);
+    tokio::spawn(admin_client::sync_keys(
+        admin.clone(),
+        keys.clone(),
+        metrics.clone(),
+    ));
     let timeout = Duration::from_secs(args.upstream_timeout_seconds);
     let http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -385,27 +331,18 @@ async fn main() -> Result<()> {
     let protection = protection_config(&args);
     let inference_model_id = args.model;
     let catalog_model_ids = vec![inference_model_id.clone()];
-    let usage = if let Some(path) = &args.usage_config_file {
-        if !args.state_enabled || !gateway_state.is_available() {
-            bail!("usage requires durable gateway state");
-        }
-        let config: confidential_gateway::usage::Config =
-            serde_json::from_slice(&read_bounded(path, 65_536)?)
-                .context("invalid usage configuration")?;
-        if config.environment != args.environment {
-            bail!("usage environment differs from gateway environment");
-        }
-        let path = args
-            .state_database
-            .parent()
-            .context("usage storage needs a state directory")?
-            .join("usage.sqlite3");
-        let recorder = confidential_gateway::usage::Recorder::open(&path, config)?;
-        recorder.spawn();
-        Some(recorder)
-    } else {
-        None
-    };
+    let usage = args.usage_enabled.then(|| {
+        // Each process is one producer instance; the pod hostname is fixed.
+        let instance = format!("gateway-{}", uuid::Uuid::new_v4().simple());
+        let recorder = confidential_gateway::usage::Recorder::new(
+            &instance,
+            admin_config.models.clone(),
+            confidential_gateway::usage::MAX_PENDING_EVENTS,
+            metrics.clone(),
+        );
+        tokio::spawn(recorder.clone().deliver(admin.clone()));
+        recorder
+    });
     let public = router_with_runtime_and_usage(
         GatewayConfig {
             catalog_model_ids,
@@ -415,10 +352,9 @@ async fn main() -> Result<()> {
             upstream_timeout: timeout,
             protection,
         },
-        Arc::new(gateway_state.clone()),
+        keys.clone(),
         Arc::new(TracingAuditSink),
         metrics.clone(),
-        availability,
         attestation,
         http,
         runtime.clone(),
@@ -444,29 +380,16 @@ async fn main() -> Result<()> {
     } else {
         tracing::info!("no admin API key file; admin requests need the v1 signature");
     }
-    let mut admin = admin_router(gateway_state);
-    if let Some(usage) = &usage {
-        admin = admin.merge(confidential_gateway::usage::admin_router(usage.clone()));
-    }
-    let admin = admin.layer(middleware::from_fn_with_state(
+    let admin_routes = admin_router(keys).layer(middleware::from_fn_with_state(
         admin_verifier,
         require_signed_admin_request,
     ));
-    let app = public.merge(admin);
+    let app = public.merge(admin_routes);
 
     let metrics_listener = tokio::net::TcpListener::bind(args.metrics_listen)
         .await
         .context("bind the private metrics listener")?;
     let mut private = metrics_router(metrics);
-    if let Some(usage) = usage {
-        private = private.route(
-            "/usage-status",
-            axum::routing::get(move || {
-                let usage = usage.clone();
-                async move { axum::Json(usage.status()) }
-            }),
-        );
-    }
     if let Some(releases) = releases {
         private = private.route(
             "/release-config",
@@ -515,7 +438,12 @@ async fn main() -> Result<()> {
     public_server
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await
-        .context("serve the public gateway")
+        .context("serve the public gateway")?;
+    // Every request has finished, so every usage event is queued.
+    if let Some(usage) = usage {
+        usage.flush(&admin, USAGE_FLUSH_TIMEOUT).await;
+    }
+    Ok(())
 }
 
 /// HTTP limits of the public listener.
@@ -858,14 +786,8 @@ fn validate_args(args: &Args) -> Result<()> {
     {
         bail!("the public protection limits are outside the safe range");
     }
-    if args.state_absence_policy != "fail-closed" {
-        bail!("GATEWAY_STATE_ABSENCE_POLICY must be fail-closed");
-    }
-    if !(1..=600).contains(&args.state_startup_timeout_seconds) {
-        bail!("GATEWAY_STATE_STARTUP_TIMEOUT_SECONDS is outside the safe range");
-    }
-    if args.state_volume != "disk" && args.state_volume != "c8s" {
-        bail!("GATEWAY_STATE_VOLUME must be disk or c8s");
+    if !(1..=600).contains(&args.secret_wait_seconds) {
+        bail!("GATEWAY_SECRET_WAIT_SECONDS is outside the safe range");
     }
     if args.attestation_timeout_seconds == 0
         || args.attestation_timeout_seconds > 120
@@ -1003,26 +925,6 @@ fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-// c8s volumed mounts the volume after the pod starts, so the first attempts can
-// see the bare emptyDir. Only a missing mount is retried; any other failure,
-// such as a corrupt database, stops at once.
-fn open_c8s_state(
-    database: &Path,
-    pepper: &[u8],
-    volume_name: &str,
-    timeout: Duration,
-) -> Result<GatewayState> {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match GatewayState::open_c8s_volume(database, pepper.to_vec(), volume_name) {
-            Err(StateError::Mount) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_secs(1));
-            }
-            result => return result.map_err(anyhow::Error::from),
-        }
-    }
-}
-
 // The probe follows symlinks, so a kubelet symlink whose target does not exist
 // yet is retried like a missing file.
 fn wait_for_bounded_file(path: &Path, limit: usize, timeout: Duration) -> Result<Vec<u8>> {
@@ -1122,7 +1024,8 @@ mod tests {
 
     fn args() -> Args {
         Args {
-            usage_config_file: None,
+            admin_config_file: PathBuf::from("/run/c8s/secrets/product-usage"),
+            usage_enabled: false,
             router_namespace: None,
             release_selection_file: None,
             runtime_config_file: None,
@@ -1150,17 +1053,9 @@ mod tests {
             attestation_timeout_seconds: 30,
             attestation_maximum_evidence_bytes: 1_048_576,
             environment: "production".to_owned(),
-            state_database: PathBuf::from("/var/lib/confidential-gateway/gateway.sqlite3"),
-            state_disk_serial: "confai-gateway-state".to_owned(),
-            state_volume: "disk".to_owned(),
-            state_volume_name: "gwstate".to_owned(),
-            state_absence_policy: "fail-closed".to_owned(),
-            state_enabled: false,
             api_key_pepper_file: PathBuf::from("/run/c8s/secrets/GATEWAY_API_KEY_PEPPER"),
-            state_startup_timeout_seconds: 60,
-            admin_signer_certificate_file: PathBuf::from(
-                "/mnt/c8s-data/admin-auth/client.crt",
-            ),
+            secret_wait_seconds: 300,
+            admin_signer_certificate_file: PathBuf::from("/mnt/c8s-data/admin-auth/client.crt"),
             admin_api_key_hashes_file: PathBuf::from("/mnt/c8s-data/admin-api-key/sha256"),
             maximum_body_bytes: 2_097_152,
             upstream_timeout_seconds: 900,
@@ -1181,7 +1076,6 @@ mod tests {
             shutdown_grace_seconds: 900,
             endpoint_drain_seconds: 35,
             trusted_proxy_cidrs: Vec::new(),
-            key_registry_mode: KeyRegistryMode::Local,
         }
     }
 
@@ -1234,33 +1128,18 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_state_and_attestation_configuration_fail() {
+    fn unsafe_secret_wait_and_attestation_configuration_fail() {
         let mut value = args();
-        value.state_absence_policy = "create-empty".to_owned();
+        value.secret_wait_seconds = 0;
         assert!(validate_args(&value).is_err());
-        value.state_absence_policy = "fail-closed".to_owned();
+        value.secret_wait_seconds = 300;
         value.attestation_timeout_seconds = 0;
         assert!(validate_args(&value).is_err());
     }
 
     #[test]
-    fn every_key_registry_mode_needs_no_extra_configuration() {
-        // The admin VM pushes each snapshot over the signed admin channel,
-        // so no mode needs a registry URL, a token file or a poll interval.
-        for mode in [
-            KeyRegistryMode::Local,
-            KeyRegistryMode::Dual,
-            KeyRegistryMode::Registry,
-        ] {
-            let mut value = args();
-            value.key_registry_mode = mode;
-            assert!(validate_args(&value).is_ok());
-        }
-    }
-
-    #[test]
-    fn absent_state_inputs_fail_closed() {
-        let missing = PathBuf::from("/definitely-absent/confidential-gateway/state");
+    fn absent_mounted_inputs_fail_closed() {
+        let missing = PathBuf::from("/definitely-absent/confidential-gateway/pepper");
         assert!(read_bounded(&missing, 4_096).is_err());
     }
 

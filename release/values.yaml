@@ -81,25 +81,13 @@ gateway:
       secretName: gateway-admin-mtls           # changed: no target name in the release
   service:
     type: ClusterIP
-  keyRegistry:
-    mode: dual                                 # a new gateway starts with no keys
   shutdownGraceSeconds: 900
   endpointDrainSeconds: 35
   terminationGracePeriodSeconds: 960
   c8sSecrets:
     apiKeyPepper: {name: GATEWAY_API_KEY_PEPPER, sourcePath: /confidential-inference/gateway/api-key-pepper}
-  # changed: the state disk is a c8s mutable encrypted volume, gwstate, on
-  # the control-plane CVM. The admin VM holds the real key records. The name
-  # is stable per deployment, so an upgrade or rollback reopens the same key
-  # database. c8s opens it for one pod, so the gateway rolls with Recreate.
-  state:
-    enabled: true
-    absencePolicy: fail-closed
-    startupTimeoutSeconds: 300
-    volumeName: gwstate
-    c8sVolumeSource: /confidential-inference/volumes/gwstate
-    volumeDirectory: /mnt/c8s-data
-    databasePath: /mnt/c8s-data/gwstate/gateway.sqlite3
+  # changed: no state. The gateway pulls its keys from the admin; the
+  # deployment sets gateway.admin (egress) in its own values.
 
 inference:
   enabled: true
@@ -193,18 +181,8 @@ workloadOverrides:
               value: 10.52.0.0/16
             - name: GATEWAY_RELEASE_IDENTITY_FILE
               value: /mnt/c8s-data/release-identity/..data/release-identity.json
-            - name: GATEWAY_STATE_DATABASE
-              value: '{{ .Values.gateway.state.databasePath }}'
-            - name: GATEWAY_STATE_ABSENCE_POLICY
-              value: fail-closed
-            - name: GATEWAY_STATE_VOLUME
-              value: c8s
-            - name: GATEWAY_STATE_VOLUME_NAME
-              value: '{{ .Values.gateway.state.volumeName }}'
-            - name: GATEWAY_STATE_STARTUP_TIMEOUT_SECONDS
-              value: '300'
-            - name: GATEWAY_STATE_ENABLED
-              value: 'true'
+            - name: GATEWAY_ADMIN_CONFIG_FILE
+              value: /run/c8s/secrets/product-usage
             - name: GATEWAY_API_KEY_PEPPER_FILE
               value: /run/c8s/secrets/GATEWAY_API_KEY_PEPPER
             - name: GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE
@@ -215,8 +193,6 @@ workloadOverrides:
               value: production
             - name: GATEWAY_METRICS_API_KEY_LABEL_ALLOWLIST
               value: unassigned
-            - name: GATEWAY_KEY_REGISTRY_MODE
-              value: registry
             - name: GATEWAY_INSTANCE_ID
               value: gateway
             - name: GATEWAY_C8S_CDS_URL

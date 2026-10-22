@@ -28,7 +28,6 @@ notify = "8.2.0"
 prometheus = { version = "0.14.0", default-features = false }
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "stream", "rustls"] }
 ring = "0.17.14"
-rusqlite = { version = "0.38.0", features = ["bundled"] }
 rustls = "0.23.37"
 rustls-pemfile = "2.2.0"
 serde = { version = "1.0.228", features = ["derive"] }

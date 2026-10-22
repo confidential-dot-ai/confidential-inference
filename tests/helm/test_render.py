@@ -159,13 +159,16 @@ def main() -> None:
         '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
         '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
         '--set', 'attestationReceipts.releaseId=v0.14.18')) if item]
-    # One gateway workload and state volume per deployment: a release change
-    # replaces the pod (Recreate) and reopens the same key database.
+    # The gateway keeps no state: it rolls with one extra pod, and c8s gives
+    # it the pepper and the admin client configuration, no volume.
     gateway = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'gateway')
-    assert gateway['spec']['strategy'] == {'type': 'Recreate'}
+    assert gateway['spec']['strategy'] == {'type': 'RollingUpdate', 'rollingUpdate': {'maxUnavailable': 0, 'maxSurge': 1}}
     gateway_annotations = gateway['spec']['template']['metadata']['annotations']
     assert gateway_annotations['confidential.ai/cw'] == 'gateway'
-    assert gateway_annotations['confidential.ai/c8s-volumes'] == 'gwstate=/confidential-inference/volumes/gwstate'
+    assert gateway_annotations['confidential.ai/c8s-secrets'] == (
+        'GATEWAY_API_KEY_PEPPER=/confidential-inference/gateway/api-key-pepper,'
+        'product-usage=/confidential-inference/gateway/product-usage')
+    assert not any(name.startswith('confidential.ai/c8s-volume') for name in gateway_annotations)
     main_container = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'gateway')
     gateway_environment = {item['name']: item['value'] for item in main_container['env']}
     for name in ('GATEWAY_C8S_IMAGE_POLICY_SHA256', 'GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256',
@@ -192,8 +195,8 @@ def main() -> None:
         pinned_gateway = next(item for item in pinned if item['kind'] == 'Deployment'
                               and item['metadata']['name'] == gateway['metadata']['name'])
         assert pinned_gateway['spec']['template'] == gateway['spec']['template']
-    assert gateway_environment['GATEWAY_STATE_VOLUME_NAME'] == 'gwstate'
-    assert gateway_environment['GATEWAY_STATE_DATABASE'] == '/mnt/c8s-data/gwstate/gateway.sqlite3'
+    assert gateway_environment['GATEWAY_ADMIN_CONFIG_FILE'] == '/run/c8s/secrets/product-usage'
+    assert not any(name.startswith('GATEWAY_STATE_') for name in gateway_environment)
     assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://router-v0-14-18.confidential-inference.svc.cluster.local:30000'
     service = next(d for d in production if d['kind'] == 'Service' and d['metadata']['name'] == 'router-v0-14-18')
     router = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'router-v0-14-18')
@@ -311,34 +314,15 @@ def main() -> None:
     rendered = yaml.safe_dump_all(documents)
     assert "nvidia.com/gpu" not in rendered
 
-    # The gateway state is a c8s mutable encrypted volume. The chart creates
-    # no host storage, no cluster-scoped storage objects, and no admission
-    # policy for it.
-    stateful = render("--namespace", "inference", "--set", "gateway.state.enabled=true")
-    assert not {
-        "PersistentVolume", "PersistentVolumeClaim", "StorageClass",
-        "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding",
-    } & {item["kind"] for item in stateful}
-    assert not any(item["kind"] == "DaemonSet" and "state" in item["metadata"]["name"] for item in stateful)
-    stateful_gateway = Gateway(stateful)
-    assert stateful_gateway.deployment["spec"]["strategy"] == {"type": "Recreate"}
-    annotations = stateful_gateway.deployment["spec"]["template"]["metadata"]["annotations"]
-    assert annotations["confidential.ai/c8s-volumes"] == "gwstate=/confidential-inference/volumes/gwstate"
-    assert annotations["confidential.ai/c8s-volume-dir"] == "/mnt/c8s-data"
-    stateful_env = stateful_gateway.env
-    assert stateful_env["GATEWAY_STATE_VOLUME"] == "c8s"
-    assert stateful_env["GATEWAY_STATE_VOLUME_NAME"] == "gwstate"
-    assert stateful_env["GATEWAY_STATE_DATABASE"] == "/mnt/c8s-data/gwstate/gateway.sqlite3"
-    assert not any(
-        "persistentVolumeClaim" in volume
-        for volume in stateful_gateway.deployment["spec"]["template"]["spec"]["volumes"]
-    )
-    helm(
-        "template", "example", str(CHART), *NEUTRAL_MODE,
-        "--set", "gateway.state.enabled=true",
-        "--set", "gateway.state.databasePath=/mnt/c8s-data/other/gateway.sqlite3",
-        success=False,
-    )
+    # The gateway reaches the admin only on the configured egress, and sends
+    # usage only when usage is enabled.
+    with_admin = render("--namespace", "inference", "--set", "gateway.usage.enabled=true",
+                        "--set", "gateway.admin.destinationCidrs={192.0.2.10/32}")
+    assert Gateway(with_admin).env["GATEWAY_USAGE_ENABLED"] == "true"
+    egress = next(item for item in with_admin if item["kind"] == "NetworkPolicy"
+                  and item["metadata"]["name"] == "gateway-to-router")["spec"]["egress"]
+    assert {"to": [{"ipBlock": {"cidr": "192.0.2.10/32"}}], "ports": [{"protocol": "TCP", "port": 443}]} in egress
+    assert "GATEWAY_USAGE_ENABLED" not in Gateway(render("--namespace", "inference")).env
     helm(
         "lint", str(CHART), *NEUTRAL_MODE, "--set-string",
         "images.gateway=example.invalid/gateway:latest", success=False,

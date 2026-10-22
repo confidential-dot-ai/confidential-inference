@@ -177,7 +177,7 @@
     },
     "gateway": {
       "type": "object",
-      "required": ["attestedWorkload", "shutdownGraceSeconds", "endpointDrainSeconds", "terminationGracePeriodSeconds", "service", "containerPorts", "protection", "c8sSecrets", "secrets", "state", "keyRegistry"],
+      "required": ["attestedWorkload", "shutdownGraceSeconds", "endpointDrainSeconds", "terminationGracePeriodSeconds", "service", "containerPorts", "protection", "c8sSecrets", "secrets", "admin"],
       "properties": {
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
         "shutdownGraceSeconds": {"type": "integer", "minimum": 1},
@@ -203,7 +203,7 @@
         "c8sSecrets": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["apiKeyPepper"],
+          "required": ["apiKeyPepper", "adminConfig"],
           "properties": {
             "apiKeyPepper": {
               "type": "object",
@@ -212,6 +212,15 @@
               "properties": {
                 "name": {"const": "GATEWAY_API_KEY_PEPPER"},
                 "sourcePath": {"const": "/confidential-inference/gateway/api-key-pepper"}
+              }
+            },
+            "adminConfig": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "sourcePath"],
+              "properties": {
+                "name": {"const": "product-usage"},
+                "sourcePath": {"const": "/confidential-inference/gateway/product-usage"}
               }
             }
           }
@@ -264,26 +273,21 @@
             }
           }
         },
-        "state": {
+        "admin": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "absencePolicy", "startupTimeoutSeconds", "volumeName", "c8sVolumeSource", "volumeDirectory", "databasePath"],
+          "required": ["destinationPort", "destinationCidrs"],
           "properties": {
-            "enabled": {"type": "boolean"},
-            "absencePolicy": {"const": "fail-closed"},
-            "startupTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 600},
-            "volumeName": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]{0,10}[a-z0-9])?$"},
-            "c8sVolumeSource": {"type": "string", "pattern": "^/confidential-inference/volumes/[a-z0-9]([-a-z0-9]{0,10}[a-z0-9])?$"},
-            "volumeDirectory": {"const": "/mnt/c8s-data"},
-            "databasePath": {"type": "string", "pattern": "^/mnt/c8s-data/[a-z0-9-]{1,12}/gateway\\.sqlite3$"}
+            "destinationPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "destinationCidrs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$"}}
           }
         },
-        "keyRegistry": {
+        "usage": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["mode"],
+          "required": ["enabled"],
           "properties": {
-            "mode": {"enum": ["local", "dual", "registry"]}
+            "enabled": {"type": "boolean"}
           }
         }
       }

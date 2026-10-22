@@ -118,11 +118,19 @@ gateway:
     apiKeyPepper:
       name: GATEWAY_API_KEY_PEPPER
       sourcePath: /confidential-inference/gateway/api-key-pepper
-  usage:
-    enabled: false
-    destinationPort: 9443
-    # Private configuration and sender credentials come from CDS memory.
+    # The admin client configuration (JSON: endpoint, token, optional
+    # tls_ca_pem, connect_address, models). The gateway pulls its API keys
+    # from the admin and sends usage events there. services/gateway/src/admin_client.rs.
+    adminConfig:
+      name: product-usage
+      sourcePath: /confidential-inference/gateway/product-usage
+  # The gateway's egress to the admin (key pull and usage events).
+  admin:
+    destinationPort: 443
     destinationCidrs: []
+  usage:
+    # Send one usage event per request to the admin.
+    enabled: false
   protection:
     maximumHeaders: 64
     maximumHeaderBytes: 16384
@@ -151,35 +159,6 @@ gateway:
     # two, under the Secret key `sha256`.
     adminApiKey:
       secretName: gateway-admin-api-key
-  state:
-    # The gateway keeps its API-key state on a c8s mutable encrypted volume.
-    # Build the volume with `c8s volume create --mutable --name <volumeName>`,
-    # seeded from an empty directory owned by 65532:65532 with mode 2770, so
-    # the non-root gateway can write at the volume root. The host cannot read
-    # the volume, but it can roll it back; the admin VM holds the real records.
-    enabled: false
-    absencePolicy: fail-closed
-    # The volume mounts after the pod starts. The gateway waits this long.
-    startupTimeoutSeconds: 300
-    volumeName: gwstate
-    c8sVolumeSource: /confidential-inference/volumes/gwstate
-    volumeDirectory: /mnt/c8s-data
-    databasePath: /mnt/c8s-data/gwstate/gateway.sqlite3
-  keyRegistry:
-    # How the gateway answers an API key check.
-    #
-    # "local" keeps today's behaviour: the gateway answers from its own
-    # `api_keys` table alone, and the gateway mints every key.
-    # "dual" checks the `api_keys` table first, then the snapshot the
-    # admin VM pushed. Use it for the production migration.
-    # "registry" answers from the pushed snapshot alone and disables the
-    # local mint. A gateway in this mode that holds no snapshot yet
-    # answers 503 `key_registry_not_ready`.
-    #
-    # The admin VM pushes every snapshot over the existing signed admin
-    # channel, so no mode needs a URL, a token or a poll interval. The
-    # default keeps today's deployment unchanged.
-    mode: local
 
 inference:
   enabled: true

@@ -86,14 +86,6 @@ gateway:
     inferenceQueue: 0
     queueTimeoutSeconds: 2
     perKeyConcurrency: 128
-  state:
-    enabled: true
-    absencePolicy: fail-closed
-    startupTimeoutSeconds: 300
-    volumeName: gwstate
-    c8sVolumeSource: /confidential-inference/volumes/gwstate
-    volumeDirectory: /mnt/c8s-data
-    databasePath: /mnt/c8s-data/gwstate/gateway.sqlite3
 inference:
   enabled: true
   mode: simulator
