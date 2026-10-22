@@ -61,11 +61,19 @@ inference:
     maxRunningRequests: 48
     chatTemplate: chatml
 
+# Staging sends metrics to Azure Managed Prometheus (OAuth 2.0 client
+# credentials) and logs to the admin-next Loki (basic auth). The auth types
+# are release values (the log collector's environment); the deployment sets
+# the URLs, the egress CIDRs and the credentials.
 telemetry:
-  enabled: false
+  enabled: true
+  metricsAuth:
+    type: oauth2
+  logsAuth:
+    type: basic
 
 logCollector:
-  enabled: false
+  enabled: true
 
 images:
   c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:97f6f5ac2e35cd635787ec95aaad842c321eb8c0f6df5a63de34c574ddae2d6e

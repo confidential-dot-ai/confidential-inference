@@ -495,11 +495,7 @@
         "clientId": {"type": "string"},
         "tokenUrl": {"type": "string", "pattern": "^(|https://[^/?#]+/[^#]*)$"},
         "scopes": {"type": "array", "items": {"type": "string"}}
-      },
-      "allOf": [
-        {"if": {"properties": {"type": {"const": "basic"}}}, "then": {"properties": {"username": {"minLength": 1}}}},
-        {"if": {"properties": {"type": {"const": "oauth2"}}}, "then": {"properties": {"clientId": {"minLength": 1}, "tokenUrl": {"minLength": 1}}}}
-      ]
+      }
     },
     "tdxMeasurementOrEmpty": {"type": "string", "pattern": "^(|[0-9a-f]{96})$"},
     "workloadPolicyName": {

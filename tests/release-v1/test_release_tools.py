@@ -51,10 +51,12 @@ FIXTURES = ROOT / "tests/release-v1/fixtures"
 OVERLAY = FIXTURES / "release-values.yaml"
 STAGING_ALLOWLIST = FIXTURES / "staging-allowlist.json"
 REPOSITORY_CONFIGS = json.loads((FIXTURES / "repository-image-config.json").read_text())
-# Packaging tests use a placeholder collector digest. Runtime generation is
-# verified separately with the registry configuration of the approved image.
+# Packaging tests use a placeholder collector digest with the image's
+# ENTRYPOINT and CMD (images/log-collector/Dockerfile).
 REPOSITORY_CONFIGS['ghcr.io/confidential-dot-ai/confidential-inference/log-collector@sha256:' + '2' * 64] = {
-    'env': [], 'entrypoint': [], 'cmd': []}
+    'env': [], 'entrypoint': ['/bin/alloy'],
+    'cmd': ['run', '/etc/alloy/config.alloy', '--storage.path=/tmp/alloy',
+            '--server.http.listen-addr=127.0.0.1:12345', '--server.http.enable-pprof=false', '--disable-reporting']}
 RELEASE_IMAGES = yaml.safe_load(OVERLAY.read_text())["images"]
 # The rollout client uses the same pinned Python base as the router fixture.
 # Its program is signed in chart argv; this synthetic digest tests packaging.
