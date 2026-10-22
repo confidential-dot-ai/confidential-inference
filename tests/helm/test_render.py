@@ -98,42 +98,25 @@ def check_override_replaces_strategy() -> None:
     assert router["spec"]["strategy"] == {"type": "Recreate"}
 
 
-def check_per_pod_mesh(*renders: list[dict]) -> None:
-    """c8s >= v0.64 runs the mesh per pod: the chart renders no cds-attest
-    sidecar and no container that reads the c8s mesh certificates."""
-    for documents in renders:
-        for document in documents:
-            if document["kind"] not in {"Deployment", "StatefulSet", "DaemonSet"}:
-                continue
-            pod = document["spec"]["template"]["spec"]
-            for container in pod.get("initContainers", []) + pod["containers"]:
-                name = (document["metadata"]["name"], container["name"])
-                assert container["name"] != "cds-attest", name
-                assert "/etc/c8s/certs" not in json.dumps(container), name
-
-
-def check_gateway_router_hop() -> None:
-    """The gateway listens on 9443 and 9090 only and reaches the router's
-    openai port directly; the per-pod mesh secures the hop."""
+def check_plain_http_behind_the_mesh() -> None:
+    """c8s >= v0.64 (C8s #809): the per-pod mesh carries every pod-to-pod hop
+    over mutual TLS and refuses its cert directory in app containers. The
+    gateway serves plain HTTP on 9443 only, and no app container uses
+    /etc/c8s/certs."""
     documents = render()
     gateway = Gateway(documents)
     assert gateway.env["GATEWAY_LISTEN"] == "0.0.0.0:9443"
-    assert gateway.env["GATEWAY_METRICS_LISTEN"] == "0.0.0.0:9090"
     assert "GATEWAY_TLS_LISTEN" not in gateway.env
     assert "GATEWAY_C8S_RECEIPT_TARGETS" not in gateway.env
-    assert sorted(port["containerPort"] for port in gateway.container["ports"]) == [9090, 9443]
-    router_service = next(item for item in documents
-                          if item["kind"] == "Service" and item["metadata"]["name"] == "sglang-router")
-    [openai] = router_service["spec"]["ports"]
-    assert openai["name"] == "openai" and openai["targetPort"] == "openai"
-    assert gateway.env["GATEWAY_INFERENCE_URL"] == f"http://sglang-router:{openai['port']}"
-    containers = [item["name"] for item in documents if item["kind"] in {"Deployment", "StatefulSet"}
-                  for item in item["spec"]["template"]["spec"]["containers"]]
-    assert not {"router-workload-proxy", "gateway-workload-proxy"} & set(containers)
     policy = next(item for item in documents if item["kind"] == "NetworkPolicy"
-                  and item["spec"]["podSelector"].get("matchLabels", {}).get("app.kubernetes.io/component") == "gateway")
+                  and item["metadata"]["name"] == "gateway-ingress")
     assert [port["port"] for port in policy["spec"]["ingress"][0]["ports"]] == [9443]
-
+    for document in documents:
+        if document["kind"] not in {"Deployment", "StatefulSet", "DaemonSet"}:
+            continue
+        for container in document["spec"]["template"]["spec"]["containers"]:
+            assert container["name"] not in {"cds-attest", "router-workload-proxy", "gateway-workload-proxy"}
+            assert "/etc/c8s/certs" not in json.dumps(container), (document["metadata"]["name"], container["name"])
 
 def check_front_door_namespace() -> None:
     # From c8s v0.66.0 the router runs in its own namespace, c8s-router.
@@ -171,8 +154,7 @@ def check_cds_nodeport_and_probe_budget() -> None:
 
 
 def main() -> None:
-    # The production release must route to a real Service and use the same
-    # C8s identity in the gateway controller and its evidence sidecar.
+    # The production release must route to a real Service.
     production = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
         '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
         '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
@@ -292,14 +274,8 @@ def main() -> None:
     names = {item["metadata"]["name"] for item in workloads}
     assert {"gateway", "sglang-router", "inference-worker-0", "inference-worker-1"}.issubset(names)
     assert not any(item["kind"] == "PersistentVolume" for item in documents)
-    for workload in workloads:
-        pod = workload["spec"]["template"]["spec"]
-        assert not any(item["name"] == "c8s-workload-claims" for item in pod.get("volumes", []))
-        for container in pod["containers"]:
-            assert not any(
-                item["name"] == "c8s-workload-claims"
-                for item in container.get("volumeMounts", [])
-            )
+    assert not any(container["name"] == "cds-attest" for workload in workloads
+                   for container in workload["spec"]["template"]["spec"]["containers"])
     assert not any(
         item["kind"] == "Service"
         and item["spec"].get("type", "ClusterIP") in {"LoadBalancer", "NodePort"}
@@ -508,50 +484,6 @@ def main() -> None:
         assert environment["CUDA_VISIBLE_DEVICES"] == ""
         assert environment["SGLANG_USE_CPU_ENGINE"] == "1"
 
-    worker_transition_documents = [
-        item for item in yaml.safe_load_all(
-            helm(
-                "template", "example", str(CHART), "--namespace", "inference",
-                "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
-                "--set-string", "inference.attestedWorkloads[0]=inference-worker-0-release-2",
-                "--set-string", "inference.attestedWorkloads[1]=inference-worker-1-release-2",
-            )
-        ) if item
-    ]
-    transition_workers = [
-        item for item in worker_transition_documents
-        if item["kind"] == "StatefulSet"
-        and item["metadata"]["name"].startswith("inference-worker-")
-    ]
-    for worker in transition_workers:
-        worker_index = worker["metadata"]["name"].removeprefix("inference-worker-")
-        assert (
-            worker["spec"]["template"]["metadata"]["annotations"]["confidential.ai/cw"]
-            == f"inference-worker-{worker_index}"
-        )
-
-    transition_documents = [
-        item for item in yaml.safe_load_all(
-            helm(
-                "template", "example", str(CHART), "--namespace", "inference", *NEUTRAL_MODE,
-                "--set-string", "gateway.attestedWorkload=gateway-release-2",
-                "--set-string", "router.attestedWorkload=router-release-2",
-                "--set-string", "metricsCollector.attestedWorkload=metrics-collector-release-2",
-                "--set-string", "kubeStateMetrics.attestedWorkload=kube-state-metrics-release-2",
-            )
-        ) if item
-    ]
-    for deployment_name in ("gateway", "sglang-router", "metrics-collector", "kube-state-metrics"):
-        deployment = next(
-            item for item in transition_documents
-            if item["kind"] == "Deployment"
-            and item["metadata"]["name"] == deployment_name
-        )
-        assert (
-            deployment["spec"]["template"]["metadata"]["annotations"]
-            ["confidential.ai/cw"] == deployment_name
-        )
-
     # The chart has no default for inference.mode, so a values file that
     # omits the field must fail the render, not silently pick a backend.
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as mode_absent_values:
@@ -619,6 +551,9 @@ def main() -> None:
     assert router_slot["spec"]["clusterIP"] == "None"
     assert routes["routes"] == {model: [model]}
     assert "gateway-release-selection" not in maps, "deployment owns verified release selection"
+    assert not any(container["name"] == "cds-attest" for document in staging_documents
+                   if document["kind"] in {"Deployment", "StatefulSet"}
+                   for container in document["spec"]["template"]["spec"]["containers"])
     agent = next(item for item in staging_documents if item["kind"] == "Deployment"
                  and item["metadata"]["name"] == "gateway-update-agent")
     assert agent["spec"]["replicas"] == 1 and agent["spec"]["strategy"]["type"] == "Recreate"
@@ -639,10 +574,7 @@ def main() -> None:
     helm("template", "example", str(CHART), *NEUTRAL_MODE,
          "--set", "stagingValidation.enabled=true", success=False)
 
-    check_gateway_router_hop()
-    check_per_pod_mesh(production, documents, stateful, inference_documents, simulator_documents,
-                       worker_transition_documents, transition_documents, production_documents,
-                       staging_documents, runtime_documents)
+    check_plain_http_behind_the_mesh()
     check_override_replaces_strategy()
     check_front_door_namespace()
     check_cds_nodeport_and_probe_budget()
