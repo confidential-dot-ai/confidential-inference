@@ -32,7 +32,6 @@ attestationReceipts:
   releaseId: v0.13.27-static-attestation-20260909
   releaseBundleSha256: sha256:c0c536e164954463ba5623d05db3692883437a2a1a34e4d58830ea4db2affac5
   policyMode: static
-  expectedStaticAllowlistSha256: sha256:05235c60dd61b239f3ac6a367b4fd6469008d766270002a235df4f54b02e217c
   targets:
     - {target: gateway, workload: gateway-db0b6ee, identity: gateway-db0b6ee, url: http://127.0.0.1:8800}
     - {target: sglang-router, workload: sglang-router-684393d, identity: sglang-router-684393d, url: http://sglang-router:8801}

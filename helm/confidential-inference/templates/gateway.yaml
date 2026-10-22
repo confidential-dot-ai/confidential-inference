@@ -221,12 +221,6 @@ spec:
             - name: GATEWAY_C8S_SERVED_IMAGE_POLICY
               value: /mnt/c8s-data/release-identity/..data/served-image-policy.json
             {{- end }}
-            - name: GATEWAY_C8S_POLICY_MODE
-              value: {{ .Values.attestationReceipts.policyMode | quote }}
-            {{- if eq .Values.attestationReceipts.policyMode "static" }}
-            - name: GATEWAY_EXPECTED_STATIC_ALLOWLIST_SHA256
-              value: {{ .Values.attestationReceipts.expectedStaticAllowlistSha256 | quote }}
-            {{- end }}
             - name: GATEWAY_STATE_DATABASE
               value: {{ .Values.gateway.state.databasePath | quote }}
             {{- if .Values.gateway.usage.enabled }}

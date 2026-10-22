@@ -34,7 +34,6 @@ attestationReceipts:
   releaseId: integration-staging-v20
   releaseBundleSha256: sha256:4e0d1d696ef0080c26213fd89e946f109b40070baff5b1d83d4a209ea6ed30ed
   policyMode: static
-  expectedStaticAllowlistSha256: sha256:625b878170cc2e12a36843f591c40112ee82c9b2a0184572a239296a4bf4a906
   targets:
   - target: gateway
     workload: gateway

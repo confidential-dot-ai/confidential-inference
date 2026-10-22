@@ -193,8 +193,6 @@ workloadOverrides:
               value: 10.52.0.0/16
             - name: GATEWAY_RELEASE_IDENTITY_FILE
               value: /mnt/c8s-data/release-identity/..data/release-identity.json
-            - name: GATEWAY_C8S_POLICY_MODE
-              value: operator
             - name: GATEWAY_STATE_DATABASE
               value: '{{ .Values.gateway.state.databasePath }}'
             - name: GATEWAY_STATE_ABSENCE_POLICY
