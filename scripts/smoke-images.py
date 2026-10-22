@@ -183,6 +183,8 @@ def main() -> int:
         secret, key = item.split("/", 1)
         secret_keys.setdefault(secret, []).append(key)
     failed = 0
+    # The kubelet's volume modes, whatever the caller's umask (bin/deploy sets 077).
+    os.umask(0o022)
     with tempfile.TemporaryDirectory(prefix="smoke-images-") as directory:
         os.chmod(directory, 0o755)
         for document in documents:
