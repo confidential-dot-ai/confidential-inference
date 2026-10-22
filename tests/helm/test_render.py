@@ -209,12 +209,19 @@ def main() -> None:
         assert pinned_gateway['spec']['template'] == gateway['spec']['template']
     assert gateway_environment['GATEWAY_STATE_VOLUME_NAME'] == 'gwstate'
     assert gateway_environment['GATEWAY_STATE_DATABASE'] == '/mnt/c8s-data/gwstate/gateway.sqlite3'
-    assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://router-v0-14-18.confidential-inference.svc.cluster.local:30000'
+    assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://router-headless.confidential-inference.svc.cluster.local:30000'
     evidence = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'cds-attest')
     assert '--expected-workload='+gateway['metadata']['name'] in evidence['args']
-    service = next(d for d in production if d['kind'] == 'Service' and d['metadata']['name'] == 'router-v0-14-18')
-    router = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'router-v0-14-18')
+    # The router Deployment and Service keep their names across releases, so
+    # an upgrade rolls the router behind the same address. Its c8s workload is
+    # per release: the old and the new pod each match their own allowlist entry.
+    service = next(d for d in production if d['kind'] == 'Service' and d['metadata']['name'] == 'router-headless')
+    router = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'sglang-router')
     assert all(router['spec']['template']['metadata']['labels'].get(k) == v for k, v in service['spec']['selector'].items())
+    assert router['spec']['selector']['matchLabels'] == {'app.kubernetes.io/part-of': 'confidential-inference',
+                                                         'app.kubernetes.io/component': 'sglang-router'}
+    assert router['spec']['strategy']['rollingUpdate'] == {'maxUnavailable': 0, 'maxSurge': 1}
+    assert router['spec']['template']['metadata']['annotations']['confidential.ai/cw'] == 'router-v0-14-18'
     # One model definition produces both views. A release metadata change
     # must not change the pod templates or add a third gateway identity.
     runtime_documents = render("--set", "runtimeConfig.enabled=true", "--set",
@@ -226,7 +233,7 @@ def main() -> None:
     routes = json.loads(maps['router-model-routes']['data']['routes.json'])
     assert settings['catalogModelIds'] == settings['inferenceModelIds'] == sorted(routes['routes'])
     assert settings['revision'] == routes['revision'] == 1
-    assert settings['routerService'] == 'router-v0-14-18'
+    assert settings['routerService'] == 'router-headless'
     router_slot = next(item for item in runtime_documents if item['kind'] == 'Service' and item['metadata']['name'] == settings['routerService'])
     assert router_slot['spec']['clusterIP'] == 'None'
     assert routes['routes']['public-a'] == ['backend-a']
@@ -269,12 +276,12 @@ def main() -> None:
     runtime_router = next(item for item in runtime_documents if item['kind'] == 'Deployment'
                           and item['metadata']['name'] == 'sglang-router')
     private_router = next(item for item in runtime_documents if item['kind'] == 'Service'
-                          and item['metadata']['name'] == 'router-v0-14-18')
+                          and item['metadata']['name'] == 'router-headless')
     assert private_router['spec']['clusterIP'] == 'None'
     assert all(runtime_router['spec']['template']['metadata']['labels'].get(key) == value
                for key, value in private_router['spec']['selector'].items())
     final_private_router = next(item for item in final_documents if item['kind'] == 'Service'
-                                and item['metadata']['name'] == 'router-v0-14-18')
+                                and item['metadata']['name'] == 'router-headless')
     assert private_router == final_private_router
     router_container = next(item for item in runtime_router['spec']['template']['spec']['containers']
                             if item['name'] == 'sglang-router')
