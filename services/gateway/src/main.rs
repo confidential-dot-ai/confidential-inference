@@ -14,7 +14,10 @@ use axum::middleware;
 use clap::Parser;
 use confidential_gateway::{
     GatewayConfig, TracingAuditSink,
-    admin_auth::{AdminRequestVerifier, MAX_CERTIFICATE_BYTES, require_signed_admin_request},
+    admin_auth::{
+        AdminRequestVerifier, MAX_API_KEY_HASHES_BYTES, MAX_CERTIFICATE_BYTES,
+        require_signed_admin_request,
+    },
     api_keys::{GatewayState, StateError, admin_router},
     key_registry::KeyRegistryMode,
     metrics::{GatewayMetrics, metrics_router},
@@ -175,6 +178,15 @@ struct Args {
         default_value = "/mnt/c8s-data/admin-auth/client.crt"
     )]
     admin_signer_certificate_file: PathBuf,
+    // SHA-256 of the accepted admin API keys, from the Kubernetes Secret
+    // gateway-admin-api-key. A missing file accepts only the v1 signature
+    // until the admin cutover (#186).
+    #[arg(
+        long,
+        env = "GATEWAY_ADMIN_API_KEY_HASHES_FILE",
+        default_value = "/mnt/c8s-data/admin-api-key/sha256"
+    )]
+    admin_api_key_hashes_file: PathBuf,
     #[arg(long, env = "GATEWAY_MAXIMUM_BODY_BYTES", default_value_t = 2_097_152)]
     maximum_body_bytes: usize,
     #[arg(long, env = "GATEWAY_UPSTREAM_TIMEOUT_SECONDS", default_value_t = 900)]
@@ -419,9 +431,19 @@ async fn main() -> Result<()> {
     let admin_certificate =
         read_bounded(&args.admin_signer_certificate_file, MAX_CERTIFICATE_BYTES)
             .context("read the admin request signer certificate")?;
-    let admin_verifier = AdminRequestVerifier::from_certificate_pem(&admin_certificate)
+    let mut admin_verifier = AdminRequestVerifier::from_certificate_pem(&admin_certificate)
         .map_err(anyhow::Error::msg)
         .context("parse the admin request signer certificate")?;
+    if args.admin_api_key_hashes_file.exists() {
+        let hashes = read_bounded(&args.admin_api_key_hashes_file, MAX_API_KEY_HASHES_BYTES)
+            .context("read the admin API key hashes")?;
+        admin_verifier = admin_verifier
+            .with_api_key_hashes(&hashes)
+            .map_err(anyhow::Error::msg)
+            .context("parse the admin API key hashes")?;
+    } else {
+        tracing::info!("no admin API key file; admin requests need the v1 signature");
+    }
     let mut admin = admin_router(gateway_state);
     if let Some(usage) = &usage {
         admin = admin.merge(confidential_gateway::usage::admin_router(usage.clone()));
@@ -1136,7 +1158,10 @@ mod tests {
             state_enabled: false,
             api_key_pepper_file: PathBuf::from("/run/c8s/secrets/GATEWAY_API_KEY_PEPPER"),
             state_startup_timeout_seconds: 60,
-            admin_signer_certificate_file: PathBuf::from("/mnt/c8s-data/admin-auth/client.crt"),
+            admin_signer_certificate_file: PathBuf::from(
+                "/mnt/c8s-data/admin-auth/client.crt",
+            ),
+            admin_api_key_hashes_file: PathBuf::from("/mnt/c8s-data/admin-api-key/sha256"),
             maximum_body_bytes: 2_097_152,
             upstream_timeout_seconds: 900,
             maximum_headers: 64,

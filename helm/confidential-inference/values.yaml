@@ -147,6 +147,10 @@ gateway:
     adminSigner:
       secretName: gateway-admin-mtls
       certificateKey: client.crt
+    # The SHA-256 hex of each accepted admin API key, one per line, at most
+    # two, under the Secret key `sha256`.
+    adminApiKey:
+      secretName: gateway-admin-api-key
   state:
     # The gateway keeps its API-key state on a c8s mutable encrypted volume.
     # Build the volume with `c8s volume create --mutable --name <volumeName>`,
