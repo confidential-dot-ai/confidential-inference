@@ -21,7 +21,6 @@ receipts in a separate private repository.
 - `images/control-plane-node`: historical consumer node profiles. Current
   releases pin the c8s node image through `release/spec.yaml`.
 - `helm/confidential-inference`: the generic Kubernetes application chart.
-- `scripts/regenerate-c8s-allowlist.py`: c8s policy generation.
 - `scripts/verify-public-attestation.py`: policy metadata checks and historical receipt verification.
 - `contracts`: public API, attestation, release, network, and metrics contracts.
 
