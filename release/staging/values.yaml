@@ -33,6 +33,11 @@ attestationReceipts:
   cds:
     url: https://c8s-cds.c8s-system.svc:8443
 
+# kube-state-metrics needs the Kubernetes API, which a c8s >= v0.64 mesh member
+# pod cannot reach.
+kubeStateMetrics:
+  enabled: false
+
 inference:
   mode: simulator
   gpusPerReplica: 0

@@ -167,11 +167,6 @@ spec:
         {{- if .Values.inference.enabled }}
         - {protocol: TCP, port: {{ .Values.inference.port }}}
         {{- end }}
-    # Pod discovery watches the Kubernetes API. Cilium can enforce either the
-    # Service port or the translated API-server port.
-    - ports:
-        - {protocol: TCP, port: 443}
-        - {protocol: TCP, port: {{ .Values.metricsCollector.kubeApi.port }}}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
