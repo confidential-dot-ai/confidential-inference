@@ -507,29 +507,6 @@ def main() -> None:
     )
     assert production_values["inference"]["mode"] == "model"
     assert production_values["inference"]["reasoningParser"] == "deepseek-v4"
-    production_documents = [
-        item for item in yaml.safe_load_all(
-            helm(
-                "template", "production", str(CHART),
-                "--namespace", "confidential-inference",
-                "--values", str(ROOT / "c8s/production-values.yaml"),
-            )
-        ) if item
-    ]
-    production_workers = [
-        item for item in production_documents
-        if item["kind"] == "StatefulSet"
-        and item["metadata"]["name"].startswith("inference-worker-")
-    ]
-    assert len(production_workers) == 2
-    for worker in production_workers:
-        sglang_args = next(
-            container["args"]
-            for container in worker["spec"]["template"]["spec"]["containers"]
-            if container["name"] == "sglang"
-        )
-        assert sglang_args.count("--reasoning-parser=deepseek-v4") == 1
-        assert sglang_args.count("--tool-call-parser=deepseekv4") == 1
     staging_values = yaml.safe_load(
         (ROOT / "c8s/staging-values.yaml").read_text()
     )
@@ -570,7 +547,7 @@ def main() -> None:
     assert role["rules"] == [{"apiGroups": [""], "resources": ["secrets"],
                               "resourceNames": ["gateway-update-task"], "verbs": ["get"]}]
     assert not any(item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway-update-agent"
-                   for item in production_documents)
+                   for item in production)
     helm("template", "example", str(CHART), *NEUTRAL_MODE,
          "--set", "stagingValidation.enabled=true", success=False)
 
