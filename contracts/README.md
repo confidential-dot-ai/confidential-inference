@@ -33,19 +33,17 @@ plaintext API key. Import requires a matching pepper fingerprint. Conflicting
 records refuse the transaction. A freeze stops mint and revoke operations
 and expires after ten minutes.
 
-## Network and observability
+## Maintenance
 
-- `network-ports.yaml`: port, protocol, scope, and access rules.
-- `observability-metrics.yaml`: scrape jobs, labels, and recording rules.
 - `maintenance-dns-receipt.schema.json`: secret-free DNS change receipts.
 
 ## Historical contracts
 
-The old schemas, policies, and fixtures remain because scripts and tests use
-them. They do not define the current customer verification procedure.
+- `release-bundle.schema.json`: release inventory format before v0.14.0.
+  The v0 verifiers still validate old releases against it.
 
-- `release-bundle.schema.json`: earlier release inventory format.
-- [Schema 2 receipt verification](historical/schema-2-receipt-verification.md):
-  old protocols, fixed target sets, and deployment trust inputs.
-- [Schema 2 admission receipts](historical/c8s-admission-receipts.md): former
-  per-workload receipt procedure.
+The network port and observability references moved to
+[docs/network-ports.yaml](../docs/network-ports.yaml) and
+[docs/observability-metrics.yaml](../docs/observability-metrics.yaml). The c8s
+attestation protocol captures moved to
+[release/inputs/c8s-attestation-protocols](../release/inputs/c8s-attestation-protocols).

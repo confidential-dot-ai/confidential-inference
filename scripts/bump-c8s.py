@@ -65,7 +65,7 @@ import c8s_release
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
-PROTOCOLS = ROOT / "contracts/c8s-attestation-protocols"
+PROTOCOLS = ROOT / "release/inputs/c8s-attestation-protocols"
 CDI_DIR = ROOT / "release/inputs/cdi"
 CANONICAL_TOOL = ROOT / "tools/c8s-allowlist-canonical"
 STRIP_COMMENTS_TOOL = ROOT / "tools/go-strip-comments"
