@@ -378,7 +378,7 @@ jobs:
             "${extra_assets[@]}"
 
       # The target.env pins of an unsigned build (internal docs/runbooks/deploy.md).
-      - name: Report the unsigned build
+      - name: report unsigned build
         if: github.event_name != 'push'
         run: |
           {
