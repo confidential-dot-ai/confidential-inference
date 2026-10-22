@@ -277,13 +277,16 @@ spec:
             periodSeconds: 15
             failureThreshold: 240
             timeoutSeconds: 5
+          # c8s >= v0.64 forwards only HTTP probes through the per-pod mesh.
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /health
               port: inference
             periodSeconds: 10
             timeoutSeconds: 5
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /v1/models
               port: inference
             periodSeconds: 30
             timeoutSeconds: 5
