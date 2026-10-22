@@ -143,6 +143,9 @@ def build_production(evidence: dict, download_dir: Path, tag: str = "v0.14.2") -
     operator = PROFILES.read_values(PRODUCTION)["images"]["c8sOperator"].rsplit("@", 1)[1]
     allowlist["workloads"]["production-operator"] = {"containers": [{"digest": operator}]}
     allowlist["workloads"]["production-collector"] = {"containers": [{"digest": 'sha256:' + '2' * 64}]}
+    # Staging runs no kube-state-metrics (it needs the Kubernetes API).
+    metrics = PROFILES.read_values(PRODUCTION)["images"]["kubeStateMetrics"].rsplit("@", 1)[1]
+    allowlist["workloads"]["production-kube-state-metrics"] = {"containers": [{"digest": metrics}]}
     generated = json.dumps(allowlist).encode()
     return build_release(tag, evidence, download_dir, lambda *_args, **_kwargs: generated,
                          mock.patch.object(MAN, "require_allowlist_contract"),
@@ -1015,7 +1018,8 @@ class ManifestTests(unittest.TestCase):
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
-        self.assertIn("--service-discovery-namespace=confidential-inference-staging", args)
+        self.assertEqual(args[:3], ["--worker-urls", "http://inference-worker-0-0.inference-workers:30000",
+                                    "http://inference-worker-1-0.inference-workers:30000"])
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"].pop("inference-worker-1")
         with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
