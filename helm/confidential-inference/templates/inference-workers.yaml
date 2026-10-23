@@ -19,11 +19,6 @@ spec:
     - name: inference
       port: {{ .Values.inference.port }}
       targetPort: inference
-    {{- if .Values.attestationReceipts.enabled }}
-    - name: cds-attest
-      port: {{ .Values.attestationReceipts.firstWorkerPort }}
-      targetPort: cds-attest
-    {{- end }}
 {{- range $index := until (int .Values.inference.replicas) }}
 {{- $simulatorMode := eq $.Values.inference.mode "simulator" }}
 {{- $modelMount := or (not $simulatorMode) $.Values.inference.simulator.validateModelMount }}
@@ -160,6 +155,11 @@ spec:
             - --trust-remote-code
             - --enable-metrics
             - --enable-cache-report
+            {{- if and $.Values.telemetry.enabled $.Values.telemetry.traces.enabled }}
+            - --enable-trace
+            - --trace-modules=request
+            - {{ printf "--otlp-traces-endpoint=telemetry-collector.%s.svc.cluster.local:%v" $.Release.Namespace $.Values.telemetry.otlpGrpcPort }}
+            {{- end }}
             - --host=0.0.0.0
             - --port={{ $.Values.inference.port }}
             {{- end }}
@@ -214,23 +214,23 @@ spec:
               port: inference
             periodSeconds: 15
             failureThreshold: 240
-            timeoutSeconds: 10
+            timeoutSeconds: 5
+          # c8s >= v0.64 forwards only HTTP probes through the per-pod mesh.
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /health
               port: inference
             periodSeconds: 10
             timeoutSeconds: 5
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /v1/models
               port: inference
             periodSeconds: 30
             timeoutSeconds: 5
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
-        {{- if $.Values.attestationReceipts.enabled }}
-        {{- include "confidential-inference.cdsAttestSidecar" (dict "root" $ "workload" $attestedWorkload "host" "0.0.0.0" "port" $.Values.attestationReceipts.firstWorkerPort "gpuEvidence" (gt (int $.Values.inference.gpusPerReplica) 0)) | nindent 8 }}
-        {{- end }}
       volumes:
         - name: shm
           emptyDir:

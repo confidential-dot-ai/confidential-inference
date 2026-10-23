@@ -20,38 +20,26 @@ images:
   gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:13334810afe09f9ec722eed6fc19c4a64e87b406e926ce383a54dd2ede01fea1
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
-  metricsCollector: ghcr.io/confidential-dot-ai/confidential-inference/metrics-collector@sha256:28138b1ccaf244abacc798d3e1102c463ecdd12c7c8332ea83489f417c4a6627
+  telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849  # 0.163.2
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: ghcr.io/confidential-dot-ai/confidential-inference/kube-state-metrics@sha256:89c1fe0bbd01800eb7475825467b29d0268273e7c5be7b574c72b3370b5fc3f0
   c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:1468ac37566b0f198c41c56c098c32133c09279c08d549f7a57263d8b09d2b89
 
-# The gateway sends prompts through the c8s named-workload proxy. The proxy
-# verifies the router identity before it releases plaintext to the router.
-namedWorkloadProxy:
-  enabled: true
-
 c8s:
-  # The `app.kubernetes.io/name` label on the c8s front-door pod in the
-  # `c8s-system` namespace. The network policies select the front door by this
+  # The `app.kubernetes.io/name` label on the c8s front-door pod. The network policies select the front door by this
   # label. c8s renamed the component from `tls-lb` to `router` in c8s PR #606
   # (2026-09-14). Keep `tls-lb` for a c8s pin from before that commit. Set
   # `router` for a c8s pin from that commit or later. A wrong value makes the
   # front door -> gateway hop time out, because the namespace default-deny
   # policy drops it.
   frontDoorPodLabelName: tls-lb
+  # The namespace of the c8s front-door pod: `c8s-system` before c8s v0.66.0,
+  # `c8s-router` from v0.66.0 (c8s #814 runs the router as a mesh member in
+  # its own namespace).
+  frontDoorNamespace: c8s-system
 
 attestationReceipts:
-  enabled: true
-  # Older c8s releases accepted this cds-attest flag. Disable it when the
-  # pinned c8s binary does not list it in `c8s cds-attest --help`.
-  gpuEvidenceFlagEnabled: true
-  # Use the node-local attestation API and the two-field gateway target format
-  # on the production c8s 615 release.
-  legacyC8s615: false
-  # Set the node socket URL for measured images that provide it. An empty
-  # value keeps the HTTP endpoint of older node images.
-  attestationApiUrl: ""
   # This URL must be the c8s tls-lb front door. The gateway reads only c8s
   # discovery and allowlist evidence from it.
   evidenceBaseUrl: https://api.example.invalid
@@ -83,50 +71,12 @@ attestationReceipts:
     url: ""
     imagePolicy: ""
     servedImagePolicy: ""
-  # c8s v0.56.0 and later (c8s #851): every cds-attest sidecar routes by the
-  # signed route manifest that it polls from cds.url, and pins that CDS by the
-  # TDX measurements of the node image. The release build sets cdsPin from the
-  # pinned node manifest.
-  cdsRoutes: false
-  cdsPin:
-    mrtd: ""
-    rtmr1: ""
-    rtmr2: ""
-  targets:
-    - target: gateway
-      workload: gateway
-      identity: gateway
-      url: http://127.0.0.1:8800
-    - target: sglang-router
-      workload: sglang-router
-      identity: sglang-router
-      url: http://sglang-router:8801
-    - target: inference-worker-0
-      workload: inference-worker-0
-      identity: inference-worker-0
-      url: http://inference-worker-0-0.inference-workers:8802
-    - target: inference-worker-1
-      workload: inference-worker-1
-      identity: inference-worker-1
-      url: http://inference-worker-1-0.inference-workers:8802
   # A cached workload image can start after c8s issues the first, unnamed
   # certificate. Renew quickly so the next certificate contains the measured
-  # workload identity and the receipt sidecar becomes ready.
+  # workload identity.
   certificateRenewInterval: 30s
-  gatewayPort: 8800
-  routerPort: 8801
-  firstWorkerPort: 8802
-  metricsCollectorPort: 8803
-  kubeStateMetricsPort: 8804
-  platform: tdx
+  # The node-local attestation API that CDS uses to verify the requesting CVM.
   attestationApiPort: 8400
-  resources:
-    requests:
-      cpu: 25m
-      memory: 32Mi
-    limits:
-      cpu: 250m
-      memory: 128Mi
 
 runtimeConfig:
   # Enable for images that contain the gateway and router file readers.
@@ -165,14 +115,6 @@ gateway:
   containerPorts:
     public: 9443
     metrics: 9090
-    # The c8s router (v0.56.0 and later) dials route backends over TLS with
-    # the get-cert leaf of the named workload; the gateway serves the same
-    # router on this port with the certificate c8s injects in /etc/c8s/certs.
-    tls: 9444
-  meshTls:
-    # Turn off only for a gateway pod that c8s does not inject: without the
-    # certificate the gateway does not start.
-    enabled: true
   c8sSecrets:
     apiKeyPepper:
       name: GATEWAY_API_KEY_PEPPER
@@ -314,43 +256,77 @@ router:
   enabled: true
   replicas: 1
   port: 30000
-  # TLS port for the c8s named-workload server proxy. The Service exposes the
-  # application port and targets this port; it must remain pinned.
-  proxyPort: 9443
   metricsPort: 29000
   resources:
     cpu: "1"
     memory: 1Gi
 
-metricsCollector:
-  enabled: true
-  attestedWorkload: metrics-collector
-  kubeApi:
-    port: 6443
-  remoteWrite:
-    enabled: true
-    url: https://metrics.example.invalid/api/v1/write
-    address: 192.0.2.1
-    serverName: metrics.example.invalid
-    secretName: metrics-remote-write-mtls
-    destinationCidrs:
-      - 192.0.2.1/32
-    queue:
-      capacity: 10000
-      maxShards: 4
-      maxSamplesPerSend: 2000
-      sampleAgeLimit: 1h
-  tls:
+
+# The telemetry collector (templates/telemetry-collector.yaml): the stock
+# OpenTelemetry Collector and the only workload with an exit. It scrapes the
+# gateway, the router and the workers over the mesh, receives gateway logs
+# and SGLang traces over OTLP, and sends everything to one relay. The relay
+# address is the collector's allowlist egress (C8s #1047), so it is public in
+# the served allowlist.
+telemetry:
+  enabled: false
+  attestedWorkload: telemetry-collector
+  # The deployment label of every series and log stream.
+  deployment: ""
+  relay:
+    serverName: ""
+    address: ""
+    port: 443
+  metrics:
+    # Entra app with Monitoring Metrics Publisher on the workspace DCR. The
+    # client secret is the Secret key entra-client-secret.
+    tenantId: ""
+    clientId: ""
+    # The DCR immutable id (dcr-...).
+    dataCollectionRule: ""
+  logs:
+    # The Loki basic-auth user; the password is the Secret key loki-password.
+    username: loki-push
+  # Keys entra-client-secret and loki-password.
+  secretName: telemetry-relay
+  traces:
+    # SGLang request spans (not the simulator); they leave only as
+    # spanmetrics histograms.
     enabled: false
-    secretName: prometheus-server-tls
-    clientCaSecretName: gateway-admin-mtls
+  scrapeInterval: 15s
+  otlpGrpcPort: 4317
+  otlpHttpPort: 4318
+  healthPort: 13133
   resources:
-    cpu: 250m
-    memory: 512Mi
-  # The gateway emits only these bounded values as api_key_name or api_key_tag.
-  approvedApiKeyLabels:
-    - unassigned
-  walSizeLimit: 4Gi
+    cpu: 100m
+    memory: 256Mi
+  # Labels that may leave, per scrape job. The collector drops every other label.
+  commonLabels: [__name__, job, instance, component, replica, le, quantile]
+  labels:
+    # env is the gateway registry's constant label.
+    gateway: [env, model, key_id, status, reason, event, router, cache_status, type]
+    # sgl-model-gateway (router 0.3.2) observability/metrics.rs.
+    router: [attempt, backend_type, branch, connection_mode, endpoint, error_code, error_type, from, method, model,
+             operation, outcome, path, policy, reason, result, router_type, source, stage, status_code, storage_type,
+             streaming, to, token_type, worker, worker_type]
+    # SGLang v0.5.18 observability/metrics_collector.py, without the custom
+    # header labels (--tokenizer-metrics-custom-labels-header is not set).
+    worker: [model_name, engine_type, tp_rank, pp_rank, dp_rank, moe_ep_rank, priority, backend, cache_source,
+             category, forward_mode, is_streaming, layer, modality, mode, phase, pool, reason, source, stage]
+    gpu: [worker, gpu]
+  # SGLang span attributes that may reach spanmetrics. Request ids, finish
+  # reason details and every span event attribute are dropped.
+  spanAttributes:
+    - gen_ai.usage.completion_tokens
+    - gen_ai.usage.prompt_tokens
+    - gen_ai.usage.cached_tokens
+    - gen_ai.response.model
+    - gen_ai.latency.time_in_queue
+    - gen_ai.latency.time_to_first_token
+    - gen_ai.latency.e2e
+    - gen_ai.latency.time_in_model_prefill
+    - gen_ai.latency.time_in_model_decode
+    - gen_ai.latency.time_in_model_inference
 
 dcgmExporter:
   enabled: false
@@ -370,13 +346,12 @@ kubeStateMetrics:
   enabled: true
   attestedWorkload: kube-state-metrics
   port: 8080
+  kubeApiPort: 6443
   resources:
     cpu: 100m
     memory: 128Mi
 
 network:
-  adminMtlsCidrs:
-    - 192.0.2.0/24
   clusterCidrs:
     - 10.52.0.0/16
     - 10.53.0.0/16

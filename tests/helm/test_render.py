@@ -87,25 +87,6 @@ def check_cds_policy_pins(url_only: Gateway) -> None:
         helm("template", "example", str(CHART), *NEUTRAL_MODE, *files, success=False)
 
 
-def check_cds_routes() -> None:
-    """With cdsRoutes (c8s v0.56.0+), every cds-attest sidecar polls CDS for
-    the route manifest and pins it; an empty pin fails the render."""
-    url = ("--set", "attestationReceipts.cds.url=https://c8s-cds.c8s-system.svc:8443")
-    helm("template", "example", str(CHART), *NEUTRAL_MODE, *url,
-         "--set", "attestationReceipts.cdsRoutes=true", success=False)
-    pin = ("--set", "attestationReceipts.cdsPin.mrtd=" + "a" * 96,
-           "--set", "attestationReceipts.cdsPin.rtmr1=" + "b" * 96,
-           "--set", "attestationReceipts.cdsPin.rtmr2=" + "c" * 96)
-    sidecars = [container for item in render(*url, *pin, "--set", "attestationReceipts.cdsRoutes=true")
-                if item["kind"] in ("Deployment", "StatefulSet")
-                for container in item["spec"]["template"]["spec"]["containers"] if container["name"] == "cds-attest"]
-    assert sidecars
-    for sidecar in sidecars:
-        assert sidecar["args"][-3:] == ["--cds-url=https://c8s-cds.c8s-system.svc:8443",
-                                        "--cds-measurements=" + "a" * 96,
-                                        f"--cds-rtmrs=1={'b' * 96},2={'c' * 96}"]
-
-
 def check_override_replaces_strategy() -> None:
     """A Recreate override drops the chart's rollingUpdate, which the API server refuses with Recreate."""
     with tempfile.TemporaryDirectory() as directory:
@@ -117,34 +98,156 @@ def check_override_replaces_strategy() -> None:
     assert router["spec"]["strategy"] == {"type": "Recreate"}
 
 
-def check_mesh_tls_listener() -> None:
-    """The gateway serves the c8s router over TLS on 9444 with the injected
-    mesh certificate, beside the plaintext 9443, unless meshTls is off."""
+def check_plain_http_behind_the_mesh() -> None:
+    """c8s >= v0.64 (C8s #809): the per-pod mesh carries every pod-to-pod hop
+    over mutual TLS and refuses its cert directory in app containers. The
+    gateway serves plain HTTP on 9443 only, and no app container uses
+    /etc/c8s/certs."""
     documents = render()
     gateway = Gateway(documents)
     assert gateway.env["GATEWAY_LISTEN"] == "0.0.0.0:9443"
-    assert gateway.env["GATEWAY_TLS_LISTEN"] == "0.0.0.0:9444"
-    assert {"name": "https", "containerPort": 9444} in gateway.container["ports"]
-    # The router dials the pod through the c8s-gateway Service that c8s
-    # makes, so the chart's gateway Service keeps only its plaintext port.
-    service = next(item for item in documents
-                   if item["kind"] == "Service" and item["metadata"]["name"] == "gateway")
-    assert all(port["name"] != "https" for port in service["spec"]["ports"])
+    assert "GATEWAY_TLS_LISTEN" not in gateway.env
+    assert "GATEWAY_C8S_RECEIPT_TARGETS" not in gateway.env
     policy = next(item for item in documents if item["kind"] == "NetworkPolicy"
-                  and item["spec"]["podSelector"].get("matchLabels", {}).get("app.kubernetes.io/component") == "gateway")
-    router_ports = [port["port"] for port in policy["spec"]["ingress"][0]["ports"]]
-    assert router_ports == [9443, 9444]
-    off = render("--set", "gateway.meshTls.enabled=false")
-    plain = Gateway(off)
-    assert "GATEWAY_TLS_LISTEN" not in plain.env
-    assert all(port["name"] != "https" for port in plain.container["ports"])
-    helm("template", "example", str(CHART), *NEUTRAL_MODE,
-         "--set", "gateway.containerPorts.tls=8443", success=False)
+                  and item["metadata"]["name"] == "gateway-ingress")
+    assert [port["port"] for port in policy["spec"]["ingress"][0]["ports"]] == [9443]
+    for document in documents:
+        if document["kind"] not in {"Deployment", "StatefulSet", "DaemonSet"}:
+            continue
+        for container in document["spec"]["template"]["spec"]["containers"]:
+            assert container["name"] not in {"cds-attest", "router-workload-proxy", "gateway-workload-proxy"}
+            assert "/etc/c8s/certs" not in json.dumps(container), (document["metadata"]["name"], container["name"])
+            # The mesh forwards only HTTP probes.
+            for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
+                assert not {"tcpSocket", "grpc"} & set(container.get(probe, {})), (document["metadata"]["name"], probe)
+
+def check_front_door_namespace() -> None:
+    # From c8s v0.66.0 the router runs in its own namespace, c8s-router.
+    documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+        '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+        '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+        '--set', 'attestationReceipts.releaseId=v0.14.18', '--set', 'c8s.frontDoorNamespace=c8s-router')) if item]
+    policies = {d['metadata']['name']: d for d in documents if d['kind'] == 'NetworkPolicy'}
+    peer = policies['gateway-ingress']['spec']['ingress'][0]['from'][0]
+    assert peer['namespaceSelector']['matchLabels'] == {'kubernetes.io/metadata.name': 'c8s-router'}
+    assert any(peer.get('namespaceSelector', {}).get('matchLabels') == {'kubernetes.io/metadata.name': 'c8s-router'}
+               for rule in policies['gateway-to-router']['spec']['egress'] for peer in rule.get('to', []))
+
+
+def check_cds_nodeport_and_probe_budget() -> None:
+    # c8s >= v0.66: credential clients dial the node's CDS NodePort, and the
+    # per-pod mesh gives every probe 5 s (C8s #1027).
+    documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+        '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+        '-f', str(ROOT/'release/staging/values.yaml'),
+        '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+        '--set', 'attestationReceipts.releaseId=v0.14.18-staging')) if item]
+    policies = {d['metadata']['name']: d for d in documents if d['kind'] == 'NetworkPolicy'}
+    for name in ('workloads-to-c8s-cds', 'gateway-update-agent'):
+        assert any('to' not in rule and {'protocol': 'TCP', 'port': 30808} in rule['ports']
+                   for rule in policies[name]['spec']['egress']), name
+    for document in documents:
+        if document['kind'] not in {'Deployment', 'StatefulSet'}:
+            continue
+        pod = document['spec']['template']['spec']
+        for container in pod.get('initContainers', []) + pod['containers']:
+            for probe in ('startupProbe', 'readinessProbe', 'livenessProbe'):
+                if probe in container:
+                    assert container[probe].get('timeoutSeconds', 1) <= 5, (document['metadata']['name'], container['name'], probe)
+
+
+TELEMETRY = (
+    "--set", "telemetry.enabled=true",
+    "--set", "telemetry.deployment=test-deployment",
+    "--set", "telemetry.relay.serverName=relay.example.com",
+    "--set", "telemetry.relay.address=203.0.113.7",
+    "--set", "telemetry.metrics.tenantId=00000000-0000-0000-0000-000000000001",
+    "--set", "telemetry.metrics.clientId=00000000-0000-0000-0000-000000000002",
+    "--set", "telemetry.metrics.dataCollectionRule=dcr-" + "0" * 32,
+)
+
+
+def collector_config(documents: list[dict]) -> dict:
+    """The telemetry collector's pipeline, which is its one argument."""
+    collector = next(item for item in documents
+                     if item["kind"] == "Deployment" and item["metadata"]["name"] == "telemetry-collector")
+    (argument,) = collector["spec"]["template"]["spec"]["containers"][0]["args"]
+    assert argument.startswith("--config=yaml:")
+    return json.loads(argument.removeprefix("--config=yaml:"))
+
+
+def check_telemetry_collector() -> None:
+    """One stock collector is the only pod with an exit, and its argument pins what leaves."""
+    assert not any(item["metadata"]["name"].startswith("telemetry-") for item in render())
+    helm("template", "example", str(CHART), *NEUTRAL_MODE, "--set", "telemetry.enabled=true", success=False)
+
+    documents = render(*TELEMETRY, "--set", "telemetry.traces.enabled=true")
+    pods = {item["metadata"]["name"]: item["spec"]["template"]["spec"] for item in documents
+            if item["kind"] in {"Deployment", "StatefulSet"}}
+    # The collector and (stateless, #223) the gateway are the only pods with
+    # an exit; each exit is a hostAliases address and its one ipBlock.
+    exits = {name for name, pod in pods.items() if pod.get("hostAliases")}
+    assert "telemetry-collector" in exits and exits <= {"telemetry-collector", "gateway"}, exits
+    collector = pods["telemetry-collector"]
+    assert collector["hostAliases"] == [{"ip": "203.0.113.7", "hostnames": ["relay.example.com"]}]
+    assert PINNED.match(collector["containers"][0]["image"])
+    assert "env" not in collector["containers"][0]
+    assert collector["automountServiceAccountToken"] is False
+    # C8s #1049: an entry with egress has no host mount and a fixed argv.
+    assert not any("hostPath" in volume for volume in collector.get("volumes", []))
+    assert all("args" in container for container in collector["containers"])
+    for pod in (collector, pods["gateway"]):
+        # Per-pod mesh: no app container mounts the c8s certificate volume.
+        assert not any(mount["mountPath"] == "/etc/c8s/certs"
+                       for container in pod["containers"] for mount in container.get("volumeMounts", []))
+    policies = {item["metadata"]["name"]: item for item in documents if item["kind"] == "NetworkPolicy"}
+    blocks = [peer["ipBlock"]["cidr"] for policy in policies.values()
+              for rule in policy["spec"].get("egress", []) for peer in rule.get("to", []) if "ipBlock" in peer]
+    addresses = {alias["ip"] + "/32" for name in exits for alias in pods[name]["hostAliases"]}
+    assert sorted(blocks) == sorted(addresses) and "203.0.113.7/32" in blocks, blocks
+
+    config = collector_config(documents)
+    relay = "https://relay.example.com/"
+    assert config["exporters"]["prometheusremotewrite"]["endpoint"].startswith(relay + "prometheus/")
+    assert config["exporters"]["otlphttp/loki"]["logs_endpoint"] == relay + "otlp/v1/logs"
+    assert config["extensions"]["oauth2client"]["token_url"].startswith(relay + "entra/")
+    jobs = config["receivers"]["prometheus"]["config"]["scrape_configs"]
+    assert [job["job_name"] for job in jobs] == ["gateway", "sglang-router", "inference-worker-0", "inference-worker-1"]
+    for job in jobs:
+        (keep,) = job["metric_relabel_configs"]
+        assert keep["action"] == "labelkeep"
+        assert "__name__" in keep["regex"] and "prompt" not in keep["regex"]
+    targets = [target for job in jobs for static in job.get("static_configs", []) for target in static["targets"]]
+    targets += [name for job in jobs for sd in job.get("dns_sd_configs", []) for name in sd["names"]]
+    services = {item["metadata"]["name"]: item for item in documents if item["kind"] == "Service"}
+    # The mesh connects pods: every target is a pod address of a headless Service.
+    for target in targets:
+        host = target.split(":")[0].split(".")
+        service = services[host[1] if host[0].startswith("inference-worker-") else host[0]]
+        assert service["spec"]["clusterIP"] == "None", target
+    processors = config["processors"]
+    assert "keep_keys(spanevent.attributes, [])" in processors["transform/traces"]["trace_statements"]
+    assert not any("gen_ai.request.id" in statement for statement in processors["transform/traces"]["trace_statements"])
+    assert "keep_keys(log.attributes, [])" in processors["transform/logs"]["log_statements"]
+    assert config["service"]["pipelines"]["traces"]["exporters"] == ["spanmetrics"]
+
+    gateway = Gateway(documents)
+    assert gateway.env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] == "http://telemetry-collector.default.svc.cluster.local:4318/v1/logs"
+    assert "RUST_LOG" not in gateway.env
+    model = [item for item in yaml.safe_load_all(helm(
+        "template", "example", str(CHART), "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
+        *TELEMETRY, "--set", "telemetry.traces.enabled=true")) if item]
+    # GPU metrics: the worker image serves them (wait-for-model --gpu-metrics-port).
+    gpu_jobs = [job["job_name"] for job in collector_config(model)["receivers"]["prometheus"]["config"]["scrape_configs"]
+                if job["job_name"].startswith("inference-gpu-")]
+    assert gpu_jobs == ["inference-gpu-0", "inference-gpu-1"], gpu_jobs
+    worker = next(item for item in model if item["kind"] == "StatefulSet")["spec"]["template"]["spec"]["containers"][0]
+    assert "--enable-trace" in worker["args"] and "--otlp-traces-endpoint=telemetry-collector.default.svc.cluster.local:4317" in worker["args"]
+    assert not any(arg.startswith("--log-requests") for arg in worker["args"])
 
 
 def main() -> None:
-    # The production release must route to a real Service and use the same
-    # C8s identity in the gateway controller and its evidence sidecar.
+    # The production release must route to a real Service.
     production = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
         '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
         '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
@@ -185,8 +288,6 @@ def main() -> None:
     assert gateway_environment['GATEWAY_STATE_VOLUME_NAME'] == 'gwstate'
     assert gateway_environment['GATEWAY_STATE_DATABASE'] == '/mnt/c8s-data/gwstate/gateway.sqlite3'
     assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://router-v0-14-18.confidential-inference.svc.cluster.local:30000'
-    evidence = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'cds-attest')
-    assert '--expected-workload='+gateway['metadata']['name'] in evidence['args']
     service = next(d for d in production if d['kind'] == 'Service' and d['metadata']['name'] == 'router-v0-14-18')
     router = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'router-v0-14-18')
     assert all(router['spec']['template']['metadata']['labels'].get(k) == v for k, v in service['spec']['selector'].items())
@@ -266,27 +367,8 @@ def main() -> None:
     names = {item["metadata"]["name"] for item in workloads}
     assert {"gateway", "sglang-router", "inference-worker-0", "inference-worker-1"}.issubset(names)
     assert not any(item["kind"] == "PersistentVolume" for item in documents)
-    for workload in workloads:
-        containers = workload["spec"]["template"]["spec"]["containers"]
-        attest = [item for item in containers if item["name"] == "cds-attest"]
-        assert len(attest) == 1
-        attest = attest[0]
-        assert "--attestation-api-url=http://$(HOST_IP):8400" in attest["args"]
-        assert any(item["name"] == "HOST_IP" for item in attest.get("env", []))
-        assert not any(
-            item["name"] == "c8s-workload-claims"
-            for item in attest.get("volumeMounts", [])
-        )
-        assert not any(
-            item["name"] == "c8s-workload-claims"
-            for item in workload["spec"]["template"]["spec"].get("volumes", [])
-        )
-        for container in containers:
-            if container is not attest:
-                assert not any(
-                    item["name"] == "c8s-workload-claims"
-                    for item in container.get("volumeMounts", [])
-                )
+    assert not any(container["name"] == "cds-attest" for workload in workloads
+                   for container in workload["spec"]["template"]["spec"]["containers"])
     assert not any(
         item["kind"] == "Service"
         and item["spec"].get("type", "ClusterIP") in {"LoadBalancer", "NodePort"}
@@ -388,7 +470,9 @@ def main() -> None:
         for container in router["spec"]["template"]["spec"]["containers"]
         if container["name"] == "sglang-router"
     )
-    assert "--selector=app.kubernetes.io/component=inference-worker" in router_args
+    assert router_args[:3] == ["--worker-urls", "http://inference-worker-0-0.inference-workers:30000",
+                               "http://inference-worker-1-0.inference-workers:30000"]
+    assert not any(arg.startswith("--service-discovery") for arg in router_args)
     assert router["spec"]["strategy"]["rollingUpdate"] == {
         "maxUnavailable": 0,
         "maxSurge": 1,
@@ -398,15 +482,8 @@ def main() -> None:
         if item["kind"] == "Service" and item["metadata"]["name"] == "sglang-router"
     )
     assert "publishNotReadyAddresses" not in router_service["spec"]
-    router_role = next(
-        item for item in inference_documents
-        if item["kind"] == "Role" and item["metadata"]["name"] == "sglang-router-pods"
-    )
-    assert router_role["rules"] == [{
-        "apiGroups": [""],
-        "resources": ["pods"],
-        "verbs": ["get", "list", "watch"],
-    }]
+    assert not any(item["kind"] in {"Role", "RoleBinding"} and item["metadata"]["name"] == "sglang-router-pods"
+                   for item in inference_documents)
 
     # The attested GPU count annotation defaults to the per-pod allocation and
     # can be overridden when several workers share one node's GPUs.
@@ -442,7 +519,7 @@ def main() -> None:
         for rule in router_network_policy["spec"]["egress"]
         for port in rule.get("ports", [])
     }
-    assert {443, 6443}.issubset(router_egress_ports)
+    assert router_egress_ports == {30000}
 
     workers = [
         item for item in inference_documents
@@ -459,50 +536,10 @@ def main() -> None:
             if container["name"] == "sglang"
         )
         assert sglang_args.count("--tool-call-parser=deepseekv4") == 1
-        cds_attest_args = next(
-            container["args"]
-            for container in worker_pod["spec"]["containers"]
-            if container["name"] == "cds-attest"
-        )
-        assert f"--expected-workload=inference-worker-{worker_index}" in cds_attest_args
-        assert "--nvidia-gpu-evidence" in cds_attest_args
-        cds_attest = next(
-            container
-            for container in worker_pod["spec"]["containers"]
-            if container["name"] == "cds-attest"
-        )
-        assert "--attestation-api-url=http://$(HOST_IP):8400" in cds_attest["args"]
-        assert not any(
-            item["name"] == "c8s-workload-claims"
-            for item in cds_attest.get("volumeMounts", [])
-        )
         assert (
             worker["spec"]["template"]["metadata"]["annotations"]["confidential.ai/cw"]
             == f"inference-worker-{worker_index}"
         )
-
-    no_gpu_flag_documents = [
-        item for item in yaml.safe_load_all(
-            helm(
-                "template", "example", str(CHART), "--namespace", "inference",
-                "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
-                "--set", "attestationReceipts.gpuEvidenceFlagEnabled=false",
-            )
-        ) if item
-    ]
-    no_gpu_flag_workers = [
-        item for item in no_gpu_flag_documents
-        if item["kind"] == "StatefulSet"
-        and item["metadata"]["name"].startswith("inference-worker-")
-    ]
-    assert len(no_gpu_flag_workers) == 2
-    for worker in no_gpu_flag_workers:
-        cds_attest_args = next(
-            container["args"]
-            for container in worker["spec"]["template"]["spec"]["containers"]
-            if container["name"] == "cds-attest"
-        )
-        assert "--nvidia-gpu-evidence" not in cds_attest_args
 
     simulator_documents = [
         item for item in yaml.safe_load_all(
@@ -535,95 +572,6 @@ def main() -> None:
         assert environment["CUDA_VISIBLE_DEVICES"] == ""
         assert environment["SGLANG_USE_CPU_ENGINE"] == "1"
 
-    worker_transition_documents = [
-        item for item in yaml.safe_load_all(
-            helm(
-                "template", "example", str(CHART), "--namespace", "inference",
-                "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
-                "--set-string", "inference.attestedWorkloads[0]=inference-worker-0-release-2",
-                "--set-string", "inference.attestedWorkloads[1]=inference-worker-1-release-2",
-            )
-        ) if item
-    ]
-    transition_workers = [
-        item for item in worker_transition_documents
-        if item["kind"] == "StatefulSet"
-        and item["metadata"]["name"].startswith("inference-worker-")
-    ]
-    for worker in transition_workers:
-        worker_index = worker["metadata"]["name"].removeprefix("inference-worker-")
-        cds_attest_args = next(
-            container["args"]
-            for container in worker["spec"]["template"]["spec"]["containers"]
-            if container["name"] == "cds-attest"
-        )
-        assert (
-            f"--expected-workload=inference-worker-{worker_index}-release-2"
-            in cds_attest_args
-        )
-        assert "--nvidia-gpu-evidence" in cds_attest_args
-        assert (
-            worker["spec"]["template"]["metadata"]["annotations"]["confidential.ai/cw"]
-            == f"inference-worker-{worker_index}"
-        )
-
-    non_worker_attest_args = []
-    for document in inference_documents:
-        if document["kind"] != "Deployment":
-            continue
-        for container in document["spec"]["template"]["spec"]["containers"]:
-            if container["name"] == "cds-attest":
-                non_worker_attest_args.extend(container.get("args", []))
-    assert "--nvidia-gpu-evidence" not in non_worker_attest_args
-
-    default_documents = [
-        item for item in yaml.safe_load_all(
-            helm("template", "example", str(CHART), "--namespace", "inference", *NEUTRAL_MODE)
-        ) if item
-    ]
-    default_attest_args = []
-    for document in default_documents:
-        if document["kind"] not in {"Deployment", "StatefulSet"}:
-            continue
-        for container in document["spec"]["template"]["spec"]["containers"]:
-            if container["name"] == "cds-attest":
-                default_attest_args.extend(container.get("args", []))
-    assert "--nvidia-gpu-evidence" not in default_attest_args
-
-    transition_documents = [
-        item for item in yaml.safe_load_all(
-            helm(
-                "template", "example", str(CHART), "--namespace", "inference", *NEUTRAL_MODE,
-                "--set-string", "gateway.attestedWorkload=gateway-release-2",
-                "--set-string", "router.attestedWorkload=router-release-2",
-                "--set-string", "metricsCollector.attestedWorkload=metrics-collector-release-2",
-                "--set-string", "kubeStateMetrics.attestedWorkload=kube-state-metrics-release-2",
-            )
-        ) if item
-    ]
-    expected = {
-        "gateway": "--expected-workload=gateway-release-2",
-        "sglang-router": "--expected-workload=router-release-2",
-        "metrics-collector": "--expected-workload=metrics-collector-release-2",
-        "kube-state-metrics": "--expected-workload=kube-state-metrics-release-2",
-    }
-    for deployment_name, expected_argument in expected.items():
-        deployment = next(
-            item for item in transition_documents
-            if item["kind"] == "Deployment"
-            and item["metadata"]["name"] == deployment_name
-        )
-        cds_attest = next(
-            container
-            for container in deployment["spec"]["template"]["spec"]["containers"]
-            if container["name"] == "cds-attest"
-        )
-        assert expected_argument in cds_attest["args"]
-        assert (
-            deployment["spec"]["template"]["metadata"]["annotations"]
-            ["confidential.ai/cw"] == deployment_name
-        )
-
     # The chart has no default for inference.mode, so a values file that
     # omits the field must fail the render, not silently pick a backend.
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as mode_absent_values:
@@ -647,57 +595,10 @@ def main() -> None:
     )
     assert production_values["inference"]["mode"] == "model"
     assert production_values["inference"]["reasoningParser"] == "deepseek-v4"
-    production_documents = [
-        item for item in yaml.safe_load_all(
-            helm(
-                "template", "production", str(CHART),
-                "--namespace", "confidential-inference",
-                "--values", str(ROOT / "c8s/production-values.yaml"),
-            )
-        ) if item
-    ]
-    production_workers = [
-        item for item in production_documents
-        if item["kind"] == "StatefulSet"
-        and item["metadata"]["name"].startswith("inference-worker-")
-    ]
-    assert len(production_workers) == 2
-    for worker in production_workers:
-        sglang_args = next(
-            container["args"]
-            for container in worker["spec"]["template"]["spec"]["containers"]
-            if container["name"] == "sglang"
-        )
-        assert sglang_args.count("--reasoning-parser=deepseek-v4") == 1
-        assert sglang_args.count("--tool-call-parser=deepseekv4") == 1
     staging_values = yaml.safe_load(
         (ROOT / "c8s/staging-values.yaml").read_text()
     )
     assert staging_values["inference"]["mode"] == "simulator"
-
-    # The cds-attest sidecar must read TEE evidence from the same attestation
-    # API that c8s injects into its own get-cert and get-secret sidecars. A
-    # c8s install with no in-cluster attestation-api Deployment serves the
-    # node HTTP endpoint only, and the Unix socket then has no server behind
-    # it: the sidecar answers 502 and /attestation answers 503.
-    node_api_documents = default_documents
-    node_api_sidecars = [
-        container
-        for document in node_api_documents
-        if document["kind"] in {"Deployment", "StatefulSet"}
-        for container in document["spec"]["template"]["spec"]["containers"]
-        if container["name"] == "cds-attest"
-    ]
-    assert node_api_sidecars
-    for container in node_api_sidecars:
-        assert "--attestation-api-url=http://$(HOST_IP):8400" in container["args"]
-        assert [
-            item for item in container.get("env", []) if item["name"] == "HOST_IP"
-        ], "the node attestation API URL needs the HOST_IP field reference"
-        assert not any(
-            item["name"] == "c8s-workload-claims"
-            for item in container.get("volumeMounts", [])
-        )
 
     # The staging layer clears production model routes and loads live files.
     staging_documents = render("--values", "release/values.yaml", "--values",
@@ -715,18 +616,9 @@ def main() -> None:
     assert router_slot["spec"]["clusterIP"] == "None"
     assert routes["routes"] == {model: [model]}
     assert "gateway-release-selection" not in maps, "deployment owns verified release selection"
-    sidecars = []
-    for document in staging_documents:
-        if document["kind"] not in {"Deployment", "StatefulSet"}:
-            continue
-        pod = document["spec"]["template"]["spec"]
-        for container in pod["containers"]:
-            if container["name"] == "cds-attest":
-                sidecars.append(container)
-                assert "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock" in container["args"]
-                assert not any(item["name"] == "HOST_IP" for item in container.get("env", []))
-                assert not container.get("volumeMounts"), "C8s NRI adds the platform socket mount"
-    assert len(sidecars) == 6
+    assert not any(container["name"] == "cds-attest" for document in staging_documents
+                   if document["kind"] in {"Deployment", "StatefulSet"}
+                   for container in document["spec"]["template"]["spec"]["containers"])
     agent = next(item for item in staging_documents if item["kind"] == "Deployment"
                  and item["metadata"]["name"] == "gateway-update-agent")
     assert agent["spec"]["replicas"] == 1 and agent["spec"]["strategy"]["type"] == "Recreate"
@@ -743,13 +635,15 @@ def main() -> None:
     assert role["rules"] == [{"apiGroups": [""], "resources": ["secrets"],
                               "resourceNames": ["gateway-update-task"], "verbs": ["get"]}]
     assert not any(item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway-update-agent"
-                   for item in production_documents)
+                   for item in production)
     helm("template", "example", str(CHART), *NEUTRAL_MODE,
          "--set", "stagingValidation.enabled=true", success=False)
 
-    check_mesh_tls_listener()
-    check_cds_routes()
+    check_plain_http_behind_the_mesh()
     check_override_replaces_strategy()
+    check_front_door_namespace()
+    check_cds_nodeport_and_probe_budget()
+    check_telemetry_collector()
     print("Helm neutral-default and safety tests passed.")
 
 

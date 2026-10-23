@@ -454,16 +454,8 @@ def node_measurements(path: Path, spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def image_names(values: dict[str, Any], images: list[str]) -> dict[str, str]:
-    """Name rendered images and registered product artifacts in the values map.
-
-    A private deployment can install a collector separately from this chart.
-    Its image still needs a signed release pin and verified publication evidence.
-    """
-    registered = {f"{release_profiles.REPOSITORY_IMAGES}{image.image}"
-                  for image in IMAGE_SELECTOR["IMAGES"]}
-    named = {key: value for key, value in values.get("images", {}).items()
-             if value in images or (isinstance(value, str) and OCI.fullmatch(value)
-                                    and value.rsplit("@", 1)[0] in registered)}
+    """Name the rendered images in the values map."""
+    named = {key: value for key, value in values.get("images", {}).items() if value in images}
     unnamed = sorted(set(images) - set(named.values()))
     require(not unnamed, f"rendered images with no name in values.images: {unnamed}")
     return dict(sorted(named.items()))
@@ -827,8 +819,7 @@ def build(
     node = node_measurements(release_profiles.node_manifest(profile), spec)
     overlay = {
         "images": release_images(values, publication, base),
-        # cds-attest pins CDS, which runs on the pinned node image (c8s #851).
-        "attestationReceipts": {"releaseId": release_profiles.workload_release(tag), "cdsPin": node["tdx"]},
+        "attestationReceipts": {"releaseId": release_profiles.workload_release(tag)},
     }
     overlay_bytes = yaml.safe_dump(overlay, sort_keys=True).encode()
     values = release_profiles.merge_values(values, overlay)
