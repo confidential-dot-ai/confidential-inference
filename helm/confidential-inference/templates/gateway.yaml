@@ -74,7 +74,6 @@ spec:
         confidential.ai/cw: gateway
         # The gateway reads its settings and release selection once at start.
         checksum/config: {{ printf "%s\n%s" (include "confidential-inference.gatewaySettings" .) (include "confidential-inference.releaseSelection" .) | sha256sum }}
-        confidential.ai/c8s-renew-interval: {{ .Values.attestationReceipts.certificateRenewInterval | quote }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.gateway.containerPorts.metrics | quote }}
         # c8s releases the pepper and the admin client configuration only

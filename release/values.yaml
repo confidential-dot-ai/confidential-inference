@@ -67,7 +67,6 @@ attestationReceipts:
     url: https://c8s-cds.c8s-system.svc.cluster.local:8443
   expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  certificateRenewInterval: 30s
   attestationApiPort: 8400
 
 gateway:
