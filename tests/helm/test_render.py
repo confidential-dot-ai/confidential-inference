@@ -327,6 +327,11 @@ def main() -> None:
     assert json.loads(admin.env["GATEWAY_USAGE_MODELS"]) == {"m": {"served_model": "m", "model_revision": "r1"}}
     assert admin.deployment["spec"]["template"]["spec"]["hostAliases"] == [
         {"ip": "203.0.113.7", "hostnames": ["relay.example.com"]}]
+    # C8s #1049: an entry with egress has no host mount and no open argv
+    # (the gateway runs its image entrypoint with no args: args deny).
+    gateway_pod = admin.deployment["spec"]["template"]["spec"]
+    assert not any("hostPath" in volume for volume in gateway_pod.get("volumes", []))
+    assert not any(container.get("args") for container in gateway_pod["containers"])
     egress = next(item for item in with_admin if item["kind"] == "NetworkPolicy"
                   and item["metadata"]["name"] == "gateway-to-router")["spec"]["egress"]
     blocks = [peer["ipBlock"]["cidr"] for rule in egress for peer in rule.get("to", []) if "ipBlock" in peer]

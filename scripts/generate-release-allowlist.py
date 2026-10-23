@@ -645,6 +645,14 @@ def generate(
                     if not (c["digest"] in core_digests and argv0(c) in INJECTED_ENTRYPOINTS)
                 ]
         if exits := declared_egress(controller, item):
+            # C8s #1049: CDS refuses an entry with exits unless it is pinned
+            # like a secrets grant: no host mount rule, no open argv.
+            for container in entry.get("initContainers", []) + entry.get("containers", []):
+                if any(rule.get("kind") == "host" for rule in container.get("mounts", {}).get("rules", [])):
+                    errors.append(f"{item['name']}: an entry with egress has a host mount")
+                if container.get("mounts", {}).get("policy") not in {"exact", "deny"} or any(
+                        container.get(field, {}).get("policy") not in {"exact", "deny"} for field in ("command", "args")):
+                    errors.append(f"{item['name']}: an entry with egress must pin command, args and mounts")
             entry["egress"] = exits
         workloads[item["name"]] = entry
     if errors:
