@@ -16,8 +16,13 @@ The worker also selects the canonical CUDA runtime and verifies that it exports
 `cudaDeviceReset`. It does not select TileLang's limited CUDA stub.
 FlashInfer 0.6.17 already contains the merged global-timer and multicast-free workspace fixes.
 
-The image also contains the public `wait_for_model.py` and `gpu_metrics.py` repository files.
+The image also contains the public `wait_for_model.py`, `fetch_model.py` and `gpu_metrics.py` repository files.
 The gate waits for the late c8s mount and checks its read-only dm-verity source.
+With `--plain-cache` the path is instead a read-only plain cache disk (public weights the
+host can read); the byte check below is then the only integrity check, on every start.
+`fetch-model fetch` fills that cache from Hugging Face before the worker starts. Its argv pins
+the SHA-256 of the byte manifest; it downloads every file whose bytes differ and deletes every
+file the manifest does not list. `fetch-model manifest` prints the byte manifest of a revision.
 The gate also checks the model revision, metadata digests, model index, and weight shard presence.
 The gate then hashes every file on the volume against the byte manifest. The release pins the
 manifest's SHA-256 with `--expected-file`. A missing, extra, resized, or changed file fails the gate.
@@ -78,9 +83,6 @@ requires two clean builds with equal Linux AMD64 platform digests. SGLang
 is built again for publication and must produce the same verified digest.
 The signed release binds the selected image publication evidence.
 See [release publication](../../release/README.md) for inputs and checks.
-
-`scripts/rebuild-release-images.py` remains an independent audit tool for
-older release inventories. It does not replace the publication audit.
 
 Do not replace the read-only build mounts with `COPY`. Git does not store file
 modification times. A `COPY` layer would make the digest depend on the machine

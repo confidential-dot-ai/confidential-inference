@@ -6,10 +6,14 @@
     "ghcr.io/confidential-dot-ai/node-guest-base@sha256:f2a17174124233b089b0282e39186266c789fe4b0c85e3095b6dcf9413215867",
     "ghcr.io/confidential-dot-ai/node-guest-base@sha256:8d05da0c62d03045d2eb73ae36eab4166df2a348e8cd32d12541bac25d3391d5",
     "ghcr.io/confidential-dot-ai/node-guest-base@sha256:905045caf6c448f3e13a366091b8285a65edea9d98b4da3a23ae5f119d5e4c20",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:47b83664b068224f71511233bd469a65738d4e60d8ff90fa99d79a3bbabf55ca"
+    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:47b83664b068224f71511233bd469a65738d4e60d8ff90fa99d79a3bbabf55ca",
+    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:1a2e290c3b5a321a0ba4e71f8ea82569cd6a08412e87c7f710dfb1eae474804f",
+    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:bb8890760104025cf3efbc65babc6b52d71b78e713e66a6b19cde760bb574cd8",
+    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:be0f9c398c5d96005acf1aabb8651eeba83c4c9929f03e4e0b1990ab801e497f",
+    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:23acb1cf65b41791fa0e1ac922c5c44c28c36a214c64be333f07d9f7504757dc"
   ],
   "driverInputs": {
-    "confosFetchGpuSha256": "sha256:df1bf1d3de34089623bc996f56a42e87d0c6d173938a26a80c62811d23e53204"
+    "confosFetchGpuSha256": "sha256:004956a003792b42017ea2933ddf558dcef43ab28534553b5e0cfa2a84397f87"
   },
   "source": "The device-plugin CDI spec of c8s v0.59.1 (C8s #954: CDI_FEATURE_FLAGS=disable-ipc-discoverer, driver root /usr and /etc, firmware_class.path=/usr/lib/firmware). It is nvidia-595.71.05.json as derived offline with the nvcdi library against the extracted c8s v0.33.2 node image root (confidential-inference-internal receipts/cdi/node-image-v0.33.2-driver-595.71.05-toolkit-1.19.1.allowlist.json, commit 43c9dcf, sha256:9841d10b5f5897a9653c3f0d428ab2d12ee6f05db45d0cc57da6704941debd4d) without the nvidia-persistenced socket and with the GSP firmware at /usr/lib/firmware. The 14 mounts equal the spec that the device plugin wrote on both GPU workers of a node image built from the #954 changes (b300-node-3, 2026-10-19).",
   "env": {

@@ -1,0 +1,517 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Confidential Inference Gateway Admin API",
+    "version": "2.0.0",
+    "description": "The gateway keeps no state on disk. The admin key registry is the only key store. The gateway pulls the key snapshot from the admin (GET /api/gateway/key-snapshot, served by the admin) and holds it in memory. The admin may also push the same snapshot to the gateway as a fast path. Every route under /admin/v1 is served by the gateway through c8s tls-lb and requires an admin API key or the v1 request signature."
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "servers": [
+    {
+      "url": "https://api.example.invalid",
+      "description": "The c8s tls-lb entry point"
+    }
+  ],
+  "security": [
+    {
+      "adminApiKey": []
+    },
+    {
+      "adminSignedRequest": []
+    }
+  ],
+  "x-state-authority": "admin-key-registry",
+  "x-non-authoritative-systems": [
+    "gateway"
+  ],
+  "x-admin-request-signing": {
+    "environmentPolicy": "deployment-defined",
+    "serverDnsSource": "deployment-environment",
+    "clientIdentity": "admin-backend",
+    "requiredKeyMaterial": [
+      "admin-client-certificate",
+      "admin-client-private-key",
+      "gateway-trust-certificate"
+    ]
+  },
+  "paths": {
+    "/admin/v1/health": {
+      "get": {
+        "operationId": "getAdminHealth",
+        "summary": "Read the admin API health",
+        "responses": {
+          "200": {
+            "description": "The admin API runs. `status` tells whether the gateway holds a key snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          }
+        },
+        "description": "Always 200 while the process runs. `status` is `ready` once the gateway holds a key snapshot."
+      }
+    },
+    "/admin/v1/api-keys/source": {
+      "get": {
+        "operationId": "getApiKeySource",
+        "summary": "Read the key snapshot status",
+        "description": "Reports the revision of the snapshot the gateway holds, when it was last applied or confirmed, and the pepper fingerprint. The admin may read it as a drift probe.",
+        "responses": {
+          "200": {
+            "description": "The key source status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrySourceStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          }
+        }
+      }
+    },
+    "/admin/v1/api-keys/snapshot": {
+      "put": {
+        "operationId": "putApiKeySnapshot",
+        "summary": "Push the key registry snapshot (fast path)",
+        "description": "Optional fast path. The gateway also pulls the same snapshot from the admin (GET /api/gateway/key-snapshot) at startup and every 30 seconds. A push and a pull follow the same checks: schema, environment, revision rule, envelope and per-row pepper check, at most 10000 rows. The gateway applies a strictly higher revision, acknowledges an equal one, and refuses a lower one. It keeps the snapshot in memory only. The snapshot carries no signature of its own: the admin authentication of the request is the only check.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyRegistrySnapshot"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The gateway applied the snapshot, or it already held that revision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotPushResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/gateway/key-snapshot": {
+      "servers": [
+        {
+          "url": "https://admin.example.invalid",
+          "description": "The admin origin: the origin of `endpoint` in the gateway's CDS secret /confidential-inference/gateway/product-usage. Its host is the TLS name the gateway checks."
+        }
+      ],
+      "get": {
+        "operationId": "getGatewayKeySnapshot",
+        "summary": "Pull the key registry snapshot (served by the admin)",
+        "description": "The admin serves this route; the gateway calls it. The admin answers with the snapshot of the key realm and environment bound to the bearer token. The gateway pulls at startup, every 5 seconds until the first snapshot is applied, then every 30 seconds. It follows no redirect, reads at most 4 MiB, and, when the CDS secret sets `tls_ca_pem`, trusts only that CA. It applies the body like a push (same checks and revision rule). A failed pull keeps the snapshot the gateway already holds. Until the first snapshot is applied, the gateway's `/ready` answers 503 and inference answers 503 `key_registry_not_ready`.",
+        "security": [
+          {
+            "gatewayBearerToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current snapshot of the token's key realm.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyRegistrySnapshot"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The bearer token is missing or matches no gateway binding (`unauthorized`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminErrorCode"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The realm has no snapshot yet (`empty_registry`; a gateway never receives an empty key set), the admin has no gateway credentials configured (`gateway_credentials_disabled`), or the registry is unavailable (`registry_unavailable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminErrorCode"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "adminApiKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An admin API key. The gateway accepts a key whose lowercase hex SHA-256 is listed in the Kubernetes Secret `gateway-admin-api-key` (key `sha256`, one or two hashes, so a rotation can hold the old and the new key). A request with an Authorization header is judged by that header alone."
+      },
+      "adminSignedRequest": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Admin-Signature",
+        "description": "The v1 request signature: a P-256 signature over the method, path, body hash, timestamp, and one-time nonce. It stays until the admin cutover (confidential-inference#186)."
+      },
+      "gatewayBearerToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The `token` of the gateway's CDS secret /confidential-inference/gateway/product-usage, 32 to 256 URL-safe characters. The admin maps it to one environment and key realm. The same token authenticates usage ingest (product-usage.md)."
+      }
+    },
+    "schemas": {
+      "Identifier": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{7,127}$"
+      },
+      "Version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "HealthResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "cachedRevision"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "ready",
+              "key_registry_not_ready"
+            ]
+          },
+          "cachedRevision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{2,63}$"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Present for `pepper_mismatch`: the first 12 characters of each pepper fingerprint."
+          }
+        }
+      },
+      "RegistrySourceStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cachedRevision",
+          "lastSuccessUnix",
+          "staleSeconds",
+          "rowCount",
+          "pepperMismatchCount",
+          "pepperFingerprint"
+        ],
+        "properties": {
+          "cachedRevision": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lastSuccessUnix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "When a snapshot was last applied or its revision confirmed, by a pull or a push."
+          },
+          "staleSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rowCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pepperMismatchCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pepperFingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "The fingerprint of the pepper this gateway holds."
+          }
+        },
+        "description": "The snapshot status of this gateway. `cachedRevision` is null until the first snapshot is applied."
+      },
+      "KeyRegistrySnapshotKey": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "owner",
+          "prefix",
+          "keyHash",
+          "pepperFingerprint",
+          "tags",
+          "createdAt",
+          "createdBy",
+          "version"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "The customer or team that holds the key."
+          },
+          "prefix": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16
+          },
+          "keyHash": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Base64url, no padding, of HMAC-SHA256(pepper, plaintext). It never discloses the plaintext key or the pepper."
+          },
+          "pepperFingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Binds this hash to one pepper. The gateway skips and counts a row whose fingerprint differs from its own."
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 16,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "rateLimit": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Reserved. Always null in this release. The gateway accepts and ignores it."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "revokedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "revokedBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "version": {
+            "$ref": "#/components/schemas/Version"
+          }
+        }
+      },
+      "KeyRegistrySnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "environment",
+          "revision",
+          "keys"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "const": "confidential.ai/key-registry-snapshot/v1"
+          },
+          "environment": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "description": "The gateway refuses a snapshot that names another environment."
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The registry revision. The gateway applies a strictly higher revision, acknowledges an equal one, and refuses a lower one (`stale_revision`). A restarted gateway holds no revision and applies any revision of at least 1."
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "pepperFingerprint": {
+            "type": "string",
+            "pattern": "^([0-9a-f]{64})?$",
+            "description": "The pepper the admin minted every row with. The gateway refuses the whole snapshot (`pepper_mismatch`) when it names another pepper. An empty value states nothing; each row is then judged by its own fingerprint."
+          },
+          "keys": {
+            "type": "array",
+            "maxItems": 10000,
+            "items": {
+              "$ref": "#/components/schemas/KeyRegistrySnapshotKey"
+            }
+          }
+        }
+      },
+      "SnapshotPushResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revision",
+          "cachedRevision",
+          "accepted",
+          "skippedPepperMismatch",
+          "applied"
+        ],
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "cachedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The revision the gateway holds after this push."
+          },
+          "accepted": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "skippedPepperMismatch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "applied": {
+            "type": "boolean",
+            "description": "False when the push repeated the cached revision: nothing changed, and the admin may treat this as an acknowledgement."
+          }
+        }
+      },
+      "AdminErrorCode": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "enum": [
+              "unauthorized",
+              "empty_registry",
+              "gateway_credentials_disabled",
+              "registry_unavailable"
+            ]
+          }
+        }
+      }
+    },
+    "responses": {
+      "InvalidRequest": {
+        "description": "The snapshot is invalid (`invalid_request`): wrong schema version or environment, a revision below 1, more than 10000 rows, or a bad field value.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unauthenticated": {
+        "description": "The admin API key or the request signature is missing or invalid.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "The snapshot revision is lower than the cached revision (`stale_revision`), or the snapshot envelope names a pepper this gateway does not hold (`pepper_mismatch`).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -40,7 +40,7 @@ already there, after the same checks.
 The build writes three files to --output-dir:
 
 - release-bundle.json: the manifest. It must match
-  contracts/release-manifest.schema.json;
+  api/release-manifest.schema.json;
 - allowlist.json: the c8s allowlist, generated with the pinned c8s CLI from
   the chart rendered with these digests. The manifest binds its SHA-256;
 - release-values.yaml: the Helm values file with the repository image
@@ -92,15 +92,15 @@ import release_signature
 
 ROOT = Path(__file__).resolve().parents[1]
 CHART = ROOT / "helm/confidential-inference"
-SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
+SOURCE_LOCK = ROOT / "release/inputs/c8s-source-lock.json"
 SCHEMA = "confidential.ai/release-manifest/v1"
-MANIFEST_SCHEMA = ROOT / "contracts/release-manifest.schema.json"
+MANIFEST_SCHEMA = ROOT / "api/release-manifest.schema.json"
 TRUST_POLICY = ROOT / "releases/trust/release-signing-policy.json"
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 IMAGE_SELECTOR = runpy.run_path(str(ROOT / "scripts/affected-release-images.py"))
 ALLOWLIST_GENERATOR = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
 PUBLICATION = runpy.run_path(str(ROOT / "scripts/image-publication-manifest.py"))
-C8S_VERSION = re.compile(rf"^{release_profiles.VERSION}(?:-beta\.([1-9][0-9]*))?$")
+C8S_VERSION = re.compile(rf"^{release_profiles.VERSION}(?:-beta\.([1-9][0-9]*)|-0\.[0-9]{{14}}-[0-9a-f]{{12}})?$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
@@ -145,7 +145,11 @@ def read_spec(profile: release_profiles.Profile) -> dict[str, Any]:
         spec = release_profiles.read_spec(profile)
     except release_profiles.ProfileError as error:
         raise ManifestError(str(error)) from error
-    return validate_spec(spec)
+    spec = validate_spec(spec)
+    # A C8s beta is signed under the beta identity; production keeps the stable (main) one.
+    require(profile.environment != "production" or "-beta." not in spec["c8s"]["release"],
+            "a production release must pin a stable c8s release")
+    return spec
 
 
 def validate_spec(spec: Any) -> dict[str, Any]:
@@ -158,7 +162,11 @@ def validate_spec(spec: Any) -> dict[str, Any]:
     c8s = spec["c8s"]
     require(isinstance(c8s, dict), "c8s must be a mapping")
     require(isinstance(c8s.get("release"), str) and C8S_VERSION.fullmatch(c8s["release"]) is not None,
-            "c8s.release must be vX.Y.Z or vX.Y.Z-beta.N")
+            "c8s.release must be vX.Y.Z, vX.Y.Z-beta.N or a c8s Go pseudo-version")
+    require("baseRelease" not in c8s
+            or (re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+-0\.[0-9]{14}-[0-9a-f]{12}", c8s["release"]) is not None
+                and re.fullmatch(release_profiles.VERSION, str(c8s["baseRelease"])) is not None),
+            "c8s.baseRelease (vX.Y.Z) is only for a c8s Go pseudo-version")
     require(isinstance(c8s.get("sourceCommit"), str) and COMMIT.fullmatch(c8s["sourceCommit"]) is not None,
             "c8s.sourceCommit must be a full Git commit")
     node = c8s.get("nodeImage", {})
@@ -834,7 +842,7 @@ def build(
                       and image not in overlay["images"].values()]
         require(not unresolved, f"rendered repository images without a published digest: {unresolved}")
         config_images = set(images)
-        if ALLOWLIST_GENERATOR["c8s_at_least"](spec["c8s"]["release"], (0, 44, 0)):
+        if ALLOWLIST_GENERATOR["c8s_at_least"](ALLOWLIST_GENERATOR["feature_release"](spec["c8s"]), (0, 44, 0)):
             config_images.update(spec["c8s"]["coreImages"])
         configs = image_configs(sorted(config_images))
         try:
@@ -848,7 +856,7 @@ def build(
     require(allowlist.get("schema") == "c8s.allowlist/v1", "the allowlist has the wrong schema")
     require_model_files(spec, documents)
     require_allowlist_contract(allowlist, policy, spec["c8s"]["coreImages"], documents, configs,
-                              spec["c8s"]["release"], ALLOWLIST_GENERATOR["core_seed"](spec["c8s"]),
+                              ALLOWLIST_GENERATOR["feature_release"](spec["c8s"]), ALLOWLIST_GENERATOR["core_seed"](spec["c8s"]),
                               ALLOWLIST_GENERATOR["native_core_entries"](spec["c8s"], configs))
     allowlisted = {
         container["digest"]

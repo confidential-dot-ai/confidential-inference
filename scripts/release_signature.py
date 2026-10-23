@@ -22,11 +22,11 @@ import release_profiles
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "releases/trust/release-signing-policy.json"
-RELEASE_SCHEMA_PATH = ROOT / "contracts/release-bundle.schema.json"
+RELEASE_SCHEMA_PATH = ROOT / "api/release-bundle.schema.json"
 # v0.14.0 and later sign a release manifest built from release/. The signed
 # file names its own schema; each schema has one contract file.
 RELEASE_MANIFEST_SCHEMA = "confidential.ai/release-manifest/v1"
-RELEASE_MANIFEST_SCHEMA_PATH = ROOT / "contracts/release-manifest.schema.json"
+RELEASE_MANIFEST_SCHEMA_PATH = ROOT / "api/release-manifest.schema.json"
 MAX_RELEASE_BUNDLE_BYTES = 2 * 1024 * 1024
 MAX_SIGNATURE_BUNDLE_BYTES = 2 * 1024 * 1024
 RELEASE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")

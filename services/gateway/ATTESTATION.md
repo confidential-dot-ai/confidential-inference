@@ -46,7 +46,8 @@ option, the live policy must equal the signed initial policy.
 
 ## CDS verification
 
-`GATEWAY_C8S_CDS_URL` selects the CDS HTTPS origin.
+`GATEWAY_C8S_CDS_URL` selects the CDS HTTPS origin. It is required; the
+gateway has no other attestation source.
 `GATEWAY_C8S_IMAGE_POLICY` selects the control-node-only image-policy file.
 `GATEWAY_C8S_IMAGE_POLICY_SHA256` pins its exact bytes in the admitted inputs.
 `GATEWAY_C8S_SERVED_IMAGE_POLICY` selects the full policy that CDS enforces.
@@ -200,8 +201,8 @@ as a successful cryptographic verification.
 ## Version 2 overlap
 
 The contract retains version 2 for checks against an old gateway during an
-update. That format includes nonce-bound workload receipts. The new process
-uses version 3 only. Rollout checks must select verification by response
+update. That format includes nonce-bound workload receipts. This gateway no
+longer contains the version 2 receipt collector and serves version 3 only. Rollout checks must select verification by response
 version and must keep inference-connection verification independent of the
 metadata response.
 
