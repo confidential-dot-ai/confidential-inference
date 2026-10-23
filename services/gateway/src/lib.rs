@@ -25,6 +25,7 @@ use tower_http::{
 use uuid::Uuid;
 
 pub mod admin_auth;
+pub mod admin_client;
 pub mod api_keys;
 pub mod attestation;
 pub mod attestation_metadata;
@@ -49,20 +50,11 @@ pub trait ApiKeyVerifier: Send + Sync + 'static {
         None
     }
 
-    /// Return the stable record ID and the source that matched it.
-    ///
-    /// The gateway state overrides this to report `"local"` or `"registry"`.
-    /// The default reports every match as `"local"`, so a verifier with one
-    /// key source needs no change.
-    fn verify_bearer_with_source(&self, bearer: &str) -> Option<(String, &'static str)> {
-        self.verify_bearer(bearer).map(|key_id| (key_id, "local"))
-    }
-
     /// Return whether this verifier can authenticate a request right now.
     ///
-    /// A verifier that reads only a registry cache is not ready before its
-    /// first successful snapshot fetch: it holds no key material yet, so it
-    /// must refuse every request rather than reject every key as invalid.
+    /// The key store is not ready before its first snapshot: it holds no
+    /// key material yet, so the gateway refuses every request rather than
+    /// reject every key as invalid, and `/ready` fails.
     fn is_ready(&self) -> bool {
         true
     }
@@ -95,36 +87,6 @@ impl AuditSink for TracingAuditSink {
 }
 
 #[derive(Clone)]
-pub struct GatewayAvailability {
-    available: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl GatewayAvailability {
-    #[must_use]
-    pub fn new(available: bool) -> Self {
-        Self {
-            available: Arc::new(std::sync::atomic::AtomicBool::new(available)),
-        }
-    }
-
-    #[must_use]
-    pub fn is_available(&self) -> bool {
-        self.available.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    pub fn set_available(&self, available: bool) {
-        self.available
-            .store(available, std::sync::atomic::Ordering::Release);
-    }
-}
-
-impl Default for GatewayAvailability {
-    fn default() -> Self {
-        Self::new(true)
-    }
-}
-
-#[derive(Clone)]
 pub struct GatewayConfig {
     pub catalog_model_ids: Vec<String>,
     pub inference_model_ids: Vec<String>,
@@ -145,7 +107,6 @@ struct AppState {
     keys: Arc<dyn ApiKeyVerifier>,
     audit: Arc<dyn AuditSink>,
     metrics: Arc<GatewayMetrics>,
-    availability: GatewayAvailability,
     attestation_provider: Arc<dyn AttestationProvider>,
     nonces: Arc<Mutex<NonceStore>>,
     protection: Arc<ProtectionState>,
@@ -223,7 +184,6 @@ pub fn router(
     keys: Arc<dyn ApiKeyVerifier>,
     audit: Arc<dyn AuditSink>,
     metrics: Arc<GatewayMetrics>,
-    availability: GatewayAvailability,
     attestation_provider: Arc<dyn AttestationProvider>,
     http: reqwest::Client,
 ) -> Router {
@@ -232,7 +192,6 @@ pub fn router(
         keys,
         audit,
         metrics,
-        availability,
         attestation_provider,
         http,
         None,
@@ -246,7 +205,6 @@ pub fn router_with_runtime(
     keys: Arc<dyn ApiKeyVerifier>,
     audit: Arc<dyn AuditSink>,
     metrics: Arc<GatewayMetrics>,
-    availability: GatewayAvailability,
     attestation_provider: Arc<dyn AttestationProvider>,
     http: reqwest::Client,
     runtime: Option<Arc<runtime_config::MountedConfig<runtime_settings::GatewaySettings>>>,
@@ -257,7 +215,6 @@ pub fn router_with_runtime(
         keys,
         audit,
         metrics,
-        availability,
         attestation_provider,
         http,
         runtime,
@@ -272,7 +229,6 @@ pub fn router_with_runtime_and_usage(
     keys: Arc<dyn ApiKeyVerifier>,
     audit: Arc<dyn AuditSink>,
     metrics: Arc<GatewayMetrics>,
-    availability: GatewayAvailability,
     attestation_provider: Arc<dyn AttestationProvider>,
     http: reqwest::Client,
     runtime: Option<Arc<runtime_config::MountedConfig<runtime_settings::GatewaySettings>>>,
@@ -306,7 +262,6 @@ pub fn router_with_runtime_and_usage(
         keys,
         audit,
         metrics,
-        availability,
         attestation_provider,
         nonces: Arc::new(Mutex::new(NonceStore::default())),
         protection: protection.clone(),
@@ -368,10 +323,10 @@ async fn health() -> impl IntoResponse {
 }
 
 async fn ready(State(state): State<Arc<AppState>>) -> Response<Body> {
-    if !state.availability.is_available() {
+    if !state.keys.is_ready() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"status":"outage_only"})),
+            Json(json!({"status":"key_registry_not_ready"})),
         )
             .into_response();
     }
@@ -508,18 +463,6 @@ async fn proxy_inference(
         .get::<String>()
         .cloned()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    if !state.availability.is_available() {
-        state.metrics.record_rejection("gateway_state_unavailable");
-        let mut response = (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({"error":{"code":"gateway_state_unavailable","message":"Inference is temporarily unavailable."}})),
-        )
-            .into_response();
-        response
-            .headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
-        return response;
-    }
     if !state.keys.is_ready() {
         state.metrics.record_rejection("key_registry_not_ready");
         return client_error(StatusCode::SERVICE_UNAVAILABLE, "key_registry_not_ready");
@@ -565,8 +508,8 @@ async fn proxy_inference(
     let model = model.as_str();
     let mut usage_request = match &state.usage {
         Some(recorder) => match recorder.reserve(&key_id, model) {
-            Ok(guard) => Some(guard),
-            Err(_) => return protection::overload("usage_capacity"),
+            Some(guard) => Some(guard),
+            None => return protection::overload("usage_capacity"),
         },
         None => None,
     };
@@ -1082,8 +1025,7 @@ fn authenticate(state: &AppState, headers: &HeaderMap) -> Authentication {
     if bearer.is_empty() || bearer.len() > 256 {
         return Authentication::Invalid;
     }
-    if let Some((key_id, source)) = state.keys.verify_bearer_with_source(bearer) {
-        state.metrics.record_api_key_accepted(source);
+    if let Some(key_id) = state.keys.verify_bearer(bearer) {
         Authentication::Active(key_id)
     } else if let Some(key_id) = state.keys.verify_revoked_bearer(bearer) {
         Authentication::Revoked(key_id)
@@ -1189,8 +1131,8 @@ mod tests {
         fn record(&self, _: AuditEvent) {}
     }
 
-    /// A `registry`-mode verifier before its first successful snapshot
-    /// fetch: it holds no key material, so it must refuse every request.
+    /// A key store before its first snapshot: it holds no key material, so
+    /// the gateway must refuse every request.
     struct NotReadyKeys;
     impl ApiKeyVerifier for NotReadyKeys {
         fn verify_bearer(&self, _value: &str) -> Option<String> {
@@ -1202,11 +1144,15 @@ mod tests {
         }
     }
 
-    fn app(availability: GatewayAvailability) -> Router {
-        app_with_attestation(availability, Arc::new(UnavailableAttestation))
+    fn app() -> Router {
+        app_with(Arc::new(Keys), Arc::new(UnavailableAttestation))
     }
 
     fn app_with_keys(keys: Arc<dyn ApiKeyVerifier>) -> Router {
+        app_with(keys, Arc::new(UnavailableAttestation))
+    }
+
+    fn app_with(keys: Arc<dyn ApiKeyVerifier>, provider: Arc<dyn AttestationProvider>) -> Router {
         router(
             GatewayConfig {
                 catalog_model_ids: vec!["deepseek".to_owned()],
@@ -1219,29 +1165,6 @@ mod tests {
             keys,
             Arc::new(Audit),
             Arc::new(GatewayMetrics::new("test")),
-            GatewayAvailability::default(),
-            Arc::new(UnavailableAttestation),
-            reqwest::Client::new(),
-        )
-    }
-
-    fn app_with_attestation(
-        availability: GatewayAvailability,
-        provider: Arc<dyn AttestationProvider>,
-    ) -> Router {
-        router(
-            GatewayConfig {
-                catalog_model_ids: vec!["deepseek".to_owned()],
-                inference_model_ids: vec!["deepseek".to_owned()],
-                upstream_base_url: "http://127.0.0.1:1".to_owned(),
-                maximum_body_bytes: 1_024,
-                upstream_timeout: Duration::from_secs(1),
-                protection: ProtectionConfig::default(),
-            },
-            Arc::new(Keys),
-            Arc::new(Audit),
-            Arc::new(GatewayMetrics::new("test")),
-            availability,
             provider,
             reqwest::Client::new(),
         )
@@ -1263,12 +1186,10 @@ mod tests {
                 Ok(json!({"schemaVersion": 3, "c8s": {"operatorKeys": []}}))
             }
         }
-        // The configured inference address has no listener. Attestation must
-        // still work, even when inference readiness is false.
+        // The configured inference address has no listener and no key is
+        // loaded. Attestation must still work.
         for path in ["/attestation", "/v1/attestation"] {
-            let availability = GatewayAvailability::default();
-            availability.set_available(false);
-            let response = app_with_attestation(availability, Arc::new(Metadata))
+            let response = app_with(Arc::new(NotReadyKeys), Arc::new(Metadata))
                 .oneshot(
                     Request::builder()
                         .uri(path)
@@ -1332,7 +1253,7 @@ mod tests {
             if let Some(value) = authorization {
                 request = request.header(header::AUTHORIZATION, value);
             }
-            let response = app(GatewayAvailability::default())
+            let response = app()
                 .oneshot(
                     request
                         .body(Body::empty())
@@ -1356,7 +1277,7 @@ mod tests {
     #[tokio::test]
     async fn unsupported_models_are_not_authorized() {
         for model in ["minimax-m3", "unknown"] {
-            let response = app(GatewayAvailability::default())
+            let response = app()
                 .oneshot(
                     Request::builder()
                         .method("POST")
@@ -1380,8 +1301,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unavailable_state_keeps_the_catalog_and_rejects_inference() {
-        let app = app(GatewayAvailability::new(false));
+    async fn a_store_without_keys_keeps_the_catalog_and_rejects_inference() {
+        let app = app_with_keys(Arc::new(NotReadyKeys));
         let response = app
             .clone()
             .oneshot(
@@ -1416,13 +1337,26 @@ mod tests {
             )
             .await
             .unwrap_or_else(|_| unreachable!());
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(response.headers()[header::RETRY_AFTER], "30");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn readiness_waits_for_the_keys() {
+        let response = app_with_keys(Arc::new(NotReadyKeys))
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap_or_else(|_| unreachable!()),
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
     async fn readiness_does_not_depend_on_inference() {
-        let response = app(GatewayAvailability::default())
+        let response = app()
             .oneshot(
                 Request::builder()
                     .uri("/ready")
@@ -1443,7 +1377,7 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_inference_returns_a_structured_503() {
-        let response = app(GatewayAvailability::default())
+        let response = app()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -1494,7 +1428,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_attestation_does_not_burn_the_nonce() {
         let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([4_u8; 32]);
-        let app = app(GatewayAvailability::default());
+        let app = app();
         let first = app
             .clone()
             .oneshot(
@@ -1530,7 +1464,7 @@ mod tests {
     #[tokio::test]
     async fn a_successful_attestation_nonce_is_single_use() {
         let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([5_u8; 32]);
-        let app = app_with_attestation(GatewayAvailability::default(), Arc::new(Evidence));
+        let app = app_with(Arc::new(Keys), Arc::new(Evidence));
         let first = app
             .clone()
             .oneshot(

@@ -16,8 +16,17 @@ runtimeConfig:
 environment: staging
 
 gateway:
+  # The admin-next relay (admin/vm/caddy in the internal repository): key
+  # snapshot GET and usage POST. Its address is the gateway's one exit.
+  admin:
+    url: https://ci-admin-next-loki.centralus.cloudapp.azure.com/api/usage/ingest
+    address: 172.173.67.102
   usage:
     enabled: true
+    models:
+      hf-internal-testing/tiny-random-LlamaForCausalLM:
+        served_model: hf-internal-testing/tiny-random-LlamaForCausalLM
+        model_revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998
   protection:
     # The node mesh proxy opens the final connection to the gateway.
     # Keep Pod proxies and the staging node network in the trusted scope.
