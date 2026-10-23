@@ -29,10 +29,14 @@ attestationReceipts:
   attestationApiUrl: unix:///run/c8s/workload-claims/attestation-api.sock
   evidenceBaseUrl: https://staging.api.confidential.ai
   evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
-  # The gateway verifies the in-cluster CDS for its schema 3 policy metadata.
-  # The deployment supplies the two policy documents; see the chart values.
+  # The gateway verifies CDS for its schema 3 policy metadata. On c8s >= C8s
+  # #1048 a member pod reaches CDS only at the node's bound endpoint: the
+  # server address of the signed launch configuration (staging-20260926
+  # CONTROL_IP) and the CDS NodePort. C8s admits that exit for every member
+  # pod. The CDS armTLS certificate names no host; the gateway pins it by
+  # attestation. The deployment supplies the two policy documents.
   cds:
-    url: https://c8s-cds.c8s-system.svc:8443
+    url: https://10.43.58.194:30808
 
 inference:
   mode: simulator

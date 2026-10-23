@@ -78,7 +78,8 @@ attestationReceipts:
   expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   expectedStaticAllowlistSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   # Schema 3 policy metadata (services/gateway/ATTESTATION.md, "CDS
-  # verification"). url is the in-cluster CDS origin the gateway verifies;
+  # verification"). url is the CDS origin the gateway verifies (c8s >=
+  # C8s #1048: https://<launch server address>:30808, the node's CDS exit);
   # empty leaves the policy settings to the deployment procedure. The
   # deployment supplies the two policy documents with --set-file; the chart
   # pins them in the release identity file. Set both or neither.
