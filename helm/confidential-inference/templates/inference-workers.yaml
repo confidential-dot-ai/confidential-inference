@@ -19,12 +19,35 @@ spec:
     - name: inference
       port: {{ .Values.inference.port }}
       targetPort: inference
+{{- $cache := .Values.inference.model.cache }}
+{{- if $cache.enabled }}
+{{- $manifestPin := "" }}
+{{- range $file := include "confidential-inference.expectedFiles" . | fromJsonArray }}
+{{- if hasPrefix (printf "%s=" $.Values.inference.model.mountVerification.revisionMetadata) $file }}
+{{- $manifestPin = regexReplaceAll "^.*=" $file "" }}
+{{- end }}
+{{- end }}
+{{- if ne $manifestPin (sha256sum $cache.manifest) }}
+{{- fail "inference.model.cache.manifest does not match the pinned SHA-256 of mountVerification.revisionMetadata" }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: model-manifest
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+data:
+  manifest.json: {{ $cache.manifest | quote }}
+{{- end }}
 {{- range $index := until (int .Values.inference.replicas) }}
 {{- $simulatorMode := eq $.Values.inference.mode "simulator" }}
 {{- $modelMount := or (not $simulatorMode) $.Values.inference.simulator.validateModelMount }}
 {{- $volumeName := "" }}
-{{- if $modelMount }}
+{{- $modelPath := "/mnt/c8s-data/models/cache" }}
+{{- if and $modelMount (not $cache.enabled) }}
 {{- $volumeName = index $.Values.inference.model.volumeNames $index }}
+{{- $modelPath = printf "%s/%s" $.Values.inference.model.volumeDirectory $volumeName }}
 {{- end }}
 {{- $attestedWorkload := index $.Values.inference.attestedWorkloads $index }}
 ---
@@ -55,7 +78,7 @@ spec:
       annotations:
         confidential.ai/cw: inference-worker-{{ $index }}
         confidential.ai/c8s-renew-interval: {{ $.Values.attestationReceipts.certificateRenewInterval | quote }}
-        {{- if $modelMount }}
+        {{- if and $modelMount (not $cache.enabled) }}
         confidential.ai/c8s-volumes: {{ printf "%s=%s" $volumeName $.Values.inference.model.c8sVolumeSource | quote }}
         confidential.ai/c8s-volume-dir: {{ $.Values.inference.model.volumeDirectory | quote }}
         {{- end }}
@@ -76,6 +99,40 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+      {{- if and $modelMount $cache.enabled }}
+      initContainers:
+        # Root owns the hostPath directory; the container has no capability.
+        - name: fetch-model
+          image: {{ $.Values.images.sglangWorker }}
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/fetch-model"]
+          args:
+            - --endpoint={{ $cache.endpoint }}
+            - fetch
+            - --path={{ $modelPath }}
+            - --manifest=/mnt/c8s-data/model-manifest/manifest.json
+            - --manifest-sha256={{ sha256sum $cache.manifest }}
+            - --revision-metadata={{ $.Values.inference.model.mountVerification.revisionMetadata }}
+          env:
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsUser: 0
+            runAsGroup: 0
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: model-cache
+              mountPath: {{ $modelPath }}
+            - name: model-manifest
+              mountPath: /mnt/c8s-data/model-manifest
+              readOnly: true
+      {{- end }}
       containers:
         - name: sglang
           image: {{ $.Values.images.sglangWorker }}
@@ -87,7 +144,10 @@ spec:
           {{- end }}
           args:
             {{- if and $simulatorMode $modelMount }}
-            - --path={{ $.Values.inference.model.volumeDirectory }}/{{ $volumeName }}
+            - --path={{ $modelPath }}
+            {{- if $cache.enabled }}
+            - --plain-cache
+            {{- end }}
             - --timeout-seconds={{ $.Values.inference.model.mountVerification.timeoutSeconds }}
             - --poll-seconds={{ $.Values.inference.model.mountVerification.pollSeconds }}
             - --expected-repository={{ $.Values.inference.model.name }}
@@ -124,7 +184,10 @@ spec:
             - --host=0.0.0.0
             - --port={{ $.Values.inference.port }}
             {{- else }}
-            - --path={{ $.Values.inference.model.volumeDirectory }}/{{ $volumeName }}
+            - --path={{ $modelPath }}
+            {{- if $cache.enabled }}
+            - --plain-cache
+            {{- end }}
             - --timeout-seconds={{ $.Values.inference.model.mountVerification.timeoutSeconds }}
             - --poll-seconds={{ $.Values.inference.model.mountVerification.pollSeconds }}
             - --expected-repository={{ $.Values.inference.model.name }}
@@ -139,7 +202,7 @@ spec:
             - python3
             - -m
             - sglang.launch_server
-            - --model-path={{ $.Values.inference.model.volumeDirectory }}/{{ $volumeName }}
+            - --model-path={{ $modelPath }}
             - --served-model-name={{ $.Values.inference.model.name }}
             - --revision={{ $.Values.inference.model.revision }}
             - --tool-call-parser=deepseekv4
@@ -161,6 +224,10 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            {{- if and $modelMount $cache.enabled }}
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            {{- end }}
             {{- if not $simulatorMode }}
             - name: WORKER_DRAIN_DEADLINE_SECONDS
               # wait-for-model reads this to drain in-flight requests on
@@ -226,11 +293,25 @@ spec:
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
+            {{- if and $modelMount $cache.enabled }}
+            - name: model-cache
+              mountPath: {{ $modelPath }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: shm
           emptyDir:
             medium: Memory
             sizeLimit: 64Gi
+        {{- if and $modelMount $cache.enabled }}
+        - name: model-cache
+          hostPath:
+            path: {{ $cache.hostPath }}
+            type: DirectoryOrCreate
+        - name: model-manifest
+          configMap:
+            name: model-manifest
+        {{- end }}
 {{- end }}
 {{- end }}
 

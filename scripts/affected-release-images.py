@@ -76,6 +76,7 @@ IMAGES = (
             "images/sglang/gpu_metrics.py",
             "images/sglang/patch_flashinfer_cuda_ipc.py",
             "images/sglang/wait_for_model.py",
+            "images/sglang/fetch_model.py",
             "images/sglang/patches/**",
             "images/sglang/simulator-upstream/**",
         ),
@@ -100,7 +101,7 @@ IMAGES = (
         "images/log-collector",
         "images/log-collector/Dockerfile",
         "Confidential Inference log collector",
-        ("images/log-collector/Dockerfile", "images/log-collector/config.alloy"),
+        ("images/log-collector/Dockerfile", "images/log-collector/config.alloy", "images/log-collector/auth/*.alloy"),
     ),
     Image(
         "kube-state-metrics",

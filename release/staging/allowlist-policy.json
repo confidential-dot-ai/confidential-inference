@@ -26,6 +26,10 @@
       "controller": "StatefulSet/inference-worker-1"
     },
     {
+      "name": "log-collector",
+      "controller": "Deployment/log-collector"
+    },
+    {
       "name": "metrics-collector",
       "controller": "Deployment/metrics-collector"
     },

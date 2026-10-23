@@ -160,7 +160,7 @@ class ReleaseManifestVerifierTests(unittest.TestCase):
             },
             "mrtd": MRTD, "rtmr1": RTMR1, "rtmr2": RTMR2,
             "sourceLock": {
-                "path": "contracts/c8s-admission-source-lock.json",
+                "path": "release/inputs/c8s-source-lock.json",
                 "sha256": digest(self.source_lock_path.read_bytes()),
             },
             "model": {

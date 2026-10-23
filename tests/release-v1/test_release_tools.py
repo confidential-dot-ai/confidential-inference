@@ -51,10 +51,12 @@ FIXTURES = ROOT / "tests/release-v1/fixtures"
 OVERLAY = FIXTURES / "release-values.yaml"
 STAGING_ALLOWLIST = FIXTURES / "staging-allowlist.json"
 REPOSITORY_CONFIGS = json.loads((FIXTURES / "repository-image-config.json").read_text())
-# Packaging tests use a placeholder collector digest. Runtime generation is
-# verified separately with the registry configuration of the approved image.
+# Packaging tests use a placeholder collector digest with the image's
+# ENTRYPOINT and CMD (images/log-collector/Dockerfile).
 REPOSITORY_CONFIGS['ghcr.io/confidential-dot-ai/confidential-inference/log-collector@sha256:' + '2' * 64] = {
-    'env': [], 'entrypoint': [], 'cmd': []}
+    'env': [], 'entrypoint': ['/bin/alloy'],
+    'cmd': ['run', '/etc/alloy/config.alloy', '--storage.path=/tmp/alloy',
+            '--server.http.listen-addr=127.0.0.1:12345', '--server.http.enable-pprof=false', '--disable-reporting']}
 RELEASE_IMAGES = yaml.safe_load(OVERLAY.read_text())["images"]
 # The rollout client uses the same pinned Python base as the router fixture.
 # Its program is signed in chart argv; this synthetic digest tests packaging.
@@ -111,7 +113,7 @@ def build_release(tag: str, evidence: dict, download_dir: Path | None, generate,
         return MAN.build(
             tag,
             ROOT / "helm/confidential-inference",
-            ROOT / "contracts/c8s-admission-source-lock.json",
+            ROOT / "release/inputs/c8s-source-lock.json",
             "d" * 40,
             evidence_path,
             download_dir or Path(temporary) / "downloads",
@@ -536,12 +538,14 @@ class ProcessTests(unittest.TestCase):
         volumed = "ghcr.io/confidential-dot-ai/volumed@sha256:" + "a" * 64
         self.assertEqual(GEN.core_entries([CORE, volumed], configs, "v0.47.0", seed), seed)
         # A shape may pin the container's own command, which extends the
-        # entrypoint; a command that leaves it is not the component.
-        extended = copy.deepcopy(seed)
-        extended["c8s-operator-" + "b" * 12 + "-01234567"]["containers"][0]["command"]["argv"] = ["/c8s", "get-cert"]
-        self.assertEqual(GEN.core_entries([CORE], configs, "v0.47.0", extended), extended)
+        # entrypoint or replaces it (the c8s v0.66.0+ router reload script);
+        # a shape without an exact command pin is refused.
+        for argv in (["/c8s", "get-cert"], ["/bin/sh", "/usr/lib/c8s/router-nginx/reload.sh"]):
+            extended = copy.deepcopy(seed)
+            extended["c8s-operator-" + "b" * 12 + "-01234567"]["containers"][0]["command"]["argv"] = argv
+            self.assertEqual(GEN.core_entries([CORE], configs, "v0.47.0", extended), extended)
         wrong = copy.deepcopy(seed)
-        wrong["c8s-operator-" + "b" * 12 + "-01234567"]["containers"][0]["command"]["argv"] = ["/bin/sh", "-c", "/c8s"]
+        wrong["c8s-operator-" + "b" * 12 + "-01234567"]["containers"][0]["command"] = {"policy": "any"}
         with self.assertRaisesRegex(GEN.GenerationError, "component command pin"):
             GEN.core_entries([CORE], configs, "v0.47.0", wrong)
         # The manifest contract expects the seed's names, not floor names.
@@ -1049,7 +1053,7 @@ class ManifestTests(unittest.TestCase):
                                  and profile.directory / "inputs/image-config.json" != PROFILES.IMAGE_CONFIG)
 
     def test_the_source_lock_pins_the_spec_commit(self):
-        lock = json.loads((ROOT / "contracts/c8s-admission-source-lock.json").read_text())
+        lock = json.loads((ROOT / "release/inputs/c8s-source-lock.json").read_text())
         for profile in PROFILES.load():
             with self.subTest(profile=profile.name):
                 spec = MAN.read_spec(profile)
@@ -1077,6 +1081,15 @@ class ManifestTests(unittest.TestCase):
             self.assertNotIn(forbidden, properties)
         self.assertFalse(schema["additionalProperties"])
         jsonschema.Draft202012Validator.check_schema(schema)
+
+    def test_a_signed_manifest_with_the_old_lock_path_still_validates(self):
+        # The published v0.15.15 manifest, which names the lock at contracts/.
+        signed = json.loads((FIXTURES / "v0.15.15-release-manifest.json").read_text())
+        self.assertEqual(signed["sourceLock"]["path"], "contracts/c8s-admission-source-lock.json")
+        MAN.release_signature.validate_release_schema(signed)
+        moved = copy.deepcopy(signed)
+        moved["sourceLock"]["path"] = MAN.SOURCE_LOCK.relative_to(ROOT).as_posix()
+        MAN.release_signature.validate_release_schema(moved)
 
 
 class ChartArchiveTests(unittest.TestCase):

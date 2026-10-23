@@ -36,6 +36,8 @@ image digests. The release commit is the image source commit.
 | `profiles.json` | A person | The release profiles and their layers |
 | `inputs/image-config.json` | `generate-release-allowlist.py --refresh-image-config` | The `ENV`, `ENTRYPOINT`, and `CMD` of every image that a profile renders and this repository does not build. All profiles share it. Review the diff by hand |
 | `inputs/cdi/nvidia-<driver>.json` | A person, from a reviewed record | The NVIDIA CDI environment variables and driver mounts of one driver version |
+| `inputs/c8s-source-lock.json` | `bump-c8s.py` | The pinned c8s commits and source hashes. The signed manifest records its path and digest. All profiles share it |
+| `inputs/c8s-attestation-protocols/<commit>.json` | `bump-c8s.py` | The attestation protocol of each c8s commit. `check-c8s-protocol-lockstep.py` compares them with the source lock |
 | `node-manifest.json` | `fetch-node-manifest.py` | The c8s `manifest.json` of the node image. It holds MRTD, RTMR1, and RTMR2 |
 | `accepted-lint-findings.json` | A reviewer | The `c8s allowlist lint --strict` findings that the release accepts, each with its reason and issue |
 
@@ -185,3 +187,27 @@ manifest `release.name` and the chart value `attestationReceipts.releaseId`
 are the tag. Each profile is released on its own: `vX.Y.Z-staging` needs no
 `vX.Y.Z`, and the two numbers can differ. Tags never move, so a failed
 release uses the next patch number.
+
+## Unsigned branch builds
+
+A staging target can deploy a branch before it is merged. The internal
+`bin/deploy --build <branch>@<commit>` takes such a build when the target has
+`RELEASE_POLICY=unsigned`, which it refuses for production and for any target
+that serves `api.confidential.ai`.
+
+Run `release-bundle.yml` on the branch (workflow dispatch):
+
+```sh
+gh workflow run release-bundle.yml --ref <branch>
+```
+
+In one run it builds each image that changed since the nearest staging release
+tag once (`release-images.yml` with `single_build`: no rebuild audit), then
+runs the release build at the branch head with the staging profile and the
+name `v0.0.<run number>-staging`, pushes the chart package, and keeps the
+files as the workflow artifact `unsigned-release-<name>`. It signs nothing and
+creates no tag and no GitHub Release. A signed release never uses these
+images: it takes the evidence of `release-images.yml` runs on main only.
+
+The workflow runs from the branch, so the branch must contain this workflow
+version (merge main into it first).

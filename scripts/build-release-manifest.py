@@ -92,7 +92,7 @@ import release_signature
 
 ROOT = Path(__file__).resolve().parents[1]
 CHART = ROOT / "helm/confidential-inference"
-SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
+SOURCE_LOCK = ROOT / "release/inputs/c8s-source-lock.json"
 SCHEMA = "confidential.ai/release-manifest/v1"
 MANIFEST_SCHEMA = ROOT / "contracts/release-manifest.schema.json"
 TRUST_POLICY = ROOT / "releases/trust/release-signing-policy.json"
