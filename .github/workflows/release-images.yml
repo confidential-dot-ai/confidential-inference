@@ -698,9 +698,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Stamped with the newest commit that changed this image's inputs
-      # (scripts/affected-release-images.py), not the build commit: the same
-      # inputs give the same digest, so an upgrade rolls only changed images.
+      # Stamped with a content id of this image's inputs and a fixed epoch
+      # (scripts/affected-release-images.py input_revision), not the build
+      # commit: the same inputs give the same digest on any commit or branch,
+      # so an upgrade rolls only changed images.
       - name: build and push image
         id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
