@@ -1,7 +1,7 @@
 """Unit tests for scripts/check-c8s-protocol-lockstep.py.
 
 These exercise the comparison logic directly against the manifests already
-committed under contracts/c8s-attestation-protocols/, with a synthetic
+committed under release/inputs/c8s-attestation-protocols/, with a synthetic
 gateway fixture text, so the test does not depend on services/gateway/tests/
 carrying any particular shape (a parallel branch owns that file).
 """

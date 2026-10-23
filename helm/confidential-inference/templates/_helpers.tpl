@@ -14,6 +14,12 @@ app.kubernetes.io/part-of: {{ include "confidential-inference.name" .root }}
 app.kubernetes.io/component: {{ .component }}
 {{- end }}
 
+{{- /* The headless router Service. The gateway accepts `sglang-router` or a
+       `router-` name here. */}}
+{{- define "confidential-inference.routerService" -}}
+router-headless
+{{- end }}
+
 {{/*
 The inference node of one worker. scheduling.inferenceNodeNames lists one node
 per worker index. An empty list places every worker on
@@ -103,3 +109,23 @@ Recreate override drops the chart's rollingUpdate. */ -}}
 {{ end -}}
 {{ end -}}
 {{- end -}}
+
+{{/* Egress to the telemetry endpoints: the destination CIDRs on the ports of
+     the metrics, logs and token URLs (443 when a URL names no port). */}}
+{{- define "confidential-inference.telemetryEgress" -}}
+{{- $ports := dict -}}
+{{- range $url := list .Values.telemetry.metricsUrl .Values.telemetry.logsUrl .Values.telemetry.metricsAuth.tokenUrl .Values.telemetry.logsAuth.tokenUrl -}}
+{{- if $url -}}
+{{- $host := (urlParse $url).host -}}
+{{- $_ := set $ports (ternary (last (splitList ":" $host)) "443" (contains ":" $host)) true -}}
+{{- end -}}
+{{- end -}}
+- to:
+    {{- range .Values.telemetry.destinationCidrs }}
+    - ipBlock: {cidr: {{ . | quote }} }
+    {{- end }}
+  ports:
+    {{- range keys $ports | sortAlpha }}
+    - {protocol: TCP, port: {{ . }} }
+    {{- end }}
+{{- end }}

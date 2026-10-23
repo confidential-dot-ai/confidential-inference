@@ -1,0 +1,28 @@
+// HTTP basic auth (Secret key password).
+declare "writer" {
+  local.file "url" {
+    filename = "/mnt/c8s-data/telemetry/logs-url"
+  }
+  local.file "username" {
+    filename = "/mnt/c8s-data/telemetry/username"
+  }
+
+  loki.write "out" {
+    endpoint {
+      url = string.trim_space(local.file.url.content)
+      batch_size = "128KiB"
+      batch_wait = "1s"
+      basic_auth {
+        username = string.trim_space(local.file.username.content)
+        password_file = "/mnt/c8s-data/telemetry-auth/password"
+      }
+      tls_config {
+        min_version = "TLS12"
+      }
+    }
+  }
+
+  export "receiver" {
+    value = loki.write.out.receiver
+  }
+}

@@ -121,6 +121,72 @@ def check_plain_http_behind_the_mesh() -> None:
             for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
                 assert not {"tcpSocket", "grpc"} & set(container.get(probe, {})), (document["metadata"]["name"], probe)
 
+def g7_violations(documents: list[dict], secret_reads: dict[str, list[str]]) -> list[str]:
+    """Controllers that mount a hostPath volume and read c8s secrets.
+
+    c8s allowlist rule G7 refuses a secrets grant on an entry with a host
+    mount. An entry reads secrets through the c8s-volumes or c8s-secrets
+    annotation, or through secretReads in its workload policy.
+    """
+    found = []
+    for item in documents:
+        if item["kind"] not in {"Deployment", "StatefulSet", "DaemonSet"}:
+            continue
+        controller = f"{item['kind']}/{item['metadata']['name']}"
+        template = item["spec"]["template"]
+        pod = template["spec"]
+        host = {volume["name"] for volume in pod.get("volumes", []) if "hostPath" in volume}
+        mounted = any(mount["name"] in host for field in ("initContainers", "containers")
+                      for container in pod.get(field, []) for mount in container.get("volumeMounts", []))
+        annotations = template.get("metadata", {}).get("annotations", {})
+        reads = (secret_reads.get(controller) or "confidential.ai/c8s-volumes" in annotations
+                 or "confidential.ai/c8s-secrets" in annotations)
+        if mounted and reads:
+            found.append(controller)
+    return found
+
+
+def check_model_cache() -> None:
+    """The plain model cache: fetch-model fills a hostPath, the gate reads it read-only."""
+    manifest = '{"files":[]}\n'
+    pin = hashlib.sha256(manifest.encode()).hexdigest()
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml") as values:
+        yaml.safe_dump({"inference": {"simulator": {"validateModelMount": True}, "model": {
+            "mountVerification": {"expectedFiles": {".model-lock-local-manifest.json": pin}},
+            "cache": {"enabled": True, "manifest": manifest}}}}, values)
+        values.flush()
+        documents = render("--values", values.name)
+        maps = {item["metadata"]["name"]: item for item in documents if item["kind"] == "ConfigMap"}
+        assert maps["model-manifest"]["data"]["manifest.json"] == manifest
+        worker = next(item for item in documents if item["kind"] == "StatefulSet"
+                      and item["metadata"]["name"] == "inference-worker-0")
+        pod = worker["spec"]["template"]["spec"]
+        assert "confidential.ai/c8s-volumes" not in worker["spec"]["template"]["metadata"]["annotations"]
+        fetch, = pod["initContainers"]
+        assert fetch["command"] == ["/usr/local/bin/fetch-model"]
+        assert "--path=/mnt/c8s-data/models/cache" in fetch["args"]
+        assert f"--manifest-sha256={pin}" in fetch["args"]
+        assert {"name": "model-cache", "mountPath": "/mnt/c8s-data/models/cache"} in fetch["volumeMounts"]
+        sglang = next(item for item in pod["containers"] if item["name"] == "sglang")
+        assert "--plain-cache" in sglang["args"] and "--path=/mnt/c8s-data/models/cache" in sglang["args"]
+        assert f"--expected-file=.model-lock-local-manifest.json={pin}" in sglang["args"]
+        assert {"name": "model-cache", "mountPath": "/mnt/c8s-data/models/cache", "readOnly": True} in sglang["volumeMounts"]
+        volume = next(item for item in pod["volumes"] if item["name"] == "model-cache")
+        assert volume["hostPath"] == {"path": "/var/lib/models/model", "type": "DirectoryOrCreate"}
+        egress = next(item for item in documents if item["kind"] == "NetworkPolicy"
+                      and item["metadata"]["name"] == "inference-worker-model-download")
+        assert egress["spec"]["egress"][0]["ports"] == [{"protocol": "TCP", "port": 443}]
+        # G7: the cache worker mounts a host path, so it drops the model volume
+        # read, and its workload policy must list no secretReads.
+        assert g7_violations(documents, {}) == []
+        assert g7_violations(documents, {"StatefulSet/inference-worker-0": ["/confidential-inference/volumes/dsv4"]}) == [
+            "StatefulSet/inference-worker-0"]
+        helm("template", "example", str(CHART), *NEUTRAL_MODE, "--values", values.name,
+             "--set", "inference.model.cache.manifest=other", success=False)
+    default = render()
+    assert not any(item["metadata"]["name"] in {"model-manifest", "inference-worker-model-download"} for item in default)
+
+
 def check_front_door_namespace() -> None:
     # From c8s v0.66.0 the router runs in its own namespace, c8s-router.
     documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
@@ -162,6 +228,45 @@ def main() -> None:
         '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
         '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
         '--set', 'attestationReceipts.releaseId=v0.14.18')) if item]
+    # The release profile's log collector gets its account, log access and egress.
+    rendered = {(d['kind'], d['metadata']['name']) for d in production}
+    assert {('ServiceAccount', 'log-collector'), ('Role', 'confidential-inference-log-reader'),
+            ('RoleBinding', 'confidential-inference-log-reader'),
+            ('NetworkPolicy', 'log-collector-egress'), ('Deployment', 'log-collector'),
+            ('ConfigMap', 'log-collector-telemetry')} <= rendered
+    # Telemetry endpoints and credentials are files, not allowlisted env.
+    collector = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'log-collector')
+    alloy = collector['spec']['template']['spec']['containers'][0]
+    assert {item['name'] for item in alloy['env']} == {'KUBE_API_URL', 'LOG_NAMESPACE', 'LOG_APPLICATION', 'TELEMETRY_AUTH'}
+    for kind, extra in (('basic', ['username=collector']),
+                        ('oauth2', ['clientId=collector', 'tokenUrl=https://login.example.invalid/token'])):
+        # Each receiver has its own credentials: here metrics use `kind`, logs stay mtls.
+        auth = [arg for setting in [f'type={kind}', *extra] for arg in ('--set', f'telemetry.metricsAuth.{setting}')]
+        if kind == 'oauth2':
+            auth += ['--set', 'telemetry.metricsUrl=https://metrics.example.invalid/api/v1/write?api-version=2023-04-24']
+        documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+            '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+            '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+            '--set', 'attestationReceipts.releaseId=v0.14.18', *auth)) if item]
+        config = yaml.safe_load(next(d for d in documents if d['kind'] == 'ConfigMap'
+                                     and d['metadata']['name'] == 'metrics-collector')['data']['prometheus.yml'])
+        remote = config['remote_write'][0]
+        assert ('basic_auth' in remote) == (kind == 'basic')
+        # Azure Managed Prometheus names its API version in the query.
+        if kind == 'oauth2':
+            assert remote['url'].endswith('?api-version=2023-04-24')
+        assert ('oauth2' in remote) == (kind == 'oauth2')
+        assert 'cert_file' not in remote['tls_config']
+        assert next(d for d in documents if d['kind'] == 'Deployment' and d['metadata']['name'] == 'log-collector'
+                    )['spec']['template'] == collector['spec']['template']
+        logs = [arg for setting in [f'type={kind}', *extra] for arg in ('--set', f'telemetry.logsAuth.{setting}')]
+        documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+            '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+            '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+            '--set', 'attestationReceipts.releaseId=v0.14.18', *logs)) if item]
+        alloy = next(d for d in documents if d['kind'] == 'Deployment' and d['metadata']['name'] == 'log-collector'
+                     )['spec']['template']['spec']['containers'][0]
+        assert {'name': 'TELEMETRY_AUTH', 'value': kind} in alloy['env']
     # One gateway workload and state volume per deployment: a release change
     # replaces the pod (Recreate) and reopens the same key database.
     gateway = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'gateway')
@@ -197,10 +302,17 @@ def main() -> None:
         assert pinned_gateway['spec']['template'] == gateway['spec']['template']
     assert gateway_environment['GATEWAY_STATE_VOLUME_NAME'] == 'gwstate'
     assert gateway_environment['GATEWAY_STATE_DATABASE'] == '/mnt/c8s-data/gwstate/gateway.sqlite3'
-    assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://router-v0-14-18.confidential-inference.svc.cluster.local:30000'
-    service = next(d for d in production if d['kind'] == 'Service' and d['metadata']['name'] == 'router-v0-14-18')
-    router = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'router-v0-14-18')
+    assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://router-headless.confidential-inference.svc.cluster.local:30000'
+    # The router Deployment and Service keep their names across releases, so
+    # an upgrade rolls the router behind the same address. Its c8s workload is
+    # per release: the old and the new pod each match their own allowlist entry.
+    service = next(d for d in production if d['kind'] == 'Service' and d['metadata']['name'] == 'router-headless')
+    router = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'sglang-router')
     assert all(router['spec']['template']['metadata']['labels'].get(k) == v for k, v in service['spec']['selector'].items())
+    assert router['spec']['selector']['matchLabels'] == {'app.kubernetes.io/part-of': 'confidential-inference',
+                                                         'app.kubernetes.io/component': 'sglang-router'}
+    assert router['spec']['strategy']['rollingUpdate'] == {'maxUnavailable': 0, 'maxSurge': 1}
+    assert router['spec']['template']['metadata']['annotations']['confidential.ai/cw'] == 'router-v0-14-18'
     # One model definition produces both views. A release metadata change
     # must not change the pod templates or add a third gateway identity.
     runtime_documents = render("--set", "runtimeConfig.enabled=true", "--set",
@@ -212,7 +324,7 @@ def main() -> None:
     routes = json.loads(maps['router-model-routes']['data']['routes.json'])
     assert settings['catalogModelIds'] == settings['inferenceModelIds'] == sorted(routes['routes'])
     assert settings['revision'] == routes['revision'] == 1
-    assert settings['routerService'] == 'router-v0-14-18'
+    assert settings['routerService'] == 'router-headless'
     router_slot = next(item for item in runtime_documents if item['kind'] == 'Service' and item['metadata']['name'] == settings['routerService'])
     assert router_slot['spec']['clusterIP'] == 'None'
     assert routes['routes']['public-a'] == ['backend-a']
@@ -255,12 +367,12 @@ def main() -> None:
     runtime_router = next(item for item in runtime_documents if item['kind'] == 'Deployment'
                           and item['metadata']['name'] == 'sglang-router')
     private_router = next(item for item in runtime_documents if item['kind'] == 'Service'
-                          and item['metadata']['name'] == 'router-v0-14-18')
+                          and item['metadata']['name'] == 'router-headless')
     assert private_router['spec']['clusterIP'] == 'None'
     assert all(runtime_router['spec']['template']['metadata']['labels'].get(key) == value
                for key, value in private_router['spec']['selector'].items())
     final_private_router = next(item for item in final_documents if item['kind'] == 'Service'
-                                and item['metadata']['name'] == 'router-v0-14-18')
+                                and item['metadata']['name'] == 'router-headless')
     assert private_router == final_private_router
     router_container = next(item for item in runtime_router['spec']['template']['spec']['containers']
                             if item['name'] == 'sglang-router')
@@ -556,6 +668,7 @@ def main() -> None:
 
     check_plain_http_behind_the_mesh()
     check_override_replaces_strategy()
+    check_model_cache()
     check_front_door_namespace()
     check_cds_nodeport_and_probe_budget()
     print("Helm neutral-default and safety tests passed.")
