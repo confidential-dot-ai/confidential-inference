@@ -76,6 +76,7 @@ IMAGES = (
             "images/sglang/gpu_metrics.py",
             "images/sglang/patch_flashinfer_cuda_ipc.py",
             "images/sglang/wait_for_model.py",
+            "images/sglang/fetch_model.py",
             "images/sglang/patches/**",
             "images/sglang/simulator-upstream/**",
         ),

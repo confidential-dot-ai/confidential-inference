@@ -423,3 +423,25 @@ spec:
       ports:
         - {protocol: TCP, port: {{ .Values.attestationReceipts.metricsCollectorPort }}}
     {{- end }}
+{{- if and .Values.inference.enabled .Values.inference.model.cache.enabled }}
+---
+# fetch-model downloads the pinned model revision from Hugging Face and its
+# LFS/Xet CDN, which have no fixed addresses. The byte manifest pins every
+# downloaded byte.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inference-worker-model-download
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: inference-worker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.inference.model.cache.egressCidrs }}
+        - ipBlock: {cidr: {{ . | quote }} }
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 443}
+{{- end }}
