@@ -303,7 +303,8 @@ telemetry:
   # Labels that may leave, per scrape job. The collector drops every other label.
   commonLabels: [__name__, job, instance, component, replica, le, quantile]
   labels:
-    gateway: [model, key_id, status, reason, event, router, cache_status, type]
+    # env is the gateway registry's constant label.
+    gateway: [env, model, key_id, status, reason, event, router, cache_status, type]
     # sgl-model-gateway (router 0.3.2) observability/metrics.rs.
     router: [attempt, backend_type, branch, connection_mode, endpoint, error_code, error_type, from, method, model,
              operation, outcome, path, policy, reason, result, router_type, source, stage, status_code, storage_type,

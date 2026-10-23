@@ -227,6 +227,10 @@ def check_telemetry_collector() -> None:
     model = [item for item in yaml.safe_load_all(helm(
         "template", "example", str(CHART), "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
         *TELEMETRY, "--set", "telemetry.traces.enabled=true")) if item]
+    # GPU metrics: the worker image serves them (wait-for-model --gpu-metrics-port).
+    gpu_jobs = [job["job_name"] for job in collector_config(model)["receivers"]["prometheus"]["config"]["scrape_configs"]
+                if job["job_name"].startswith("inference-gpu-")]
+    assert gpu_jobs == ["inference-gpu-0", "inference-gpu-1"], gpu_jobs
     worker = next(item for item in model if item["kind"] == "StatefulSet")["spec"]["template"]["spec"]["containers"][0]
     assert "--enable-trace" in worker["args"] and "--otlp-traces-endpoint=telemetry-collector.default.svc.cluster.local:4317" in worker["args"]
     assert not any(arg.startswith("--log-requests") for arg in worker["args"])
