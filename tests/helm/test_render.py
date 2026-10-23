@@ -492,7 +492,9 @@ def main() -> None:
         for container in router["spec"]["template"]["spec"]["containers"]
         if container["name"] == "sglang-router"
     )
-    assert "--selector=app.kubernetes.io/component=inference-worker" in router_args
+    assert router_args[:3] == ["--worker-urls", "http://inference-worker-0-0.inference-workers:30000",
+                               "http://inference-worker-1-0.inference-workers:30000"]
+    assert not any(arg.startswith("--service-discovery") for arg in router_args)
     assert router["spec"]["strategy"]["rollingUpdate"] == {
         "maxUnavailable": 0,
         "maxSurge": 1,
@@ -502,15 +504,8 @@ def main() -> None:
         if item["kind"] == "Service" and item["metadata"]["name"] == "sglang-router"
     )
     assert "publishNotReadyAddresses" not in router_service["spec"]
-    router_role = next(
-        item for item in inference_documents
-        if item["kind"] == "Role" and item["metadata"]["name"] == "sglang-router-pods"
-    )
-    assert router_role["rules"] == [{
-        "apiGroups": [""],
-        "resources": ["pods"],
-        "verbs": ["get", "list", "watch"],
-    }]
+    assert not any(item["kind"] in {"Role", "RoleBinding"} and item["metadata"]["name"] == "sglang-router-pods"
+                   for item in inference_documents)
 
     # The attested GPU count annotation defaults to the per-pod allocation and
     # can be overridden when several workers share one node's GPUs.
@@ -546,7 +541,7 @@ def main() -> None:
         for rule in router_network_policy["spec"]["egress"]
         for port in rule.get("ports", [])
     }
-    assert {443, 6443}.issubset(router_egress_ports)
+    assert router_egress_ports == {30000}
 
     workers = [
         item for item in inference_documents

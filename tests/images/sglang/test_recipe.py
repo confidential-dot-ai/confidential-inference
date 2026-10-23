@@ -165,8 +165,8 @@ class SGLangImageRecipeTests(unittest.TestCase):
 
         simulator_roles = LOCK["simulatorRoles"]
         worker_simulator_roles = {"inference-worker-0", "inference-worker-1"}
-        # simulatorRoles also carries the sglang-router role's one alternate
-        # argv, for the staging service-discovery namespace.
+        # simulatorRoles also carries the sglang-router role: staging names
+        # its workers like production (--worker-urls).
         self.assertEqual(
             worker_simulator_roles | {"sglang-router"},
             set(simulator_roles),
@@ -178,29 +178,9 @@ class SGLangImageRecipeTests(unittest.TestCase):
                 "sglang_simulator.simulation.sglang.launch_server", argv
             )
             self.assertIn("--max-running-requests=48", argv)
-
-        router_staging_argv = simulator_roles["sglang-router"]["argv"]
         self.assertEqual(
-            LOCK["roles"]["sglang-router"]["argv"][0],
-            router_staging_argv[0],
-        )
-        self.assertIn("sglang_router.launch_router", router_staging_argv)
-        self.assertIn(
-            "--service-discovery-namespace=confidential-inference-staging",
-            router_staging_argv,
-        )
-        # Every other argument matches production's role.
-        production_argv = LOCK["roles"]["sglang-router"]["argv"]
-        differences = {
-            argument
-            for argument in set(production_argv) ^ set(router_staging_argv)
-        }
-        self.assertEqual(
-            {
-                "--service-discovery-namespace=confidential-inference",
-                "--service-discovery-namespace=confidential-inference-staging",
-            },
-            differences,
+            LOCK["roles"]["sglang-router"]["argv"],
+            simulator_roles["sglang-router"]["argv"],
         )
 
     def test_recipe_directory_has_only_public_build_material(self) -> None:
