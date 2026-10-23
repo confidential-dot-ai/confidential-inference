@@ -5,12 +5,15 @@
 //! API key.  The public metric interface is `metrics-contract.md`.
 
 use std::{
-    collections::BTreeMap,
-    fmt::Write as _,
+    collections::HashMap,
     sync::{Arc, Mutex},
 };
 
 use axum::{Router, response::IntoResponse, routing::get};
+use prometheus::{
+    Gauge, Histogram, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts,
+    Registry, TextEncoder, core::Collector,
+};
 
 const HISTOGRAM_BUCKETS: &[f64] = &[
     0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
@@ -22,6 +25,7 @@ const TOKEN_BUCKETS: &[f64] = &[
 const TOKEN_RATE_BUCKETS: &[f64] = &[
     1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1_000.0,
 ];
+const MODEL_KEY: &[&str] = &["model", "key_id"];
 
 /// Provides only the names and labels published in `metrics-contract.md`.
 /// Values must not contain request content, headers, or plaintext keys.
@@ -35,134 +39,77 @@ pub trait MetricsSource: Send + Sync + 'static {
 /// returns stable opaque control-plane record IDs. Callers must use rejection
 /// metrics for unauthenticated requests instead of inventing a key label.
 pub struct GatewayMetrics {
-    environment: String,
-    state: Mutex<MetricsState>,
-}
-
-#[derive(Default)]
-struct MetricsState {
-    attestation_responses: BTreeMap<u16, u64>,
+    registry: Registry,
+    attestation_responses: IntCounterVec,
     attestation_duration: Histogram,
-    attestation_events: BTreeMap<&'static str, u64>,
-    requests: BTreeMap<RequestLabels, u64>,
-    rejections: BTreeMap<RejectionLabels, u64>,
-    upstream_reachable: bool,
-    active_requests: u64,
-    router_requests: BTreeMap<String, u64>,
-    queue_depth: u64,
+    attestation_events: IntCounterVec,
+    requests: IntCounterVec,
+    rejections: IntCounterVec,
+    upstream_reachable: IntGauge,
+    active_requests: IntGauge,
+    router_requests: IntGaugeVec,
+    router_requests_lock: Mutex<()>,
+    queue_depth: IntGauge,
     queue_duration: Histogram,
-    request_duration: BTreeMap<RequestDurationLabels, Histogram>,
-    ttft: BTreeMap<ModelKeyLabels, Histogram>,
-    cache_classified_ttft: BTreeMap<ModelKeyCacheLabels, Histogram>,
-    output_token_time: BTreeMap<ModelKeyLabels, Histogram>,
-    tokens_per_second: BTreeMap<ModelKeyLabels, Histogram>,
-    token_usage: BTreeMap<TokenUsageLabels, u64>,
-    input_tokens_per_request: BTreeMap<ModelKeyLabels, Histogram>,
-    output_tokens_per_request: BTreeMap<ModelKeyLabels, Histogram>,
-    cache_read_tokens: BTreeMap<ModelKeyLabels, u64>,
-    finish_reasons: BTreeMap<ModelReasonLabels, u64>,
-    key_registry_stale_seconds: f64,
-    key_registry_push_rejections: BTreeMap<&'static str, u64>,
-    key_registry_revision: i64,
-    key_registry_pepper_mismatch_rows: u64,
-    key_registry_pepper_mismatch: u64,
-    api_key_accepted: BTreeMap<&'static str, u64>,
+    request_duration: HistogramVec,
+    ttft: HistogramVec,
+    cache_classified_ttft: HistogramVec,
+    output_token_time: HistogramVec,
+    tokens_per_second: HistogramVec,
+    token_usage: IntCounterVec,
+    input_tokens_per_request: HistogramVec,
+    output_tokens_per_request: HistogramVec,
+    cache_read_tokens: IntCounterVec,
+    finish_reasons: IntCounterVec,
+    key_registry_stale_seconds: Gauge,
+    key_registry_push_rejections: IntCounterVec,
+    key_registry_revision: IntGauge,
+    key_registry_pepper_mismatch_rows: IntGauge,
+    key_registry_pepper_mismatch: IntGauge,
+    api_key_accepted: IntCounterVec,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct RequestLabels {
-    model: String,
-    key_id: String,
-    status: u16,
+/// Metric names, labels and buckets are compile-time constants, so the
+/// library can reject them only for a programming error.
+fn register<M: Collector + Clone + 'static>(
+    registry: &Registry,
+    metric: prometheus::Result<M>,
+) -> M {
+    let metric = metric.unwrap_or_else(|error| unreachable!("invalid metric definition: {error}"));
+    registry
+        .register(Box::new(metric.clone()))
+        .unwrap_or_else(|error| unreachable!("duplicate metric definition: {error}"));
+    metric
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct RequestDurationLabels {
-    model: String,
-    status: u16,
+fn counter(registry: &Registry, name: &str, help: &str, labels: &[&str]) -> IntCounterVec {
+    register(registry, IntCounterVec::new(Opts::new(name, help), labels))
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct RejectionLabels {
-    reason: String,
-    key_id: String,
+fn gauge(registry: &Registry, name: &str, help: &str) -> IntGauge {
+    register(registry, IntGauge::new(name, help))
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct ModelKeyLabels {
-    model: String,
-    key_id: String,
+fn histogram(registry: &Registry, name: &str, help: &str, buckets: &[f64]) -> Histogram {
+    let opts = HistogramOpts::new(name, help).buckets(buckets.to_vec());
+    register(registry, Histogram::with_opts(opts))
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct ModelKeyCacheLabels {
-    model: String,
-    key_id: String,
-    cache_status: &'static str,
+fn histograms(
+    registry: &Registry,
+    name: &str,
+    help: &str,
+    buckets: &[f64],
+    labels: &[&str],
+) -> HistogramVec {
+    let opts = HistogramOpts::new(name, help).buckets(buckets.to_vec());
+    register(registry, HistogramVec::new(opts, labels))
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct TokenUsageLabels {
-    model: String,
-    key_id: String,
-    token_type: &'static str,
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct ModelReasonLabels {
-    model: String,
-    reason: &'static str,
-}
-
-#[derive(Clone)]
-struct Histogram {
-    bounds: &'static [f64],
-    buckets: Vec<u64>,
-    count: u64,
-    sum: f64,
-}
-
-impl Default for Histogram {
-    fn default() -> Self {
-        Self {
-            bounds: HISTOGRAM_BUCKETS,
-            buckets: vec![0; HISTOGRAM_BUCKETS.len()],
-            count: 0,
-            sum: 0.0,
-        }
-    }
-}
-
-impl Histogram {
-    fn tokens() -> Self {
-        Self {
-            bounds: TOKEN_BUCKETS,
-            buckets: vec![0; TOKEN_BUCKETS.len()],
-            count: 0,
-            sum: 0.0,
-        }
-    }
-
-    fn token_rate() -> Self {
-        Self {
-            bounds: TOKEN_RATE_BUCKETS,
-            buckets: vec![0; TOKEN_RATE_BUCKETS.len()],
-            count: 0,
-            sum: 0.0,
-        }
-    }
-
-    fn observe(&mut self, seconds: f64) {
-        if !seconds.is_finite() || seconds < 0.0 {
-            return;
-        }
-        self.count = self.count.saturating_add(1);
-        self.sum += seconds;
-        for (index, bucket) in self.bounds.iter().enumerate() {
-            if seconds <= *bucket {
-                self.buckets[index] = self.buckets[index].saturating_add(1);
-            }
-        }
+/// Negative and non-finite values come only from clock or upstream errors.
+fn observe(histogram: &Histogram, value: f64) {
+    if value.is_finite() && value >= 0.0 {
+        histogram.observe(value);
     }
 }
 
@@ -170,132 +117,277 @@ impl GatewayMetrics {
     /// The process validates this as a DNS-label environment name.
     /// before it builds the registry.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn new(environment: impl Into<String>) -> Self {
+        let registry = registry_with_env(environment.into());
+        let r = &registry;
+        let configured = gauge(
+            r,
+            "confidential_gateway_process_configured",
+            "Gateway process passed startup configuration checks",
+        );
+        configured.set(1);
         Self {
-            environment: environment.into(),
-            state: Mutex::new(MetricsState::default()),
+            attestation_responses: counter(
+                r,
+                "gateway_attestation_responses_total",
+                "Metadata responses",
+                &["status"],
+            ),
+            attestation_duration: histogram(
+                r,
+                "gateway_attestation_duration",
+                "Metadata response time in seconds",
+                HISTOGRAM_BUCKETS,
+            ),
+            attestation_events: counter(
+                r,
+                "gateway_attestation_events_total",
+                "Metadata cache and refresh outcomes",
+                &["event"],
+            ),
+            requests: counter(
+                r,
+                "gateway_requests",
+                "Authenticated inference requests",
+                &["model", "key_id", "status"],
+            ),
+            rejections: counter(
+                r,
+                "gateway_rejections",
+                "Requests rejected before forwarding",
+                &["reason", "key_id"],
+            ),
+            upstream_reachable: gauge(
+                r,
+                "gateway_upstream_reachable",
+                "Whether the model node answers",
+            ),
+            active_requests: gauge(
+                r,
+                "gateway_inference_active",
+                "Authenticated inference requests currently executing",
+            ),
+            router_requests: register(
+                r,
+                IntGaugeVec::new(
+                    Opts::new(
+                        "gateway_router_requests_active",
+                        "Authenticated requests retaining each router target, including body reads, queues and streams",
+                    ),
+                    &["router"],
+                ),
+            ),
+            router_requests_lock: Mutex::new(()),
+            queue_depth: gauge(
+                r,
+                "gateway_inference_queue_depth",
+                "Authenticated inference requests waiting for execution",
+            ),
+            queue_duration: histogram(
+                r,
+                "gateway_queue_duration",
+                "Seconds spent waiting for an inference execution slot",
+                HISTOGRAM_BUCKETS,
+            ),
+            request_duration: histograms(
+                r,
+                "gateway_request_duration",
+                "Caller-visible inference request time in seconds",
+                HISTOGRAM_BUCKETS,
+                &["model", "status"],
+            ),
+            ttft: histograms(
+                r,
+                "gen_ai_server_time_to_first_token",
+                "Seconds until the first output token reaches the caller",
+                HISTOGRAM_BUCKETS,
+                MODEL_KEY,
+            ),
+            cache_classified_ttft: histograms(
+                r,
+                "gateway_time_to_first_token_seconds",
+                "Caller-visible TTFT classified by reported input-cache reuse",
+                HISTOGRAM_BUCKETS,
+                &["model", "key_id", "cache_status"],
+            ),
+            output_token_time: histograms(
+                r,
+                "gen_ai_server_time_per_output_token",
+                "Seconds between output token deliveries",
+                HISTOGRAM_BUCKETS,
+                MODEL_KEY,
+            ),
+            tokens_per_second: histograms(
+                r,
+                "gateway_tokens_per_second",
+                "Output tokens delivered per second for one streaming request",
+                TOKEN_RATE_BUCKETS,
+                MODEL_KEY,
+            ),
+            token_usage: counter(
+                r,
+                "gen_ai_client_token_usage",
+                "Tokens reported by the upstream API",
+                &["model", "key_id", "type"],
+            ),
+            input_tokens_per_request: histograms(
+                r,
+                "gateway_input_tokens_per_request",
+                "Input tokens reported for one completed inference request",
+                TOKEN_BUCKETS,
+                MODEL_KEY,
+            ),
+            output_tokens_per_request: histograms(
+                r,
+                "gateway_output_tokens_per_request",
+                "Output tokens reported for one completed inference request",
+                TOKEN_BUCKETS,
+                MODEL_KEY,
+            ),
+            cache_read_tokens: counter(
+                r,
+                "gen_ai_usage_cache_read_input_tokens",
+                "Cached input tokens reported by the upstream API",
+                MODEL_KEY,
+            ),
+            finish_reasons: counter(
+                r,
+                "gen_ai_response_finish_reasons",
+                "OpenAI-compatible completion finish reasons",
+                &["model", "reason"],
+            ),
+            key_registry_stale_seconds: register(
+                r,
+                Gauge::new(
+                    "gateway_key_registry_stale_seconds",
+                    "Seconds since the last applied key registry snapshot push",
+                ),
+            ),
+            key_registry_push_rejections: counter(
+                r,
+                "gateway_key_registry_push_rejected_total",
+                "Count of refused key registry snapshot pushes by reason",
+                &["reason"],
+            ),
+            key_registry_revision: gauge(
+                r,
+                "gateway_key_registry_revision",
+                "The key registry snapshot revision this gateway holds",
+            ),
+            key_registry_pepper_mismatch_rows: gauge(
+                r,
+                "gateway_key_registry_pepper_mismatch_rows",
+                "Rows the latest key registry snapshot skipped for a pepper fingerprint mismatch",
+            ),
+            key_registry_pepper_mismatch: gauge(
+                r,
+                "gateway_key_registry_pepper_mismatch",
+                "One while the last pushed key registry snapshot named a different pepper than the gateway holds",
+            ),
+            api_key_accepted: counter(
+                r,
+                "gateway_api_key_accepted_total",
+                "Count of accepted API key authentications by source",
+                &["source"],
+            ),
+            registry,
         }
     }
 
     /// Record metadata responses without client or policy labels.
     pub fn record_attestation_response(&self, status: u16, seconds: f64) {
-        let mut state = recover_lock(&self.state);
-        *state.attestation_responses.entry(status).or_default() += 1;
-        state.attestation_duration.observe(seconds);
+        self.attestation_responses
+            .with_label_values(&[status.to_string()])
+            .inc();
+        observe(&self.attestation_duration, seconds);
     }
 
     /// Record a fixed metadata cache or refresh outcome.
     pub fn record_attestation_event(&self, event: &'static str) {
-        *recover_lock(&self.state)
-            .attestation_events
-            .entry(event)
-            .or_default() += 1;
+        self.attestation_events.with_label_values(&[event]).inc();
     }
 
     /// Every authenticated inference request is counted once, after a status
     /// is known. Authentication failures use [`Self::record_rejection`], so a
     /// fake `key_id` can never enter Prometheus.
     pub fn record_request(&self, model: &str, key_id: &str, status: u16) {
-        let mut state = recover_lock(&self.state);
-        *state
-            .requests
-            .entry(RequestLabels {
-                model: model.to_owned(),
-                key_id: key_id.to_owned(),
-                status,
-            })
-            .or_default() += 1;
+        self.requests
+            .with_label_values(&[model, key_id, &status.to_string()])
+            .inc();
     }
 
     /// Record a pre-forwarding rejection with a fixed code, never caller data.
     pub fn record_rejection(&self, reason: &'static str) {
-        let mut state = recover_lock(&self.state);
-        *state
-            .rejections
-            .entry(RejectionLabels {
-                reason: reason.to_owned(),
-                key_id: String::new(),
-            })
-            .or_default() += 1;
+        self.record_key_rejection(reason, "");
     }
 
     /// Record a rejection for an already known opaque key record ID.
     pub fn record_key_rejection(&self, reason: &'static str, key_id: &str) {
-        let mut state = recover_lock(&self.state);
-        *state
-            .rejections
-            .entry(RejectionLabels {
-                reason: reason.to_owned(),
-                key_id: key_id.to_owned(),
-            })
-            .or_default() += 1;
+        self.rejections.with_label_values(&[reason, key_id]).inc();
     }
 
     /// Reflect the outcome of the most recent connection to the model node.
     pub fn set_upstream_reachable(&self, reachable: bool) {
-        recover_lock(&self.state).upstream_reachable = reachable;
+        self.upstream_reachable.set(i64::from(reachable));
     }
 
     /// Mark one request as waiting for an inference execution slot.
     pub fn enter_queue(&self) {
-        let mut state = recover_lock(&self.state);
-        state.queue_depth = state.queue_depth.saturating_add(1);
+        self.queue_depth.inc();
     }
 
     /// Mark one request as no longer waiting and record its bounded wait time.
     pub fn leave_queue(&self, seconds: f64) {
-        let mut state = recover_lock(&self.state);
-        state.queue_depth = state.queue_depth.saturating_sub(1);
-        state.queue_duration.observe(seconds);
+        self.queue_depth.dec();
+        observe(&self.queue_duration, seconds);
     }
 
     /// Hold one active-request gauge slot until the returned guard is dropped.
     #[must_use]
-    pub fn active_request(self: &Arc<Self>) -> ActiveRequestGuard {
-        let mut state = recover_lock(&self.state);
-        state.active_requests = state.active_requests.saturating_add(1);
-        ActiveRequestGuard {
-            metrics: Arc::clone(self),
-        }
+    pub fn active_request(&self) -> GaugeGuard {
+        GaugeGuard::new(self.active_requests.clone())
     }
 
     /// Count an authenticated request from body read through stream close.
     #[must_use]
-    pub fn router_request(self: &Arc<Self>, router: String) -> RouterRequestGuard {
-        let mut state = recover_lock(&self.state);
-        if state.router_requests.len() >= 1024 {
-            state.router_requests.retain(|_, count| *count > 0);
+    pub fn router_request(&self, router: String) -> GaugeGuard {
+        let _lock = self
+            .router_requests_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Router names come from runtime config. Keep the label set bounded
+        // by dropping idle targets once it grows large.
+        let family = self.router_requests.collect().remove(0);
+        if family.get_metric().len() >= 1024 {
+            for metric in family.get_metric() {
+                if metric.get_gauge().get_value() <= 0.0 {
+                    let label = metric
+                        .get_label()
+                        .iter()
+                        .find(|label| label.name() == "router");
+                    if let Some(label) = label {
+                        let _ = self.router_requests.remove_label_values(&[label.value()]);
+                    }
+                }
+            }
         }
-        let count = state.router_requests.entry(router.clone()).or_default();
-        *count = count.saturating_add(1);
-        RouterRequestGuard {
-            metrics: self.clone(),
-            router,
-        }
+        GaugeGuard::new(self.router_requests.with_label_values(&[router]))
     }
 
     /// Observe caller-visible request time for an authenticated inference call.
     pub fn observe_request_duration(&self, model: &str, status: u16, seconds: f64) {
-        let mut state = recover_lock(&self.state);
-        state
-            .request_duration
-            .entry(RequestDurationLabels {
-                model: model.to_owned(),
-                status,
-            })
-            .or_default()
-            .observe(seconds);
+        observe(
+            &self
+                .request_duration
+                .with_label_values(&[model, &status.to_string()]),
+            seconds,
+        );
     }
 
     /// Observe first generated output delivery, not connection setup.
     pub fn observe_time_to_first_token(&self, model: &str, key_id: &str, seconds: f64) {
-        observe_model_key(
-            &self.state,
-            &mut |state| &mut state.ttft,
-            model,
-            key_id,
-            seconds,
-        );
+        observe(&self.ttft.with_label_values(&[model, key_id]), seconds);
     }
 
     /// Record caller-visible TTFT after the upstream reports whether it reused
@@ -307,40 +399,29 @@ impl GatewayMetrics {
         cached: bool,
         seconds: f64,
     ) {
-        let mut state = recover_lock(&self.state);
-        state
-            .cache_classified_ttft
-            .entry(ModelKeyCacheLabels {
-                model: model.to_owned(),
-                key_id: key_id.to_owned(),
-                cache_status: if cached { "cached" } else { "cold" },
-            })
-            .or_default()
-            .observe(seconds);
+        let cache_status = if cached { "cached" } else { "cold" };
+        observe(
+            &self
+                .cache_classified_ttft
+                .with_label_values(&[model, key_id, cache_status]),
+            seconds,
+        );
     }
 
     /// Observe time between generated output deliveries.
     pub fn observe_time_per_output_token(&self, model: &str, key_id: &str, seconds: f64) {
-        observe_model_key(
-            &self.state,
-            &mut |state| &mut state.output_token_time,
-            model,
-            key_id,
+        observe(
+            &self.output_token_time.with_label_values(&[model, key_id]),
             seconds,
         );
     }
 
     /// Observe one completed streaming request's output-token rate.
     pub fn observe_tokens_per_second(&self, model: &str, key_id: &str, rate: f64) {
-        let mut state = recover_lock(&self.state);
-        state
-            .tokens_per_second
-            .entry(ModelKeyLabels {
-                model: model.to_owned(),
-                key_id: key_id.to_owned(),
-            })
-            .or_insert_with(Histogram::token_rate)
-            .observe(rate);
+        observe(
+            &self.tokens_per_second.with_label_values(&[model, key_id]),
+            rate,
+        );
     }
 
     /// Record numeric usage emitted by the upstream OpenAI-compatible API.
@@ -351,69 +432,51 @@ impl GatewayMetrics {
         token_type: &'static str,
         amount: u64,
     ) {
-        let mut state = recover_lock(&self.state);
-        let entry = state
-            .token_usage
-            .entry(TokenUsageLabels {
-                model: model.to_owned(),
-                key_id: key_id.to_owned(),
-                token_type,
-            })
-            .or_default();
-        *entry = entry.saturating_add(amount);
-        let labels = ModelKeyLabels {
-            model: model.to_owned(),
-            key_id: key_id.to_owned(),
-        };
+        self.token_usage
+            .with_label_values(&[model, key_id, token_type])
+            .inc_by(amount);
         let histogram = match token_type {
-            "input" => &mut state.input_tokens_per_request,
-            "output" => &mut state.output_tokens_per_request,
+            "input" => &self.input_tokens_per_request,
+            "output" => &self.output_tokens_per_request,
             _ => return,
         };
-        histogram
-            .entry(labels)
-            .or_insert_with(Histogram::tokens)
-            .observe(u32::try_from(amount).map_or(f64::from(u32::MAX), f64::from));
+        observe(
+            &histogram.with_label_values(&[model, key_id]),
+            u32::try_from(amount).map_or(f64::from(u32::MAX), f64::from),
+        );
     }
 
     /// Record cached input tokens only when the upstream reports that number.
     pub fn add_cache_read_input_tokens(&self, model: &str, key_id: &str, amount: u64) {
-        let mut state = recover_lock(&self.state);
-        let entry = state
-            .cache_read_tokens
-            .entry(ModelKeyLabels {
-                model: model.to_owned(),
-                key_id: key_id.to_owned(),
-            })
-            .or_default();
-        *entry = entry.saturating_add(amount);
+        self.cache_read_tokens
+            .with_label_values(&[model, key_id])
+            .inc_by(amount);
     }
 
     /// Record how many seconds have passed since the last successful key
     /// applied key registry snapshot push. The push route sets it.
     pub fn set_key_registry_stale_seconds(&self, seconds: f64) {
-        recover_lock(&self.state).key_registry_stale_seconds = seconds;
+        self.key_registry_stale_seconds.set(seconds);
     }
 
     /// Count one refused key registry snapshot push under a fixed reason
     /// code. The admin VM reads the same reason from the response body.
     pub fn record_key_registry_push_rejection(&self, reason: &'static str) {
-        let mut state = recover_lock(&self.state);
-        *state
-            .key_registry_push_rejections
-            .entry(reason)
-            .or_default() += 1;
+        self.key_registry_push_rejections
+            .with_label_values(&[reason])
+            .inc();
     }
 
     /// Record the cached key registry snapshot revision.
     pub fn set_key_registry_revision(&self, revision: i64) {
-        recover_lock(&self.state).key_registry_revision = revision;
+        self.key_registry_revision.set(revision.max(0));
     }
 
     /// Record the number of rows the latest snapshot skipped for a pepper
     /// fingerprint mismatch.
     pub fn set_key_registry_pepper_mismatch_rows(&self, rows: u64) {
-        recover_lock(&self.state).key_registry_pepper_mismatch_rows = rows;
+        self.key_registry_pepper_mismatch_rows
+            .set(i64::try_from(rows).unwrap_or(i64::MAX));
     }
 
     /// Record whether the last pushed snapshot named a different pepper
@@ -424,13 +487,12 @@ impl GatewayMetrics {
     /// that the admin backend and the gateway hold different peppers, so
     /// no new key can work until one side is corrected.
     pub fn set_key_registry_pepper_mismatch(&self, mismatch: bool) {
-        recover_lock(&self.state).key_registry_pepper_mismatch = u64::from(mismatch);
+        self.key_registry_pepper_mismatch.set(i64::from(mismatch));
     }
 
     /// Count one authenticated request by which key source matched it.
     pub fn record_api_key_accepted(&self, source: &'static str) {
-        let mut state = recover_lock(&self.state);
-        *state.api_key_accepted.entry(source).or_default() += 1;
+        self.api_key_accepted.with_label_values(&[source]).inc();
     }
 
     /// Only the contract's bounded `OpenAI` finish reasons are emitted.
@@ -438,38 +500,15 @@ impl GatewayMetrics {
         let Some(reason) = canonical_finish_reason(reason) else {
             return;
         };
-        let mut state = recover_lock(&self.state);
-        *state
-            .finish_reasons
-            .entry(ModelReasonLabels {
-                model: model.to_owned(),
-                reason,
-            })
-            .or_default() += 1;
+        self.finish_reasons
+            .with_label_values(&[model, reason])
+            .inc();
     }
 }
 
-fn observe_model_key(
-    mutex: &Mutex<MetricsState>,
-    map: &mut dyn FnMut(&mut MetricsState) -> &mut BTreeMap<ModelKeyLabels, Histogram>,
-    model: &str,
-    key_id: &str,
-    seconds: f64,
-) {
-    let mut state = recover_lock(mutex);
-    map(&mut state)
-        .entry(ModelKeyLabels {
-            model: model.to_owned(),
-            key_id: key_id.to_owned(),
-        })
-        .or_default()
-        .observe(seconds);
-}
-
-fn recover_lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+fn registry_with_env(environment: String) -> Registry {
+    Registry::new_custom(None, Some(HashMap::from([("env".to_owned(), environment)])))
+        .unwrap_or_else(|error| unreachable!("invalid registry label: {error}"))
 }
 
 fn canonical_finish_reason(value: &str) -> Option<&'static str> {
@@ -483,529 +522,29 @@ fn canonical_finish_reason(value: &str) -> Option<&'static str> {
 }
 
 impl MetricsSource for GatewayMetrics {
-    #[allow(clippy::too_many_lines)]
     fn render_prometheus(&self) -> String {
-        let state = recover_lock(&self.state);
         let mut output = String::new();
-        render_header(
-            &mut output,
-            "gateway_attestation_responses_total",
-            "Metadata responses",
-            "counter",
-        );
-        for (status, count) in &state.attestation_responses {
-            render_sample(
-                &mut output,
-                "gateway_attestation_responses_total",
-                &[("status", &status.to_string())],
-                &self.environment,
-                *count,
-            );
-        }
-        render_header(
-            &mut output,
-            "gateway_attestation_events_total",
-            "Metadata cache and refresh outcomes",
-            "counter",
-        );
-        for (event, count) in &state.attestation_events {
-            render_sample(
-                &mut output,
-                "gateway_attestation_events_total",
-                &[("event", event)],
-                &self.environment,
-                *count,
-            );
-        }
-        render_header(
-            &mut output,
-            "gateway_attestation_duration",
-            "Metadata response time in seconds",
-            "histogram",
-        );
-        render_histogram(
-            &mut output,
-            "gateway_attestation_duration",
-            &[],
-            &state.attestation_duration,
-            &self.environment,
-        );
-        render_header(
-            &mut output,
-            "gen_ai_server_time_to_first_token",
-            "Seconds until the first output token reaches the caller",
-            "histogram",
-        );
-        for (labels, histogram) in &state.ttft {
-            render_histogram(
-                &mut output,
-                "gen_ai_server_time_to_first_token",
-                &[("model", &labels.model), ("key_id", &labels.key_id)],
-                histogram,
-                &self.environment,
-            );
-        }
-        render_header(
-            &mut output,
-            "gateway_time_to_first_token_seconds",
-            "Caller-visible TTFT classified by reported input-cache reuse",
-            "histogram",
-        );
-        for (labels, histogram) in &state.cache_classified_ttft {
-            render_histogram(
-                &mut output,
-                "gateway_time_to_first_token_seconds",
-                &[
-                    ("model", &labels.model),
-                    ("key_id", &labels.key_id),
-                    ("cache_status", labels.cache_status),
-                ],
-                histogram,
-                &self.environment,
-            );
-        }
-        render_header(
-            &mut output,
-            "gen_ai_server_time_per_output_token",
-            "Seconds between output token deliveries",
-            "histogram",
-        );
-        for (labels, histogram) in &state.output_token_time {
-            render_histogram(
-                &mut output,
-                "gen_ai_server_time_per_output_token",
-                &[("model", &labels.model), ("key_id", &labels.key_id)],
-                histogram,
-                &self.environment,
-            );
-        }
-        render_header(
-            &mut output,
-            "gateway_tokens_per_second",
-            "Output tokens delivered per second for one streaming request",
-            "histogram",
-        );
-        for (labels, histogram) in &state.tokens_per_second {
-            render_histogram(
-                &mut output,
-                "gateway_tokens_per_second",
-                &[("model", &labels.model), ("key_id", &labels.key_id)],
-                histogram,
-                &self.environment,
-            );
-        }
-        render_header(
-            &mut output,
-            "gen_ai_client_token_usage",
-            "Tokens reported by the upstream API",
-            "counter",
-        );
-        for (labels, value) in &state.token_usage {
-            render_sample(
-                &mut output,
-                "gen_ai_client_token_usage",
-                &[
-                    ("model", &labels.model),
-                    ("key_id", &labels.key_id),
-                    ("type", labels.token_type),
-                ],
-                &self.environment,
-                *value,
-            );
-        }
-        render_header(
-            &mut output,
-            "gateway_input_tokens_per_request",
-            "Input tokens reported for one completed inference request",
-            "histogram",
-        );
-        for (labels, histogram) in &state.input_tokens_per_request {
-            render_histogram(
-                &mut output,
-                "gateway_input_tokens_per_request",
-                &[("model", &labels.model), ("key_id", &labels.key_id)],
-                histogram,
-                &self.environment,
-            );
-        }
-        render_header(
-            &mut output,
-            "gateway_output_tokens_per_request",
-            "Output tokens reported for one completed inference request",
-            "histogram",
-        );
-        for (labels, histogram) in &state.output_tokens_per_request {
-            render_histogram(
-                &mut output,
-                "gateway_output_tokens_per_request",
-                &[("model", &labels.model), ("key_id", &labels.key_id)],
-                histogram,
-                &self.environment,
-            );
-        }
-        render_header(
-            &mut output,
-            "gen_ai_usage_cache_read_input_tokens",
-            "Cached input tokens reported by the upstream API",
-            "counter",
-        );
-        for (labels, value) in &state.cache_read_tokens {
-            render_sample(
-                &mut output,
-                "gen_ai_usage_cache_read_input_tokens",
-                &[("model", &labels.model), ("key_id", &labels.key_id)],
-                &self.environment,
-                *value,
-            );
-        }
-        render_header(
-            &mut output,
-            "gen_ai_response_finish_reasons",
-            "OpenAI-compatible completion finish reasons",
-            "counter",
-        );
-        for (labels, value) in &state.finish_reasons {
-            render_sample(
-                &mut output,
-                "gen_ai_response_finish_reasons",
-                &[("model", &labels.model), ("reason", labels.reason)],
-                &self.environment,
-                *value,
-            );
-        }
-        render_header(
-            &mut output,
-            "gateway_requests",
-            "Authenticated inference requests",
-            "counter",
-        );
-        for (labels, value) in &state.requests {
-            render_sample(
-                &mut output,
-                "gateway_requests",
-                &[
-                    ("model", &labels.model),
-                    ("key_id", &labels.key_id),
-                    ("status", &labels.status.to_string()),
-                ],
-                &self.environment,
-                *value,
-            );
-        }
-        render_header(
-            &mut output,
-            "gateway_rejections",
-            "Requests rejected before forwarding",
-            "counter",
-        );
-        for (labels, value) in &state.rejections {
-            render_sample(
-                &mut output,
-                "gateway_rejections",
-                &[("reason", &labels.reason), ("key_id", &labels.key_id)],
-                &self.environment,
-                *value,
-            );
-        }
-        render_header(
-            &mut output,
-            "gateway_upstream_reachable",
-            "Whether the model node answers",
-            "gauge",
-        );
-        render_sample(
-            &mut output,
-            "gateway_upstream_reachable",
-            &[],
-            &self.environment,
-            u64::from(state.upstream_reachable),
-        );
-        render_header(
-            &mut output,
-            "gateway_inference_active",
-            "Authenticated inference requests currently executing",
-            "gauge",
-        );
-        render_sample(
-            &mut output,
-            "gateway_inference_active",
-            &[],
-            &self.environment,
-            state.active_requests,
-        );
-        render_header(
-            &mut output,
-            "gateway_router_requests_active",
-            "Authenticated requests retaining each router target, including body reads, queues and streams",
-            "gauge",
-        );
-        for (router, count) in &state.router_requests {
-            render_sample(
-                &mut output,
-                "gateway_router_requests_active",
-                &[("router", router.as_str())],
-                &self.environment,
-                *count,
-            );
-        }
-        render_header(
-            &mut output,
-            "gateway_inference_queue_depth",
-            "Authenticated inference requests waiting for execution",
-            "gauge",
-        );
-        render_sample(
-            &mut output,
-            "gateway_inference_queue_depth",
-            &[],
-            &self.environment,
-            state.queue_depth,
-        );
-        render_header(
-            &mut output,
-            "gateway_queue_duration",
-            "Seconds spent waiting for an inference execution slot",
-            "histogram",
-        );
-        render_histogram(
-            &mut output,
-            "gateway_queue_duration",
-            &[],
-            &state.queue_duration,
-            &self.environment,
-        );
-        render_header(
-            &mut output,
-            "gateway_request_duration",
-            "Caller-visible inference request time in seconds",
-            "histogram",
-        );
-        for (labels, histogram) in &state.request_duration {
-            render_histogram(
-                &mut output,
-                "gateway_request_duration",
-                &[
-                    ("model", &labels.model),
-                    ("status", &labels.status.to_string()),
-                ],
-                histogram,
-                &self.environment,
-            );
-        }
-        render_header(
-            &mut output,
-            "gateway_key_registry_stale_seconds",
-            "Seconds since the last applied key registry snapshot push",
-            "gauge",
-        );
-        render_sample_float(
-            &mut output,
-            "gateway_key_registry_stale_seconds",
-            &[],
-            &self.environment,
-            state.key_registry_stale_seconds,
-        );
-        render_header(
-            &mut output,
-            "gateway_key_registry_push_rejected_total",
-            "Count of refused key registry snapshot pushes by reason",
-            "counter",
-        );
-        for (reason, value) in &state.key_registry_push_rejections {
-            render_sample(
-                &mut output,
-                "gateway_key_registry_push_rejected_total",
-                &[("reason", reason)],
-                &self.environment,
-                *value,
-            );
-        }
-        render_header(
-            &mut output,
-            "gateway_key_registry_revision",
-            "The key registry snapshot revision this gateway holds",
-            "gauge",
-        );
-        render_sample(
-            &mut output,
-            "gateway_key_registry_revision",
-            &[],
-            &self.environment,
-            u64::try_from(state.key_registry_revision).unwrap_or(0),
-        );
-        render_header(
-            &mut output,
-            "gateway_key_registry_pepper_mismatch_rows",
-            "Rows the latest key registry snapshot skipped for a pepper fingerprint mismatch",
-            "gauge",
-        );
-        render_sample(
-            &mut output,
-            "gateway_key_registry_pepper_mismatch_rows",
-            &[],
-            &self.environment,
-            state.key_registry_pepper_mismatch_rows,
-        );
-        render_header(
-            &mut output,
-            "gateway_key_registry_pepper_mismatch",
-            "One while the last pushed key registry snapshot named a different pepper than the gateway holds",
-            "gauge",
-        );
-        render_sample(
-            &mut output,
-            "gateway_key_registry_pepper_mismatch",
-            &[],
-            &self.environment,
-            state.key_registry_pepper_mismatch,
-        );
-        render_header(
-            &mut output,
-            "gateway_api_key_accepted_total",
-            "Count of accepted API key authentications by source",
-            "counter",
-        );
-        for (source, value) in &state.api_key_accepted {
-            render_sample(
-                &mut output,
-                "gateway_api_key_accepted_total",
-                &[("source", source)],
-                &self.environment,
-                *value,
-            );
-        }
-        render_header(
-            &mut output,
-            "confidential_gateway_process_configured",
-            "Gateway process passed startup configuration checks",
-            "gauge",
-        );
-        render_sample(
-            &mut output,
-            "confidential_gateway_process_configured",
-            &[],
-            &self.environment,
-            1,
-        );
+        // Encoding into a String fails only for invalid metric families,
+        // which the registry has already rejected at registration.
+        let _ = TextEncoder::new().encode_utf8(&self.registry.gather(), &mut output);
         output
     }
 }
 
-/// Decrements the active-request gauge when the response body ends or closes.
-pub struct RouterRequestGuard {
-    metrics: Arc<GatewayMetrics>,
-    router: String,
+/// Decrements a gauge when the request, or its response body, ends.
+pub struct GaugeGuard(IntGauge);
+
+impl GaugeGuard {
+    fn new(gauge: IntGauge) -> Self {
+        gauge.inc();
+        Self(gauge)
+    }
 }
 
-impl Drop for RouterRequestGuard {
+impl Drop for GaugeGuard {
     fn drop(&mut self) {
-        let mut state = recover_lock(&self.metrics.state);
-        if let Some(count) = state.router_requests.get_mut(&self.router) {
-            *count = count.saturating_sub(1);
-        }
+        self.0.dec();
     }
-}
-
-pub struct ActiveRequestGuard {
-    metrics: Arc<GatewayMetrics>,
-}
-
-impl Drop for ActiveRequestGuard {
-    fn drop(&mut self) {
-        let mut state = recover_lock(&self.metrics.state);
-        state.active_requests = state.active_requests.saturating_sub(1);
-    }
-}
-
-fn render_header(output: &mut String, name: &str, help: &str, kind: &str) {
-    let _ = writeln!(output, "# HELP {name} {help}");
-    let _ = writeln!(output, "# TYPE {name} {kind}");
-}
-
-fn render_histogram(
-    output: &mut String,
-    name: &str,
-    labels: &[(&str, &str)],
-    histogram: &Histogram,
-    environment: &str,
-) {
-    for (bucket, value) in histogram.bounds.iter().zip(&histogram.buckets) {
-        let mut values = labels.to_vec();
-        let bucket_text = bucket.to_string();
-        values.push(("le", &bucket_text));
-        render_sample(
-            output,
-            &format!("{name}_bucket"),
-            &values,
-            environment,
-            *value,
-        );
-    }
-    let mut infinity = labels.to_vec();
-    infinity.push(("le", "+Inf"));
-    render_sample(
-        output,
-        &format!("{name}_bucket"),
-        &infinity,
-        environment,
-        histogram.count,
-    );
-    render_sample_float(
-        output,
-        &format!("{name}_sum"),
-        labels,
-        environment,
-        histogram.sum,
-    );
-    render_sample(
-        output,
-        &format!("{name}_count"),
-        labels,
-        environment,
-        histogram.count,
-    );
-}
-
-fn render_sample(
-    output: &mut String,
-    name: &str,
-    labels: &[(&str, &str)],
-    environment: &str,
-    value: u64,
-) {
-    render_label_prefix(output, name, labels, environment);
-    let _ = writeln!(output, " {value}");
-}
-
-fn render_sample_float(
-    output: &mut String,
-    name: &str,
-    labels: &[(&str, &str)],
-    environment: &str,
-    value: f64,
-) {
-    render_label_prefix(output, name, labels, environment);
-    let _ = writeln!(output, " {value}");
-}
-
-fn render_label_prefix(
-    output: &mut String,
-    name: &str,
-    labels: &[(&str, &str)],
-    environment: &str,
-) {
-    let _ = write!(output, "{name}{{env=\"{}\"", escape_label(environment));
-    for (key, value) in labels {
-        let _ = write!(output, ",{key}=\"{}\"", escape_label(value));
-    }
-    output.push('}');
-}
-
-fn escape_label(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('\n', "\\n")
-        .replace('"', "\\\"")
 }
 
 #[derive(Clone)]
@@ -1091,7 +630,13 @@ mod tests {
         assert!(rendered.contains("key_id=\"key_opaque_01\""));
         assert!(rendered.contains("cache_status=\"cached\""));
         assert!(rendered.contains("cache_status=\"cold\""));
-        assert!(rendered.contains("reason=\"revoked_api_key\",key_id=\"key_opaque_02\""));
+        assert!(rendered.contains("key_id=\"key_opaque_02\",reason=\"revoked_api_key\""));
+        assert!(rendered.contains(
+            "gateway_requests{key_id=\"key_opaque_01\",model=\"deepseek\",status=\"200\",env=\"staging\"} 1\n"
+        ));
+        assert!(rendered.contains(
+            "gateway_request_duration_bucket{model=\"deepseek\",status=\"200\",env=\"staging\",le=\"1\"} 1\n"
+        ));
         assert!(rendered.contains("gateway_inference_active{env=\"staging\"} 1"));
         drop(active);
         assert!(
@@ -1129,7 +674,7 @@ mod tests {
         }
         assert!(rendered.contains("gateway_key_registry_stale_seconds{env=\"staging\"} 12.5"));
         assert!(rendered.contains(
-            "gateway_key_registry_push_rejected_total{env=\"staging\",reason=\"stale_revision\"} 1"
+            "gateway_key_registry_push_rejected_total{reason=\"stale_revision\",env=\"staging\"} 1"
         ));
         assert!(rendered.contains("gateway_key_registry_revision{env=\"staging\"} 42"));
         assert!(rendered.contains("gateway_key_registry_pepper_mismatch_rows{env=\"staging\"} 2"));
@@ -1141,11 +686,11 @@ mod tests {
                 .contains("gateway_key_registry_pepper_mismatch{env=\"staging\"} 0")
         );
         assert!(
-            rendered.contains("gateway_api_key_accepted_total{env=\"staging\",source=\"local\"} 1")
+            rendered.contains("gateway_api_key_accepted_total{source=\"local\",env=\"staging\"} 1")
         );
         assert!(
             rendered
-                .contains("gateway_api_key_accepted_total{env=\"staging\",source=\"registry\"} 2")
+                .contains("gateway_api_key_accepted_total{source=\"registry\",env=\"staging\"} 2")
         );
     }
 }
