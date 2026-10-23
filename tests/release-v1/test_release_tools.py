@@ -650,6 +650,17 @@ class ManifestTests(unittest.TestCase):
         MAN.read_spec(PRODUCTION)
         MAN.read_spec(STAGING)
 
+    def test_only_staging_may_pin_a_c8s_beta(self):
+        for profile, allowed in ((STAGING, True), (PRODUCTION, False)):
+            spec = copy.deepcopy(PROFILES.read_spec(profile))
+            spec["c8s"]["release"] = "v0.73.0-beta.1"
+            with self.subTest(profile=profile.name), mock.patch.object(PROFILES, "read_spec", return_value=spec):
+                if allowed:
+                    MAN.read_spec(profile)
+                else:
+                    with self.assertRaisesRegex(MAN.ManifestError, "stable c8s release"):
+                        MAN.read_spec(profile)
+
     def test_the_spec_names_no_version_because_the_tag_is_the_version(self):
         spec = MAN.read_spec(PRODUCTION)
         with self.assertRaisesRegex(MAN.ManifestError, "the tag is the version"):

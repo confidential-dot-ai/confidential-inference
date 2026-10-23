@@ -145,7 +145,11 @@ def read_spec(profile: release_profiles.Profile) -> dict[str, Any]:
         spec = release_profiles.read_spec(profile)
     except release_profiles.ProfileError as error:
         raise ManifestError(str(error)) from error
-    return validate_spec(spec)
+    spec = validate_spec(spec)
+    # A C8s beta is signed under the beta identity; production keeps the stable (main) one.
+    require(profile.environment != "production" or "-beta." not in spec["c8s"]["release"],
+            "a production release must pin a stable c8s release")
+    return spec
 
 
 def validate_spec(spec: Any) -> dict[str, Any]:
