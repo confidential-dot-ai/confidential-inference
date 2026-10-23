@@ -26,7 +26,6 @@ gateway:
       - 10.42.0.0/16
 
 attestationReceipts:
-  attestationApiUrl: unix:///run/c8s/workload-claims/attestation-api.sock
   evidenceBaseUrl: https://staging.api.confidential.ai
   evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
   # The gateway verifies the in-cluster CDS for its schema 3 policy metadata.
