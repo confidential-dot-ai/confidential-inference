@@ -307,7 +307,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plain-cache", action="store_true",
                         help="the path is a read-only plain cache that fetch-model filled, not a c8s dm-verity volume")
     parser.add_argument("--gpu-metrics-port", type=int)
-    parser.add_argument("--gpu-metrics-worker")
     parser.add_argument("--mountinfo", type=Path, default=Path("/proc/self/mountinfo"), help=argparse.SUPPRESS)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -319,17 +318,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("the expected repository is invalid")
     if len(args.expected_file) < 3:
         parser.error("at least three expected model files are required")
-    if (args.gpu_metrics_port is None) != (args.gpu_metrics_worker is None):
-        parser.error("GPU metrics require both a port and a worker label")
     if args.gpu_metrics_port is not None and not 1024 <= args.gpu_metrics_port <= 65535:
         parser.error("the GPU metrics port must be between 1024 and 65535")
-    if args.gpu_metrics_worker is not None and (
-        not args.gpu_metrics_worker
-        or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-" for character in args.gpu_metrics_worker)
-        or args.gpu_metrics_worker.startswith("-")
-        or args.gpu_metrics_worker.endswith("-")
-    ):
-        parser.error("the GPU metrics worker label is invalid")
     if not args.command or args.command[0] != "--" or len(args.command) == 1:
         parser.error("a command must follow --")
     args.command = args.command[1:]
@@ -359,12 +349,15 @@ def main() -> int:
     print(f"model-mount: verified {args.path}", file=sys.stderr)
     if args.gpu_metrics_port is not None:
         try:
+            # NVIDIA dcgm-exporter with an embedded DCGM host engine; it sees
+            # only the GPUs granted to this container.
             subprocess.Popen(
                 [
-                    "/usr/local/bin/gpu-metrics",
-                    f"--port={args.gpu_metrics_port}",
-                    f"--worker={args.gpu_metrics_worker}",
+                    "/usr/local/bin/dcgm-exporter",
+                    "--collectors=/etc/dcgm-exporter/counters.csv",
+                    f"--address=:{args.gpu_metrics_port}",
                 ],
+                env={**os.environ, "LD_LIBRARY_PATH": "/opt/dcgm/lib"},
                 stdin=subprocess.DEVNULL,
                 close_fds=True,
             )
