@@ -11,7 +11,7 @@ metadata:
     app.kubernetes.io/component: gateway
 data:
   {{- $identity := dict }}
-  {{- if not .Values.runtimeConfig.enabled }}
+  {{- if not .Values.runtimeConfig.releaseBundle }}
   {{- $_ := set $identity "releaseBundleSha256" .Values.attestationReceipts.releaseBundleSha256 }}
   {{- end }}
   {{- if eq .Values.attestationReceipts.policyMode "operator" }}
@@ -75,6 +75,8 @@ spec:
         confidential.ai/environment: {{ .Values.environment | quote }}
       annotations:
         confidential.ai/cw: gateway
+        # The gateway reads its settings and release selection once at start.
+        checksum/config: {{ printf "%s\n%s" (include "confidential-inference.gatewaySettings" .) (include "confidential-inference.releaseSelection" .) | sha256sum }}
         confidential.ai/c8s-renew-interval: {{ .Values.attestationReceipts.certificateRenewInterval | quote }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.gateway.containerPorts.metrics | quote }}
@@ -135,36 +137,8 @@ spec:
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.maximumHeaderBytes) | quote }}
             - name: GATEWAY_MAXIMUM_URI_BYTES
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.maximumUriBytes) | quote }}
-            {{- if not .Values.runtimeConfig.enabled }}
-            - name: GATEWAY_MAXIMUM_BODY_BYTES
-              value: {{ printf "%.0f" (float64 .Values.gateway.protection.maximumBodyBytes) | quote }}
-            {{- end }}
             - name: GATEWAY_HEADER_TIMEOUT_SECONDS
               value: {{ printf "%.0f" (float64 .Values.gateway.protection.headerTimeoutSeconds) | quote }}
-            {{- if not .Values.runtimeConfig.enabled }}
-            - name: GATEWAY_BODY_TIMEOUT_SECONDS
-              value: {{ printf "%.0f" (float64 .Values.gateway.protection.bodyTimeoutSeconds) | quote }}
-            - name: GATEWAY_UPSTREAM_TIMEOUT_SECONDS
-              value: {{ printf "%.0f" (float64 .Values.gateway.protection.upstreamTimeoutSeconds) | quote }}
-            - name: GATEWAY_STREAM_IDLE_TIMEOUT_SECONDS
-              value: {{ printf "%.0f" (float64 .Values.gateway.protection.streamIdleTimeoutSeconds) | quote }}
-            - name: GATEWAY_GLOBAL_REQUEST_CONCURRENCY
-              value: {{ printf "%.0f" (float64 .Values.gateway.protection.globalRequestConcurrency) | quote }}
-            - name: GATEWAY_PER_ADDRESS_CONCURRENCY
-              value: {{ printf "%.0f" (float64 .Values.gateway.protection.perAddressConcurrency) | quote }}
-            - name: GATEWAY_INFERENCE_CONCURRENCY
-              value: {{ printf "%.0f" (float64 .Values.gateway.protection.inferenceConcurrency) | quote }}
-            - name: GATEWAY_INFERENCE_QUEUE
-              value: {{ printf "%.0f" (float64 .Values.gateway.protection.inferenceQueue) | quote }}
-            - name: GATEWAY_QUEUE_TIMEOUT_SECONDS
-              value: {{ printf "%.0f" (float64 .Values.gateway.protection.queueTimeoutSeconds) | quote }}
-            - name: GATEWAY_PER_KEY_CONCURRENCY
-              value: {{ printf "%.0f" (float64 .Values.gateway.protection.perKeyConcurrency) | quote }}
-            - name: GATEWAY_ATTESTATION_CONCURRENCY
-              value: {{ printf "%.0f" (float64 .Values.gateway.protection.attestationConcurrency) | quote }}
-            - name: GATEWAY_REQUESTS_PER_ADDRESS_PER_SECOND
-              value: {{ printf "%.0f" (float64 .Values.gateway.protection.requestsPerAddressPerSecond) | quote }}
-            {{- end }}
             - name: GATEWAY_SHUTDOWN_GRACE_SECONDS
               value: {{ printf "%.0f" (float64 .Values.gateway.shutdownGraceSeconds) | quote }}
             - name: GATEWAY_ENDPOINT_DRAIN_SECONDS
@@ -173,26 +147,14 @@ spec:
             - name: GATEWAY_TRUSTED_PROXY_CIDRS
               value: {{ join "," .Values.gateway.protection.trustedProxyCidrs | quote }}
             {{- end }}
-            {{- if .Values.runtimeConfig.enabled }}
             - name: GATEWAY_ROUTER_NAMESPACE
               value: {{ .Release.Namespace | quote }}
             - name: GATEWAY_RUNTIME_CONFIG_FILE
               value: /mnt/c8s-data/runtime/settings.json
+            {{- if .Values.runtimeConfig.releaseBundle }}
             - name: GATEWAY_RELEASE_SELECTION_FILE
               value: /mnt/c8s-data/release-selection/releases.json
             {{- else }}
-            - name: GATEWAY_MODEL
-              value: {{ .Values.inference.model.name | quote }}
-            {{- end }}
-            {{- if not .Values.runtimeConfig.enabled }}
-            - name: GATEWAY_C8S_EVIDENCE_BASE_URL
-              value: {{ .Values.attestationReceipts.evidenceBaseUrl | quote }}
-            {{- with .Values.attestationReceipts.evidenceConnectHost }}
-            - name: GATEWAY_C8S_EVIDENCE_CONNECT_HOST
-              value: {{ . | quote }}
-            {{- end }}
-            {{- end }}
-            {{- if not .Values.runtimeConfig.enabled }}
             - name: GATEWAY_RELEASE_ID
               value: {{ .Values.attestationReceipts.releaseId | quote }}
             {{- end }}
@@ -274,10 +236,10 @@ spec:
             - name: release-identity
               mountPath: /mnt/c8s-data/release-identity
               readOnly: true
-            {{- if .Values.runtimeConfig.enabled }}
             - name: runtime-config
               mountPath: /mnt/c8s-data/runtime
               readOnly: true
+            {{- if .Values.runtimeConfig.releaseBundle }}
             - name: release-selection
               mountPath: /mnt/c8s-data/release-selection
               readOnly: true
@@ -305,10 +267,10 @@ spec:
         - name: release-identity
           configMap:
             name: gateway-release-identity
-        {{- if .Values.runtimeConfig.enabled }}
         - name: runtime-config
           configMap:
             name: {{ .Values.runtimeConfig.gatewayConfigMap }}
+        {{- if .Values.runtimeConfig.releaseBundle }}
         - name: release-selection
           configMap:
             name: {{ .Values.runtimeConfig.releaseConfigMap }}

@@ -24,7 +24,6 @@ hmac = "0.12.1"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["server-auto", "tokio"] }
 ipnet = "2.11.0"
-notify = "8.2.0"
 opentelemetry-appender-tracing = "0.33.1"
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "logs"] }
 opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["logs"] }
