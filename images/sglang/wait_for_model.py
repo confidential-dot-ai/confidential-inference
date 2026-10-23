@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+# upgrade-sim: test build marker (not for merge)
+
 import argparse
 import concurrent.futures
 import errno
