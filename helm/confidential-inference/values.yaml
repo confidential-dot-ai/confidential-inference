@@ -124,13 +124,18 @@ gateway:
     adminConfig:
       name: product-usage
       sourcePath: /confidential-inference/gateway/product-usage
-  # The gateway's egress to the admin (key pull and usage events).
+  # The admin: the gateway pulls its keys from the url's origin and sends
+  # usage events to the url. The address is the gateway's one exit (C8s
+  # #1047, public in the served allowlist), TCP 443. Both are allowlist input.
   admin:
-    destinationPort: 443
-    destinationCidrs: []
+    url: https://admin.example.invalid/api/usage/ingest
+    address: 192.0.2.10
   usage:
     # Send one usage event per request to the admin.
     enabled: false
+    # The requested models usage is recorded for, each with its backend
+    # model: {"<requested>": {"served_model": ..., "model_revision": ...}}.
+    models: {}
   protection:
     maximumHeaders: 64
     maximumHeaderBytes: 16384

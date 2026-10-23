@@ -86,8 +86,10 @@ gateway:
   terminationGracePeriodSeconds: 960
   c8sSecrets:
     apiKeyPepper: {name: GATEWAY_API_KEY_PEPPER, sourcePath: /confidential-inference/gateway/api-key-pepper}
-  # changed: no state. The gateway pulls its keys from the admin; the
-  # deployment sets gateway.admin (egress) in its own values.
+  # changed: no state. The gateway pulls its keys from the admin and sends
+  # usage events there. gateway.admin is the gateway's one exit (C8s #1047)
+  # and allowlist input, so it belongs to the release, not to a deployment.
+  # The production admin is not chosen yet: the chart placeholder stays.
 
 inference:
   enabled: true

@@ -1,13 +1,15 @@
 //! The gateway's HTTPS client to the admin: it pulls the key snapshot and
 //! sends usage events.
 //!
-//! The configuration is the CDS secret `/confidential-inference/gateway/product-usage`
-//! (JSON), which c8s releases only to the attested gateway. `endpoint` is the
-//! admin's usage ingest URL; the key snapshot is served on the same origin at
-//! [`KEY_SNAPSHOT_PATH`]. The URL's host is the TLS name the gateway checks.
-//! `tls_ca_pem`, when set, is the only CA the gateway trusts for the admin;
-//! otherwise the image's public roots are used. `token` authenticates the
-//! gateway to the admin, which maps it to one environment and key realm.
+//! `endpoint` is the admin's usage ingest URL and `models` the models usage is
+//! recorded for; the gateway takes both from its pinned environment
+//! (`GATEWAY_ADMIN_ENDPOINT`, `GATEWAY_USAGE_MODELS`). The key snapshot is
+//! served on the same origin at [`KEY_SNAPSHOT_PATH`]. The URL's host is the
+//! TLS name the gateway checks against the image's public roots. `token`, the
+//! only field of the CDS secret `/confidential-inference/gateway/product-usage`
+//! the gateway reads, authenticates it to the admin, which maps it to one
+//! environment and key realm. `tls_ca_pem` and `connect_address` are for
+//! tests against a local admin.
 
 use std::{collections::BTreeMap, net::IpAddr, sync::Arc, time::Duration};
 

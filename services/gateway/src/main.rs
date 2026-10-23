@@ -35,16 +35,30 @@ const INFERENCE_UPSTREAM_URL: &str = "http://127.0.0.1:30001";
 // Inside the termination grace the chart leaves after the HTTP drain.
 const USAGE_FLUSH_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// The only field of the admin client secret the gateway reads.
+#[derive(serde::Deserialize)]
+struct AdminSecret {
+    token: String,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "confidential-gateway")]
 struct Args {
-    // The admin client configuration: a CDS secret (`crate::admin_client`).
+    // The admin client token: a CDS secret, JSON `{"token": ...}`
+    // (`crate::admin_client`). Other fields of the secret are ignored.
     #[arg(
         long,
         env = "GATEWAY_ADMIN_CONFIG_FILE",
         default_value = "/run/c8s/secrets/product-usage"
     )]
     admin_config_file: PathBuf,
+    // Where the key pull and usage events go, and which models usage is
+    // recorded for. They are environment, so the allowlist pins them: the
+    // control plane cannot point the gateway's exit at anything else.
+    #[arg(long, env = "GATEWAY_ADMIN_ENDPOINT", default_value = "")]
+    admin_endpoint: String,
+    #[arg(long, env = "GATEWAY_USAGE_MODELS", default_value = "{}")]
+    usage_models: String,
     #[arg(long, env = "GATEWAY_USAGE_ENABLED", default_value_t = false)]
     usage_enabled: bool,
     #[arg(long, env = "GATEWAY_ROUTER_NAMESPACE")]
@@ -309,12 +323,19 @@ async fn main() -> Result<()> {
             .map_err(|_| anyhow::anyhow!("the API key pepper must be at least 32 bytes"))?
             .with_metrics(metrics.clone()),
     );
-    let admin_config: admin_client::Config = serde_json::from_slice(&wait_for_bounded_file(
+    let secret: AdminSecret = serde_json::from_slice(&wait_for_bounded_file(
         &args.admin_config_file,
         65_536,
         secret_wait,
     )?)
-    .context("invalid admin client configuration")?;
+    .context("invalid admin client secret")?;
+    let admin_config = admin_client::Config {
+        endpoint: args.admin_endpoint.clone(),
+        token: secret.token,
+        tls_ca_pem: None,
+        connect_address: None,
+        models: serde_json::from_str(&args.usage_models).context("invalid GATEWAY_USAGE_MODELS")?,
+    };
     let admin = Arc::new(AdminClient::new(&admin_config).map_err(anyhow::Error::msg)?);
     tokio::spawn(admin_client::sync_keys(
         admin.clone(),
@@ -1071,6 +1092,8 @@ mod tests {
     fn args() -> Args {
         Args {
             admin_config_file: PathBuf::from("/run/c8s/secrets/product-usage"),
+            admin_endpoint: "https://admin.example.com/api/usage/ingest".into(),
+            usage_models: "{}".into(),
             usage_enabled: false,
             router_namespace: None,
             release_selection_file: None,

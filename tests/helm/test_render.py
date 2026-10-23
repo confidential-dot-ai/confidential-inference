@@ -314,15 +314,26 @@ def main() -> None:
     rendered = yaml.safe_dump_all(documents)
     assert "nvidia.com/gpu" not in rendered
 
-    # The gateway reaches the admin only on the configured egress, and sends
-    # usage only when usage is enabled.
+    # The gateway reaches the admin only at its pinned address (also its
+    # allowlist exit), and what it sends is environment, so allowlist input.
     with_admin = render("--namespace", "inference", "--set", "gateway.usage.enabled=true",
-                        "--set", "gateway.admin.destinationCidrs={192.0.2.10/32}")
-    assert Gateway(with_admin).env["GATEWAY_USAGE_ENABLED"] == "true"
+                        "--set", "gateway.admin.url=https://relay.example.com/api/usage/ingest",
+                        "--set", "gateway.admin.address=203.0.113.7",
+                        "--set", "gateway.usage.models.m.served_model=m",
+                        "--set", "gateway.usage.models.m.model_revision=r1")
+    admin = Gateway(with_admin)
+    assert admin.env["GATEWAY_USAGE_ENABLED"] == "true"
+    assert admin.env["GATEWAY_ADMIN_ENDPOINT"] == "https://relay.example.com/api/usage/ingest"
+    assert json.loads(admin.env["GATEWAY_USAGE_MODELS"]) == {"m": {"served_model": "m", "model_revision": "r1"}}
+    assert admin.deployment["spec"]["template"]["spec"]["hostAliases"] == [
+        {"ip": "203.0.113.7", "hostnames": ["relay.example.com"]}]
     egress = next(item for item in with_admin if item["kind"] == "NetworkPolicy"
                   and item["metadata"]["name"] == "gateway-to-router")["spec"]["egress"]
-    assert {"to": [{"ipBlock": {"cidr": "192.0.2.10/32"}}], "ports": [{"protocol": "TCP", "port": 443}]} in egress
+    blocks = [peer["ipBlock"]["cidr"] for rule in egress for peer in rule.get("to", []) if "ipBlock" in peer]
+    assert blocks == ["203.0.113.7/32"], blocks
     assert "GATEWAY_USAGE_ENABLED" not in Gateway(render("--namespace", "inference")).env
+    helm("template", "example", str(CHART), *NEUTRAL_MODE,
+         "--set", "gateway.admin.url=http://relay.example.com/x", success=False)
     helm(
         "lint", str(CHART), *NEUTRAL_MODE, "--set-string",
         "images.gateway=example.invalid/gateway:latest", success=False,
