@@ -44,9 +44,8 @@ images:
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang
   sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang-router
-  # The log collector (logCollector below).
-  logCollector: ghcr.io/confidential-dot-ai/confidential-inference/log-collector
-  metricsCollector: docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24
+  # The stock OpenTelemetry Collector (contrib 0.163.2), unmodified.
+  telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
@@ -133,34 +132,8 @@ router:
   attestedWorkload: sglang-router
   enabled: true
 
-metricsCollector:
-  enabled: true
-  attestedWorkload: metrics-collector
-
 kubeStateMetrics:
   attestedWorkload: kube-state-metrics
-
-logCollector:
-  enabled: true
-
-# The production receiver authenticates the collectors' client certificate
-# (logsAuth.type is part of the signed log collector). The deployment sets the
-# rest in its own values: deployment, the URLs, the CIDRs and host aliases.
-telemetry:
-  enabled: true
-  metricsUrl: https://admin.api.confidential.ai:9443/api/v1/write
-  logsUrl: https://admin.api.confidential.ai:9443/loki/api/v1/push
-  destinationCidrs:
-    - 20.163.209.126/32
-  hostAliases:
-    - ip: 20.163.209.126
-      hostnames: [admin.api.confidential.ai]
-  metricsAuth:
-    type: mtls
-    secretName: metrics-remote-write-mtls
-  logsAuth:
-    type: mtls
-    secretName: metrics-remote-write-mtls
 
 # Current workload changes. Unchanged fields come from the chart.
 workloadOverridesEnabled: true
@@ -328,45 +301,6 @@ workloadOverrides:
           restartPolicy: Always
           schedulerName: default-scheduler
           serviceAccount: kube-state-metrics
-          terminationGracePeriodSeconds: 30
-  Deployment/metrics-collector:
-    spec:
-      progressDeadlineSeconds: 600
-      revisionHistoryLimit: 10
-      strategy:
-        rollingUpdate:
-          maxSurge: 25%
-          maxUnavailable: 25%
-        type: RollingUpdate
-      template:
-        spec:
-          containers:
-          - name: prometheus
-            image: '{{ .Values.images.metricsCollector }}'
-            livenessProbe:
-              failureThreshold: 3
-              httpGet:
-                scheme: HTTP
-              periodSeconds: 10
-              successThreshold: 1
-              timeoutSeconds: 1
-            ports:
-            - containerPort: 9090
-              name: health
-              protocol: TCP
-            readinessProbe:
-              failureThreshold: 3
-              httpGet:
-                scheme: HTTP
-              periodSeconds: 10
-              successThreshold: 1
-              timeoutSeconds: 1
-            terminationMessagePath: /dev/termination-log
-            terminationMessagePolicy: File
-          dnsPolicy: ClusterFirst
-          restartPolicy: Always
-          schedulerName: default-scheduler
-          serviceAccount: metrics-collector
           terminationGracePeriodSeconds: 30
   Deployment/sglang-router:
     spec:
@@ -592,3 +526,4 @@ workloadOverrides:
           schedulerName: default-scheduler
           serviceAccount: confidential-inference
       updateStrategy: {}
+additionalWorkloads: []

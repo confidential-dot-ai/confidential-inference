@@ -51,12 +51,6 @@ FIXTURES = ROOT / "tests/release-v1/fixtures"
 OVERLAY = FIXTURES / "release-values.yaml"
 STAGING_ALLOWLIST = FIXTURES / "staging-allowlist.json"
 REPOSITORY_CONFIGS = json.loads((FIXTURES / "repository-image-config.json").read_text())
-# Packaging tests use a placeholder collector digest with the image's
-# ENTRYPOINT and CMD (images/log-collector/Dockerfile).
-REPOSITORY_CONFIGS['ghcr.io/confidential-dot-ai/confidential-inference/log-collector@sha256:' + '2' * 64] = {
-    'env': [], 'entrypoint': ['/bin/alloy'],
-    'cmd': ['run', '/etc/alloy/config.alloy', '--storage.path=/tmp/alloy',
-            '--server.http.listen-addr=127.0.0.1:12345', '--server.http.enable-pprof=false', '--disable-reporting']}
 RELEASE_IMAGES = yaml.safe_load(OVERLAY.read_text())["images"]
 # The rollout client uses the same pinned Python base as the router fixture.
 # Its program is signed in chart argv; this synthetic digest tests packaging.
@@ -144,7 +138,6 @@ def build_production(evidence: dict, download_dir: Path, tag: str = "v0.14.2") -
     allowlist = json.loads(STAGING_ALLOWLIST.read_text())
     operator = PROFILES.read_values(PRODUCTION)["images"]["c8sOperator"].rsplit("@", 1)[1]
     allowlist["workloads"]["production-operator"] = {"containers": [{"digest": operator}]}
-    allowlist["workloads"]["production-collector"] = {"containers": [{"digest": 'sha256:' + '2' * 64}]}
     # Staging runs no kube-state-metrics (it needs the Kubernetes API).
     metrics = PROFILES.read_values(PRODUCTION)["images"]["kubeStateMetrics"].rsplit("@", 1)[1]
     allowlist["workloads"]["production-kube-state-metrics"] = {"containers": [{"digest": metrics}]}
@@ -990,14 +983,6 @@ class ManifestTests(unittest.TestCase):
         result = MAN.publication_binding(b"{}", publication({maintenance: "sha256:" + "2" * 64}),
                                          {"gateway": f"{gateway}@sha256:{'1' * 64}"})
         self.assertEqual(result["images"][maintenance], "sha256:" + "2" * 64)
-
-    def test_manifest_names_separately_installed_registered_image(self):
-        gateway = "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64
-        collector = "ghcr.io/confidential-dot-ai/confidential-inference/log-collector@sha256:" + "2" * 64
-        self.assertEqual(MAN.image_names({"images": {"gateway": gateway, "logCollector": collector}},
-                                        [gateway]), {"gateway": gateway, "logCollector": collector})
-        with self.assertRaisesRegex(MAN.ManifestError, "rendered images with no name"):
-            MAN.image_names({"images": {"logCollector": collector}}, [gateway])
 
     def test_manifest_refuses_publication_outside_the_release_registry(self):
         unknown = publication({"ghcr.io/confidential-dot-ai/confidential-inference/unknown": "sha256:" + "1" * 64})

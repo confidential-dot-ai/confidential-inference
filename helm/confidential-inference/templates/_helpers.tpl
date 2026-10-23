@@ -109,23 +109,3 @@ Recreate override drops the chart's rollingUpdate. */ -}}
 {{ end -}}
 {{ end -}}
 {{- end -}}
-
-{{/* Egress to the telemetry endpoints: the destination CIDRs on the ports of
-     the metrics, logs and token URLs (443 when a URL names no port). */}}
-{{- define "confidential-inference.telemetryEgress" -}}
-{{- $ports := dict -}}
-{{- range $url := list .Values.telemetry.metricsUrl .Values.telemetry.logsUrl .Values.telemetry.metricsAuth.tokenUrl .Values.telemetry.logsAuth.tokenUrl -}}
-{{- if $url -}}
-{{- $host := (urlParse $url).host -}}
-{{- $_ := set $ports (ternary (last (splitList ":" $host)) "443" (contains ":" $host)) true -}}
-{{- end -}}
-{{- end -}}
-- to:
-    {{- range .Values.telemetry.destinationCidrs }}
-    - ipBlock: {cidr: {{ . | quote }} }
-    {{- end }}
-  ports:
-    {{- range keys $ports | sortAlpha }}
-    - {protocol: TCP, port: {{ . }} }
-    {{- end }}
-{{- end }}
