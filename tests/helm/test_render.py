@@ -194,6 +194,10 @@ def check_telemetry_collector() -> None:
     # C8s #1049: an entry with egress has no host mount and a fixed argv.
     assert not any("hostPath" in volume for volume in collector.get("volumes", []))
     assert all("args" in container for container in collector["containers"])
+    for pod in (collector, pods["gateway"]):
+        # Per-pod mesh: no app container mounts the c8s certificate volume.
+        assert not any(mount["mountPath"] == "/etc/c8s/certs"
+                       for container in pod["containers"] for mount in container.get("volumeMounts", []))
     policies = {item["metadata"]["name"]: item for item in documents if item["kind"] == "NetworkPolicy"}
     blocks = [peer["ipBlock"]["cidr"] for policy in policies.values()
               for rule in policy["spec"].get("egress", []) for peer in rule.get("to", []) if "ipBlock" in peer]
