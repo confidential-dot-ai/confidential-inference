@@ -680,10 +680,6 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Get the stable source epoch
-        id: source
-        run: printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
-
       - name: Free runner storage for SGLang
         if: matrix.image == 'sglang'
         run: |
@@ -714,6 +710,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Stamped with the newest commit that changed this image's inputs
+      # (scripts/affected-release-images.py), not the build commit: the same
+      # inputs give the same digest, so an upgrade rolls only changed images.
       - name: Build and publish the image
         id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
@@ -721,16 +720,16 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           build-args: |
-            SOURCE_REVISION=${{ github.sha }}
-            SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
+            SOURCE_REVISION=${{ matrix.revision }}
+            SOURCE_DATE_EPOCH=${{ matrix.epoch }}
           platforms: linux/amd64
           no-cache: true
           outputs: type=image,name=ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}:sha-${{ github.sha }},push=true,rewrite-timestamp=true
           labels: |
             org.opencontainers.image.title=${{ matrix.title }}
             org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=sha-${{ github.sha }}
+            org.opencontainers.image.revision=${{ matrix.revision }}
+            org.opencontainers.image.version=sha-${{ matrix.revision }}
           provenance: false
           sbom: false
 
