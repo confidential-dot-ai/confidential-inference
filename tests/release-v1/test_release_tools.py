@@ -1089,6 +1089,16 @@ class ManifestTests(unittest.TestCase):
         self.assertFalse(schema["additionalProperties"])
         jsonschema.Draft202012Validator.check_schema(schema)
 
+    def test_a_dev_c8s_build_is_for_staging_only(self):
+        schema = json.loads((ROOT / "contracts/release-manifest.schema.json").read_text())
+        dev = "v0.72.1-0.20261023005616-90bd65abd955"
+        jsonschema.validate(dev, schema["properties"]["c8s"]["properties"]["release"])
+        rules = {"allOf": [rule for rule in schema["allOf"] if "environment" in json.dumps(rule["if"])]}
+        jsonschema.validate({"release": {"environment": "staging"}, "c8s": {"release": dev}}, rules)
+        jsonschema.validate({"release": {"environment": "production"}, "c8s": {"release": "v0.72.0"}}, rules)
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate({"release": {"environment": "production"}, "c8s": {"release": dev}}, rules)
+
 
 class ChartArchiveTests(unittest.TestCase):
     def test_the_package_version_is_the_tag_without_v_and_suffix(self):
