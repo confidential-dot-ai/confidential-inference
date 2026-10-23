@@ -67,11 +67,8 @@ inference:
 
 # Telemetry to the admin-next relay (admin/vm/caddy in the internal
 # repository). Its address is the telemetry collector's one allowlist exit.
-# Enable it with the c8s bump that has declared egress (C8s #1047): set
-# enabled, add the telemetry-collector entry with "egress": {"port": 443} to
-# allowlist-policy.json, and regenerate the fixture with scripts/bump-c8s.py.
 telemetry:
-  enabled: false
+  enabled: true
   deployment: staging-20260926
   relay:
     serverName: ci-admin-next-loki.centralus.cloudapp.azure.com
