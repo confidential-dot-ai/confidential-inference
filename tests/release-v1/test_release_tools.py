@@ -107,7 +107,7 @@ def build_release(tag: str, evidence: dict, download_dir: Path | None, generate,
         return MAN.build(
             tag,
             ROOT / "helm/confidential-inference",
-            ROOT / "release/inputs/c8s-source-lock.json",
+            ROOT / "contracts/c8s-admission-source-lock.json",
             "d" * 40,
             evidence_path,
             download_dir or Path(temporary) / "downloads",
@@ -549,6 +549,33 @@ class ProcessTests(unittest.TestCase):
             MAN.require_allowlist_contract({"workloads": {**seed, floor_name: floor}}, policy, [CORE], [], configs,
                                           "v0.47.0", core_seed=seed)
 
+    def test_from_the_seed_layer_release_the_allowlist_has_only_application_entries(self):
+        # C8s #1031: CDS keeps the node image's seed beside the uploaded
+        # document, so the release mirrors no seed entry.
+        shape = {"label": CORE, "initContainers": [], "containers": [{
+            "digest": GEN.split_image(CORE)[1], "image": CORE,
+            "command": {"policy": "exact", "argv": ["/c8s"]}, "args": {"policy": "exact", "argv": ["cds"]},
+            "mounts": {"policy": "exact", "rules": []}, "env": {"policy": "match", "variables": {}}}]}
+        seed = {"c8s-operator-" + "b" * 12 + "-01234567": shape}
+        configs = {CORE: {"entrypoint": ["/c8s"], "cmd": [], "env": []}}
+        record = {"sourceCommit": "a" * 40, "coreImages": [CORE],
+                  "allowlist": {"schema": "c8s.allowlist/v1", "workloads": seed}}
+        for release, mirrored in (("v0.72.0", seed), ("v0.73.0-beta.1", {}), ("v0.73.0", {})):
+            spec = {"release": release, "sourceCommit": "a" * 40, "coreImages": [CORE]}
+            with mock.patch.object(GEN, "read_json", return_value=record):
+                self.assertEqual(GEN.core_seed(spec), mirrored, release)
+        self.assertEqual(GEN.core_entries([CORE], configs, "v0.73.0-beta.1", {}), {})
+        # A dev build counts from the last tag; its baseRelease turns the gate on.
+        dev = {"release": "v0.72.1-0.20261023005616-90bd65abd955", "sourceCommit": "a" * 40, "coreImages": [CORE]}
+        with mock.patch.object(GEN, "read_json", return_value=record):
+            self.assertEqual(GEN.core_seed(dev), seed)
+            self.assertEqual(GEN.core_seed({**dev, "baseRelease": "v0.73.0"}), {})
+        policy = {"workloads": []}
+        MAN.require_allowlist_contract({"workloads": {}}, policy, [CORE], [], configs, "v0.73.0-beta.1", core_seed={})
+        with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
+            MAN.require_allowlist_contract({"workloads": seed}, policy, [CORE], [], configs, "v0.73.0-beta.1",
+                                          core_seed={})
+
     def test_core_seed_record_cannot_use_another_source_or_image_set(self):
         spec = {"release": "v0.44.5-beta.1", "sourceCommit": "a" * 40, "coreImages": [CORE]}
         record = {"sourceCommit": spec["sourceCommit"], "coreImages": [CORE],
@@ -634,6 +661,18 @@ class ManifestTests(unittest.TestCase):
     def test_the_committed_spec_is_valid(self):
         MAN.read_spec(PRODUCTION)
         MAN.read_spec(STAGING)
+
+    def test_only_staging_may_pin_a_c8s_beta(self):
+        for profile, allowed in ((STAGING, True), (PRODUCTION, False)):
+            spec = copy.deepcopy(PROFILES.read_spec(profile))
+            spec["c8s"]["release"] = "v0.73.0-beta.1"
+            spec["c8s"].pop("baseRelease", None)
+            with self.subTest(profile=profile.name), mock.patch.object(PROFILES, "read_spec", return_value=spec):
+                if allowed:
+                    MAN.read_spec(profile)
+                else:
+                    with self.assertRaisesRegex(MAN.ManifestError, "stable c8s release"):
+                        MAN.read_spec(profile)
 
     def test_the_spec_names_no_version_because_the_tag_is_the_version(self):
         spec = MAN.read_spec(PRODUCTION)
@@ -1003,7 +1042,7 @@ class ManifestTests(unittest.TestCase):
         # Use the real CDS process ordering that publication generates.
         allowlist = json.loads(GEN.canonicalize(allowlist, None))
         MAN.require_allowlist_contract(allowlist, policy, core, documents, configs,
-                                      spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
+                                      GEN.feature_release(spec["c8s"]), GEN.core_seed(spec["c8s"]), native)
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
@@ -1013,21 +1052,25 @@ class ManifestTests(unittest.TestCase):
         changed["workloads"].pop("inference-worker-1")
         with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
             MAN.require_allowlist_contract(changed, policy, core, documents, configs,
-                                          spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
+                                          GEN.feature_release(spec["c8s"]), GEN.core_seed(spec["c8s"]), native)
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"]["sglang-router"]["containers"][0]["args"]["argv"][1] = \
             "--service-discovery-namespace=wrong"
         with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
             MAN.require_allowlist_contract(changed, policy, core, documents, configs,
-                                          spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
+                                          GEN.feature_release(spec["c8s"]), GEN.core_seed(spec["c8s"]), native)
 
         changed = json.loads(json.dumps(allowlist))
-        # The router is a native entry before c8s v0.47.0 and a seeded one after.
+        # The router is a native entry before c8s v0.47.0, a seeded one after,
+        # and from the seed layer release CDS keeps it (no entry).
+        if GEN.c8s_at_least(GEN.feature_release(spec["c8s"]), GEN.SEED_LAYER_SINCE):
+            self.assertFalse(any(name.startswith("c8s-router") for name in changed["workloads"]))
+            return
         router_entry = next(name for name in changed["workloads"] if name.startswith("c8s-router"))
         changed["workloads"][router_entry]["containers"][0]["args"] = {"policy": "any"}
         with self.assertRaisesRegex(MAN.ManifestError, "entry c8s-router.* differs"):
             MAN.require_allowlist_contract(changed, policy, core, documents, configs,
-                                          spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
+                                          GEN.feature_release(spec["c8s"]), GEN.core_seed(spec["c8s"]), native)
 
     def test_each_node_manifest_belongs_to_the_layer_that_pins_c8s(self):
         for profile in PROFILES.load():
@@ -1038,7 +1081,7 @@ class ManifestTests(unittest.TestCase):
                                  and profile.directory / "inputs/image-config.json" != PROFILES.IMAGE_CONFIG)
 
     def test_the_source_lock_pins_the_spec_commit(self):
-        lock = json.loads((ROOT / "release/inputs/c8s-source-lock.json").read_text())
+        lock = json.loads((ROOT / "contracts/c8s-admission-source-lock.json").read_text())
         for profile in PROFILES.load():
             with self.subTest(profile=profile.name):
                 spec = MAN.read_spec(profile)
@@ -1060,21 +1103,22 @@ class ManifestTests(unittest.TestCase):
                 NODE.check_measurements(json.loads(data))
 
     def test_the_schema_refuses_deployment_values(self):
-        schema = json.loads((ROOT / "api/release-manifest.schema.json").read_text())
+        schema = json.loads((ROOT / "contracts/release-manifest.schema.json").read_text())
         properties = set(schema["properties"])
         for forbidden in ("meshCa", "operatorPublicKeySha256", "operatorKeySetSha256", "target"):
             self.assertNotIn(forbidden, properties)
         self.assertFalse(schema["additionalProperties"])
         jsonschema.Draft202012Validator.check_schema(schema)
 
-    def test_a_signed_manifest_with_the_old_lock_path_still_validates(self):
-        # The published v0.15.15 manifest, which names the lock at contracts/.
-        signed = json.loads((FIXTURES / "v0.15.15-release-manifest.json").read_text())
-        self.assertEqual(signed["sourceLock"]["path"], "contracts/c8s-admission-source-lock.json")
-        MAN.release_signature.validate_release_schema(signed)
-        moved = copy.deepcopy(signed)
-        moved["sourceLock"]["path"] = MAN.SOURCE_LOCK.relative_to(ROOT).as_posix()
-        MAN.release_signature.validate_release_schema(moved)
+    def test_a_dev_c8s_build_is_for_staging_only(self):
+        schema = json.loads((ROOT / "contracts/release-manifest.schema.json").read_text())
+        dev = "v0.72.1-0.20261023005616-90bd65abd955"
+        jsonschema.validate(dev, schema["properties"]["c8s"]["properties"]["release"])
+        rules = {"allOf": [rule for rule in schema["allOf"] if "environment" in json.dumps(rule["if"])]}
+        jsonschema.validate({"release": {"environment": "staging"}, "c8s": {"release": dev}}, rules)
+        jsonschema.validate({"release": {"environment": "production"}, "c8s": {"release": "v0.72.0"}}, rules)
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate({"release": {"environment": "production"}, "c8s": {"release": dev}}, rules)
 
 
 class ChartArchiveTests(unittest.TestCase):

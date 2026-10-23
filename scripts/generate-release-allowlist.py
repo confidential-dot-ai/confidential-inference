@@ -24,7 +24,9 @@ The script never learns a value from a running container. A value that no
 pinned source can give (for example a node IP) is an error.
 
 `c8s allowlist derive` from the pinned c8s release builds each entry, so c8s
-itself decides which containers it injects and drops. The c8s core entries mirror the bootstrap seed: from c8s v0.47.0 as
+itself decides which containers it injects and drops. From the c8s release
+with the fixed seed layer (C8s #1031, SEED_LAYER_SINCE) the allowlist has only
+the application entries. Before it, the c8s core entries mirror the bootstrap seed: from c8s v0.47.0 as
 the chart renders it, one pinned entry per component shape and the router pod;
 before it, one floor entry per core image pinned to its complete image
 ENTRYPOINT beside the seed. The
@@ -96,6 +98,10 @@ PER_POD_MESH_SINCE = (0, 64, 0)
 # it is: a floor entry or a native router entry beside it would leave args,
 # mounts or env `any`, which `c8s allowlist lint --strict` refuses.
 SEED_PINS_COMPONENTS_SINCE = (0, 47, 0)
+# The first c8s release whose CDS keeps the node image's seed as a fixed
+# layer that an allowlist upload cannot drop (C8s #1031). From it the release
+# allowlist names only the application entries; it mirrors no seed entry.
+SEED_LAYER_SINCE = (0, 73, 0)
 CLAIMS_SOCKET_SOURCE = "/var/run/nri-image-policy"
 CLAIMS_SOCKET_DESTINATION = "/run/c8s/workload-claims"
 
@@ -103,10 +109,19 @@ CLAIMS_SOCKET_DESTINATION = "/run/c8s/workload-claims"
 def c8s_at_least(release: str | None, version: tuple[int, int, int]) -> bool:
     if release is None:
         return False
-    match = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-beta\.[1-9][0-9]*)?", release)
+    match = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-beta\.[1-9][0-9]*|-0\.[0-9]{14}-[0-9a-f]{12})?", release)
     if match is None:
         raise GenerationError(f"unsupported c8s release: {release}")
     return tuple(int(part) for part in match.groups()) >= version
+
+
+def feature_release(c8s: dict[str, Any]) -> str:
+    """The c8s release whose features the pinned c8s has, for the version gates.
+
+    A dev build (Go pseudo-version, staging only) names it in `baseRelease`: its
+    pseudo-version counts from the last tag, not from the release it previews.
+    """
+    return c8s.get("baseRelease", c8s["release"])
 
 
 class GenerationError(ValueError):
@@ -489,7 +504,10 @@ def floor_entry(image: str, entrypoint: list[str] | None = None) -> tuple[str, d
 
 
 def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
-    if not c8s_at_least(c8s["release"], (0, 44, 0)):
+    """The seed entries the release allowlist must mirror: none before c8s
+    v0.44.0 (floor entries instead) and none from SEED_LAYER_SINCE (CDS keeps
+    the seed beside the uploaded document)."""
+    if not c8s_at_least(feature_release(c8s), (0, 44, 0)) or c8s_at_least(feature_release(c8s), SEED_LAYER_SINCE):
         return {}
     path = ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json")
     record = read_json(path)
@@ -549,7 +567,7 @@ def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[s
 
 
 def native_core_entries(c8s: dict[str, Any], configs: dict[str, Any]) -> dict[str, Any]:
-    if not c8s_at_least(c8s["release"], (0, 44, 6)) or c8s_at_least(c8s["release"], SEED_PINS_COMPONENTS_SINCE):
+    if not c8s_at_least(feature_release(c8s), (0, 44, 6)) or c8s_at_least(feature_release(c8s), SEED_PINS_COMPONENTS_SINCE):
         return {}
     record = read_json(ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json"))
     helper = runpy.run_path(str(ROOT / "scripts/native_c8s_allowlist.py"))
@@ -611,7 +629,7 @@ def generate(
         mount_policies: dict[str, Any] = {}
         for container_name, container in containers.items():
             if is_carved_out(effective_process(container, image_env.get(container["image"], {})),
-                             core_digests, c8s["release"]):
+                             core_digests, feature_release(c8s)):
                 env_policies[container_name] = {"policy": "any"}
                 mount_policies[container_name] = {"policy": "any"}
                 continue
@@ -620,7 +638,7 @@ def generate(
                     "policy": "exact",
                     "values": container_env(controller, container, image_env, policy, cdi),
                 }
-                rules = container_mounts(controller, container, cdi, c8s_release=c8s["release"])
+                rules = container_mounts(controller, container, cdi, c8s_release=feature_release(c8s))
                 mount_policies[container_name] = {"policy": "exact", "rules": rules} if rules else {"policy": "deny"}
             except GenerationError as error:
                 errors.append(str(error))
@@ -636,7 +654,7 @@ def generate(
         entry = derive(executable, item["name"], explicit, env_policies, mount_policies, reads)
         # New c8s derive already omits injected names. Authored cds-attest
         # and allowlist-proxy must remain in the exact workload definition.
-        if not c8s_at_least(c8s["release"], (0, 41, 0)):
+        if not c8s_at_least(feature_release(c8s), (0, 41, 0)):
             for field in ("initContainers", "containers"):
                 entry[field] = [
                     c for c in entry.get(field, [])
@@ -655,7 +673,7 @@ def generate(
         workloads[item["name"]] = entry
     if errors:
         raise GenerationError("the release allowlist has unpinned inputs:\n  - " + "\n  - ".join(errors))
-    for name, entry in core_entries(c8s["coreImages"], image_env, c8s["release"], core_seed(c8s)).items():
+    for name, entry in core_entries(c8s["coreImages"], image_env, feature_release(c8s), core_seed(c8s)).items():
         if name in workloads:
             raise GenerationError(f"the core entry {name} collides with a workload")
         workloads[name] = entry

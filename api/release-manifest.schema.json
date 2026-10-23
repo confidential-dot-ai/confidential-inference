@@ -113,7 +113,7 @@
       "additionalProperties": false,
       "required": ["release", "sourceCommit"],
       "properties": {
-        "release": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-beta\\.[1-9][0-9]*)?$"},
+        "release": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-beta\\.[1-9][0-9]*|-0\\.[0-9]{14}-[0-9a-f]{12})?$"},
         "sourceCommit": {"$ref": "#/$defs/gitCommit"}
       }
     },
@@ -250,7 +250,8 @@
       "items": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$"}
     }
   },
-  "allOf": [{"if":{"properties":{"release":{"properties":{"name":{"pattern":"-transition(?:-staging)?$"}}}}},"then":{"required":["transition"]},"else":{"not":{"required":["transition"]}}}],
+  "allOf": [{"if":{"properties":{"release":{"properties":{"name":{"pattern":"-transition(?:-staging)?$"}}}}},"then":{"required":["transition"]},"else":{"not":{"required":["transition"]}}},
+    {"if":{"properties":{"release":{"properties":{"environment":{"const":"production"}}}}},"then":{"properties":{"c8s":{"properties":{"release":{"pattern":"^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-beta\\.[1-9][0-9]*)?$"}}}}}}],
   "$defs": {
     "sha256Digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "sha384Hex": {"type": "string", "pattern": "^[0-9a-f]{96}$"},
