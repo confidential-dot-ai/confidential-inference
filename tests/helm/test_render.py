@@ -332,6 +332,9 @@ def main() -> None:
     gateway_pod = admin.deployment["spec"]["template"]["spec"]
     assert not any("hostPath" in volume for volume in gateway_pod.get("volumes", []))
     assert not any(container.get("args") for container in gateway_pod["containers"])
+    # Per-pod mesh: the gateway does not mount the c8s certificate volume.
+    assert not any(mount["mountPath"] == "/etc/c8s/certs"
+                   for container in gateway_pod["containers"] for mount in container.get("volumeMounts", []))
     egress = next(item for item in with_admin if item["kind"] == "NetworkPolicy"
                   and item["metadata"]["name"] == "gateway-to-router")["spec"]["egress"]
     blocks = [peer["ipBlock"]["cidr"] for rule in egress for peer in rule.get("to", []) if "ipBlock" in peer]
