@@ -115,15 +115,7 @@ pub fn router(
     metrics: Arc<GatewayMetrics>,
     http: reqwest::Client,
 ) -> Router {
-    router_with_runtime(
-        config,
-        keys,
-        audit,
-        metrics,
-        http,
-        None,
-        None,
-    )
+    router_with_runtime(config, keys, audit, metrics, http, None, None)
 }
 
 #[allow(clippy::too_many_arguments)]

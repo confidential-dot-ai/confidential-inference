@@ -14,8 +14,7 @@ use axum::{
     routing::post,
 };
 use confidential_gateway::{
-    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig,
-    metrics::GatewayMetrics, router,
+    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig, metrics::GatewayMetrics, router,
 };
 use serde_json::{Value, json};
 use tokio::sync::oneshot;

@@ -28,13 +28,14 @@ def validate_action(action, allowed_hosts, router_hosts=(), *, worker_hosts=(), 
     """Permit only bounded staging checks. Reload comes from native file readers."""
     parsed = urllib.parse.urlsplit(action["url"])
     gateway = {"/health": (9443, "GET"), "/ready": (9443, "GET"),
-               "/v1/chat/completions": (9443, "POST"),
-               "/metrics": (9090, "GET"), "/runtime-config": (9090, "GET")}
+               "/v1/chat/completions": (9443, "POST"), "/attestation": (9443, "GET"),
+               "/metrics": (9090, "GET"), "/runtime-config": (9090, "GET"),
+               "/release-config": (9090, "GET")}
     router = {"/health": (30000, "GET"), "/readiness": (30000, "GET"),
               "/model-routes": (30000, "GET"), "/model-routes/status": (30000, "GET")}
     paths = gateway if parsed.hostname in allowed_hosts else router if parsed.hostname in router_hosts else {}
     if (parsed.scheme != "http" or parsed.username or parsed.password or parsed.fragment
-            or parsed.path not in paths or parsed.query
+            or parsed.path not in paths or (parsed.query and parsed.path != "/attestation")
             or (parsed.port, action.get("method", "GET")) != paths.get(parsed.path)):
         raise ValueError("The staging action destination, method, or port is not approved.")
     checked_body(action)

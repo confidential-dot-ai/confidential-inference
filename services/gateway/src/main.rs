@@ -200,9 +200,7 @@ async fn main() -> Result<()> {
         let namespace = args.router_namespace.clone();
         let direct = args.allow_direct_inference_url;
         config.watch(
-            move |settings| {
-                validate_runtime_settings(settings, namespace.as_deref(), direct)
-            },
+            move |settings| validate_runtime_settings(settings, namespace.as_deref(), direct),
             Duration::from_secs(5),
         )
     });
@@ -673,8 +671,7 @@ mod tests {
     #[tokio::test]
     async fn instance_header_identifies_the_slot_without_changing_the_body() -> Result<()> {
         use tower::ServiceExt as _;
-        let app =
-            axum::Router::new().route("/health", axum::routing::get(|| async { "metadata" }));
+        let app = axum::Router::new().route("/health", axum::routing::get(|| async { "metadata" }));
         let app = with_instance_header(app, Some("gateway-new"))?;
         let response = app
             .oneshot(
@@ -909,7 +906,6 @@ mod tests {
         let path = directory.path().join("pepper");
         assert!(wait_for_bounded_file(&path, 4_096, Duration::from_millis(100)).is_err());
     }
-
 }
 
 #[cfg(test)]
