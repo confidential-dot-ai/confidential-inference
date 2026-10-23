@@ -67,8 +67,6 @@ still pins `c8s.cvmMode: bare-metal` (the v0.20.4 name for the mode
 `allowlists/staging.json`: an operator-mode cluster starts from this file as
 its floor and extends it with signed operator uploads afterward, so the
 generator, the review step, and the digest discipline below are unchanged.
-`images/control-plane-node/README.md` explains which environments seal a
-node image and which do not.
 
 `regenerate-c8s-allowlist.py` also generates the staging allowlist. Pass
 `--config c8s/staging-policy.json` to select it; the script rejects any
