@@ -184,8 +184,10 @@ def check_telemetry_collector() -> None:
     documents = render(*TELEMETRY, "--set", "telemetry.traces.enabled=true")
     pods = {item["metadata"]["name"]: item["spec"]["template"]["spec"] for item in documents
             if item["kind"] in {"Deployment", "StatefulSet"}}
+    # The collector and (stateless, #223) the gateway are the only pods with
+    # an exit; each exit is a hostAliases address and its one ipBlock.
     exits = {name for name, pod in pods.items() if pod.get("hostAliases")}
-    assert exits == {"telemetry-collector"}, exits
+    assert "telemetry-collector" in exits and exits <= {"telemetry-collector", "gateway"}, exits
     collector = pods["telemetry-collector"]
     assert collector["hostAliases"] == [{"ip": "203.0.113.7", "hostnames": ["relay.example.com"]}]
     assert PINNED.match(collector["containers"][0]["image"])
@@ -201,7 +203,8 @@ def check_telemetry_collector() -> None:
     policies = {item["metadata"]["name"]: item for item in documents if item["kind"] == "NetworkPolicy"}
     blocks = [peer["ipBlock"]["cidr"] for policy in policies.values()
               for rule in policy["spec"].get("egress", []) for peer in rule.get("to", []) if "ipBlock" in peer]
-    assert blocks == ["203.0.113.7/32"], blocks
+    addresses = {alias["ip"] + "/32" for name in exits for alias in pods[name]["hostAliases"]}
+    assert sorted(blocks) == sorted(addresses) and "203.0.113.7/32" in blocks, blocks
 
     config = collector_config(documents)
     relay = "https://relay.example.com/"
