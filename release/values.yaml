@@ -215,7 +215,7 @@ workloadOverrides:
             - name: GATEWAY_RELEASE_SELECTION_FILE
               value: /mnt/c8s-data/release-selection/releases.json
             - name: GATEWAY_INFERENCE_URL
-              value: http://router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}.confidential-inference.svc.cluster.local:30000
+              value: http://router-headless.confidential-inference.svc.cluster.local:30000
             - name: GATEWAY_ALLOW_DIRECT_INFERENCE_URL
               value: 'true'
             - name: GATEWAY_MAXIMUM_HEADERS
@@ -481,15 +481,12 @@ workloadOverrides:
     spec:
       progressDeadlineSeconds: 600
       revisionHistoryLimit: 10
-      selector:
-        matchLabels:
-          confidential.ai/router-slot: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
       template:
         metadata:
           annotations:
+            # A new c8s workload per release: during the roll the old and the
+            # new router run side by side, each with its own allowlist entry.
             confidential.ai/cw: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
-          labels:
-            confidential.ai/router-slot: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
         spec:
           containers:
           - name: sglang-router
@@ -569,7 +566,6 @@ workloadOverrides:
             terminationMessagePath: /dev/termination-log
             terminationMessagePolicy: File
           dnsPolicy: ClusterFirst
-          hostname: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
           restartPolicy: Always
           schedulerName: default-scheduler
           serviceAccount: sglang-router
@@ -579,8 +575,6 @@ workloadOverrides:
               defaultMode: 420
               name: router-model-routes
             name: model-routes
-    metadata:
-      name: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
   StatefulSet/inference-worker-0:
     spec:
       persistentVolumeClaimRetentionPolicy:

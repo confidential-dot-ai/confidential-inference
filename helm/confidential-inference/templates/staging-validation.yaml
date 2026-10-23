@@ -6,8 +6,7 @@
 {{- $gateway := printf "c8s-gateway.%s.svc.cluster.local" .Release.Namespace }}
 {{- $router := printf "sglang-router.%s.svc.cluster.local" .Release.Namespace }}
 {{- if .Values.runtimeConfig.enabled }}
-{{- $slot := printf "router-%s" (.Values.attestationReceipts.releaseId | replace "-transition" "" | replace "." "-") }}
-{{- $router = printf "%s.%s.svc.cluster.local" $slot .Release.Namespace }}
+{{- $router = printf "%s.%s.svc.cluster.local" (include "confidential-inference.routerService" .) .Release.Namespace }}
 {{- end }}
 apiVersion: v1
 kind: ServiceAccount
