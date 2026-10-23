@@ -19,6 +19,9 @@ model:
 
 c8s:
   release: v0.72.1-0.20261023005616-90bd65abd955
+  # A dev build's pseudo-version counts from the last tag (v0.72.0); the
+  # version gates use the release it previews: it has the seed layer (C8s #1031).
+  baseRelease: v0.73.0
   sourceCommit: 90bd65abd9550a03c73b414a657aa2f7eb60884c
   nodeImage:
     reference: ghcr.io/confidential-dot-ai/node-guest-base

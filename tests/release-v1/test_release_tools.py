@@ -565,6 +565,11 @@ class ProcessTests(unittest.TestCase):
             with mock.patch.object(GEN, "read_json", return_value=record):
                 self.assertEqual(GEN.core_seed(spec), mirrored, release)
         self.assertEqual(GEN.core_entries([CORE], configs, "v0.73.0-beta.1", {}), {})
+        # A dev build counts from the last tag; its baseRelease turns the gate on.
+        dev = {"release": "v0.72.1-0.20261023005616-90bd65abd955", "sourceCommit": "a" * 40, "coreImages": [CORE]}
+        with mock.patch.object(GEN, "read_json", return_value=record):
+            self.assertEqual(GEN.core_seed(dev), seed)
+            self.assertEqual(GEN.core_seed({**dev, "baseRelease": "v0.73.0"}), {})
         policy = {"workloads": []}
         MAN.require_allowlist_contract({"workloads": {}}, policy, [CORE], [], configs, "v0.73.0-beta.1", core_seed={})
         with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
