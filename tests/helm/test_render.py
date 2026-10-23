@@ -208,7 +208,7 @@ def check_c8s_admission() -> None:
                "-f", "tests/release-v1/fixtures/release-values.yaml",
                "--set", "attestationReceipts.releaseId=v0.14.18-staging")
     for profile in ((), release, (*release, "-f", "release/staging/values.yaml"),
-                    ("--values", "tests/contracts/values-sglang.yaml")):
+                    ("--values", "tests/api/values-sglang.yaml")):
         # The release profiles' log collector (release/values.yaml) takes its
         # egress policy from the target's inner.yaml until #181 renders it.
         found = [line for line in admission["refusals"](render(*profile))
@@ -485,7 +485,7 @@ def main() -> None:
         item for item in yaml.safe_load_all(
             helm(
                 "template", "example", str(CHART), "--namespace", "inference",
-                "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
+                "--values", str(ROOT / "tests/api/values-sglang.yaml"),
             )
         ) if item
     ]
@@ -526,7 +526,7 @@ def main() -> None:
         item for item in yaml.safe_load_all(
             helm(
                 "template", "example", str(CHART), "--namespace", "inference",
-                "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
+                "--values", str(ROOT / "tests/api/values-sglang.yaml"),
                 "--set", "inference.attestedGpuCount=8",
             )
         ) if item
@@ -573,7 +573,7 @@ def main() -> None:
         item for item in yaml.safe_load_all(
             helm(
                 "template", "example", str(CHART), "--namespace", "inference",
-                "--values", str(ROOT / "tests/contracts/values-sglang-simulator.yaml"),
+                "--values", str(ROOT / "tests/api/values-sglang-simulator.yaml"),
             )
         ) if item
     ]

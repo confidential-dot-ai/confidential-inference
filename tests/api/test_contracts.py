@@ -29,7 +29,7 @@ def validate(instance: dict, schema: dict) -> None:
 class ContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.release_schema = load(ROOT / "contracts/release-bundle.schema.json")
+        cls.release_schema = load(ROOT / "api/release-bundle.schema.json")
         cls.release = load(FIXTURES / "release-bundle.valid.json")
         cls.production_release = load(ROOT / "releases/production/release-bundle.json")
         cls.source_lock = load(ROOT / "images/sglang/source.lock")
@@ -159,7 +159,7 @@ class ContractTests(unittest.TestCase):
                 "--namespace",
                 "confidential-inference",
                 "-f",
-                str(ROOT / "tests/contracts/values-sglang.yaml"),
+                str(ROOT / "tests/api/values-sglang.yaml"),
             ],
             cwd=ROOT,
             check=True,
@@ -193,7 +193,7 @@ class WorkloadAttestationFixtureTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.schema = load(ROOT / "contracts/workload-attestation.schema.json")
+        cls.schema = load(ROOT / "api/workload-attestation.schema.json")
         jsonschema.Draft202012Validator.check_schema(cls.schema)
 
     def test_production_fixture_is_valid(self):
@@ -242,7 +242,7 @@ class WorkloadAttestationFixtureTests(unittest.TestCase):
 
 
 class GatewayInferenceContractTests(unittest.TestCase):
-    """Checks contracts/gateway-inference.openapi.json against the gateway source."""
+    """Checks api/gateway-inference.openapi.json against the gateway source."""
 
     EXPECTED_PATHS = {
         "/health",
@@ -263,7 +263,7 @@ class GatewayInferenceContractTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.contract = load(ROOT / "contracts/gateway-inference.openapi.json")
+        cls.contract = load(ROOT / "api/gateway-inference.openapi.json")
         cls.gateway_source = (
             ROOT / "services/gateway/src/lib.rs"
         ).read_text(encoding="utf-8")
