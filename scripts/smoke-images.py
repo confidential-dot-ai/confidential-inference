@@ -2,7 +2,7 @@
 """Start each repository image of a rendered release as its pod would, in podman.
 
     helm template ... > rendered.yaml
-    scripts/smoke-images.py rendered.yaml [--image log-collector ...]
+    scripts/smoke-images.py rendered.yaml [--image gateway ...]
 
 For each container of a rendered workload that runs a repository image, the
 script gives podman what the kubelet would: command and args, env, the user,
@@ -170,7 +170,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("rendered", type=Path)
     parser.add_argument("--image", action="append", default=[],
-                        help="only this repository image (log-collector, gateway, ...); repeatable; default: all")
+                        help="only this repository image (gateway, sglang, ...); repeatable; default: all")
     parser.add_argument("--secret-key", action="append", default=[], metavar="SECRET/KEY",
                         help="a key of a Secret volume, written as a placeholder file; repeatable")
     parser.add_argument("--seconds", type=int, default=20)

@@ -90,20 +90,6 @@ IMAGES = (
          "images/sglang-router/canonicalize_wheel.py", "images/sglang-router/requirements.in", "images/sglang-router/requirements.lock", "images/sglang-router/Cargo.lock"),
     ),
     Image(
-        "metrics-collector",
-        "images/metrics-collector",
-        "images/metrics-collector/Dockerfile",
-        "Confidential Inference metrics collector",
-        ("images/metrics-collector/Dockerfile",),
-    ),
-    Image(
-        "log-collector",
-        "images/log-collector",
-        "images/log-collector/Dockerfile",
-        "Confidential Inference log collector",
-        ("images/log-collector/Dockerfile", "images/log-collector/config.alloy", "images/log-collector/auth/*.alloy"),
-    ),
-    Image(
         "kube-state-metrics",
         "images/kube-state-metrics",
         "images/kube-state-metrics/Dockerfile",

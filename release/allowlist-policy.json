@@ -25,14 +25,6 @@
       "controller": "Deployment/kube-state-metrics"
     },
     {
-      "name": "log-collector",
-      "controller": "Deployment/log-collector"
-    },
-    {
-      "name": "metrics-collector",
-      "controller": "Deployment/metrics-collector"
-    },
-    {
       "name": "router-{release}",
       "controller": "Deployment/sglang-router"
     },
