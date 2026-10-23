@@ -224,7 +224,13 @@ class ReleaseSignatureTests(unittest.TestCase):
     def test_workflow_uses_keyless_oidc_and_refuses_asset_replacement(self) -> None:
         workflow = WORKFLOW.read_text()
         self.assertIn("id-token: write", workflow)
-        self.assertIn("name: ${{ needs.select-profile.outputs.signing_environment }}", workflow)
+        # The signing environment (and its protection rules) applies to tag
+        # pushes only; a dispatched unsigned branch build runs without it.
+        self.assertIn(
+            "name: ${{ github.event_name == 'push' && "
+            "needs.select-profile.outputs.signing_environment || '' }}",
+            workflow,
+        )
         profiles = (ROOT / "release/profiles.json").read_text(encoding="utf-8")
         self.assertIn('"signed-release-production"', profiles)
         self.assertIn('"signed-release-staging"', profiles)
