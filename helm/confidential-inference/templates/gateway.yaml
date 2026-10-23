@@ -11,9 +11,6 @@ metadata:
     app.kubernetes.io/component: gateway
 data:
   {{- $identity := dict }}
-  {{- if not .Values.runtimeConfig.releaseBundle }}
-  {{- $_ := set $identity "releaseBundleSha256" .Values.attestationReceipts.releaseBundleSha256 }}
-  {{- end }}
   {{- if eq .Values.attestationReceipts.policyMode "operator" }}
   {{- $_ := set $identity "expectedOperatorPublicKeySha256" .Values.attestationReceipts.expectedOperatorPublicKeySha256 }}
   {{- $_ := set $identity "expectedOperatorKeySetSha256" .Values.attestationReceipts.expectedOperatorKeySetSha256 }}
@@ -151,13 +148,10 @@ spec:
               value: {{ .Release.Namespace | quote }}
             - name: GATEWAY_RUNTIME_CONFIG_FILE
               value: /mnt/c8s-data/runtime/settings.json
-            {{- if .Values.runtimeConfig.releaseBundle }}
+            # The pod spec does not depend on runtimeConfig.releaseBundle: the
+            # allowlist is rendered without it and bin/deploy sets it.
             - name: GATEWAY_RELEASE_SELECTION_FILE
               value: /mnt/c8s-data/release-selection/releases.json
-            {{- else }}
-            - name: GATEWAY_RELEASE_ID
-              value: {{ .Values.attestationReceipts.releaseId | quote }}
-            {{- end }}
             # The release manifest hash and the operator key hashes are in a
             # mounted file, so the exact allowlist does not pin them.
             # The bounded reader accepts kubelet's symlink only inside the mount.
@@ -239,11 +233,9 @@ spec:
             - name: runtime-config
               mountPath: /mnt/c8s-data/runtime
               readOnly: true
-            {{- if .Values.runtimeConfig.releaseBundle }}
             - name: release-selection
               mountPath: /mnt/c8s-data/release-selection
               readOnly: true
-            {{- end }}
             - name: run
               mountPath: /run/confidential-gateway
             - name: tmp
@@ -270,11 +262,9 @@ spec:
         - name: runtime-config
           configMap:
             name: {{ .Values.runtimeConfig.gatewayConfigMap }}
-        {{- if .Values.runtimeConfig.releaseBundle }}
         - name: release-selection
           configMap:
             name: {{ .Values.runtimeConfig.releaseConfigMap }}
-        {{- end }}
         - name: run
           emptyDir: {}
         - name: tmp

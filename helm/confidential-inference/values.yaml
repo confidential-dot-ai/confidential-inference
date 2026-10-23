@@ -90,8 +90,8 @@ runtimeConfig:
   # The exact bytes of the release-bundle.json that the deployment verified,
   # set with --set-file. The chart then renders releaseConfigMap, which selects
   # this release, so an upgrade or rollback changes it with the release.
-  # Without it the gateway takes attestationReceipts.releaseId and
-  # releaseBundleSha256.
+  # The gateway always reads releaseConfigMap. Without releaseBundle the
+  # deployment must create it.
   releaseBundle: ""
   attestationCacheSeconds: 10
 
