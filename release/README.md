@@ -36,6 +36,8 @@ image digests. The release commit is the image source commit.
 | `profiles.json` | A person | The release profiles and their layers |
 | `inputs/image-config.json` | `generate-release-allowlist.py --refresh-image-config` | The `ENV`, `ENTRYPOINT`, and `CMD` of every image that a profile renders and this repository does not build. All profiles share it. Review the diff by hand |
 | `inputs/cdi/nvidia-<driver>.json` | A person, from a reviewed record | The NVIDIA CDI environment variables and driver mounts of one driver version |
+| `inputs/c8s-source-lock.json` | `bump-c8s.py` | The pinned c8s commits and source hashes. The signed manifest records its path and digest. All profiles share it |
+| `inputs/c8s-attestation-protocols/<commit>.json` | `bump-c8s.py` | The attestation protocol of each c8s commit. `check-c8s-protocol-lockstep.py` compares them with the source lock |
 | `node-manifest.json` | `fetch-node-manifest.py` | The c8s `manifest.json` of the node image. It holds MRTD, RTMR1, and RTMR2 |
 | `accepted-lint-findings.json` | A reviewer | The `c8s allowlist lint --strict` findings that the release accepts, each with its reason and issue |
 
@@ -48,7 +50,7 @@ profile values files:
 
 | Asset | Contents |
 | --- | --- |
-| `release-bundle.json` | The release manifest. The workflow signs it. It must match `contracts/release-manifest.schema.json` |
+| `release-bundle.json` | The release manifest. The workflow signs it. It must match `api/release-manifest.schema.json` |
 | `allowlist.json` | The exact c8s allowlist of the release, in canonical bytes. The manifest binds its SHA-256 as `allowlist.sha256`; `allowlist.path` names the profile, for example `release/staging/allowlist.json` |
 | `release-values.yaml` | The repository image digests and `attestationReceipts.releaseId` (the tag) as a Helm values file. Apply it after the profile values files. The manifest binds its SHA-256 as `releaseValues.sha256`; `releaseValues.path` names the profile, for example `release/staging/release-values.yaml`. Each image in it is also in the manifest `images` |
 | `confidential-inference-X.Y.Z.tgz` | The chart package of the source commit, written by the staging release build at version X.Y.Z (the tag without `v` and `-staging`). The manifest binds its SHA-256 as `chart.archiveSha256` and the registry reference the publish job pushes it to as `chart.reference` (`ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference:X.Y.Z`); the SHA-256 is the digest of the chart layer there. A production release of the same commit builds no package: its manifest binds the staging package, so production promotes the chart staging verified. `chart.sha256` stays the tree hash of `helm/confidential-inference` at the tag |

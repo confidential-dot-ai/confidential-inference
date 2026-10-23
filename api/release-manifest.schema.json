@@ -134,7 +134,7 @@
       "additionalProperties": false,
       "required": ["path", "sha256"],
       "properties": {
-        "path": {"const": "contracts/c8s-admission-source-lock.json"},
+        "path": {"enum": ["contracts/c8s-admission-source-lock.json", "release/inputs/c8s-source-lock.json"]},
         "sha256": {"$ref": "#/$defs/sha256Digest"}
       }
     },

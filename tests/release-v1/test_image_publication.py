@@ -120,7 +120,7 @@ class ImagePublicationTests(unittest.TestCase):
 
     def test_publication_schema_is_valid(self):
         import jsonschema
-        schema = json.loads((ROOT / "contracts/image-publication-manifest.schema.json").read_text())
+        schema = json.loads((ROOT / "api/image-publication-manifest.schema.json").read_text())
         jsonschema.Draft202012Validator.check_schema(schema)
 
 

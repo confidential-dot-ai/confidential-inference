@@ -16,7 +16,7 @@ Base c8s units this profile's units order against or copy from
 (cred-release.service, rke2-role.service, rke2-server.service.d/*,
 rke2-agent.service.d/*, scratch-enforce.service, gpu-cc-enforce.service) are
 vendored verbatim under fixtures/c8s-base/ and hash-checked against the
-commit contracts/c8s-admission-source-lock.json pins, via `git show` against
+commit release/inputs/c8s-source-lock.json pins, via `git show` against
 a local c8s checkout when one is available (see C8S_CHECKOUT below).
 
 Two units this profile's units reference are NOT part of the c8s repository
@@ -46,7 +46,7 @@ C8S_BASE = FIXTURES / "c8s-base"
 EXTERNAL_STUBS = FIXTURES / "external-stubs"
 
 SOURCE_LOCK = json.loads(
-    (ROOT / "contracts/c8s-admission-source-lock.json").read_text()
+    (ROOT / "release/inputs/c8s-source-lock.json").read_text()
 )
 C8S_PIN = SOURCE_LOCK["commit"]
 # The c8s checkout is not part of this repository. Set C8S_CHECKOUT to the

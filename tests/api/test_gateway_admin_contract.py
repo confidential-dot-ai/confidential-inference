@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CONTRACT_PATH = ROOT / "contracts" / "gateway-admin.openapi.json"
+CONTRACT_PATH = ROOT / "api" / "gateway-admin.openapi.json"
 HTTP_METHODS = {"get", "put", "post", "delete", "patch", "head", "options", "trace"}
 MUTATIONS = {
     ("/admin/v1/api-keys", "post"),

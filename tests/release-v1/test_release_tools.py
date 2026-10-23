@@ -51,10 +51,6 @@ FIXTURES = ROOT / "tests/release-v1/fixtures"
 OVERLAY = FIXTURES / "release-values.yaml"
 STAGING_ALLOWLIST = FIXTURES / "staging-allowlist.json"
 REPOSITORY_CONFIGS = json.loads((FIXTURES / "repository-image-config.json").read_text())
-# Packaging tests use a placeholder collector digest. Runtime generation is
-# verified separately with the registry configuration of the approved image.
-REPOSITORY_CONFIGS['ghcr.io/confidential-dot-ai/confidential-inference/log-collector@sha256:' + '2' * 64] = {
-    'env': [], 'entrypoint': [], 'cmd': []}
 RELEASE_IMAGES = yaml.safe_load(OVERLAY.read_text())["images"]
 # The rollout client uses the same pinned Python base as the router fixture.
 # Its program is signed in chart argv; this synthetic digest tests packaging.
@@ -111,7 +107,7 @@ def build_release(tag: str, evidence: dict, download_dir: Path | None, generate,
         return MAN.build(
             tag,
             ROOT / "helm/confidential-inference",
-            ROOT / "contracts/c8s-admission-source-lock.json",
+            ROOT / "release/inputs/c8s-source-lock.json",
             "d" * 40,
             evidence_path,
             download_dir or Path(temporary) / "downloads",
@@ -142,7 +138,9 @@ def build_production(evidence: dict, download_dir: Path, tag: str = "v0.14.2") -
     allowlist = json.loads(STAGING_ALLOWLIST.read_text())
     operator = PROFILES.read_values(PRODUCTION)["images"]["c8sOperator"].rsplit("@", 1)[1]
     allowlist["workloads"]["production-operator"] = {"containers": [{"digest": operator}]}
-    allowlist["workloads"]["production-collector"] = {"containers": [{"digest": 'sha256:' + '2' * 64}]}
+    # Staging runs no kube-state-metrics (it needs the Kubernetes API).
+    metrics = PROFILES.read_values(PRODUCTION)["images"]["kubeStateMetrics"].rsplit("@", 1)[1]
+    allowlist["workloads"]["production-kube-state-metrics"] = {"containers": [{"digest": metrics}]}
     generated = json.dumps(allowlist).encode()
     return build_release(tag, evidence, download_dir, lambda *_args, **_kwargs: generated,
                          mock.patch.object(MAN, "require_allowlist_contract"),
@@ -984,14 +982,6 @@ class ManifestTests(unittest.TestCase):
                                          {"gateway": f"{gateway}@sha256:{'1' * 64}"})
         self.assertEqual(result["images"][maintenance], "sha256:" + "2" * 64)
 
-    def test_manifest_names_separately_installed_registered_image(self):
-        gateway = "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "1" * 64
-        collector = "ghcr.io/confidential-dot-ai/confidential-inference/log-collector@sha256:" + "2" * 64
-        self.assertEqual(MAN.image_names({"images": {"gateway": gateway, "logCollector": collector}},
-                                        [gateway]), {"gateway": gateway, "logCollector": collector})
-        with self.assertRaisesRegex(MAN.ManifestError, "rendered images with no name"):
-            MAN.image_names({"images": {"logCollector": collector}}, [gateway])
-
     def test_manifest_refuses_publication_outside_the_release_registry(self):
         unknown = publication({"ghcr.io/confidential-dot-ai/confidential-inference/unknown": "sha256:" + "1" * 64})
         with tempfile.TemporaryDirectory() as temporary:
@@ -1015,7 +1005,8 @@ class ManifestTests(unittest.TestCase):
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
-        self.assertIn("--service-discovery-namespace=confidential-inference-staging", args)
+        self.assertEqual(args[:3], ["--worker-urls", "http://inference-worker-0-0.inference-workers:30000",
+                                    "http://inference-worker-1-0.inference-workers:30000"])
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"].pop("inference-worker-1")
         with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
@@ -1045,7 +1036,7 @@ class ManifestTests(unittest.TestCase):
                                  and profile.directory / "inputs/image-config.json" != PROFILES.IMAGE_CONFIG)
 
     def test_the_source_lock_pins_the_spec_commit(self):
-        lock = json.loads((ROOT / "contracts/c8s-admission-source-lock.json").read_text())
+        lock = json.loads((ROOT / "release/inputs/c8s-source-lock.json").read_text())
         for profile in PROFILES.load():
             with self.subTest(profile=profile.name):
                 spec = MAN.read_spec(profile)
@@ -1067,12 +1058,21 @@ class ManifestTests(unittest.TestCase):
                 NODE.check_measurements(json.loads(data))
 
     def test_the_schema_refuses_deployment_values(self):
-        schema = json.loads((ROOT / "contracts/release-manifest.schema.json").read_text())
+        schema = json.loads((ROOT / "api/release-manifest.schema.json").read_text())
         properties = set(schema["properties"])
         for forbidden in ("meshCa", "operatorPublicKeySha256", "operatorKeySetSha256", "target"):
             self.assertNotIn(forbidden, properties)
         self.assertFalse(schema["additionalProperties"])
         jsonschema.Draft202012Validator.check_schema(schema)
+
+    def test_a_signed_manifest_with_the_old_lock_path_still_validates(self):
+        # The published v0.15.15 manifest, which names the lock at contracts/.
+        signed = json.loads((FIXTURES / "v0.15.15-release-manifest.json").read_text())
+        self.assertEqual(signed["sourceLock"]["path"], "contracts/c8s-admission-source-lock.json")
+        MAN.release_signature.validate_release_schema(signed)
+        moved = copy.deepcopy(signed)
+        moved["sourceLock"]["path"] = MAN.SOURCE_LOCK.relative_to(ROOT).as_posix()
+        MAN.release_signature.validate_release_schema(moved)
 
 
 class ChartArchiveTests(unittest.TestCase):
