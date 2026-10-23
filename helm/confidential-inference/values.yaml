@@ -71,10 +71,6 @@ attestationReceipts:
     url: ""
     imagePolicy: ""
     servedImagePolicy: ""
-  # A cached workload image can start after c8s issues the first, unnamed
-  # certificate. Renew quickly so the next certificate contains the measured
-  # workload identity.
-  certificateRenewInterval: 30s
   # The node-local attestation API that CDS uses to verify the requesting CVM.
   attestationApiPort: 8400
 

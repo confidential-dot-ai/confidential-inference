@@ -50,7 +50,7 @@
     "attestationReceipts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["evidenceBaseUrl", "releaseId", "releaseBundleSha256", "policyMode", "certificateRenewInterval", "attestationApiPort"],
+      "required": ["evidenceBaseUrl", "releaseId", "releaseBundleSha256", "policyMode", "attestationApiPort"],
       "properties": {
         "evidenceBaseUrl": {"type": "string", "pattern": "^https://[^/?#]+(?::[0-9]{1,5})?$"},
         "evidenceConnectHost": {"type": "string", "pattern": "^[A-Za-z0-9.:-]*$"},
@@ -74,7 +74,6 @@
             "servedImagePolicy": {"type": "string", "maxLength": 262144}
           }
         },
-        "certificateRenewInterval": {"const": "30s"},
         "attestationApiPort": {"const": 8400}
       },
       "allOf": [

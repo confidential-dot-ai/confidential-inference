@@ -31,7 +31,7 @@ them, and sends usage events back to the admin (`gateway.usage.enabled`).
 The gateway no longer serves `/attestation` (clients verify the front door with
 TEErminator; see [client verification](../../docs/verification.md)). The chart
 still renders the gateway's former attestation inputs (`attestationReceipts`
-except `certificateRenewInterval` and `attestationApiPort`,
+except `attestationApiPort`,
 `runtimeConfig.releaseBundle`, the `gateway-release-identity` ConfigMap); the
 gateway ignores them. They go once production runs a release built from this
 chart.

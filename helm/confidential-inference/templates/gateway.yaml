@@ -75,7 +75,6 @@ spec:
         # The gateway reads its settings once at start. It does not read the
         # release selection (#245), so a new release alone does not roll it.
         checksum/config: {{ include "confidential-inference.gatewaySettings" . | sha256sum }}
-        confidential.ai/c8s-renew-interval: {{ .Values.attestationReceipts.certificateRenewInterval | quote }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.gateway.containerPorts.metrics | quote }}
         # c8s releases the pepper and the admin client configuration only

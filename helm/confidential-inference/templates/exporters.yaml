@@ -113,7 +113,6 @@ spec:
         confidential.ai/environment: {{ .Values.environment | quote }}
       annotations:
         confidential.ai/cw: kube-state-metrics
-        confidential.ai/c8s-renew-interval: {{ .Values.attestationReceipts.certificateRenewInterval | quote }}
     spec:
       enableServiceLinks: false
       # A fixed hostname keeps HOSTNAME exact in the c8s allowlist.
