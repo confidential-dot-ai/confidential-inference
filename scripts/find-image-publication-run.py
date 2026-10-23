@@ -31,14 +31,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import runpy
 import subprocess
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 
@@ -55,20 +52,11 @@ IMAGE_SELECTOR = runpy.run_path(str(ROOT / SELECTOR))
 MAX_COMMITS = 200
 
 
-def request_json(url: str, token: str) -> dict:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return json.load(response)
-    except (urllib.error.URLError, json.JSONDecodeError) as error:
-        raise LookupError(f"GitHub API request failed: {error}") from error
+def gh_api(path: str) -> dict:
+    result = subprocess.run(["gh", "api", path], capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise LookupError(f"gh api {path} failed: {result.stderr.strip()}")
+    return json.loads(result.stdout)
 
 
 def artifact_name(commit: str) -> str:
@@ -76,9 +64,7 @@ def artifact_name(commit: str) -> str:
 
 
 def trusted_runs(
-    api_url: str,
     repository: str,
-    token: str,
     artifact_name: str,
     source_commit: str,
     branches: tuple[str, ...] = ("main",),
@@ -86,9 +72,7 @@ def trusted_runs(
     if COMMIT.fullmatch(source_commit) is None:
         raise LookupError("source commit must be a full lowercase Git commit")
     query = urllib.parse.urlencode({"name": artifact_name, "per_page": 100})
-    artifacts = request_json(
-        f"{api_url}/repos/{repository}/actions/artifacts?{query}", token,
-    ).get("artifacts", [])
+    artifacts = gh_api(f"repos/{repository}/actions/artifacts?{query}").get("artifacts", [])
     candidates: set[int] = set()
     for artifact in artifacts:
         workflow_run = artifact.get("workflow_run") or {}
@@ -98,7 +82,7 @@ def trusted_runs(
                 candidates.add(run_id)
     trusted: list[int] = []
     for run_id in sorted(candidates):
-        run = request_json(f"{api_url}/repos/{repository}/actions/runs/{run_id}", token)
+        run = gh_api(f"repos/{repository}/actions/runs/{run_id}")
         if (
             run.get("event") == "workflow_dispatch"
             and run.get("path") == ".github/workflows/release-images.yml"
@@ -111,16 +95,12 @@ def trusted_runs(
     return trusted
 
 
-def named_run(api_url: str, repository: str, token: str, tag: str) -> int | None:
+def named_run(repository: str, tag: str) -> int | None:
     """Return the run that the annotated tag names, or None."""
-    reference = request_json(
-        f"{api_url}/repos/{repository}/git/ref/tags/{urllib.parse.quote(tag, safe='')}", token,
-    ).get("object") or {}
+    reference = gh_api(f"repos/{repository}/git/ref/tags/{urllib.parse.quote(tag, safe='')}").get("object") or {}
     if reference.get("type") != "tag":
         return None
-    message = request_json(
-        f"{api_url}/repos/{repository}/git/tags/{reference.get('sha')}", token,
-    ).get("message", "")
+    message = gh_api(f"repos/{repository}/git/tags/{reference.get('sha')}").get("message", "")
     matches = RUN_TRAILER.findall(message)
     if len(matches) > 1:
         raise LookupError(f"the {tag} tag names more than one image publication run")
@@ -144,9 +124,7 @@ def changes_images(commit: str, repo: Path = ROOT) -> bool:
 
 
 def find_nearest(
-    api_url: str,
     repository: str,
-    token: str,
     release_commit: str,
     repo: Path = ROOT,
     selected_run: int | None = None,
@@ -161,7 +139,7 @@ def find_nearest(
     commits = git("rev-list", "--first-parent", f"--max-count={MAX_COMMITS}", release_commit,
                   repo=repo).split()
     for commit in commits:
-        runs = trusted_runs(api_url, repository, token, artifact_name(commit), commit, branches)
+        runs = trusted_runs(repository, artifact_name(commit), commit, branches)
         if runs and selected_run is not None:
             if selected_run not in runs:
                 raise LookupError(f"the tag names run {selected_run}, which is not a trusted "
@@ -186,18 +164,11 @@ def main() -> int:
     parser.add_argument("--release-commit", required=True)
     parser.add_argument("--tag", help="The release tag, whose annotation can name the run")
     parser.add_argument("--branch", help="An unsigned branch build: also trust the release-images runs on this branch")
-    parser.add_argument("--api-url", default=os.environ.get("GITHUB_API_URL", "https://api.github.com"))
-    parser.add_argument("--token-env", default="GITHUB_TOKEN")
     args = parser.parse_args()
-    token = os.environ.get(args.token_env, "")
-    if not token:
-        print(f"find-image-publication-run: {args.token_env} is absent", file=sys.stderr)
-        return 1
     try:
-        api_url = args.api_url.rstrip("/")
-        selected = named_run(api_url, args.repository, token, args.tag) if args.tag else None
+        selected = named_run(args.repository, args.tag) if args.tag else None
         commit, run_id = find_nearest(
-            api_url, args.repository, token, args.release_commit, selected_run=selected,
+            args.repository, args.release_commit, selected_run=selected,
             branches=("main", args.branch) if args.branch else ("main",),
         )
     except LookupError as error:

@@ -147,7 +147,7 @@ def run_response(runs: dict[int, str], artifacts: dict[str, list[int]], tag_mess
 
     With tag_message, the release tag is annotated with that message.
     """
-    def response(url, _token):
+    def response(url):
         if "/git/ref/tags/" in url:
             return {"object": {"type": "tag" if tag_message is not None else "commit", "sha": "1" * 40}}
         if "/git/tags/" in url:
@@ -181,10 +181,10 @@ class PublicationRunLookupTests(unittest.TestCase):
         self.image = self.commit("images/gateway/Dockerfile", "FROM scratch\n")
         self.docs = self.commit("docs/notes.md", "notes\n")
         self.head = self.commit("docs/notes.md", "more notes\n")
-        self.original = FINDER.request_json
+        self.original = FINDER.gh_api
 
     def tearDown(self):
-        FINDER.request_json = self.original
+        FINDER.gh_api = self.original
         self.temporary.cleanup()
 
     def git(self, *args: str) -> str:
@@ -199,9 +199,8 @@ class PublicationRunLookupTests(unittest.TestCase):
         return self.git("rev-parse", "HEAD")
 
     def find(self, runs, artifacts):
-        FINDER.request_json = run_response(runs, artifacts)
-        return FINDER.find_nearest("https://api.github.test", "confidential-dot-ai/confidential-inference",
-                                   "token", self.head, self.repo)
+        FINDER.gh_api = run_response(runs, artifacts)
+        return FINDER.find_nearest("confidential-dot-ai/confidential-inference", self.head, self.repo)
 
     def test_the_release_commit_uses_its_own_evidence(self):
         name = FINDER.artifact_name(self.head)
@@ -218,17 +217,16 @@ class PublicationRunLookupTests(unittest.TestCase):
     def test_a_selector_change_alone_keeps_the_earlier_evidence(self):
         selector = self.commit("scripts/affected-release-images.py", "# changed\n")
         name = FINDER.artifact_name(self.image)
-        FINDER.request_json = run_response({73: self.image}, {name: [73]})
-        self.assertEqual(FINDER.find_nearest("https://api.github.test", "confidential-dot-ai/confidential-inference",
-                                             "token", selector, self.repo), (self.image, 73))
+        FINDER.gh_api = run_response({73: self.image}, {name: [73]})
+        self.assertEqual(FINDER.find_nearest("confidential-dot-ai/confidential-inference", selector, self.repo), (self.image, 73))
 
     def test_a_branch_run_is_trusted_only_by_a_build_of_that_branch(self):
         name = FINDER.artifact_name(self.head)
-        api, repository = "https://api.github.test", "confidential-dot-ai/confidential-inference"
-        FINDER.request_json = run_response({73: self.head}, {name: [73]}, branch="conf-inf-integration")
+        repository = "confidential-dot-ai/confidential-inference"
+        FINDER.gh_api = run_response({73: self.head}, {name: [73]}, branch="conf-inf-integration")
         with self.assertRaisesRegex(FINDER.LookupError, "changes an image build input"):
-            FINDER.find_nearest(api, repository, "token", self.head, self.repo)
-        self.assertEqual(FINDER.find_nearest(api, repository, "token", self.head, self.repo,
+            FINDER.find_nearest(repository, self.head, self.repo)
+        self.assertEqual(FINDER.find_nearest(repository, self.head, self.repo,
                                              branches=("main", "conf-inf-integration")), (self.head, 73))
 
     def test_duplicate_publication_runs_fail_closed(self):
@@ -237,10 +235,10 @@ class PublicationRunLookupTests(unittest.TestCase):
             self.find({73: self.docs, 74: self.docs}, {name: [73, 74]})
 
     def named(self, runs, artifacts, message):
-        FINDER.request_json = run_response(runs, artifacts, message)
-        api, repository = "https://api.github.test", "confidential-dot-ai/confidential-inference"
-        selected = FINDER.named_run(api, repository, "token", "v0.14.6-staging")
-        return FINDER.find_nearest(api, repository, "token", self.head, self.repo, selected_run=selected)
+        FINDER.gh_api = run_response(runs, artifacts, message)
+        repository = "confidential-dot-ai/confidential-inference"
+        selected = FINDER.named_run(repository, "v0.14.6-staging")
+        return FINDER.find_nearest(repository, self.head, self.repo, selected_run=selected)
 
     def test_the_tag_selects_one_of_duplicate_runs(self):
         # Staging run 37609539592: a run by hand and a staging run of one
