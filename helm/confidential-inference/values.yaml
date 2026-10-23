@@ -293,6 +293,13 @@ telemetry:
     # SGLang request spans (not the simulator); they leave only as
     # spanmetrics histograms.
     enabled: false
+  # C8s's platform kube-state-metrics (c8s/integration eeed11b5+, so from
+  # c8s v0.73.0). Off until the pinned c8s has it.
+  kubeStateMetrics:
+    enabled: false
+    address: 10.53.0.11:8080
+    # Pod health series only.
+    metrics: kube_pod_status_phase|kube_pod_status_ready|kube_pod_container_status_.*|kube_pod_container_info|kube_(deployment|statefulset)_status_replicas.*|kube_(deployment|statefulset)_spec_replicas
   scrapeInterval: 15s
   otlpGrpcPort: 4317
   otlpHttpPort: 4318
@@ -314,6 +321,7 @@ telemetry:
     worker: [model_name, engine_type, tp_rank, pp_rank, dp_rank, moe_ep_rank, priority, backend, cache_source,
              category, forward_mode, is_streaming, layer, modality, mode, phase, pool, reason, source, stage]
     gpu: [worker, gpu]
+    kubeStateMetrics: [namespace, pod, container, reason, phase, condition, deployment, statefulset]
   # SGLang span attributes that may reach spanmetrics. Request ids, finish
   # reason details and every span event attribute are dropped.
   spanAttributes:

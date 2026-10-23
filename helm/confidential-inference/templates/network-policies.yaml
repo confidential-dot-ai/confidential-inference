@@ -254,6 +254,16 @@ spec:
         - ipBlock: {cidr: {{ printf "%s/32" .Values.telemetry.relay.address | quote }} }
       ports:
         - {protocol: TCP, port: {{ .Values.telemetry.relay.port }}}
+    {{- with .Values.telemetry.kubeStateMetrics }}
+    {{- if .enabled }}
+    # C8s's platform kube-state-metrics (not an allowlist exit: C8s grants it).
+    {{- $ksm := splitList ":" .address }}
+    - to:
+        - ipBlock: {cidr: {{ printf "%s/32" (first $ksm) | quote }} }
+      ports:
+        - {protocol: TCP, port: {{ last $ksm }}}
+    {{- end }}
+    {{- end }}
 ---
 {{- if .Values.telemetry.traces.enabled }}
 apiVersion: networking.k8s.io/v1
