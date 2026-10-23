@@ -4,10 +4,7 @@
 {{- end }}
 {{- $name := "gateway-update-agent" }}
 {{- $gateway := printf "c8s-gateway.%s.svc.cluster.local" .Release.Namespace }}
-{{- $router := printf "sglang-router.%s.svc.cluster.local" .Release.Namespace }}
-{{- if .Values.runtimeConfig.enabled }}
-{{- $router = printf "%s.%s.svc.cluster.local" (include "confidential-inference.routerService" .) .Release.Namespace }}
-{{- end }}
+{{- $router := printf "%s.%s.svc.cluster.local" (include "confidential-inference.routerService" .) .Release.Namespace }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:

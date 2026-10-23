@@ -1,6 +1,8 @@
 //! Release references derived from local, exact release asset bytes.
 //! Deployment verifies signatures before publishing these files. A client
 //! still verifies the release signature and its build evidence independently.
+//! The gateway reads the selection once at start; the chart rolls the pods
+//! when it changes.
 
 use std::sync::Arc;
 
@@ -8,10 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
-use crate::{
-    AttestationError, AttestationProvider,
-    runtime_config::{MountedConfig, Versioned},
-};
+use crate::{AttestationError, AttestationProvider};
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,7 +23,6 @@ pub struct ReleaseReference {
 }
 
 pub struct ReleaseSettings {
-    revision: u64,
     selected: ReleaseReference,
     releases: Vec<ReleaseReference>,
 }
@@ -33,7 +31,6 @@ pub struct ReleaseSettings {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Document {
     schema_version: u32,
-    revision: u64,
     selected_bundle_sha256: String,
     // Each string preserves the exact signed asset bytes, including its
     // whitespace. The deployment tool writes this document, not a human.
@@ -43,12 +40,6 @@ struct Document {
 impl<'de> Deserialize<'de> for ReleaseSettings {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Self::compile(Document::deserialize(deserializer)?).map_err(serde::de::Error::custom)
-    }
-}
-
-impl Versioned for ReleaseSettings {
-    fn revision(&self) -> u64 {
-        self.revision
     }
 }
 
@@ -67,7 +58,6 @@ impl ReleaseSettings {
     }
     fn compile(document: Document) -> Result<Self, String> {
         if document.schema_version != 1
-            || document.revision == 0
             || document.release_bundles.is_empty()
             || document.release_bundles.len() > 8
         {
@@ -113,27 +103,7 @@ impl ReleaseSettings {
             .find(|release| release.bundle_sha256 == document.selected_bundle_sha256)
             .cloned()
             .ok_or("selected release bundle is absent")?;
-        Ok(Self {
-            revision: document.revision,
-            selected,
-            releases,
-        })
-    }
-
-    /// All fields were compiled and checked before publication.
-    ///
-    /// # Errors
-    /// Returns an error if the selection is not part of the compiled set.
-    pub fn validate(&self) -> Result<(), String> {
-        if self
-            .releases
-            .iter()
-            .any(|release| release.bundle_sha256 == self.selected.bundle_sha256)
-        {
-            Ok(())
-        } else {
-            Err("selected release bundle is absent".into())
-        }
+        Ok(Self { selected, releases })
     }
 
     fn matching(&self, policy: &str) -> Option<&ReleaseReference> {
@@ -154,11 +124,11 @@ impl ReleaseSettings {
     }
 }
 
-/// Select a release after the cached CDS read. A `ConfigMap` change therefore
-/// cannot leave a cached response claiming the wrong release for its policy.
+/// Select a release after the cached CDS read, so a cached response never
+/// claims the wrong release for its policy.
 pub struct ReleaseMetadataProvider {
     pub policy: Arc<dyn AttestationProvider>,
-    pub releases: Arc<MountedConfig<ReleaseSettings>>,
+    pub releases: ReleaseSettings,
 }
 
 #[async_trait::async_trait]
@@ -172,7 +142,7 @@ impl AttestationProvider for ReleaseMetadataProvider {
         let policy = response["c8s"]["activeAllowlist"]["sha256"]
             .as_str()
             .ok_or_else(|| AttestationError::Invalid("CDS metadata has no policy digest".into()))?;
-        let settings = self.releases.snapshot();
+        let settings = &self.releases;
         let matched = settings.matching(policy);
         let selection = json!({"status": if settings.selected.policy_sha256 == policy { "matched" } else { "pending" },
             "desired": settings.selected, "desiredPolicySha256": settings.selected.policy_sha256,
@@ -200,7 +170,6 @@ mod tests {
         let selected = format!("sha256:{:x}", Sha256::digest(second.as_bytes()));
         let settings = ReleaseSettings::compile(Document {
             schema_version: 1,
-            revision: 1,
             selected_bundle_sha256: selected.clone(),
             release_bundles: vec![first, second],
         })?;
@@ -230,23 +199,12 @@ mod tests {
                 )
             }
         }
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("releases.json");
         let asset = bundle("v0.14.18", &format!("sha256:{}", "a".repeat(64)));
-        std::fs::write(
-            &path,
-            json!({"schemaVersion":1,"revision":1,
-            "selectedBundleSha256":format!("sha256:{:x}",Sha256::digest(asset.as_bytes())),
-            "releaseBundles":[asset]})
-            .to_string(),
-        )?;
         let provider = ReleaseMetadataProvider {
             policy: Arc::new(Policy),
-            releases: Arc::new(MountedConfig::open(
-                path,
-                1024 * 1024,
-                ReleaseSettings::validate,
-            )?),
+            releases: serde_json::from_value(json!({"schemaVersion":1,
+            "selectedBundleSha256":format!("sha256:{:x}",Sha256::digest(asset.as_bytes())),
+            "releaseBundles":[asset]}))?,
         };
         let response = provider
             .response(&[0; 32])

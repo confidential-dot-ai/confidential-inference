@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import unittest
 from pathlib import Path
@@ -162,14 +163,10 @@ class NetworkContractTests(unittest.TestCase):
 
     def test_application_limits_match_the_public_contract(self) -> None:
         expected = self.contract["publicProtection"]["application"]
-        gateway = named(self.documents, "Deployment", "gateway")
-        values = {
-            item["name"]: item.get("value")
-            for item in gateway["spec"]["template"]["spec"]["containers"][0]["env"]
-        }
-        self.assertEqual(int(values["GATEWAY_INFERENCE_CONCURRENCY"]), expected["inferenceConcurrency"])
-        self.assertEqual(int(values["GATEWAY_INFERENCE_QUEUE"]), expected["inferenceQueue"])
-        self.assertEqual(int(values["GATEWAY_ATTESTATION_CONCURRENCY"]), expected["attestationConcurrency"])
+        settings = json.loads(named(self.documents, "ConfigMap", "gateway-runtime")["data"]["settings.json"])
+        self.assertEqual(settings["inferenceConcurrency"], expected["inferenceConcurrency"])
+        self.assertEqual(settings["inferenceQueue"], expected["inferenceQueue"])
+        self.assertEqual(settings["attestationConcurrency"], expected["attestationConcurrency"])
 
 
 if __name__ == "__main__":

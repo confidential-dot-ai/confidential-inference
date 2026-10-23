@@ -392,17 +392,18 @@ def main() -> None:
                                                          'app.kubernetes.io/component': 'sglang-router'}
     assert router['spec']['strategy']['rollingUpdate'] == {'maxUnavailable': 0, 'maxSurge': 1}
     assert router['spec']['template']['metadata']['annotations']['confidential.ai/cw'] == 'router-v0-14-18'
-    # One model definition produces both views. A release metadata change
-    # must not change the pod templates or add a third gateway identity.
-    runtime_documents = render("--set", "runtimeConfig.enabled=true", "--set",
-        "attestationReceipts.releaseId=v0.14.18-transition", "--set-json",
-        'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}')
+    # One model definition produces both views. A settings or release
+    # metadata change rolls the pods through the checksum annotation, but must
+    # not change the pod spec or add a third gateway identity.
+    routes_json = 'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}'
+    runtime_documents = render("--set", "attestationReceipts.releaseId=v0.14.18-transition",
+        "--set-json", routes_json)
     runtime_gateway = Gateway(runtime_documents)
     maps = {item['metadata']['name']: item for item in runtime_documents if item['kind'] == 'ConfigMap'}
     settings = json.loads(maps['gateway-runtime']['data']['settings.json'])
     routes = json.loads(maps['router-model-routes']['data']['routes.json'])
     assert settings['catalogModelIds'] == settings['inferenceModelIds'] == sorted(routes['routes'])
-    assert settings['revision'] == routes['revision'] == 1
+    assert 'revision' not in settings and routes['revision'] == 1
     assert settings['routerService'] == 'router-headless'
     router_slot = next(item for item in runtime_documents if item['kind'] == 'Service' and item['metadata']['name'] == settings['routerService'])
     assert router_slot['spec']['clusterIP'] == 'None'
@@ -410,41 +411,46 @@ def main() -> None:
     assert settings['evidence'] == {'baseUrl': 'https://api.example.invalid'}
     assert 'GATEWAY_C8S_EVIDENCE_BASE_URL' not in runtime_gateway.env
     assert 'GATEWAY_C8S_EVIDENCE_CONNECT_HOST' not in runtime_gateway.env
-    promoted_documents = render("--set", "runtimeConfig.enabled=true", "--set",
-        "attestationReceipts.releaseId=v0.14.18-transition", "--set-json",
-        'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}',
+    checksum = lambda deployment: deployment['spec']['template']['metadata']['annotations']['checksum/config']
+    assert checksum(runtime_gateway.deployment) == hashlib.sha256(
+        (maps['gateway-runtime']['data']['settings.json'] + '\n').encode()).hexdigest()
+    promoted_documents = render("--set", "attestationReceipts.releaseId=v0.14.18-transition",
+        "--set-json", routes_json,
         "--set", "attestationReceipts.evidenceBaseUrl=https://api.example.test",
-        "--set", "attestationReceipts.evidenceConnectHost=c8s-router.c8s-system.svc.cluster.local",
-        "--set", "runtimeConfig.revision=2")
+        "--set", "attestationReceipts.evidenceConnectHost=c8s-router.c8s-system.svc.cluster.local")
     promoted_maps = {item['metadata']['name']: item for item in promoted_documents if item['kind'] == 'ConfigMap'}
     promoted_settings = json.loads(promoted_maps['gateway-runtime']['data']['settings.json'])
     assert promoted_settings['evidence'] == {'baseUrl': 'https://api.example.test',
         'connectHost': 'c8s-router.c8s-system.svc.cluster.local'}
-    assert promoted_settings['revision'] == 2
-    assert Gateway(promoted_documents).deployment['spec']['template'] == runtime_gateway.deployment['spec']['template']
+    promoted_gateway = Gateway(promoted_documents)
+    assert checksum(promoted_gateway.deployment) != checksum(runtime_gateway.deployment)
+    assert promoted_gateway.deployment['spec']['template']['spec'] == runtime_gateway.deployment['spec']['template']['spec']
     assert runtime_gateway.env['GATEWAY_RUNTIME_CONFIG_FILE'] == '/mnt/c8s-data/runtime/settings.json'
-    assert runtime_gateway.env['GATEWAY_RELEASE_SELECTION_FILE'] == '/mnt/c8s-data/release-selection/releases.json'
-    for removed in ('GATEWAY_MODEL', 'GATEWAY_RELEASE_ID', 'GATEWAY_INFERENCE_CONCURRENCY',
+    for removed in ('GATEWAY_MODEL', 'GATEWAY_INFERENCE_CONCURRENCY',
                     'GATEWAY_MAXIMUM_BODY_BYTES', 'GATEWAY_UPSTREAM_TIMEOUT_SECONDS'):
         assert removed not in runtime_gateway.env
-    assert 'releaseBundleSha256' not in runtime_gateway.identity
     assert 'gateway-release-selection' not in maps
     with tempfile.TemporaryDirectory() as directory:
-        bundle = Path(directory) / 'release-bundle.json'
-        bundle.write_text('{"schema": "confidential.ai/release-manifest/v1"}\n')
-        selected = {item['metadata']['name']: item for item in render(
-            "--set", "runtimeConfig.enabled=true", "--set", "attestationReceipts.releaseId=v0.14.18",
-            "--set-file", f"runtimeConfig.releaseBundle={bundle}") if item['kind'] == 'ConfigMap'}
+        bundles = []
+        for name in ('v0.14.18-transition', 'v0.14.18'):
+            bundle = Path(directory) / f'{name}.json'
+            bundle.write_text(json.dumps({"schema": "confidential.ai/release-manifest/v1", "release": {"name": name}}) + '\n')
+            bundles.append(render("--set-json", routes_json, "--set-file", f"runtimeConfig.releaseBundle={bundle}"))
+        selected = {item['metadata']['name']: item for item in bundles[1] if item['kind'] == 'ConfigMap'}
         selection = json.loads(selected['gateway-release-selection']['data']['releases.json'])
-        assert selection == {'schemaVersion': 1, 'revision': 1, 'releaseBundles': [bundle.read_text()],
+        assert selection == {'schemaVersion': 1, 'releaseBundles': [bundle.read_text()],
             'selectedBundleSha256': 'sha256:' + hashlib.sha256(bundle.read_bytes()).hexdigest()}
+        transition, final = (Gateway(documents) for documents in bundles)
+        assert final.env['GATEWAY_RELEASE_SELECTION_FILE'] == '/mnt/c8s-data/release-selection/releases.json'
+        assert 'GATEWAY_RELEASE_ID' not in final.env
+        assert 'releaseBundleSha256' not in final.identity
+        assert checksum(transition.deployment) != checksum(final.deployment)
+        assert transition.deployment['spec']['template']['spec'] == final.deployment['spec']['template']['spec']
     assert not any('subPath' in mount for mount in runtime_gateway.container['volumeMounts'])
-    final_documents = render("--set", "runtimeConfig.enabled=true", "--set",
-        "attestationReceipts.releaseId=v0.14.18", "--set-json",
-        'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}')
-    assert Gateway(final_documents).deployment['spec']['template'] == runtime_gateway.deployment['spec']['template']
+    final_documents = render("--set", "attestationReceipts.releaseId=v0.14.18", "--set-json", routes_json)
     runtime_router = next(item for item in runtime_documents if item['kind'] == 'Deployment'
                           and item['metadata']['name'] == 'sglang-router')
+    assert checksum(runtime_router) == hashlib.sha256(json.dumps(routes['routes'], separators=(',', ':')).encode()).hexdigest()
     private_router = next(item for item in runtime_documents if item['kind'] == 'Service'
                           and item['metadata']['name'] == 'router-headless')
     assert private_router['spec']['clusterIP'] == 'None'
@@ -478,13 +484,16 @@ def main() -> None:
     gateway = Gateway(documents)
     assert gateway.env["GATEWAY_ENDPOINT_DRAIN_SECONDS"] == "35"
     assert "GATEWAY_C8S_EVIDENCE_CONNECT_HOST" not in gateway.env
-    local = Gateway(render(
+    local_documents = render(
         "--set", "attestationReceipts.evidenceBaseUrl=https://api.example.test",
         "--set", "attestationReceipts.evidenceConnectHost=c8s-router.c8s-system.svc.cluster.local",
         "--set", "attestationReceipts.cds.url=https://c8s-cds.c8s-system.svc:8443",
-    ))
-    assert local.env["GATEWAY_C8S_EVIDENCE_BASE_URL"] == "https://api.example.test"
-    assert local.env["GATEWAY_C8S_EVIDENCE_CONNECT_HOST"] == "c8s-router.c8s-system.svc.cluster.local"
+    )
+    local = Gateway(local_documents)
+    local_settings = json.loads(next(item for item in local_documents if item["kind"] == "ConfigMap"
+                                     and item["metadata"]["name"] == "gateway-runtime")["data"]["settings.json"])
+    assert local_settings["evidence"] == {"baseUrl": "https://api.example.test",
+                                          "connectHost": "c8s-router.c8s-system.svc.cluster.local"}
     # The release identity reaches the gateway through a mounted ConfigMap,
     # not environment variables, so the allowlist can pin the environment.
     assert "GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256" not in gateway.env
