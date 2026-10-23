@@ -14,8 +14,8 @@ use axum::{
     routing::post,
 };
 use confidential_gateway::{
-    ApiKeyVerifier, AuditEvent, AuditSink, GatewayAvailability, GatewayConfig,
-    UnavailableAttestation, metrics::GatewayMetrics, router,
+    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig, UnavailableAttestation,
+    metrics::GatewayMetrics, router,
 };
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
@@ -89,7 +89,6 @@ async fn runtime_models_change_without_interrupting_an_active_request()
         Arc::new(Keys),
         Arc::new(Audit),
         Arc::new(GatewayMetrics::new("test")),
-        GatewayAvailability::default(),
         Arc::new(UnavailableAttestation),
         reqwest::Client::new(),
         Some(runtime.clone()),
@@ -203,7 +202,6 @@ async fn router_file_change_moves_new_requests_and_tracks_the_old_request()
         Arc::new(Keys),
         Arc::new(Audit),
         metrics.clone(),
-        GatewayAvailability::default(),
         Arc::new(UnavailableAttestation),
         client,
         Some(runtime.clone()),
@@ -226,7 +224,7 @@ async fn router_file_change_moves_new_requests_and_tracks_the_old_request()
     let new: Value = serde_json::from_slice(&axum::body::to_bytes(new.into_body(), 4096).await?)?;
     assert_eq!(new["choices"][0]["message"]["content"], "new");
     assert_eq!(old_requests.load(Ordering::SeqCst), 1);
-    let labels = format!("env=\"test\",router=\"{old_host}\"");
+    let labels = format!("router=\"{old_host}\",env=\"test\"");
     assert!(
         metrics
             .render_prometheus()
@@ -389,7 +387,6 @@ fn app_with_client(address: SocketAddr, client: reqwest::Client) -> Router {
         Arc::new(Keys),
         Arc::new(Audit),
         Arc::new(GatewayMetrics::new("test")),
-        GatewayAvailability::default(),
         Arc::new(UnavailableAttestation),
         client,
     )

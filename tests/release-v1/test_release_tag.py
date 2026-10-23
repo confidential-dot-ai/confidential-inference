@@ -1,14 +1,20 @@
 from __future__ import annotations
 
-import runpy
+import sys
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MODULE = runpy.run_path(str(ROOT / "scripts/validate-release-tag.py"))
-ReleaseTagError = MODULE["ReleaseTagError"]
-parse_tag = MODULE["parse_tag"]
+sys.path.insert(0, str(ROOT / "scripts"))
+import release_profiles  # noqa: E402
+
+ReleaseTagError = release_profiles.ProfileError
+
+
+def parse_tag(tag: str) -> str:
+    release_profiles.for_tag(tag)
+    return tag
 
 
 class ReleaseTagTests(unittest.TestCase):
