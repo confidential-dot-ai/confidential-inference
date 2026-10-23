@@ -279,35 +279,19 @@ def require_allowlist_contract(
     image_configs: dict[str, Any],
     c8s_release: str | None = None,
     core_seed: dict[str, Any] | None = None,
-    native_core: dict[str, Any] | None = None,
 ) -> None:
     rendered = ALLOWLIST_GENERATOR["controllers"](documents)
     policy_controllers = {item["controller"] for item in policy["workloads"]}
     require(set(rendered) == policy_controllers,
             f"rendered controllers differ from allowlist policy: rendered={sorted(rendered)} policy={sorted(policy_controllers)}")
-    expected_names = {item["name"] for item in policy["workloads"]}
-    if ALLOWLIST_GENERATOR["c8s_at_least"](c8s_release, ALLOWLIST_GENERATOR["SEED_PINS_COMPONENTS_SINCE"]):
-        expected_names |= set(core_seed or {})
-    else:
-        expected_names |= {ALLOWLIST_GENERATOR["floor_entry"](image)[0] for image in core_images}
-    expected_names |= set(native_core or {})
+    expected_names = {item["name"] for item in policy["workloads"]} | set(core_seed or {})
     workloads = allowlist.get("workloads")
     require(isinstance(workloads, dict) and set(workloads) == expected_names,
             "the allowlist entries differ from the profile allowlist policy")
     core_digests = {OCI.fullmatch(image).group(2) for image in core_images}
     effective_process = ALLOWLIST_GENERATOR["effective_process"]
-    if ALLOWLIST_GENERATOR["c8s_at_least"](c8s_release, (0, 44, 0)):
-        expected_core = ALLOWLIST_GENERATOR["core_entries"](core_images, image_configs, c8s_release, core_seed or {})
-        for name, expected in expected_core.items():
-            require(workloads[name] == expected,
-                    f"core entry {name} differs from the component ENTRYPOINT pin or baked seed")
-    # CDS sorts process rules when it makes canonical policy bytes.
-    # Compare the exact native rules in the same pinned canonical form.
-    canonical_native = json.loads(ALLOWLIST_GENERATOR["canonicalize"](
-        {"schema": "c8s.allowlist/v1", "workloads": native_core}, None))["workloads"] if native_core else {}
-    for name, expected in canonical_native.items():
-        require(workloads[name] == expected,
-                f"native entry {name} differs from the pinned node integration render")
+    for name, expected in ALLOWLIST_GENERATOR["core_entries"](core_images, core_seed or {}).items():
+        require(workloads[name] == expected, f"core entry {name} differs from the baked seed")
     for item in policy["workloads"]:
         pod = rendered[item["controller"]]["spec"]["template"]["spec"]
         expected_processes = []
@@ -856,8 +840,7 @@ def build(
     require(allowlist.get("schema") == "c8s.allowlist/v1", "the allowlist has the wrong schema")
     require_model_files(spec, documents)
     require_allowlist_contract(allowlist, policy, spec["c8s"]["coreImages"], documents, configs,
-                              ALLOWLIST_GENERATOR["feature_release"](spec["c8s"]), ALLOWLIST_GENERATOR["core_seed"](spec["c8s"]),
-                              ALLOWLIST_GENERATOR["native_core_entries"](spec["c8s"], configs))
+                              ALLOWLIST_GENERATOR["feature_release"](spec["c8s"]), ALLOWLIST_GENERATOR["core_seed"](spec["c8s"]))
     allowlisted = {
         container["digest"]
         for entry in allowlist["workloads"].values()
