@@ -146,7 +146,7 @@ jobs:
       - name: find image evidence
         id: publication
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
           BUILT_IMAGES: ${{ needs.images.outputs.names }}
         run: |
           if [ -n "$BUILT_IMAGES" ]; then

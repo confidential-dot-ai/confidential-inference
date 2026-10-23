@@ -26,10 +26,9 @@ pinned source can give (for example a node IP) is an error.
 `c8s allowlist derive` from the pinned c8s release builds each entry, so c8s
 itself decides which containers it injects and drops. From the c8s release
 with the fixed seed layer (C8s #1031, SEED_LAYER_SINCE) the allowlist has only
-the application entries. Before it, the c8s core entries mirror the bootstrap seed: from c8s v0.47.0 as
-the chart renders it, one pinned entry per component shape and the router pod;
-before it, one floor entry per core image pinned to its complete image
-ENTRYPOINT beside the seed. The
+the application entries. Before it, the c8s core entries mirror the bootstrap
+seed in release/inputs/c8s-seeds/ as the chart renders it: one pinned entry per
+component shape and the router pod. The
 pinned Go tool in tools/c8s-allowlist-canonical writes the canonical bytes,
 and `c8s allowlist lint --strict` must pass.
 
@@ -45,7 +44,6 @@ import argparse
 import copy
 import json
 import re
-import runpy
 import subprocess
 import sys
 import tempfile
@@ -92,12 +90,6 @@ CLAIMS_SOCKET_PLATFORM_SINCE = (0, 50, 0)
 # The first c8s release with the per-pod mesh (C8s #809): the webhook mounts the
 # certificate volume only into its own sidecars, so no workload container has it.
 PER_POD_MESH_SINCE = (0, 64, 0)
-# The first c8s release whose chart seed names one entry per component shape
-# (`<image>-<digest>-<shape>`), pins its args and mounts, and seeds the router
-# pod's composition (c8s #876, #878). From it the release mirrors the seed as
-# it is: a floor entry or a native router entry beside it would leave args,
-# mounts or env `any`, which `c8s allowlist lint --strict` refuses.
-SEED_PINS_COMPONENTS_SINCE = (0, 47, 0)
 # The first c8s release whose CDS keeps the node image's seed as a fixed
 # layer that an allowlist upload cannot drop (C8s #1031). From it the release
 # allowlist names only the application entries; it mirrors no seed entry.
@@ -472,42 +464,10 @@ def derive(
     return entry[name] if name in entry else entry
 
 
-def component_entrypoint(image: str, config: dict[str, Any]) -> list[str]:
-    """Match component command pins; platform installer rules stay in C8s."""
-    repository, _digest = split_image(image)
-    entrypoint = list(config.get("entrypoint", []))
-    if repository == "nginxinc/nginx-unprivileged":
-        cmd = config.get("cmd", [])
-        if not cmd or cmd[0] != "nginx":
-            raise GenerationError("the nginx core image CMD must start with nginx")
-        entrypoint.append(cmd[0])
-    return entrypoint
-
-
-def floor_entry(image: str, entrypoint: list[str] | None = None) -> tuple[str, dict[str, Any]]:
-    """Mirror the selected c8s seed, including its component command pins."""
-    if entrypoint is not None and (not entrypoint or not all(isinstance(arg, str) and arg for arg in entrypoint)):
-        raise GenerationError(f"core image {image} has no valid ENTRYPOINT")
-    _reference, digest = split_image(image)
-    base = image.split("@")[0].rsplit("/", 1)[-1].split(":")[0][:50]
-    name = base + "-" + digest.removeprefix("sha256:")[:12]
-    return name, {
-        "label": image,
-        "initContainers": [],
-        "containers": [{
-            "digest": digest, "image": image,
-            "command": {"policy": "any"} if entrypoint is None else {"policy": "exact", "argv": entrypoint},
-            "args": {"policy": "any"},
-            "env": {"policy": "any"}, "mounts": {"policy": "any"},
-        }],
-    }
-
-
 def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
-    """The seed entries the release allowlist must mirror: none before c8s
-    v0.44.0 (floor entries instead) and none from SEED_LAYER_SINCE (CDS keeps
-    the seed beside the uploaded document)."""
-    if not c8s_at_least(feature_release(c8s), (0, 44, 0)) or c8s_at_least(feature_release(c8s), SEED_LAYER_SINCE):
+    """The seed entries the release allowlist must mirror: none from
+    SEED_LAYER_SINCE (CDS keeps the seed beside the uploaded document)."""
+    if c8s_at_least(feature_release(c8s), SEED_LAYER_SINCE):
         return {}
     path = ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json")
     record = read_json(path)
@@ -519,32 +479,10 @@ def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
     return seed["workloads"]
 
 
-def core_entries(images: list[str], configs: dict[str, Any], release: str | None,
-                 seed: dict[str, Any]) -> dict[str, Any]:
-    if c8s_at_least(release, SEED_PINS_COMPONENTS_SINCE):
-        return seeded_core_entries(images, configs, seed)
-    entries = {}
-    for image in images:
-        entrypoint = component_entrypoint(image, configs.get(image, {})) if c8s_at_least(release, (0, 44, 0)) else None
-        name, entry = floor_entry(image, entrypoint)
-        if name in seed:
-            entry = seed[name]
-            digest = split_image(image)[1]
-            if not entry.get("containers") or any(c.get("digest") != digest for c in entry["containers"]):
-                raise GenerationError(f"seed entry {name} does not bind its core image")
-            if entrypoint is not None and any(
-                c.get("command", {}).get("policy") != "exact"
-                or c["command"].get("argv") != entrypoint for c in entry["containers"]
-            ):
-                raise GenerationError(f"seed entry {name} does not preserve its component command pin")
-        entries[name] = entry
-    return entries
-
-
-def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[str, Any]) -> dict[str, Any]:
+def core_entries(images: list[str], seed: dict[str, Any]) -> dict[str, Any]:
     """Mirror the chart's seed: every entry as rendered, nothing else.
 
-    bump-c8s records the seed in canonical form, so the mirrored entries are
+    The recorded seed is in canonical form, so the mirrored entries are
     the canonical allowlist's entries byte for byte and the manifest contract
     can require equality.
 
@@ -552,9 +490,7 @@ def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[s
     entrypoint, at a command that extends it (`/c8s get-cert`), or at a
     command of its own (c8s v0.66.0+ runs the router's nginx image as
     `/bin/sh /usr/lib/c8s/router-nginx/reload.sh`). A core image the seed does not bind runs on the node, never as
-    a pod (nri-image-policy, volumed), and gets no entry: a floor entry for it
-    would admit a component with open mounts and env, which strict lint
-    refuses.
+    a pod (nri-image-policy, volumed), and gets no entry.
     """
     for name, entry in seed.items():
         for container in entry.get("initContainers", []) + entry.get("containers", []):
@@ -564,17 +500,6 @@ def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[s
             if container.get("command", {}).get("policy") != "exact" or not container["command"].get("argv"):
                 raise GenerationError(f"seed entry {name} does not preserve its component command pin")
     return copy.deepcopy(seed)
-
-
-def native_core_entries(c8s: dict[str, Any], configs: dict[str, Any]) -> dict[str, Any]:
-    if not c8s_at_least(feature_release(c8s), (0, 44, 6)) or c8s_at_least(feature_release(c8s), SEED_PINS_COMPONENTS_SINCE):
-        return {}
-    record = read_json(ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json"))
-    helper = runpy.run_path(str(ROOT / "scripts/native_c8s_allowlist.py"))
-    try:
-        return helper["native_entries"](c8s, configs, record)
-    except helper["NativeRuleError"] as error:
-        raise GenerationError(str(error)) from error
 
 
 def canonicalize(document: dict[str, Any], tool: Path | None) -> bytes:
@@ -673,13 +598,9 @@ def generate(
         workloads[item["name"]] = entry
     if errors:
         raise GenerationError("the release allowlist has unpinned inputs:\n  - " + "\n  - ".join(errors))
-    for name, entry in core_entries(c8s["coreImages"], image_env, feature_release(c8s), core_seed(c8s)).items():
+    for name, entry in core_entries(c8s["coreImages"], core_seed(c8s)).items():
         if name in workloads:
             raise GenerationError(f"the core entry {name} collides with a workload")
-        workloads[name] = entry
-    for name, entry in native_core_entries(c8s, image_env).items():
-        if name in workloads:
-            raise GenerationError(f"the native entry {name} collides with a workload")
         workloads[name] = entry
     canonical = canonicalize({"schema": "c8s.allowlist/v1", "workloads": workloads}, tool)
     kept = json.loads(canonical)["workloads"]

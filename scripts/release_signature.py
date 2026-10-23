@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import os
@@ -101,60 +100,6 @@ def resolve_repository_file(value: Any, label: str) -> Path:
     return path
 
 
-def validate_signature_bundle(document: dict[str, Any]) -> tuple[int, bytes]:
-    if document.get("mediaType") != "application/vnd.dev.sigstore.bundle.v0.3+json":
-        raise ReleaseSignatureError("the Sigstore bundle does not use the required v0.3 format")
-    verification = document.get("verificationMaterial")
-    if not isinstance(verification, dict):
-        raise ReleaseSignatureError("the Sigstore bundle has no verification material")
-    certificate = verification.get("certificate")
-    if not isinstance(certificate, dict):
-        raise ReleaseSignatureError("the Sigstore bundle has no Fulcio certificate")
-    try:
-        certificate_bytes = base64.b64decode(
-            required_text(certificate.get("rawBytes"), "Sigstore certificate"),
-            validate=True,
-        )
-    except ValueError as error:
-        raise ReleaseSignatureError("the Sigstore certificate is not valid base64") from error
-    if not certificate_bytes:
-        raise ReleaseSignatureError("the Sigstore certificate is empty")
-    entries = verification.get("tlogEntries")
-    if not isinstance(entries, list) or not entries:
-        raise ReleaseSignatureError("the Sigstore bundle has no transparency-log entry")
-    for entry in entries:
-        if not isinstance(entry, dict):
-            raise ReleaseSignatureError("a transparency-log entry is invalid")
-        proof = entry.get("inclusionProof")
-        checkpoint = proof.get("checkpoint") if isinstance(proof, dict) else None
-        if (
-            not isinstance(proof, dict)
-            or not isinstance(proof.get("hashes"), list)
-            or not isinstance(checkpoint, dict)
-            or not isinstance(checkpoint.get("envelope"), str)
-            or not checkpoint["envelope"]
-        ):
-            raise ReleaseSignatureError("a transparency-log entry has no offline inclusion proof")
-    signature = document.get("messageSignature")
-    digest = signature.get("messageDigest") if isinstance(signature, dict) else None
-    if (
-        not isinstance(signature, dict)
-        or not isinstance(digest, dict)
-        or digest.get("algorithm") != "SHA2_256"
-        or not isinstance(digest.get("digest"), str)
-        or not isinstance(signature.get("signature"), str)
-    ):
-        raise ReleaseSignatureError("the Sigstore message signature is invalid")
-    try:
-        signed_digest = base64.b64decode(digest["digest"], validate=True)
-        raw_signature = base64.b64decode(signature["signature"], validate=True)
-    except ValueError as error:
-        raise ReleaseSignatureError("the Sigstore message signature is not valid base64") from error
-    if len(signed_digest) != hashlib.sha256().digest_size or not raw_signature:
-        raise ReleaseSignatureError("the Sigstore message signature is invalid")
-    return len(entries), signed_digest
-
-
 def validate_policy(
     release: dict[str, Any],
 ) -> tuple[bytes, dict[str, Any], Path, bytes, str]:
@@ -235,21 +180,11 @@ def cosign_version(cosign: Path, policy: dict[str, Any], timeout_seconds: int) -
     if not isinstance(expected, dict):
         raise ReleaseSignatureError("the Cosign tool policy is invalid")
     try:
-        result = subprocess.run(
-            [str(cosign), "version", "--json"],
-            text=True,
-            capture_output=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
+        result = subprocess.run([str(cosign), "version", "--json"], text=True, capture_output=True,
+                                timeout=timeout_seconds, check=False)
+        actual = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         raise ReleaseSignatureError("cannot run the required Cosign verifier") from error
-    if result.returncode != 0:
-        raise ReleaseSignatureError("the Cosign verifier did not report its version")
-    try:
-        actual = json.loads(result.stdout)
-    except json.JSONDecodeError as error:
-        raise ReleaseSignatureError("the Cosign version output is invalid") from error
     if not isinstance(actual, dict) or any(
         actual.get(name) != expected.get(name) for name in ("gitVersion", "gitCommit")
     ):
@@ -266,83 +201,53 @@ def verify_release_signature(
 ) -> dict[str, Any]:
     """Verify one release with no network and return its trusted signer facts.
 
+    `cosign verify-blob --offline` checks the Sigstore bundle: the Fulcio
+    certificate chain to the pinned trusted root, the transparency-log
+    inclusion proof, and the signature over the exact release bytes.
+
     `schema_path` selects the release document schema. It defaults to the
     release-bundle schema; a v0.14.0 or later release passes the
     release-manifest schema. Both carry the same signing fields.
     """
-    if timeout_seconds < 1:
-        raise ReleaseSignatureError("the Cosign timeout must be positive")
     if not cosign.is_file() or cosign.is_symlink():
         raise ReleaseSignatureError("the required Cosign verifier is not a file")
-    release_bytes, release = read_object(
-        release_path,
-        "release bundle",
-        MAX_RELEASE_BUNDLE_BYTES,
-    )
+    release_bytes, release = read_object(release_path, "release bundle", MAX_RELEASE_BUNDLE_BYTES)
     validate_release_schema(release, schema_path)
     signature_bytes, signature_document = read_object(
-        signature_bundle_path,
-        "Sigstore signature bundle",
-        MAX_SIGNATURE_BUNDLE_BYTES,
+        signature_bundle_path, "Sigstore signature bundle", MAX_SIGNATURE_BUNDLE_BYTES,
     )
-    transparency_entries, signed_digest = validate_signature_bundle(signature_document)
-    if signed_digest != hashlib.sha256(release_bytes).digest():
-        raise ReleaseSignatureError("the Sigstore signature covers different release bytes")
+    if signature_document.get("mediaType") != "application/vnd.dev.sigstore.bundle.v0.3+json":
+        raise ReleaseSignatureError("the Sigstore bundle does not use the required v0.3 format")
     policy_bytes, policy, _, trusted_root_bytes, identity = validate_policy(release)
     version = cosign_version(cosign, policy, timeout_seconds)
     release_name = release["release"]["name"]
     workflow = policy["githubWorkflow"]
-    environment = {
-        name: os.environ[name]
-        for name in ("LANG", "LC_ALL", "PATH", "TMPDIR")
-        if name in os.environ
-    }
-    environment.update({
-        "SIGSTORE_NO_CACHE": "true",
-        "HTTP_PROXY": "http://127.0.0.1:1",
-        "HTTPS_PROXY": "http://127.0.0.1:1",
-        "ALL_PROXY": "http://127.0.0.1:1",
-        "http_proxy": "http://127.0.0.1:1",
-        "https_proxy": "http://127.0.0.1:1",
-        "all_proxy": "http://127.0.0.1:1",
-        "NO_PROXY": "",
-        "no_proxy": "",
-    })
-    try:
-        with tempfile.TemporaryDirectory(prefix="confidential-inference-sigstore-") as home:
-            environment["HOME"] = home
-            snapshot = Path(home)
-            release_snapshot = snapshot / "release-bundle.json"
-            signature_snapshot = snapshot / "release-bundle.sigstore.json"
-            root_snapshot = snapshot / "trusted-root.json"
-            release_snapshot.write_bytes(release_bytes)
-            signature_snapshot.write_bytes(signature_bytes)
-            root_snapshot.write_bytes(trusted_root_bytes)
-            command = [
-                str(cosign),
-                "verify-blob",
-                "--offline",
-                "--bundle", str(signature_snapshot),
-                "--trusted-root", str(root_snapshot),
-                "--certificate-identity", identity,
-                "--certificate-oidc-issuer", policy["certificateOidcIssuer"],
-                "--certificate-github-workflow-repository", workflow["repository"],
-                "--certificate-github-workflow-ref", workflow["refTemplate"].replace("{release}", release_name),
-                "--certificate-github-workflow-name", workflow["name"],
-                "--certificate-github-workflow-trigger", workflow["trigger"],
-                "--certificate-github-workflow-sha", release["source"]["commit"],
-                str(release_snapshot),
-            ]
-            result = subprocess.run(
-                command,
-                text=True,
-                capture_output=True,
-                timeout=timeout_seconds,
-                check=False,
-                env=environment,
-            )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise ReleaseSignatureError("Cosign could not verify the release signature") from error
+    workflow_ref = workflow["refTemplate"].replace("{release}", release_name)
+    # Verify snapshots of the checked bytes, with an empty Sigstore cache.
+    with tempfile.TemporaryDirectory(prefix="confidential-inference-sigstore-") as home:
+        snapshot = Path(home)
+        (snapshot / "release-bundle.json").write_bytes(release_bytes)
+        (snapshot / "release-bundle.sigstore.json").write_bytes(signature_bytes)
+        (snapshot / "trusted-root.json").write_bytes(trusted_root_bytes)
+        command = [
+            str(cosign), "verify-blob", "--offline",
+            "--bundle", str(snapshot / "release-bundle.sigstore.json"),
+            "--trusted-root", str(snapshot / "trusted-root.json"),
+            "--certificate-identity", identity,
+            "--certificate-oidc-issuer", policy["certificateOidcIssuer"],
+            "--certificate-github-workflow-repository", workflow["repository"],
+            "--certificate-github-workflow-ref", workflow_ref,
+            "--certificate-github-workflow-name", workflow["name"],
+            "--certificate-github-workflow-trigger", workflow["trigger"],
+            "--certificate-github-workflow-sha", release["source"]["commit"],
+            str(snapshot / "release-bundle.json"),
+        ]
+        try:
+            result = subprocess.run(command, text=True, capture_output=True, timeout=timeout_seconds,
+                                    check=False, env={"PATH": os.environ.get("PATH", ""), "HOME": home,
+                                                     "SIGSTORE_NO_CACHE": "true"})
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ReleaseSignatureError("Cosign could not verify the release signature") from error
     if result.returncode != 0:
         detail = result.stderr.strip().splitlines()
         suffix = f": {detail[-1]}" if detail else ""
@@ -355,10 +260,10 @@ def verify_release_signature(
         "certificateIdentity": identity,
         "certificateOidcIssuer": policy["certificateOidcIssuer"],
         "githubWorkflowRepository": workflow["repository"],
-        "githubWorkflowRef": workflow["refTemplate"].replace("{release}", release_name),
+        "githubWorkflowRef": workflow_ref,
         "githubWorkflowName": workflow["name"],
         "githubWorkflowTrigger": workflow["trigger"],
-        "transparencyLogEntries": transparency_entries,
+        "transparencyLogEntries": len(signature_document.get("verificationMaterial", {}).get("tlogEntries", [])),
         "cosignVersion": version["gitVersion"],
         "cosignCommit": version["gitCommit"],
     }
