@@ -40,7 +40,7 @@ already there, after the same checks.
 The build writes three files to --output-dir:
 
 - release-bundle.json: the manifest. It must match
-  contracts/release-manifest.schema.json;
+  api/release-manifest.schema.json;
 - allowlist.json: the c8s allowlist, generated with the pinned c8s CLI from
   the chart rendered with these digests. The manifest binds its SHA-256;
 - release-values.yaml: the Helm values file with the repository image
@@ -92,9 +92,9 @@ import release_signature
 
 ROOT = Path(__file__).resolve().parents[1]
 CHART = ROOT / "helm/confidential-inference"
-SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
+SOURCE_LOCK = ROOT / "release/inputs/c8s-source-lock.json"
 SCHEMA = "confidential.ai/release-manifest/v1"
-MANIFEST_SCHEMA = ROOT / "contracts/release-manifest.schema.json"
+MANIFEST_SCHEMA = ROOT / "api/release-manifest.schema.json"
 TRUST_POLICY = ROOT / "releases/trust/release-signing-policy.json"
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 IMAGE_SELECTOR = runpy.run_path(str(ROOT / "scripts/affected-release-images.py"))
@@ -827,8 +827,7 @@ def build(
     node = node_measurements(release_profiles.node_manifest(profile), spec)
     overlay = {
         "images": release_images(values, publication, base),
-        # cds-attest pins CDS, which runs on the pinned node image (c8s #851).
-        "attestationReceipts": {"releaseId": release_profiles.workload_release(tag), "cdsPin": node["tdx"]},
+        "attestationReceipts": {"releaseId": release_profiles.workload_release(tag)},
     }
     overlay_bytes = yaml.safe_dump(overlay, sort_keys=True).encode()
     values = release_profiles.merge_values(values, overlay)

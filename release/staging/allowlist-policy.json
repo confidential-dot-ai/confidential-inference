@@ -26,8 +26,8 @@
       "controller": "StatefulSet/inference-worker-1"
     },
     {
-      "name": "kube-state-metrics",
-      "controller": "Deployment/kube-state-metrics"
+      "name": "log-collector",
+      "controller": "Deployment/log-collector"
     },
     {
       "name": "metrics-collector",

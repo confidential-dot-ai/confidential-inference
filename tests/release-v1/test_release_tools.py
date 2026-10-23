@@ -51,10 +51,12 @@ FIXTURES = ROOT / "tests/release-v1/fixtures"
 OVERLAY = FIXTURES / "release-values.yaml"
 STAGING_ALLOWLIST = FIXTURES / "staging-allowlist.json"
 REPOSITORY_CONFIGS = json.loads((FIXTURES / "repository-image-config.json").read_text())
-# Packaging tests use a placeholder collector digest. Runtime generation is
-# verified separately with the registry configuration of the approved image.
+# Packaging tests use a placeholder collector digest with the image's
+# ENTRYPOINT and CMD (images/log-collector/Dockerfile).
 REPOSITORY_CONFIGS['ghcr.io/confidential-dot-ai/confidential-inference/log-collector@sha256:' + '2' * 64] = {
-    'env': [], 'entrypoint': [], 'cmd': []}
+    'env': [], 'entrypoint': ['/bin/alloy'],
+    'cmd': ['run', '/etc/alloy/config.alloy', '--storage.path=/tmp/alloy',
+            '--server.http.listen-addr=127.0.0.1:12345', '--server.http.enable-pprof=false', '--disable-reporting']}
 RELEASE_IMAGES = yaml.safe_load(OVERLAY.read_text())["images"]
 # The rollout client uses the same pinned Python base as the router fixture.
 # Its program is signed in chart argv; this synthetic digest tests packaging.
@@ -68,16 +70,8 @@ REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 
 @functools.cache
 def rendered(profile) -> list[dict]:
-    """The chart rendered with the profile values and its policy settings. Do not change it.
-
-    The overlay adds the CDS pin of the profile's node image, as the release build does.
-    """
-    overlay = yaml.safe_load(OVERLAY.read_text())
-    overlay["attestationReceipts"] = {"cdsPin": node_pin(profile)}
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "release-values.yaml"
-        path.write_text(yaml.safe_dump(overlay))
-        return MAN.render_chart(MAN.CHART, profile, MAN.read_allowlist_policy(profile.policy)["chart"], path)
+    """The chart rendered with the profile values and its policy settings. Do not change it."""
+    return MAN.render_chart(MAN.CHART, profile, MAN.read_allowlist_policy(profile.policy)["chart"], OVERLAY)
 
 
 def publication(images: dict[str, str], *, commit: str = "b" * 40, base_ref: str = "v0.13.28-rc.2",
@@ -119,7 +113,7 @@ def build_release(tag: str, evidence: dict, download_dir: Path | None, generate,
         return MAN.build(
             tag,
             ROOT / "helm/confidential-inference",
-            ROOT / "contracts/c8s-admission-source-lock.json",
+            ROOT / "release/inputs/c8s-source-lock.json",
             "d" * 40,
             evidence_path,
             download_dir or Path(temporary) / "downloads",
@@ -151,6 +145,9 @@ def build_production(evidence: dict, download_dir: Path, tag: str = "v0.14.2") -
     operator = PROFILES.read_values(PRODUCTION)["images"]["c8sOperator"].rsplit("@", 1)[1]
     allowlist["workloads"]["production-operator"] = {"containers": [{"digest": operator}]}
     allowlist["workloads"]["production-collector"] = {"containers": [{"digest": 'sha256:' + '2' * 64}]}
+    # Staging runs no kube-state-metrics (it needs the Kubernetes API).
+    metrics = PROFILES.read_values(PRODUCTION)["images"]["kubeStateMetrics"].rsplit("@", 1)[1]
+    allowlist["workloads"]["production-kube-state-metrics"] = {"containers": [{"digest": metrics}]}
     generated = json.dumps(allowlist).encode()
     return build_release(tag, evidence, download_dir, lambda *_args, **_kwargs: generated,
                          mock.patch.object(MAN, "require_allowlist_contract"),
@@ -164,11 +161,6 @@ def staging_allowlist(c8s: Path) -> bytes:
     staging profile moves to another c8s release.
     """
     return build_staging(publication(published_release_images()), c8s=c8s)["allowlist.json"]
-
-
-def node_pin(profile) -> dict[str, str]:
-    """The CDS pin that the release build writes: the TDX measurements of the node image."""
-    return MAN.node_measurements(PROFILES.node_manifest(profile), MAN.read_spec(profile))["tdx"]
 
 
 def rendered_workers(profile) -> list[dict]:
@@ -546,12 +538,14 @@ class ProcessTests(unittest.TestCase):
         volumed = "ghcr.io/confidential-dot-ai/volumed@sha256:" + "a" * 64
         self.assertEqual(GEN.core_entries([CORE, volumed], configs, "v0.47.0", seed), seed)
         # A shape may pin the container's own command, which extends the
-        # entrypoint; a command that leaves it is not the component.
-        extended = copy.deepcopy(seed)
-        extended["c8s-operator-" + "b" * 12 + "-01234567"]["containers"][0]["command"]["argv"] = ["/c8s", "get-cert"]
-        self.assertEqual(GEN.core_entries([CORE], configs, "v0.47.0", extended), extended)
+        # entrypoint or replaces it (the c8s v0.66.0+ router reload script);
+        # a shape without an exact command pin is refused.
+        for argv in (["/c8s", "get-cert"], ["/bin/sh", "/usr/lib/c8s/router-nginx/reload.sh"]):
+            extended = copy.deepcopy(seed)
+            extended["c8s-operator-" + "b" * 12 + "-01234567"]["containers"][0]["command"]["argv"] = argv
+            self.assertEqual(GEN.core_entries([CORE], configs, "v0.47.0", extended), extended)
         wrong = copy.deepcopy(seed)
-        wrong["c8s-operator-" + "b" * 12 + "-01234567"]["containers"][0]["command"]["argv"] = ["/bin/sh", "-c", "/c8s"]
+        wrong["c8s-operator-" + "b" * 12 + "-01234567"]["containers"][0]["command"] = {"policy": "any"}
         with self.assertRaisesRegex(GEN.GenerationError, "component command pin"):
             GEN.core_entries([CORE], configs, "v0.47.0", wrong)
         # The manifest contract expects the seed's names, not floor names.
@@ -660,7 +654,7 @@ class ManifestTests(unittest.TestCase):
         manifest = json.loads(files["release-bundle.json"])
         self.assertEqual(manifest["release"], {"name": "v0.14.9-staging", "environment": "staging"})
         self.assertEqual(yaml.safe_load(files["release-values.yaml"])["attestationReceipts"],
-                         {"releaseId": "v0.14.9-staging", "cdsPin": node_pin(STAGING)})
+                         {"releaseId": "v0.14.9-staging"})
         for tag in ("v0.14.9-rc.1", "v0.14.9-staging.1", "staging"):
             with self.subTest(tag=tag), self.assertRaisesRegex(MAN.ManifestError, "no release profile"):
                 build_staging(publication(published_release_images()), tag=tag)
@@ -747,7 +741,7 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(manifest["imagePublication"]["sourceCommit"], "b" * 40)
         self.assertEqual(yaml.safe_load(files["release-values.yaml"]), {
             "images": RELEASE_IMAGES,
-            "attestationReceipts": {"releaseId": "v0.14.2-staging", "cdsPin": node_pin(STAGING)},
+            "attestationReceipts": {"releaseId": "v0.14.2-staging"},
         })
         for key, image in RELEASE_IMAGES.items():
             self.assertEqual(manifest["images"][key], image)
@@ -1028,7 +1022,8 @@ class ManifestTests(unittest.TestCase):
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
-        self.assertIn("--service-discovery-namespace=confidential-inference-staging", args)
+        self.assertEqual(args[:3], ["--worker-urls", "http://inference-worker-0-0.inference-workers:30000",
+                                    "http://inference-worker-1-0.inference-workers:30000"])
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"].pop("inference-worker-1")
         with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
@@ -1058,7 +1053,7 @@ class ManifestTests(unittest.TestCase):
                                  and profile.directory / "inputs/image-config.json" != PROFILES.IMAGE_CONFIG)
 
     def test_the_source_lock_pins_the_spec_commit(self):
-        lock = json.loads((ROOT / "contracts/c8s-admission-source-lock.json").read_text())
+        lock = json.loads((ROOT / "release/inputs/c8s-source-lock.json").read_text())
         for profile in PROFILES.load():
             with self.subTest(profile=profile.name):
                 spec = MAN.read_spec(profile)
@@ -1080,12 +1075,21 @@ class ManifestTests(unittest.TestCase):
                 NODE.check_measurements(json.loads(data))
 
     def test_the_schema_refuses_deployment_values(self):
-        schema = json.loads((ROOT / "contracts/release-manifest.schema.json").read_text())
+        schema = json.loads((ROOT / "api/release-manifest.schema.json").read_text())
         properties = set(schema["properties"])
         for forbidden in ("meshCa", "operatorPublicKeySha256", "operatorKeySetSha256", "target"):
             self.assertNotIn(forbidden, properties)
         self.assertFalse(schema["additionalProperties"])
         jsonschema.Draft202012Validator.check_schema(schema)
+
+    def test_a_signed_manifest_with_the_old_lock_path_still_validates(self):
+        # The published v0.15.15 manifest, which names the lock at contracts/.
+        signed = json.loads((FIXTURES / "v0.15.15-release-manifest.json").read_text())
+        self.assertEqual(signed["sourceLock"]["path"], "contracts/c8s-admission-source-lock.json")
+        MAN.release_signature.validate_release_schema(signed)
+        moved = copy.deepcopy(signed)
+        moved["sourceLock"]["path"] = MAN.SOURCE_LOCK.relative_to(ROOT).as_posix()
+        MAN.release_signature.validate_release_schema(moved)
 
 
 class ChartArchiveTests(unittest.TestCase):

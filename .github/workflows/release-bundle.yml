@@ -28,6 +28,7 @@ jobs:
   # The release profile of the tag selects the signing environment, so it is
   # read before the signing job starts.
   select-profile:
+    name: select profile
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -36,12 +37,12 @@ jobs:
       directory: ${{ steps.profile.outputs.directory }}
       signing_environment: ${{ steps.profile.outputs.signing_environment }}
     steps:
-      - name: Check out the release tag
+      - name: checkout tag
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
 
-      - name: Select the release profile
+      - name: select profile
         id: profile
         run: |
           python3 scripts/release_profiles.py resolve --tag "$RELEASE_TAG" --format github \
@@ -57,6 +58,7 @@ jobs:
       single_build: true
 
   sign-release-bundle:
+    name: sign
     needs: [select-profile, images]
     # A tag push skips the images job.
     if: ${{ !cancelled() && needs.select-profile.result == 'success' && needs.images.result != 'failure' }}
@@ -70,25 +72,25 @@ jobs:
       id-token: write
       packages: read
     steps:
-      - name: Check out the release tag
+      - name: checkout tag
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up the fixed Python runtime
+      - name: install python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: scripts/requirements-release-signing.txt
 
-      - name: Install hash-locked schema validation
+      - name: install schema validator
         run: |
           python3 -m pip install --require-hashes \
             --requirement scripts/requirements-release-signing.txt
 
-      - name: Validate the release tag
+      - name: validate tag
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -105,7 +107,7 @@ jobs:
             --tag "$RELEASE_TAG" \
             --main-ref refs/remotes/origin/main
 
-      - name: Install the pinned Helm
+      - name: install helm
         run: |
           curl -fsSL -o /tmp/helm.tar.gz \
             https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz
@@ -114,7 +116,7 @@ jobs:
           tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
           sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
 
-      - name: Install the pinned crane
+      - name: install crane
         run: |
           curl -fsSL -o /tmp/crane.tar.gz \
             https://github.com/google/go-containerregistry/releases/download/v0.21.6/go-containerregistry_Linux_x86_64.tar.gz
@@ -125,14 +127,14 @@ jobs:
 
       # The allowlist needs the configuration of each repository image, which
       # crane reads from the registry by digest.
-      - name: Log in to GHCR to read the image configuration
+      - name: login ghcr
         uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Install the pinned Cosign verifier
+      - name: install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.2
@@ -141,7 +143,7 @@ jobs:
       # or before the tag commit. No image build input may change in between.
       # An unsigned branch build takes the images it built itself, else a
       # release-images run on its branch.
-      - name: Find the image publication evidence
+      - name: find image evidence
         id: publication
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -158,7 +160,7 @@ jobs:
             --release-commit "$(git rev-parse HEAD)" \
             "${select[@]}" >> "$GITHUB_OUTPUT"
 
-      - name: Download the verified image publication evidence
+      - name: download image evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ steps.publication.outputs.artifact_name }}
@@ -167,12 +169,12 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ steps.publication.outputs.run_id }}
 
-      - name: Check the image publication evidence
+      - name: check image evidence
         run: |
           python3 scripts/image-publication-manifest.py check \
             dist/image-publication-manifest.json
 
-      - name: Read the pinned c8s source commit
+      - name: read c8s pin
         id: c8s
         env:
           RELEASE_DIRECTORY: ${{ needs.select-profile.outputs.directory }}
@@ -186,7 +188,7 @@ jobs:
           print("source_commit=" + release_profiles.read_spec(profile)["c8s"]["sourceCommit"])
           PY
 
-      - name: Check out the pinned c8s source
+      - name: checkout c8s
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: confidential-dot-ai/c8s
@@ -194,7 +196,7 @@ jobs:
           path: c8s-source
           persist-credentials: false
 
-      - name: Set up the Go toolchain of the pinned c8s
+      - name: install go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: c8s-source/go.mod
@@ -207,7 +209,7 @@ jobs:
       # Release apply in the internal repository rebuilds every release
       # asset with a SHA-256-pinned c8s CLI and refuses a byte mismatch, so
       # a cache that changed the build fails closed.
-      - name: Restore the Go caches of the pinned c8s
+      - name: restore go cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -215,7 +217,7 @@ jobs:
             ~/go/pkg/mod
           key: c8s-go-${{ runner.os }}-${{ steps.c8s.outputs.source_commit }}-${{ hashFiles('c8s-source/go.sum', 'tools/c8s-allowlist-canonical/go.sum') }}
 
-      - name: Build the pinned c8s CLI and the canonical allowlist tool
+      - name: build c8s cli
         env:
           GOPRIVATE: github.com/confidential-dot-ai/*
         run: |
@@ -226,7 +228,7 @@ jobs:
       # An image that did not change after the base release of the image run
       # keeps the digest of the signed base release manifest. The build reads
       # the base from the evidence and downloads and verifies that release.
-      - name: Build the release at the tag commit
+      - name: build release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -239,14 +241,14 @@ jobs:
             --canonical-tool "$RUNNER_TEMP/bin/c8s-allowlist-canonical" \
             --output-dir dist
 
-      - name: Create the keyless Sigstore bundle
+      - name: sign bundle
         if: github.event_name == 'push'
         run: |
           cosign sign-blob --yes \
             --bundle dist/release-bundle.sigstore.json \
             dist/release-bundle.json
 
-      - name: Verify the release without network trust lookup
+      - name: verify signature offline
         if: github.event_name == 'push'
         run: |
           python3 scripts/verify-release-bundle-signature.py \
@@ -254,7 +256,7 @@ jobs:
             --signature-bundle dist/release-bundle.sigstore.json \
             --cosign "$(command -v cosign)"
 
-      - name: Save the immutable workflow artifact
+      - name: upload release
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ github.event_name == 'push' && 'signed' || 'unsigned' }}-release-${{ env.RELEASE_TAG }}
@@ -271,6 +273,7 @@ jobs:
           retention-days: 90
 
   publish-release:
+    name: publish
     needs: sign-release-bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -279,13 +282,13 @@ jobs:
       # The chart package goes to GHCR from here, not from the signing job.
       packages: write
     steps:
-      - name: Download the verified release artifact
+      - name: download release
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ github.event_name == 'push' && 'signed' || 'unsigned' }}-release-${{ env.RELEASE_TAG }}
           path: dist
 
-      - name: Install the pinned Helm
+      - name: install helm
         run: |
           curl -fsSL -o /tmp/helm.tar.gz \
             https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz
@@ -298,7 +301,7 @@ jobs:
       # pushes its package; every release then pulls the package at the
       # reference and proves it is the signed one, so a production release
       # finds its staging package there.
-      - name: Push the chart package and prove the reference holds the signed one
+      - name: push chart
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -320,7 +323,7 @@ jobs:
           test "$(digest "${pulled[0]}")" = "$expected" \
             || { echo "The chart at $reference is not the signed package." >&2; exit 1; }
 
-      - name: Publish new GitHub Release assets
+      - name: publish github release
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -375,7 +378,7 @@ jobs:
             "${extra_assets[@]}"
 
       # The target.env pins of an unsigned build (internal docs/runbooks/deploy.md).
-      - name: Report the unsigned build
+      - name: report unsigned build
         if: github.event_name != 'push'
         run: |
           {

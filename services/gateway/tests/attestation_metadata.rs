@@ -54,7 +54,7 @@ async fn read(State(state): State<Upstream>, request: Request) -> Response {
 async fn reads_only_cds_and_discovery_and_hashes_exact_policy_bytes()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture: Value = serde_json::from_str(include_str!(
-        "../../../tests/contracts/fixtures/workload-attestation.v3.valid.json"
+        "../../../tests/api/fixtures/workload-attestation.v3.valid.json"
     ))?;
     let mut policy = serde_json::to_vec(&fixture["c8s"]["activeAllowlist"]["document"])?;
     policy.push(b'\n'); // The digest must include the received newline.

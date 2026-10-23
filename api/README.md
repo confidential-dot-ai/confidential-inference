@@ -1,0 +1,51 @@
+# Release and API contracts
+
+Use [client verification](../docs/verification.md) for the current public
+endpoint and [release documentation](../release/README.md) for publication.
+
+## Current release and discovery
+
+- `release-manifest.schema.json`: signed release manifest for v0.14.0 and
+  later. It records source, image digests, node measurements, publication
+  evidence, and the initial policy.
+- `workload-attestation.schema.json`: schema 3 release and active-policy
+  metadata. It also retains schema 2 for historical responses. Schema 3
+  requires no API key or nonce and has no aggregate workload receipts.
+- `environment-spec.schema.json`: deployment environment input format.
+
+The gateway reads the active policy and operator public keys through verified
+CDS access. See [the gateway contract](../services/gateway/ATTESTATION.md).
+The active policy can differ from the signed initial policy. Clients review
+and pin the exact active bytes separately.
+
+## Gateway APIs
+
+- `gateway-inference.openapi.json`: public inference, model catalog, health,
+  schema 3 discovery, and native c8s routes served by TLS-LB.
+- `gateway-admin.openapi.json`: signed API-key administration, key-store
+  export and import, and a temporary key-store freeze.
+- `maintenance-gateway.openapi.json`: public responses during an outage.
+
+Key-store export includes a pepper fingerprint, never the pepper or a
+plaintext API key. Import requires a matching pepper fingerprint. Conflicting
+records refuse the transaction. A freeze stops mint and revoke operations
+and expires after ten minutes.
+
+## Maintenance
+
+- `maintenance-dns-receipt.schema.json`: secret-free DNS change receipts.
+
+## Historical contracts
+
+- `release-bundle.schema.json`: release inventory format before v0.14.0.
+  The v0 verifiers still validate old releases against it.
+
+The network port and observability references moved to
+[docs/network-ports.yaml](../docs/network-ports.yaml) and
+[docs/observability-metrics.yaml](../docs/observability-metrics.yaml). The c8s
+source lock (pinned c8s commits and source hashes) moved to
+[release/inputs/c8s-source-lock.json](../release/inputs/c8s-source-lock.json),
+and the c8s attestation protocol captures to
+[release/inputs/c8s-attestation-protocols](../release/inputs/c8s-attestation-protocols).
+The signed release still records the lock path and digest; releases before
+the move name `contracts/c8s-admission-source-lock.json`.
