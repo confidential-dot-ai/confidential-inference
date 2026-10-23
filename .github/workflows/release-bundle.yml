@@ -103,9 +103,9 @@ jobs:
             echo "The release version is already published." >&2
             exit 1
           fi
-          python3 scripts/validate-release-tag.py \
-            --tag "$RELEASE_TAG" \
-            --main-ref refs/remotes/origin/main
+          # select-profile refused a tag that no release profile accepts.
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main \
+            || { echo "The release tag does not point to a commit on main." >&2; exit 1; }
 
       - name: install helm
         run: |

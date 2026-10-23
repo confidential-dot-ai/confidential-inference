@@ -115,7 +115,7 @@ class ReleaseSignatureTests(unittest.TestCase):
         self.assertIn("--bundle dist/release-bundle.sigstore.json", workflow)
         self.assertIn("git rev-parse HEAD > dist/release-tag-commit.txt", workflow)
         self.assertIn("--require-hashes", workflow)
-        self.assertIn("scripts/validate-release-tag.py", workflow)
+        self.assertIn("git merge-base --is-ancestor HEAD refs/remotes/origin/main", workflow)
         self.assertIn("refs/remotes/origin/main", workflow)
         self.assertIn("The release version is already published", workflow)
         self.assertIn("sha256sum --check --strict", workflow)
