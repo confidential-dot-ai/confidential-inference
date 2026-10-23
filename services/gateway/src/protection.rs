@@ -7,11 +7,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{
-    capacity::{Capacity, CapacityPermit},
-    runtime_config::MountedConfig,
-    runtime_settings::GatewaySettings,
-};
 use axum::{
     body::Body,
     extract::{ConnectInfo, Request, State},
@@ -21,6 +16,7 @@ use axum::{
 };
 use ipnet::IpNet;
 use serde_json::json;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const ADDRESS_CAPACITY: usize = 4_096;
 
@@ -64,12 +60,11 @@ impl Default for ProtectionConfig {
 #[derive(Clone)]
 pub struct ProtectionState {
     pub config: ProtectionConfig,
-    runtime: Option<Arc<MountedConfig<GatewaySettings>>>,
-    inference_slots: Arc<Capacity>,
-    inference_admission: Arc<Capacity>,
-    public_requests: Arc<Capacity>,
-    address_slots: Arc<Mutex<BTreeMap<IpAddr, Arc<Capacity>>>>,
-    key_slots: Arc<Mutex<BTreeMap<String, Arc<Capacity>>>>,
+    inference_slots: Arc<Semaphore>,
+    inference_admission: Arc<Semaphore>,
+    public_requests: Arc<Semaphore>,
+    address_slots: Arc<Mutex<BTreeMap<IpAddr, Arc<Semaphore>>>>,
+    key_slots: Arc<Mutex<BTreeMap<String, Arc<Semaphore>>>>,
     addresses: Arc<Mutex<BTreeMap<IpAddr, AddressWindow>>>,
 }
 
@@ -80,9 +75,9 @@ struct AddressWindow {
 }
 
 pub struct InferencePermits {
-    _key: CapacityPermit,
-    _admission: CapacityPermit,
-    _execution: CapacityPermit,
+    _key: OwnedSemaphorePermit,
+    _admission: OwnedSemaphorePermit,
+    _execution: OwnedSemaphorePermit,
 }
 
 #[derive(Debug)]
@@ -92,57 +87,18 @@ impl ProtectionState {
     #[must_use]
     pub fn new(config: ProtectionConfig) -> Self {
         Self {
-            inference_slots: Arc::new(Capacity::new(config.inference_concurrency)),
-            inference_admission: Arc::new(Capacity::new(
+            inference_slots: Arc::new(Semaphore::new(config.inference_concurrency)),
+            inference_admission: Arc::new(Semaphore::new(
                 config
                     .inference_concurrency
                     .saturating_add(config.inference_queue),
             )),
-            public_requests: Arc::new(Capacity::new(config.global_request_concurrency)),
+            public_requests: Arc::new(Semaphore::new(config.global_request_concurrency)),
             address_slots: Arc::new(Mutex::new(BTreeMap::new())),
             key_slots: Arc::new(Mutex::new(BTreeMap::new())),
             addresses: Arc::new(Mutex::new(BTreeMap::new())),
             config,
-            runtime: None,
         }
-    }
-
-    #[must_use]
-    pub fn with_runtime(mut self, runtime: Option<Arc<MountedConfig<GatewaySettings>>>) -> Self {
-        self.runtime = runtime;
-        self
-    }
-
-    fn effective_config(&self) -> (ProtectionConfig, u64) {
-        let mut config = self.config.clone();
-        let mut revision = 0;
-        if let Some(runtime) = &self.runtime {
-            let settings = runtime.snapshot();
-            revision = settings.revision;
-            config.global_request_concurrency = settings.global_request_concurrency;
-            config.per_address_concurrency = settings.per_address_concurrency;
-            config.inference_concurrency = settings.inference_concurrency;
-            config.inference_queue = settings.inference_queue;
-            config.queue_timeout = Duration::from_secs(settings.queue_timeout_seconds);
-            config.per_key_concurrency = settings.per_key_concurrency;
-            config.requests_per_address_per_second = settings.requests_per_address_per_second;
-        }
-        (config, revision)
-    }
-
-    fn refresh_limits(&self) -> (ProtectionConfig, u64) {
-        let (config, revision) = self.effective_config();
-        self.inference_slots
-            .resize_at_revision(config.inference_concurrency, revision);
-        self.inference_admission.resize_at_revision(
-            config
-                .inference_concurrency
-                .saturating_add(config.inference_queue),
-            revision,
-        );
-        self.public_requests
-            .resize_at_revision(config.global_request_concurrency, revision);
-        (config, revision)
     }
 
     /// Reserve one key slot, one bounded queue slot, and one execution slot.
@@ -151,35 +107,26 @@ impl ProtectionState {
     ///
     /// Returns an error when any capacity limit rejects the request.
     pub async fn inference_permits(&self, key_id: &str) -> Result<InferencePermits, CapacityError> {
-        let (config, revision) = self.refresh_limits();
         let key_slots = {
             let mut slots = self.key_slots.lock().map_err(|_| CapacityError)?;
             slots
                 .entry(key_id.to_owned())
-                .or_insert_with(|| Arc::new(Capacity::new(config.per_key_concurrency)))
+                .or_insert_with(|| Arc::new(Semaphore::new(self.config.per_key_concurrency)))
                 .clone()
         };
-        key_slots.resize_at_revision(config.per_key_concurrency, revision);
-        let key = key_slots.try_acquire_owned().map_err(|()| CapacityError)?;
+        let key = key_slots.try_acquire_owned().map_err(|_| CapacityError)?;
         let admission = self
             .inference_admission
             .clone()
             .try_acquire_owned()
-            .map_err(|()| CapacityError)?;
-        let waiting = self.inference_slots.clone().acquire_owned();
-        tokio::pin!(waiting);
-        let mut refresh = tokio::time::interval(Duration::from_millis(100));
-        let execution = tokio::time::timeout(config.queue_timeout, async {
-            loop {
-                tokio::select! {
-                    result = &mut waiting => return result,
-                    _ = refresh.tick() => { self.refresh_limits(); }
-                }
-            }
-        })
+            .map_err(|_| CapacityError)?;
+        let execution = tokio::time::timeout(
+            self.config.queue_timeout,
+            self.inference_slots.clone().acquire_owned(),
+        )
         .await
         .map_err(|_| CapacityError)?
-        .map_err(|()| CapacityError)?;
+        .map_err(|_| CapacityError)?;
         Ok(InferencePermits {
             _key: key,
             _admission: admission,
@@ -206,7 +153,7 @@ impl ProtectionState {
                 requests: 0,
             };
         }
-        if window.requests >= self.effective_config().0.requests_per_address_per_second {
+        if window.requests >= self.config.requests_per_address_per_second {
             return false;
         }
         window.requests += 1;
@@ -219,7 +166,7 @@ pub async fn enforce_public_limits(
     request: Request,
     next: Next,
 ) -> Response<Body> {
-    let (config, revision) = state.refresh_limits();
+    let config = &state.config;
     let header_bytes = request
         .headers()
         .iter()
@@ -240,7 +187,7 @@ pub async fn enforce_public_limits(
     if request.uri().to_string().len() > config.maximum_uri_bytes {
         return error(StatusCode::URI_TOO_LONG, "request_uri_too_long", None);
     }
-    let Ok(client) = client_address(request.headers(), request.extensions().get(), &config) else {
+    let Ok(client) = client_address(request.headers(), request.extensions().get(), config) else {
         return error(StatusCode::BAD_REQUEST, "invalid_forwarding_headers", None);
     };
     let Ok(_global_permit) = state.public_requests.clone().try_acquire_owned() else {
@@ -268,10 +215,9 @@ pub async fn enforce_public_limits(
         }
         slots
             .entry(client)
-            .or_insert_with(|| Arc::new(Capacity::new(config.per_address_concurrency)))
+            .or_insert_with(|| Arc::new(Semaphore::new(config.per_address_concurrency)))
             .clone()
     };
-    address_slots.resize_at_revision(config.per_address_concurrency, revision);
     let Ok(_address_permit) = address_slots.try_acquire_owned() else {
         return error(StatusCode::TOO_MANY_REQUESTS, "address_capacity", Some("1"));
     };
@@ -354,64 +300,6 @@ fn error(
 
 #[cfg(test)]
 mod tests {
-    #[tokio::test]
-    async fn runtime_limits_preserve_active_permits_queues_and_rate_windows()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use super::*;
-        let directory = tempfile::tempdir()?;
-        let path = directory.path().join("settings.json");
-        let settings = |revision, concurrency, rate| {
-            serde_json::json!({
-                "schemaVersion":1, "revision":revision, "catalogModelIds":["public"], "inferenceModelIds":["public"],
-                "maximumBodyBytes":1024, "upstreamTimeoutSeconds":30, "bodyTimeoutSeconds":10,
-                "streamIdleTimeoutSeconds":20, "attestationCacheSeconds":10,
-                "globalRequestConcurrency":256, "perAddressConcurrency":16,
-                "inferenceConcurrency":concurrency, "inferenceQueue":2, "queueTimeoutSeconds":2,
-                "perKeyConcurrency":4, "attestationConcurrency":4, "requestsPerAddressPerSecond":rate,
-            })
-        };
-        std::fs::write(&path, settings(1, 2, 30).to_string())?;
-        let runtime = Arc::new(MountedConfig::open(
-            path.clone(),
-            4096,
-            GatewaySettings::validate,
-        )?);
-        let state = Arc::new(
-            ProtectionState::new(ProtectionConfig::default()).with_runtime(Some(runtime.clone())),
-        );
-        let first = state
-            .inference_permits("first")
-            .await
-            .map_err(|_| "first request failed")?;
-        let second = state
-            .inference_permits("second")
-            .await
-            .map_err(|_| "second request failed")?;
-        let address = "127.0.0.1".parse()?;
-        assert!(state.accept_address(address));
-        assert!(state.accept_address(address));
-        std::fs::write(&path, settings(2, 1, 1).to_string())?;
-        runtime.refresh(GatewaySettings::validate);
-        assert!(!state.accept_address(address));
-        let waiting = {
-            let state = state.clone();
-            tokio::spawn(async move { state.inference_permits("third").await })
-        };
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        drop(first);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(!waiting.is_finished());
-        // Increase capacity while the same queued request waits. No new
-        // inference request is needed to make the update take effect.
-        std::fs::write(&path, settings(3, 2, 1).to_string())?;
-        runtime.refresh(GatewaySettings::validate);
-        let third = tokio::time::timeout(Duration::from_secs(1), waiting)
-            .await??
-            .map_err(|_| "queued request failed")?;
-        drop(second);
-        drop(third);
-        Ok(())
-    }
     use super::*;
     use axum::{Router, routing::get};
     use tower::ServiceExt as _;
@@ -437,7 +325,7 @@ mod tests {
                 .unwrap_or_else(|_| unreachable!());
             for index in 0..ADDRESS_CAPACITY {
                 let address = IpAddr::V6(std::net::Ipv6Addr::from(index as u128));
-                slots.insert(address, Arc::new(Capacity::new(1)));
+                slots.insert(address, Arc::new(Semaphore::new(1)));
             }
         }
         let app = Router::new().route("/", get(|| async { "ok" })).layer(

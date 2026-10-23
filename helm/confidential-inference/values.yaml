@@ -43,8 +43,8 @@ attestationReceipts:
   # This URL must be the c8s tls-lb front door. The gateway reads only c8s
   # discovery and allowlist evidence from it.
   evidenceBaseUrl: https://api.example.invalid
-  # Runtime mode puts both evidence addresses in gateway-runtime/settings.json.
-  # Increase runtimeConfig.revision when either address changes.
+  # Both evidence addresses are in the gateway settings file
+  # (runtimeConfig.gatewayConfigMap).
   # Connect to this cluster's router. Keep evidenceBaseUrl as the TLS name.
   evidenceConnectHost: ""
   # c8s serves GET /operator-keys on CDS, not on the public front door. Leave
@@ -78,10 +78,9 @@ attestationReceipts:
   # The node-local attestation API that CDS uses to verify the requesting CVM.
   attestationApiPort: 8400
 
+# Files the gateway and the router read once at start. A change rolls their
+# pods through the checksum/config pod annotation.
 runtimeConfig:
-  # Enable for images that contain the gateway and router file readers.
-  enabled: false
-  revision: 1
   # One public-model definition generates both application views. An empty
   # map uses inference.model.name as both public and backend model name.
   modelRoutes: {}
@@ -91,7 +90,8 @@ runtimeConfig:
   # The exact bytes of the release-bundle.json that the deployment verified,
   # set with --set-file. The chart then renders releaseConfigMap, which selects
   # this release, so an upgrade or rollback changes it with the release.
-  # Without it the deployment creates releaseConfigMap itself.
+  # The gateway always reads releaseConfigMap. Without releaseBundle the
+  # deployment must create it.
   releaseBundle: ""
   attestationCacheSeconds: 10
 

@@ -22,7 +22,7 @@ use confidential_gateway::{
     metrics::GatewayMetrics,
     metrics::MetricsSource,
     protection::ProtectionConfig,
-    router_with_runtime_and_usage,
+    router_with_usage,
     usage::{MAX_PENDING_EVENTS, Model, Outcome, Recorder},
 };
 use hmac::{Hmac, Mac};
@@ -205,7 +205,7 @@ async fn keys_come_from_the_admin_and_usage_goes_back_as_events()
         },
     )]);
     let recorder = Recorder::new("gateway-test", models, MAX_PENDING_EVENTS, metrics.clone());
-    let app = router_with_runtime_and_usage(
+    let app = router_with_usage(
         GatewayConfig {
             catalog_model_ids: vec!["model-a".into()],
             inference_model_ids: vec!["model-a".into()],
@@ -218,8 +218,6 @@ async fn keys_come_from_the_admin_and_usage_goes_back_as_events()
         Arc::new(Audit),
         metrics.clone(),
         reqwest::Client::new(),
-        None,
-        None,
         Some(recorder.clone()),
     );
     let ready = app

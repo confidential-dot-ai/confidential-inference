@@ -1,19 +1,17 @@
-//! Gateway settings that apply to new requests. Trust inputs remain fixed.
+//! Gateway settings from the chart's settings `ConfigMap`. The gateway reads
+//! them once at start; the chart rolls the pods when they change.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::runtime_config::Versioned;
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewaySettings {
     pub schema_version: u32,
-    pub revision: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub router_service: Option<String>,
     // The chart still renders `evidence`, `attestationCacheSeconds` and
     // `attestationConcurrency`; the gateway reads none of them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub evidence: Option<serde_json::Value>,
     pub catalog_model_ids: Vec<String>,
     pub inference_model_ids: Vec<String>,
@@ -32,14 +30,9 @@ pub struct GatewaySettings {
     pub requests_per_address_per_second: u32,
 }
 
-impl Versioned for GatewaySettings {
-    fn revision(&self) -> u64 {
-        self.revision
-    }
-}
-
 impl GatewaySettings {
-    /// Validate the complete snapshot before accepting it.
+    /// Validate the fields the process arguments cannot express. The startup
+    /// argument checks bound the numeric limits.
     ///
     /// # Errors
     /// Returns an error for unsafe settings or inconsistent model lists.
@@ -56,29 +49,13 @@ impl GatewaySettings {
                 })
         };
         if self.schema_version != 1
-            || self.revision == 0
             || !names_valid(&self.catalog_model_ids)
             || !names_valid(&self.inference_model_ids)
             || !self
                 .catalog_model_ids
                 .iter()
                 .all(|name| self.inference_model_ids.contains(name))
-            || !(1024..=8 * 1024 * 1024).contains(&self.maximum_body_bytes)
-            || !(1..=3600).contains(&self.upstream_timeout_seconds)
-            || !(1..=120).contains(&self.body_timeout_seconds)
-            || !(1..=600).contains(&self.stream_idle_timeout_seconds)
             || self.stream_idle_timeout_seconds > self.upstream_timeout_seconds
-            || [
-                self.global_request_concurrency,
-                self.per_address_concurrency,
-                self.inference_concurrency,
-                self.per_key_concurrency,
-            ]
-            .iter()
-            .any(|value| !(1..=4096).contains(value))
-            || self.inference_queue > 4096
-            || !(1..=30).contains(&self.queue_timeout_seconds)
-            || !(1..=10_000).contains(&self.requests_per_address_per_second)
             || self.router_service.as_ref().is_some_and(|name| {
                 !(name == "sglang-router" || name.starts_with("router-"))
                     || name.len() > 63
@@ -88,7 +65,7 @@ impl GatewaySettings {
                     })
             })
         {
-            return Err("invalid gateway runtime settings".into());
+            return Err("invalid gateway settings".into());
         }
         Ok(())
     }

@@ -4,10 +4,7 @@
 //! It has no API that can receive a prompt, completion, header, or plaintext
 //! API key.  The public metric interface is `metrics-contract.md`.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{Router, response::IntoResponse, routing::get};
 use prometheus::{
@@ -45,7 +42,6 @@ pub struct GatewayMetrics {
     upstream_reachable: IntGauge,
     active_requests: IntGauge,
     router_requests: IntGaugeVec,
-    router_requests_lock: Mutex<()>,
     queue_depth: IntGauge,
     queue_duration: Histogram,
     request_duration: HistogramVec,
@@ -167,7 +163,6 @@ impl GatewayMetrics {
                     &["router"],
                 ),
             ),
-            router_requests_lock: Mutex::new(()),
             queue_depth: gauge(
                 r,
                 "gateway_inference_queue_depth",
@@ -351,27 +346,7 @@ impl GatewayMetrics {
 
     /// Count an authenticated request from body read through stream close.
     #[must_use]
-    pub fn router_request(&self, router: String) -> GaugeGuard {
-        let _lock = self
-            .router_requests_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Router names come from runtime config. Keep the label set bounded
-        // by dropping idle targets once it grows large.
-        let family = self.router_requests.collect().remove(0);
-        if family.get_metric().len() >= 1024 {
-            for metric in family.get_metric() {
-                if metric.get_gauge().get_value() <= 0.0 {
-                    let label = metric
-                        .get_label()
-                        .iter()
-                        .find(|label| label.name() == "router");
-                    if let Some(label) = label {
-                        let _ = self.router_requests.remove_label_values(&[label.value()]);
-                    }
-                }
-            }
-        }
+    pub fn router_request(&self, router: &str) -> GaugeGuard {
         GaugeGuard::new(self.router_requests.with_label_values(&[router]))
     }
 

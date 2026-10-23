@@ -22,9 +22,8 @@ use confidential_gateway::{
     api_keys::{KeyStore, admin_router},
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
-    router_with_runtime_and_usage,
-    runtime_config::MountedConfig,
-    runtime_settings::GatewaySettings,
+    router_with_usage,
+    settings::GatewaySettings,
 };
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 
@@ -41,7 +40,7 @@ struct AdminSecret {
     token: String,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "confidential-gateway")]
 struct Args {
     // The admin client token: a CDS secret, JSON `{"token": ...}`
@@ -63,6 +62,8 @@ struct Args {
     usage_enabled: bool,
     #[arg(long, env = "GATEWAY_ROUTER_NAMESPACE")]
     router_namespace: Option<String>,
+    // The chart's settings ConfigMap, read once at start. Its values replace
+    // the matching arguments below.
     #[arg(long, env = "GATEWAY_RUNTIME_CONFIG_FILE")]
     runtime_config_file: Option<PathBuf>,
     #[arg(long, env = "GATEWAY_LISTEN", default_value = "0.0.0.0:9443")]
@@ -180,40 +181,19 @@ async fn main() -> Result<()> {
             .init();
     }
     let mut args = Args::parse();
-    let runtime = args
-        .runtime_config_file
-        .as_ref()
-        .map(|path| {
-            MountedConfig::<GatewaySettings>::open(path.clone(), 256 * 1024, |settings| {
-                validate_runtime_settings(
-                    settings,
-                    args.router_namespace.as_deref(),
-                    args.allow_direct_inference_url,
-                )
-            })
-            .map(Arc::new)
-            .map_err(anyhow::Error::msg)
-        })
-        .transpose()
-        .context("load gateway runtime settings")?;
-    let _runtime_watcher = runtime.as_ref().map(|config| {
-        let namespace = args.router_namespace.clone();
-        let direct = args.allow_direct_inference_url;
-        config.watch(
-            move |settings| validate_runtime_settings(settings, namespace.as_deref(), direct),
-            Duration::from_secs(5),
-        )
-    });
-    if let Some(runtime) = &runtime {
-        let snapshot = runtime.snapshot();
-        args.model = snapshot
-            .inference_model_ids
-            .first()
-            .cloned()
-            .unwrap_or_default();
+    // The HTTP/2 stream limit keeps the startup argument; the settings file
+    // does not change it.
+    let limits = HttpLimits::from_args(&args)?;
+    let mut catalog_model_ids = vec![args.model.clone()];
+    let mut inference_model_ids = vec![args.model.clone()];
+    if let Some(path) = args.runtime_config_file.clone() {
+        let settings: GatewaySettings = serde_json::from_slice(&read_bounded(&path, 256 * 1024)?)
+            .context("parse the gateway settings")?;
+        apply_settings(&mut args, &settings).context("load gateway settings")?;
+        catalog_model_ids = settings.catalog_model_ids;
+        inference_model_ids = settings.inference_model_ids;
     }
     validate_args(&args)?;
-    let limits = HttpLimits::from_args(&args)?;
     tracing::info!("gateway configuration validated");
 
     let secret_wait = Duration::from_secs(args.secret_wait_seconds);
@@ -251,8 +231,6 @@ async fn main() -> Result<()> {
         .build()
         .context("build the internal inference client")?;
     let protection = protection_config(&args);
-    let inference_model_id = args.model;
-    let catalog_model_ids = vec![inference_model_id.clone()];
     let usage = args.usage_enabled.then(|| {
         // Each process is one producer instance; the pod hostname is fixed.
         let instance = format!("gateway-{}", uuid::Uuid::new_v4().simple());
@@ -265,10 +243,10 @@ async fn main() -> Result<()> {
         tokio::spawn(recorder.clone().deliver(admin.clone()));
         recorder
     });
-    let public = router_with_runtime_and_usage(
+    let public = router_with_usage(
         GatewayConfig {
             catalog_model_ids,
-            inference_model_ids: vec![inference_model_id],
+            inference_model_ids,
             upstream_base_url: args.inference_url.trim_end_matches('/').to_owned(),
             maximum_body_bytes: args.maximum_body_bytes,
             upstream_timeout: timeout,
@@ -278,10 +256,6 @@ async fn main() -> Result<()> {
         Arc::new(TracingAuditSink),
         metrics.clone(),
         http,
-        runtime.clone(),
-        args.router_namespace
-            .clone()
-            .filter(|_| args.allow_direct_inference_url),
         usage.clone(),
     );
     let public = with_instance_header(public, args.gateway_instance_id.as_deref())?;
@@ -310,16 +284,7 @@ async fn main() -> Result<()> {
     let metrics_listener = tokio::net::TcpListener::bind(args.metrics_listen)
         .await
         .context("bind the private metrics listener")?;
-    let mut private = metrics_router(metrics);
-    if let Some(runtime) = runtime {
-        private = private.route(
-            "/runtime-config",
-            axum::routing::get(move || {
-                let runtime = runtime.clone();
-                async move { axum::Json(runtime.status()) }
-            }),
-        );
-    }
+    let private = metrics_router(metrics);
     tokio::spawn(async move {
         if let Err(error) = axum::serve(metrics_listener, private).await {
             tracing::error!(%error, "the metrics listener stopped");
@@ -555,7 +520,8 @@ fn validate_args(args: &Args) -> Result<()> {
     {
         bail!("GATEWAY_INFERENCE_URL must be an http(s) URL");
     }
-    if args.maximum_body_bytes == 0 || args.maximum_body_bytes > 16 * 1024 * 1024 {
+    if !(1024..=confidential_gateway::MAXIMUM_BODY_BYTES_CEILING).contains(&args.maximum_body_bytes)
+    {
         bail!("GATEWAY_MAXIMUM_BODY_BYTES is outside the safe range");
     }
     if !(1..=256).contains(&args.maximum_headers)
@@ -578,23 +544,49 @@ fn validate_args(args: &Args) -> Result<()> {
     if !(1..=600).contains(&args.secret_wait_seconds) {
         bail!("GATEWAY_SECRET_WAIT_SECONDS is outside the safe range");
     }
-    if args.runtime_config_file.is_none() && (args.model.is_empty() || args.model.len() > 256) {
+    if args.model.is_empty() || args.model.len() > 256 {
         bail!("GATEWAY_MODEL must identify one configured model");
     }
     Ok(())
 }
 
-fn validate_runtime_settings(
-    settings: &GatewaySettings,
-    namespace: Option<&str>,
-    direct: bool,
-) -> Result<(), String> {
-    settings.validate()?;
-    if settings.router_service.is_some() && (!direct || namespace.is_none()) {
-        return Err(
-            "router Service reload needs the fixed namespace and direct-router mode".into(),
+/// Replace the matching arguments with the settings file. `validate_args`
+/// then bounds the numeric values.
+fn apply_settings(args: &mut Args, settings: &GatewaySettings) -> Result<()> {
+    settings.validate().map_err(anyhow::Error::msg)?;
+    if let Some(service) = &settings.router_service {
+        let (Some(namespace), true) = (&args.router_namespace, args.allow_direct_inference_url)
+        else {
+            bail!("a router Service needs the fixed namespace and direct-router mode");
+        };
+        validate_router_namespace(Some(namespace), &args.inference_url)?;
+        // The namespace and port are startup trust inputs. The settings can
+        // select only a router Service in this namespace.
+        let origin = url::Url::parse(&args.inference_url)?;
+        let port = origin
+            .port_or_known_default()
+            .context("the fixed router origin has no port")?;
+        args.inference_url = format!(
+            "{}://{service}.{namespace}.svc.cluster.local:{port}",
+            origin.scheme()
         );
     }
+    args.model = settings
+        .inference_model_ids
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    args.maximum_body_bytes = settings.maximum_body_bytes;
+    args.upstream_timeout_seconds = settings.upstream_timeout_seconds;
+    args.body_timeout_seconds = settings.body_timeout_seconds;
+    args.stream_idle_timeout_seconds = settings.stream_idle_timeout_seconds;
+    args.global_request_concurrency = settings.global_request_concurrency;
+    args.per_address_concurrency = settings.per_address_concurrency;
+    args.inference_concurrency = settings.inference_concurrency;
+    args.inference_queue = settings.inference_queue;
+    args.queue_timeout_seconds = settings.queue_timeout_seconds;
+    args.per_key_concurrency = settings.per_key_concurrency;
+    args.requests_per_address_per_second = settings.requests_per_address_per_second;
     Ok(())
 }
 
@@ -667,6 +659,56 @@ fn wait_for_bounded_file(path: &Path, limit: usize, timeout: Duration) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn settings(router_service: Option<&str>) -> GatewaySettings {
+        let mut value = serde_json::json!({
+            "schemaVersion":1,"evidence":{"baseUrl":"https://candidate.example.test"},
+            "catalogModelIds":["test"],"inferenceModelIds":["test"],"maximumBodyBytes":1024,
+            "upstreamTimeoutSeconds":30,"bodyTimeoutSeconds":10,"streamIdleTimeoutSeconds":20,
+            "attestationCacheSeconds":3,"globalRequestConcurrency":256,"perAddressConcurrency":16,
+            "inferenceConcurrency":1,"inferenceQueue":0,"queueTimeoutSeconds":2,"perKeyConcurrency":4,
+            "attestationConcurrency":4,"requestsPerAddressPerSecond":30
+        });
+        if let Some(service) = router_service {
+            value["routerService"] = service.into();
+        }
+        serde_json::from_value(value).unwrap_or_else(|_| unreachable!())
+    }
+
+    #[test]
+    fn settings_replace_the_matching_arguments() -> Result<()> {
+        let mut value = args();
+        value.inference_url = "http://sglang-router:30000".into();
+        value.allow_direct_inference_url = true;
+        value.router_namespace = Some("confidential-inference".into());
+        apply_settings(&mut value, &settings(Some("router-headless")))?;
+        assert_eq!(
+            value.inference_url,
+            "http://router-headless.confidential-inference.svc.cluster.local:30000"
+        );
+        assert_eq!(value.model, "test");
+        assert_eq!(value.inference_concurrency, 1);
+        validate_args(&value)?;
+        // The settings cannot raise a limit past the argument bounds.
+        let mut limits = settings(None);
+        limits.per_key_concurrency = 4096;
+        let mut value = args();
+        apply_settings(&mut value, &limits)?;
+        assert!(validate_args(&value).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn settings_need_a_fixed_router_namespace() {
+        let mut value = args();
+        assert!(apply_settings(&mut value, &settings(Some("router-headless"))).is_err());
+        value.allow_direct_inference_url = true;
+        value.inference_url = "http://sglang-router:30000".into();
+        assert!(apply_settings(&mut value, &settings(Some("router-headless"))).is_err());
+        value.router_namespace = Some("confidential-inference".into());
+        assert!(apply_settings(&mut value, &settings(Some("other"))).is_err());
+        assert!(apply_settings(&mut value, &settings(Some("router-headless"))).is_ok());
+    }
 
     #[tokio::test]
     async fn instance_header_identifies_the_slot_without_changing_the_body() -> Result<()> {
