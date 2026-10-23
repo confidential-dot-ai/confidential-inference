@@ -329,10 +329,9 @@
           "properties": {"enabled": {"type": "boolean"}}
         },
         "kubeStateMetrics": {
-          "type": "object", "additionalProperties": false, "required": ["enabled", "address", "metrics"],
+          "type": "object", "additionalProperties": false, "required": ["target", "metrics"],
           "properties": {
-            "enabled": {"type": "boolean"},
-            "address": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+){3}:[0-9]{1,5}$"},
+            "target": {"type": "string", "pattern": "^(|[0-9]+(?:\\.[0-9]+){3}:[0-9]{1,5})$"},
             "metrics": {"type": "string", "minLength": 1}
           }
         },

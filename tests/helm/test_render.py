@@ -231,19 +231,20 @@ def check_telemetry_collector() -> None:
     assert "keep_keys(log.attributes, [])" in processors["transform/logs"]["log_statements"]
     assert config["service"]["pipelines"]["traces"]["exporters"] == ["spanmetrics"]
 
-    # C8s's platform kube-state-metrics: off by default, then one job with a
-    # name filter and the only extra ipBlock, no hostAliases exit.
+    # C8s's platform kube-state-metrics: off without a target, then one job
+    # with a name filter and a port-only egress rule, no hostAliases exit.
     assert "kube-state-metrics" not in [job["job_name"] for job in jobs]
-    with_ksm = render(*TELEMETRY, "--set", "telemetry.kubeStateMetrics.enabled=true")
+    with_ksm = render(*TELEMETRY, "--set", "telemetry.kubeStateMetrics.target=192.0.2.5:30809")
     (ksm,) = [job for job in collector_config(with_ksm)["receivers"]["prometheus"]["config"]["scrape_configs"]
               if job["job_name"] == "kube-state-metrics"]
-    assert ksm["static_configs"][0]["targets"] == ["10.53.0.11:8080"]
+    assert ksm["static_configs"][0]["targets"] == ["192.0.2.5:30809"]
     assert ksm["metric_relabel_configs"][0]["action"] == "keep"
     assert "namespace" in ksm["metric_relabel_configs"][1]["regex"]
-    ksm_rules = [rule for item in with_ksm if item["kind"] == "NetworkPolicy"
-                 and item["metadata"]["name"] == "telemetry-collector-paths"
-                 for rule in item["spec"]["egress"] if rule.get("to", [{}])[0].get("ipBlock", {}).get("cidr") == "10.53.0.11/32"]
-    assert ksm_rules == [{"to": [{"ipBlock": {"cidr": "10.53.0.11/32"}}], "ports": [{"protocol": "TCP", "port": 8080}]}]
+    egress = next(item for item in with_ksm if item["kind"] == "NetworkPolicy"
+                  and item["metadata"]["name"] == "telemetry-collector-paths")["spec"]["egress"]
+    assert {"ports": [{"protocol": "TCP", "port": 30809}]} in egress
+    assert not next(item for item in with_ksm if item["kind"] == "Deployment"
+                    and item["metadata"]["name"] == "telemetry-collector")["spec"]["template"]["spec"]["hostAliases"][1:]
     gateway = Gateway(documents)
     assert gateway.env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] == "http://telemetry-collector.default.svc.cluster.local:4318/v1/logs"
     assert "RUST_LOG" not in gateway.env

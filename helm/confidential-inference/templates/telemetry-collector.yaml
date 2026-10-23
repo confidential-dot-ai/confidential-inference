@@ -70,12 +70,12 @@ receivers:
         {{- end }}
         {{- end }}
         {{- with $t.kubeStateMetrics }}
-        {{- if .enabled }}
-        # C8s's platform kube-state-metrics (c8s/integration eeed11b5+): a
-        # fixed, measured member exit to this address. Pod health series only.
+        {{- if .target }}
+        # C8s's platform kube-state-metrics: C8s gives member pods a fixed,
+        # measured exit to this one address. Pod health series only.
         - job_name: kube-state-metrics
           static_configs:
-            - targets: [{{ .address | quote }}]
+            - targets: [{{ .target | quote }}]
               labels: {component: kube-state-metrics}
           metric_relabel_configs:
             - {source_labels: [__name__], action: keep, regex: {{ .metrics | quote }}}
