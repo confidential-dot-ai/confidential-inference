@@ -328,7 +328,7 @@ def check_telemetry_collector() -> None:
     model = [item for item in yaml.safe_load_all(helm(
         "template", "example", str(CHART), "--values", str(ROOT / "tests/api/values-sglang.yaml"),
         *TELEMETRY, "--set", "telemetry.traces.enabled=true")) if item]
-    # GPU metrics: the worker image serves them (wait-for-model --gpu-metrics-port).
+    # GPU metrics: dcgm-exporter in the worker image (wait-for-model --gpu-metrics-port).
     gpu_jobs = [job["job_name"] for job in collector_config(model)["receivers"]["prometheus"]["config"]["scrape_configs"]
                 if job["job_name"].startswith("inference-gpu-")]
     assert gpu_jobs == ["inference-gpu-0", "inference-gpu-1"], gpu_jobs
