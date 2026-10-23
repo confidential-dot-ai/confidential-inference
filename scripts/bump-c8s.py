@@ -199,6 +199,8 @@ def new_c8s(tag: str, commit: str, old: dict[str, Any], renamed_mesh: bool = Fal
                 name = REGISTRY + "armtls-mesh"
             core.append(f"{name}@{digest(f'{name}:{tag}')}" if name.startswith(REGISTRY) else image)
     value = copy.deepcopy(old)
+    # A dev build's baseRelease belongs to that build only; set it by hand.
+    value.pop("baseRelease", None)
     value.update({
         "release": tag,
         "sourceCommit": commit,
