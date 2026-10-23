@@ -32,6 +32,21 @@ collection:
   gatewayOnlyBoundedLabels:
     - api_key_name
     - api_key_tag
+# GPU series come from NVIDIA dcgm-exporter in each SGLang worker
+# (images/sglang/dcgm-counters.csv). The collector's remote write appends
+# `_total` to every DCGM counter, so a counter is stored as, for example,
+# DCGM_FI_DEV_ECC_DBE_VOL_TOTAL_total.
+gpuMetrics:
+  source: images/sglang/dcgm-counters.csv
+  counterSuffix: _total
+  unavailableUnderGpuConfidentialCompute:
+    - fields: [DCGM_FI_PROF_*]
+      reason: DCGM's profiling module does not load with GPU confidential compute on.
+    - fields: [DCGM_FI_DEV_NVLINK_CRC_ERROR_TOTAL, DCGM_FI_DEV_NVLINK_RECOVERY_TOTAL, DCGM_FI_DEV_NVLINK_REPLAY_TOTAL]
+      reason: The confidential VM sees no NVLink or NVSwitch fabric, so per-link error fields have no value.
+  eventOnly:
+    - fields: [DCGM_FI_DEV_XID_ERRORS, DCGM_EXP_XID_ERRORS_TOTAL, DCGM_EXP_CLOCK_EVENTS_TOTAL]
+      reason: No series exists until the first event; alerts treat an absent series as zero.
 recordingRules:
   - record: confidential:ttft_seconds:p50
     source: gen_ai_server_time_to_first_token_bucket
@@ -106,11 +121,11 @@ recordingRules:
     source: DCGM_FI_DEV_GPU_TEMP
     promql: max by (environment) (DCGM_FI_DEV_GPU_TEMP)
   - record: confidential:gpu_ecc_corrected_errors:sum
-    source: DCGM_FI_DEV_ECC_SBE_VOL_TOTAL
-    promql: sum by (environment) (DCGM_FI_DEV_ECC_SBE_VOL_TOTAL)
+    source: DCGM_FI_DEV_ECC_SBE_VOL_TOTAL_total
+    promql: sum by (environment) (DCGM_FI_DEV_ECC_SBE_VOL_TOTAL_total)
   - record: confidential:gpu_ecc_uncorrected_errors:sum
-    source: DCGM_FI_DEV_ECC_DBE_VOL_TOTAL
-    promql: sum by (environment) (DCGM_FI_DEV_ECC_DBE_VOL_TOTAL)
+    source: DCGM_FI_DEV_ECC_DBE_VOL_TOTAL_total
+    promql: sum by (environment) (DCGM_FI_DEV_ECC_DBE_VOL_TOTAL_total)
   - record: confidential:requests_per_second
     source: gateway_requests
     promql: sum by (environment) (rate(gateway_requests[5m]))

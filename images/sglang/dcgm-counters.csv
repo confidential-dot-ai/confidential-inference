@@ -1,5 +1,8 @@
 # NVIDIA dcgm-exporter 4.8.4 etc/default-counters.csv with the error, ECC,
 # NVLink error, clock event and confidential-compute fields enabled.
+# Off: the profiling (PROF_*) fields and the Hopper NVLink data-link
+# counters. B300 workers in confidential-compute mode do not report them
+# (DCGM's profiling module does not load; no NVLink fabric in the guest).
 # Format
 # If line starts with a '#' it is considered a comment
 # DCGM FIELD, Prometheus metric type, help message
@@ -73,9 +76,9 @@ DCGM_FI_DEV_ECC_DBE_AGG_TOTAL, counter, Total number of double-bit persistent EC
 # DCGM_FI_DEV_NVLINK_REPLAY_ERROR_TOTAL,   counter, Total number of NVLink replay errors across all lanes.
 # DCGM_FI_DEV_NVLINK_RECOVERY_ERROR_TOTAL, counter, Total number of NVLink recovery errors across all lanes.
 # NVLink data-link error counters for Hopper GPUs
-DCGM_FI_DEV_NVLINK_CRC_ERROR_TOTAL, counter, Total number of NVLink data-link CRC errors.
-DCGM_FI_DEV_NVLINK_RECOVERY_TOTAL,  counter, Total number of NVLink data-link recovery errors.
-DCGM_FI_DEV_NVLINK_REPLAY_TOTAL,    counter, Total number of NVLink data-link replay errors.
+# DCGM_FI_DEV_NVLINK_CRC_ERROR_TOTAL, counter, Total number of NVLink data-link CRC errors.
+# DCGM_FI_DEV_NVLINK_RECOVERY_TOTAL,  counter, Total number of NVLink data-link recovery errors.
+# DCGM_FI_DEV_NVLINK_REPLAY_TOTAL,    counter, Total number of NVLink data-link replay errors.
 # NVLink recovery counters for Blackwell and newer GPUs
 DCGM_FI_DEV_NVLINK_RECOVERY_SUCCESSFUL_TOTAL, counter, Total number of successful NVLink recovery events across all links.
 DCGM_FI_DEV_NVLINK_RECOVERY_FAILED_TOTAL,     counter, Total number of failed NVLink recovery events across all links.
@@ -107,16 +110,16 @@ DCGM_FI_DRIVER_VERSION,        label, Driver Version
 
 # Datacenter Profiling (DCP) metrics
 # NOTE: supported on Nvidia datacenter Volta GPUs and newer
-DCGM_FI_PROF_GR_ENGINE_ACTIVE,   gauge, Ratio of time the graphics engine is active.
+# DCGM_FI_PROF_GR_ENGINE_ACTIVE,   gauge, Ratio of time the graphics engine is active.
 # DCGM_FI_PROF_SM_ACTIVE,          gauge, The ratio of cycles an SM has at least 1 warp assigned.
 # DCGM_FI_PROF_SM_OCCUPANCY,       gauge, The ratio of number of warps resident on an SM.
-DCGM_FI_PROF_PIPE_TENSOR_ACTIVE, gauge, Ratio of cycles the tensor (HMMA) pipe is active.
-DCGM_FI_PROF_DRAM_ACTIVE,        gauge, Ratio of cycles the device memory interface is active sending or receiving data.
+# DCGM_FI_PROF_PIPE_TENSOR_ACTIVE, gauge, Ratio of cycles the tensor (HMMA) pipe is active.
+# DCGM_FI_PROF_DRAM_ACTIVE,        gauge, Ratio of cycles the device memory interface is active sending or receiving data.
 # DCGM_FI_PROF_PIPE_FP64_ACTIVE,   gauge, Ratio of cycles the fp64 pipes are active.
 # DCGM_FI_PROF_PIPE_FP32_ACTIVE,   gauge, Ratio of cycles the fp32 pipes are active.
 # DCGM_FI_PROF_PIPE_FP16_ACTIVE,   gauge, Ratio of cycles the fp16 pipes are active.
-DCGM_FI_PROF_PCIE_TX_BYTES,      gauge, The rate of data transmitted over the PCIe bus - including both protocol headers and data payloads - in bytes per second.
-DCGM_FI_PROF_PCIE_RX_BYTES,      gauge, The rate of data received over the PCIe bus - including both protocol headers and data payloads - in bytes per second.
+# DCGM_FI_PROF_PCIE_TX_BYTES,      gauge, The rate of data transmitted over the PCIe bus - including both protocol headers and data payloads - in bytes per second.
+# DCGM_FI_PROF_PCIE_RX_BYTES,      gauge, The rate of data received over the PCIe bus - including both protocol headers and data payloads - in bytes per second.
 # DCGM_FI_PROF_SM_CYCLES_ELAPSED_TOTAL, counter, Total elapsed SM cycles.
 # DCGM_FI_PROF_SM_CYCLES_ACTIVE_TOTAL,  counter, Total SM cycles with active warps.
 # DCGM_FI_PROF_MMA_CYCLES_ACTIVE_TOTAL, counter, Total MMA tensor cycles active.
