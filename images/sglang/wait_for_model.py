@@ -13,17 +13,8 @@ import signal
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
-# Kubernetes removes a deleted pod from Service Endpoints before it sends
-# SIGTERM, so no new request should route here once this arrives. This
-# wrapper is PID 1 and runs under a pinned c8s argv with no lifecycle hook
-# and no exec access, so the drain must happen here.
-DRAIN_DEADLINE_ENV = "WORKER_DRAIN_DEADLINE_SECONDS"
-DRAIN_PATH = "/v1/loads?include=core"
-DEFAULT_DRAIN_PORT = 30000
 # Every model file is hashed before the server starts. Hashing threads release
 # the GIL inside hashlib, so parallel reads keep a large volume's check short.
 HASH_WORKERS = max(1, min(16, os.cpu_count() or 1))
@@ -287,129 +278,20 @@ def verify_once(args: argparse.Namespace) -> None:
     verify_every_file(path, args.revision_metadata, inventory)
 
 
-def drain_port(command: list[str]) -> int:
-    """Read the worker's own --port value from its pinned argv."""
-    for token in command:
-        if token.startswith("--port="):
-            try:
-                return int(token.split("=", 1)[1])
-            except ValueError:
-                break
-    return DEFAULT_DRAIN_PORT
+def supervise(child: subprocess.Popen) -> int:
+    """Run as PID 1: pass SIGTERM/SIGINT straight to the child, then exit with its code.
 
-
-def drain_deadline_seconds() -> float:
-    """Read the drain deadline from the environment, not the pinned argv.
-
-    The wrapper's command-line arguments are exact-matched by the c8s
-    allowlist. The deadline is derived from the Helm chart's
-    terminationGracePeriodSeconds and passed as an environment variable
-    instead, so the argv this wrapper receives never changes.
+    SGLang drains on SIGTERM: /health answers 503, so the router stops picking
+    this worker, and the server exits once its in-flight requests finish.
+    Kubernetes kills the pod after terminationGracePeriodSeconds.
     """
-    raw = os.environ.get(DRAIN_DEADLINE_ENV, "")
-    try:
-        value = float(raw)
-    except ValueError:
-        return 0.0
-    return max(0.0, value)
 
-
-def pending_requests(port: int) -> int | None:
-    """Read the worker's own running-plus-queued request count, or None on failure."""
-    url = f"http://127.0.0.1:{port}{DRAIN_PATH}"
-    try:
-        with urllib.request.urlopen(url, timeout=5) as response:
-            payload = json.loads(response.read())
-    except (OSError, urllib.error.URLError, ValueError) as error:
-        print(f"model-mount: drain: the load probe failed: {error}", file=sys.stderr)
-        return None
-    # SGLang v0.5.18 wraps the per-rank records in a `loads` object.
-    # Keep the legacy list form, but never treat missing data as zero load.
-    loads = payload.get("loads") if isinstance(payload, dict) else payload
-    if not isinstance(loads, list) or not loads:
-        return None
-    total = 0
-    for load in loads:
-        if not isinstance(load, dict):
-            return None
-        counts = [load.get("num_running_reqs"), load.get("num_waiting_reqs")]
-        if any(type(count) is not int or count < 0 for count in counts):
-            return None
-        total += sum(counts)
-    return total
-
-
-def drain_then_forward(
-    child: subprocess.Popen, port: int, deadline_seconds: float, poll_seconds: float, signum: int, state: dict,
-) -> None:
-    """Wait for in-flight requests to reach zero, then send SIGTERM to the child.
-
-    Kubernetes has already removed the pod from Service Endpoints by the
-    time a signal reaches this wrapper, so no new request should arrive.
-    This only waits out requests that are already running or queued.
-
-    This function runs nested inside the outer `child.wait()` call: a
-    signal delivered while that call is blocked in the kernel interrupts it,
-    and Python re-enters this handler before retrying the wait. Because that
-    outer `child.wait()` holds `subprocess.Popen`'s internal wait lock for
-    its whole (interrupted) duration, `child.poll()` called from here can
-    never observe the child as exited -- it always reports None until the
-    outer call finally unwinds. So a second signal cannot be noticed via
-    `child.poll()`; it is tracked with `state["escalate"]` instead, checked
-    on every loop iteration so escalation is not delayed until the deadline.
-    """
-    name = signal.Signals(signum).name
-    if deadline_seconds <= 0:
-        print(f"model-mount: {name} received, stopping the worker", file=sys.stderr)
+    def forward(signum: int, _frame: object) -> None:
         if child.poll() is None:
-            child.send_signal(signal.SIGTERM)
-        return
-    print(
-        f"model-mount: {name} received, draining up to {deadline_seconds:.0f}s "
-        "before stopping the worker",
-        file=sys.stderr,
-    )
-    deadline = time.monotonic() + deadline_seconds
-    drained = False
-    while time.monotonic() < deadline:
-        if state["escalate"]:
-            break
-        if child.poll() is not None:
-            drained = True
-            break
-        total = pending_requests(port)
-        if total == 0:
-            drained = True
-            break
-        time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
-    if not drained and not state["escalate"]:
-        print("model-mount: drain deadline reached, stopping the worker", file=sys.stderr)
-    if child.poll() is None:
-        child.send_signal(signal.SIGTERM)
+            child.send_signal(signum)
 
-
-def supervise(child: subprocess.Popen, command: list[str], poll_seconds: float) -> int:
-    """Run as the PID 1 supervisor: forward SIGTERM/SIGINT through a drain, then exit with the child's code."""
-    port = drain_port(command)
-    deadline_seconds = drain_deadline_seconds()
-    state = {"draining": False, "escalate": False}
-
-    def handle_signal(signum: int, _frame: object) -> None:
-        if state["draining"]:
-            # A second signal escalates immediately; do not wait twice. The
-            # drain loop above is what actually stops early -- it polls
-            # state["escalate"], not child.poll(), because child.poll()
-            # cannot observe the child's exit while nested like this.
-            state["escalate"] = True
-            print("model-mount: signal received again, stopping the worker now", file=sys.stderr)
-            if child.poll() is None:
-                child.send_signal(signal.SIGTERM)
-            return
-        state["draining"] = True
-        drain_then_forward(child, port, deadline_seconds, poll_seconds, signum, state)
-
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, forward)
+    signal.signal(signal.SIGINT, forward)
     return child.wait()
 
 
@@ -490,11 +372,8 @@ def main() -> int:
             # Metrics must not stop inference. Prometheus reports this failure
             # because the worker metrics target stays down.
             print(f"model-mount: GPU metrics did not start: {error}", file=sys.stderr)
-    # Spawn and supervise, rather than os.execvp, so this wrapper stays PID 1
-    # and can forward SIGTERM through a drain before the child stops. The
-    # child's argv and stdout/stderr passthrough are unchanged either way.
     child = subprocess.Popen(args.command)
-    return supervise(child, args.command, args.poll_seconds)
+    return supervise(child)
 
 
 if __name__ == "__main__":
