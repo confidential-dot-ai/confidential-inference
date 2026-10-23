@@ -1,3 +1,5 @@
+FROM nvcr.io/nvidia/k8s/dcgm-exporter@sha256:148b0c025e5f2850256816fa33754fbf4733b7a086697a95613fc0ba3db5b003 AS dcgm-exporter
+
 FROM docker.io/lmsysorg/sglang@sha256:bde16a8447b19e89056b9eea06c72be6c02801dc89d528c9ea90c53368fd74bf
 
 ARG SOURCE_REVISION
@@ -20,6 +22,9 @@ LABEL ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256="9c654801f
 LABEL ai.confidential.flashinfer.version="0.6.17"
 LABEL ai.confidential.flashinfer.revision="a0a6b019b9b27d49d209f85d028a1ae5a9b347d7"
 LABEL ai.confidential.flashinfer.cuda-ipc-patch.sha256="62d607a31de4662de8e54a70140b72cc7bfd87cdad5d5850e0e0893f0a13bfff"
+LABEL ai.confidential.dcgm-exporter.version="4.8.4"
+LABEL ai.confidential.dcgm-exporter.digest="sha256:148b0c025e5f2850256816fa33754fbf4733b7a086697a95613fc0ba3db5b003"
+LABEL ai.confidential.dcgm.version="4.6.1"
 LABEL org.opencontainers.image.base.name="docker.io/lmsysorg/sglang"
 LABEL org.opencontainers.image.base.digest="sha256:bde16a8447b19e89056b9eea06c72be6c02801dc89d528c9ea90c53368fd74bf"
 
@@ -27,7 +32,8 @@ RUN --mount=type=bind,source=patches/cc-optimizations-v0518.patch,target=/run-sr
     --mount=type=bind,source=patch_flashinfer_cuda_ipc.py,target=/run-src/patch-flashinfer-cuda-ipc.py,readonly \
     --mount=type=bind,source=wait_for_model.py,target=/run-src/wait-for-model,readonly \
     --mount=type=bind,source=fetch_model.py,target=/run-src/fetch-model,readonly \
-    --mount=type=bind,source=gpu_metrics.py,target=/run-src/gpu-metrics,readonly \
+    --mount=type=bind,source=dcgm-counters.csv,target=/run-src/dcgm-counters.csv,readonly \
+    --mount=type=bind,from=dcgm-exporter,source=/,target=/run-dcgm,readonly \
     --mount=type=bind,source=simulator-upstream,target=/run-src/sglang-simulator,readonly \
     --mount=type=bind,source=patches/sglang-simulator-replay-only.patch,target=/run-src/sglang-simulator-replay-only.patch,readonly \
     --mount=type=bind,source=patches/sglang-simulator-parser-flags-noop.patch,target=/run-src/sglang-simulator-parser-flags-noop.patch,readonly \
@@ -49,5 +55,9 @@ RUN --mount=type=bind,source=patches/cc-optimizations-v0518.patch,target=/run-sr
     && git apply /run-src/sglang-simulator-parser-flags-noop.patch \
     && install -D -m 0555 /run-src/wait-for-model /usr/local/bin/wait-for-model \
     && install -D -m 0555 /run-src/fetch-model /usr/local/bin/fetch-model \
-    && install -D -m 0555 /run-src/gpu-metrics /usr/local/bin/gpu-metrics \
+    && install -D -m 0555 /run-dcgm/usr/bin/dcgm-exporter /usr/local/bin/dcgm-exporter \
+    && install -d -m 0755 /opt/dcgm/lib \
+    && cp -a /run-dcgm/usr/lib/x86_64-linux-gnu/libdcgm* /run-dcgm/usr/lib/x86_64-linux-gnu/libnvperf_* /opt/dcgm/lib/ \
+    && cp -a /run-dcgm/licenses /opt/dcgm/licenses \
+    && install -D -m 0644 /run-src/dcgm-counters.csv /etc/dcgm-exporter/counters.csv \
     && rm /tmp/cc-optimizations.patch /tmp/patch-flashinfer-cuda-ipc.py

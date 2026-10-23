@@ -72,8 +72,9 @@ spec:
         confidential.ai/environment: {{ .Values.environment | quote }}
       annotations:
         confidential.ai/cw: gateway
-        # The gateway reads its settings and release selection once at start.
-        checksum/config: {{ printf "%s\n%s" (include "confidential-inference.gatewaySettings" .) (include "confidential-inference.releaseSelection" .) | sha256sum }}
+        # The gateway reads its settings once at start. It does not read the
+        # release selection (#245), so a new release alone does not roll it.
+        checksum/config: {{ include "confidential-inference.gatewaySettings" . | sha256sum }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.gateway.containerPorts.metrics | quote }}
         # c8s releases the pepper and the admin client configuration only

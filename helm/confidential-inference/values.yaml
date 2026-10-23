@@ -327,7 +327,8 @@ telemetry:
     # header labels (--tokenizer-metrics-custom-labels-header is not set).
     worker: [model_name, engine_type, tp_rank, pp_rank, dp_rank, moe_ep_rank, priority, backend, cache_source,
              category, forward_mode, is_streaming, layer, modality, mode, phase, pool, reason, source, stage]
-    gpu: [worker, gpu]
+    # NVIDIA dcgm-exporter in the worker image, without GPU UUIDs or PCI addresses.
+    gpu: [gpu, modelName, Hostname, DCGM_FI_DRIVER_VERSION, xid, clock_event, err_code]
     # Object names, owners, states and resource units; no uids or addresses.
     kubeStateMetrics: [namespace, pod, container, node, reason, phase, condition, status, resource, unit, qos_class,
                        deployment, statefulset, daemonset, job_name, persistentvolumeclaim, storageclass, volume,

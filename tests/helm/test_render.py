@@ -328,7 +328,7 @@ def check_telemetry_collector() -> None:
     model = [item for item in yaml.safe_load_all(helm(
         "template", "example", str(CHART), "--values", str(ROOT / "tests/api/values-sglang.yaml"),
         *TELEMETRY, "--set", "telemetry.traces.enabled=true")) if item]
-    # GPU metrics: the worker image serves them (wait-for-model --gpu-metrics-port).
+    # GPU metrics: dcgm-exporter in the worker image (wait-for-model --gpu-metrics-port).
     gpu_jobs = [job["job_name"] for job in collector_config(model)["receivers"]["prometheus"]["config"]["scrape_configs"]
                 if job["job_name"].startswith("inference-gpu-")]
     assert gpu_jobs == ["inference-gpu-0", "inference-gpu-1"], gpu_jobs
@@ -392,8 +392,8 @@ def main() -> None:
                                                          'app.kubernetes.io/component': 'sglang-router'}
     assert router['spec']['strategy']['rollingUpdate'] == {'maxUnavailable': 0, 'maxSurge': 1}
     assert router['spec']['template']['metadata']['annotations']['confidential.ai/cw'] == 'router-v0-14-18'
-    # One model definition produces both views. A settings or release
-    # metadata change rolls the pods through the checksum annotation, but must
+    # One model definition produces both views. A settings change rolls the
+    # pods through the checksum annotation, but must
     # not change the pod spec or add a third gateway identity.
     routes_json = 'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}'
     runtime_documents = render("--set", "attestationReceipts.releaseId=v0.14.18-transition",
@@ -413,7 +413,7 @@ def main() -> None:
     assert 'GATEWAY_C8S_EVIDENCE_CONNECT_HOST' not in runtime_gateway.env
     checksum = lambda deployment: deployment['spec']['template']['metadata']['annotations']['checksum/config']
     assert checksum(runtime_gateway.deployment) == hashlib.sha256(
-        (maps['gateway-runtime']['data']['settings.json'] + '\n').encode()).hexdigest()
+        maps['gateway-runtime']['data']['settings.json'].encode()).hexdigest()
     promoted_documents = render("--set", "attestationReceipts.releaseId=v0.14.18-transition",
         "--set-json", routes_json,
         "--set", "attestationReceipts.evidenceBaseUrl=https://api.example.test",
@@ -444,7 +444,9 @@ def main() -> None:
         assert final.env['GATEWAY_RELEASE_SELECTION_FILE'] == '/mnt/c8s-data/release-selection/releases.json'
         assert 'GATEWAY_RELEASE_ID' not in final.env
         assert 'releaseBundleSha256' not in final.identity
-        assert checksum(transition.deployment) != checksum(final.deployment)
+        # The gateway does not read the release selection: a new release
+        # alone does not roll it.
+        assert checksum(transition.deployment) == checksum(final.deployment)
         assert transition.deployment['spec']['template']['spec'] == final.deployment['spec']['template']['spec']
         # The allowlist is rendered without a bundle; bin/deploy sets one.
         assert final.deployment['spec']['template']['spec'] == runtime_gateway.deployment['spec']['template']['spec']
