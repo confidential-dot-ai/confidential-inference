@@ -199,6 +199,9 @@ def new_c8s(tag: str, commit: str, old: dict[str, Any], renamed_mesh: bool = Fal
                 name = REGISTRY + "armtls-mesh"
             core.append(f"{name}@{digest(f'{name}:{tag}')}" if name.startswith(REGISTRY) else image)
     value = copy.deepcopy(old)
+    # baseRelease names the release a dev build previews; a release tag has none.
+    if not TAG.fullmatch(tag).group(5):
+        value.pop("baseRelease", None)
     value.update({
         "release": tag,
         "sourceCommit": commit,
@@ -269,6 +272,15 @@ def edit_yaml(path: Path, key_path: tuple[str, ...], value: Any) -> None:
 def pin_c8s_mapping(path: Path, value: dict[str, Any]) -> None:
     """Permit only the reviewed core inventory list to change its length."""
     current = yaml.safe_load(path.read_text())
+    if "baseRelease" in current.get("c8s", {}) and "baseRelease" not in value:
+        # Drop the dev build's baseRelease line and the comment above it.
+        text = re.sub(r"(?m)^(?:[ ]+#[^\n]*\n)*[ ]+baseRelease:[^\n]*\n", "", path.read_text(), count=1)
+        expected = copy.deepcopy(current)
+        del expected["c8s"]["baseRelease"]
+        if yaml.safe_load(text) != expected:
+            raise BumpError(f"{path.relative_to(ROOT)}: cannot drop c8s.baseRelease; edit it by hand")
+        path.write_text(text)
+        current = expected
     if "c8s" not in current or current["c8s"]["coreImages"] == value["coreImages"]:
         edit_yaml(path, ("c8s",), value)
         return
