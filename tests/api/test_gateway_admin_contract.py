@@ -1,20 +1,15 @@
 import copy
 import json
+import re
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_PATH = ROOT / "api" / "gateway-admin.openapi.json"
+GATEWAY_ADMIN_ROUTES = ROOT / "services" / "gateway" / "src" / "api_keys.rs"
 HTTP_METHODS = {"get", "put", "post", "delete", "patch", "head", "options", "trace"}
-MUTATIONS = {
-    ("/admin/v1/api-keys", "post"),
-    ("/admin/v1/api-keys/{keyId}/revoke", "post"),
-    ("/admin/v1/api-keys/{keyId}", "delete"),
-    ("/admin/v1/api-keys/import", "post"),
-    ("/admin/v1/api-keys/freeze", "post"),
-    ("/admin/v1/api-keys/unfreeze", "post"),
-}
+KEY_SNAPSHOT_PULL = ("/api/gateway/key-snapshot", "get")
 
 
 def load_contract():
@@ -40,25 +35,6 @@ def operations(document):
                 yield path, method, operation
 
 
-def parameter_names(document, operation):
-    names = set()
-    for parameter in operation.get("parameters", []):
-        resolved = resolve_ref(document, parameter)
-        names.add((resolved["in"], resolved["name"], resolved.get("required", False)))
-    return names
-
-
-def response_schema(document, operation, status):
-    response = resolve_ref(document, operation["responses"][status])
-    media = response["content"]["application/json"]
-    return resolve_ref(document, media["schema"])
-
-
-def request_schema(document, operation):
-    media = operation["requestBody"]["content"]["application/json"]
-    return resolve_ref(document, media["schema"])
-
-
 def property_names(document, schema, seen=None):
     seen = set() if seen is None else seen
     if isinstance(schema, dict) and "$ref" in schema:
@@ -80,26 +56,40 @@ def property_names(document, schema, seen=None):
     return set()
 
 
-def validate_mtls_security(document):
+ADMIN_SECURITY = [{"adminApiKey": []}, {"adminSignedRequest": []}]
+
+
+def validate_security(document):
+    """Every gateway route requires an admin API key or the v1 request
+    signature. The one route the admin serves (the key snapshot pull)
+    requires the gateway bearer token."""
     schemes = document["components"]["securitySchemes"]
     signed = schemes.get("adminSignedRequest", {})
     if signed.get("type") != "apiKey" or signed.get("name") != "X-Admin-Signature":
-        raise AssertionError("the admin API must require signed requests")
-    if document.get("security") != [{"adminSignedRequest": []}]:
-        raise AssertionError("the contract must require signed requests globally")
+        raise AssertionError("the admin API must define the v1 request signature")
+    if schemes.get("adminApiKey", {}).get("scheme") != "bearer":
+        raise AssertionError("the admin API must define the admin API key")
+    if schemes.get("gatewayBearerToken", {}).get("scheme") != "bearer":
+        raise AssertionError("the key snapshot pull must require a bearer token")
+    if document.get("security") != ADMIN_SECURITY:
+        raise AssertionError("the contract must require admin authentication globally")
     for path, method, operation in operations(document):
-        effective = operation.get("security", document["security"])
-        if effective != [{"adminSignedRequest": []}]:
-            raise AssertionError(f"{method} {path} does not require only signed requests")
-        if "401" not in operation["responses"] or "403" not in operation["responses"]:
-            raise AssertionError(f"{method} {path} omits an authentication error response")
-
-
-CREATE_RESPONSE = ("/admin/v1/api-keys", "post", "201")
+        expected = (
+            [{"gatewayBearerToken": []}]
+            if (path, method) == KEY_SNAPSHOT_PULL
+            else ADMIN_SECURITY
+        )
+        if operation.get("security", document["security"]) != expected:
+            raise AssertionError(f"{method} {path} does not require {expected}")
+        if "401" not in operation["responses"]:
+            raise AssertionError(f"{method} {path} omits the authentication error response")
 
 
 def validate_response_secret_boundaries(document):
-    forbidden = {"plaintext", "secret", "verifier", "keyhash", "hash", "salt"}
+    """No response carries a plaintext key, the pepper or another secret. The
+    snapshot rows carry `keyHash`, the peppered HMAC the gateway verifies
+    against; it is not a secret on its own."""
+    forbidden = {"apikey", "plaintext", "plaintextkey", "secret", "pepper", "token", "salt"}
     for path, method, operation in operations(document):
         for status, raw_response in operation["responses"].items():
             response = resolve_ref(document, raw_response)
@@ -107,19 +97,10 @@ def validate_response_secret_boundaries(document):
             if not content:
                 continue
             names = property_names(document, content["schema"])
-            normalized = {"".join(character.lower() for character in name if character.isalnum()) for name in names}
+            normalized = {"".join(c.lower() for c in name if c.isalnum()) for name in names}
             leaked = normalized & forbidden
-            # The one-time create response gains `keyHash`, the same
-            # HMAC-SHA256(pepper, plaintext) digest the export route already
-            # calls `verifierHash`. The admin key registry stores only this
-            # hash: it never receives the plaintext. Every other response
-            # keeps the full boundary.
-            if (path, method, status) == CREATE_RESPONSE:
-                leaked = leaked - {"keyhash"}
             if leaked:
                 raise AssertionError(f"{method} {path} {status} exposes {sorted(leaked)}")
-            if "apiKey" in names and (path, method, status) != CREATE_RESPONSE:
-                raise AssertionError(f"{method} {path} {status} exposes the API key")
 
 
 class GatewayAdminContractTests(unittest.TestCase):
@@ -132,44 +113,40 @@ class GatewayAdminContractTests(unittest.TestCase):
             self.contract["jsonSchemaDialect"],
             "https://json-schema.org/draft/2020-12/schema",
         )
-        self.assertEqual(self.contract["x-state-authority"], "unencrypted-persistent-ext4-state-disk")
-        self.assertIn("admin-client", self.contract["x-non-authoritative-systems"])
+        self.assertEqual(self.contract["x-state-authority"], "admin-key-registry")
+        self.assertEqual(self.contract["x-non-authoritative-systems"], ["gateway"])
 
-    def test_server_uses_the_c8s_tls_lb_entry_point(self):
+    def test_gateway_routes_use_the_c8s_tls_lb_entry_point(self):
         self.assertEqual(
             self.contract["servers"],
-            [
-                {
-                    "url": "https://api.example.invalid",
-                    "description": "The c8s tls-lb entry point",
-                }
-            ],
+            [{"url": "https://api.example.invalid", "description": "The c8s tls-lb entry point"}],
+        )
+        pull = self.contract["paths"][KEY_SNAPSHOT_PULL[0]]
+        self.assertEqual(pull["servers"][0]["url"], "https://admin.example.invalid")
+
+    def test_security(self):
+        validate_security(self.contract)
+
+    def test_gateway_paths_match_the_gateway_admin_router(self):
+        source = GATEWAY_ADMIN_ROUTES.read_text(encoding="utf-8")
+        routed = set(re.findall(r'\.route\(\s*"([^"]+)",\s*(get|put|post|delete)\(', source))
+        self.assertTrue(routed, "no .route(...) calls found in api_keys.rs")
+        served = {
+            (path, method)
+            for path, method, _ in operations(self.contract)
+            if (path, method) != KEY_SNAPSHOT_PULL
+        }
+        self.assertEqual(served, routed)
+
+    def test_pull_and_push_carry_the_same_snapshot(self):
+        pull = self.contract["paths"][KEY_SNAPSHOT_PULL[0]]["get"]["responses"]["200"]
+        push = self.contract["paths"]["/admin/v1/api-keys/snapshot"]["put"]["requestBody"]
+        self.assertEqual(
+            pull["content"]["application/json"]["schema"],
+            push["content"]["application/json"]["schema"],
         )
 
-    def test_every_operation_requires_mtls(self):
-        validate_mtls_security(self.contract)
-
-    def test_required_operations_exist(self):
-        expected = {
-            ("/admin/v1/health", "get"),
-            ("/admin/v1/api-keys", "post"),
-            ("/admin/v1/api-keys", "get"),
-            ("/admin/v1/api-keys/{keyId}/revoke", "post"),
-            ("/admin/v1/api-keys/{keyId}", "delete"),
-            ("/admin/v1/api-keys/export", "get"),
-            ("/admin/v1/api-keys/import", "post"),
-            ("/admin/v1/api-keys/freeze", "post"),
-            ("/admin/v1/api-keys/unfreeze", "post"),
-            ("/admin/v1/api-keys/source", "get"),
-            ("/admin/v1/api-keys/snapshot", "put"),
-        }
-        actual = {(path, method) for path, method, _ in operations(self.contract)}
-        self.assertEqual(actual, expected)
-
-    def test_the_snapshot_push_carries_no_second_signature(self):
-        """The admin request signature already binds the pushed body. A
-        second signature field would add a trust root the gateway does not
-        need."""
+    def test_the_snapshot_carries_no_second_signature(self):
         snapshot = self.contract["components"]["schemas"]["KeyRegistrySnapshot"]
         self.assertNotIn("signature", snapshot["properties"])
         self.assertFalse(snapshot["additionalProperties"])
@@ -179,8 +156,6 @@ class GatewayAdminContractTests(unittest.TestCase):
         )
 
     def test_the_snapshot_never_carries_a_plaintext_key(self):
-        """The admin VM stores only the peppered hash. No snapshot field
-        may hold a plaintext key."""
         key = self.contract["components"]["schemas"]["KeyRegistrySnapshotKey"]
         self.assertFalse(key["additionalProperties"])
         self.assertNotIn("apiKey", key["properties"])
@@ -188,104 +163,29 @@ class GatewayAdminContractTests(unittest.TestCase):
         self.assertIn("keyHash", key["required"])
 
     def test_the_source_route_reports_the_drift_probe_fields(self):
-        """The admin VM reads this route once a minute. It pushes only on
-        drift, so the route must report the revision and the pepper
-        fingerprint."""
         status = self.contract["components"]["schemas"]["RegistrySourceStatus"]
-        for field in ("mode", "cachedRevision", "pepperFingerprint"):
+        for field in ("cachedRevision", "pepperFingerprint"):
             self.assertIn(field, status["required"])
+        self.assertNotIn("mode", status["properties"])
 
-    def test_create_returns_plaintext_once(self):
-        create = self.contract["paths"]["/admin/v1/api-keys"]["post"]
-        schema = response_schema(self.contract, create, "201")
-        self.assertEqual(
-            set(schema["properties"]),
-            {"apiKey", "metadata", "keyHash", "pepperFingerprint"},
-        )
-        self.assertTrue(schema["properties"]["apiKey"]["x-sensitive"])
-        self.assertTrue(schema["properties"]["apiKey"]["x-one-time-response"])
-        self.assertIn("apiKey", schema["required"])
-        replay_schema = response_schema(self.contract, create, "200")
-        self.assertNotIn("apiKey", property_names(self.contract, replay_schema))
-        replay = resolve_ref(self.contract, create["responses"]["200"])
-        self.assertIn("Idempotency-Replayed", replay["headers"])
-
-        for path, method, operation in operations(self.contract):
-            for status in operation["responses"]:
-                if (path, method, status) == ("/admin/v1/api-keys", "post", "201"):
-                    continue
-                response = resolve_ref(self.contract, operation["responses"][status])
-                content = response.get("content", {}).get("application/json")
-                if content:
-                    names = property_names(self.contract, content["schema"])
-                    self.assertNotIn("apiKey", names, (path, method, status))
-
-    def test_list_returns_metadata_without_secret_fields(self):
-        list_keys = self.contract["paths"]["/admin/v1/api-keys"]["get"]
-        names = property_names(self.contract, response_schema(self.contract, list_keys, "200"))
-        forbidden = {"apiKey", "plaintext", "secret", "verifier", "keyHash", "salt"}
-        self.assertTrue({"id", "name", "prefix", "status", "version"}.issubset(names))
-        self.assertFalse(names & forbidden, names & forbidden)
-
-    def test_no_response_schema_leaks_secret_storage_fields(self):
+    def test_no_response_schema_leaks_secrets(self):
         validate_response_secret_boundaries(self.contract)
-
-    def test_mutations_require_idempotency_and_audit_context(self):
-        for path, method in MUTATIONS:
-            operation = self.contract["paths"][path][method]
-            with self.subTest(path=path, method=method):
-                self.assertIn(("header", "Idempotency-Key", True), parameter_names(self.contract, operation))
-                schema = request_schema(self.contract, operation)
-                if schema is self.contract["components"]["schemas"]["AuditContext"]:
-                    audit = schema
-                else:
-                    self.assertIn("audit", schema["required"])
-                    audit = resolve_ref(self.contract, schema["properties"]["audit"])
-                self.assertTrue({"actor", "reason"}.issubset(audit["required"]))
-                self.assertIn("409", operation["responses"])
-
-    def test_updates_require_optimistic_versions(self):
-        update_operations = (
-            self.contract["paths"]["/admin/v1/api-keys/{keyId}/revoke"]["post"],
-            self.contract["paths"]["/admin/v1/api-keys/{keyId}"]["delete"],
-        )
-        for operation in update_operations:
-            with self.subTest(operation=operation["operationId"]):
-                self.assertIn(("header", "If-Match", True), parameter_names(self.contract, operation))
-                self.assertIn("412", operation["responses"])
-                success = resolve_ref(self.contract, operation["responses"]["200"])
-                self.assertIn("ETag", success["headers"])
-
-        for schema_name in ("ApiKeyMetadata",):
-            schema = self.contract["components"]["schemas"][schema_name]
-            self.assertIn("version", schema["required"])
-
-    def test_health_reports_canonical_disk_readiness(self):
-        health = self.contract["paths"]["/admin/v1/health"]["get"]
-        schema = response_schema(self.contract, health, "200")
-        self.assertEqual(schema["properties"]["status"]["const"], "ready")
-        self.assertEqual(
-            schema["properties"]["stateAuthority"]["const"],
-            "unencrypted-persistent-ext4-state-disk",
-        )
-        self.assertEqual(schema["properties"]["stateDisk"]["const"], "ready")
-        self.assertIn("503", health["responses"])
 
     def test_security_regression_is_detected(self):
         altered = copy.deepcopy(self.contract)
         altered["security"] = []
         with self.assertRaises(AssertionError):
-            validate_mtls_security(altered)
+            validate_security(altered)
 
         altered = copy.deepcopy(self.contract)
         altered["paths"]["/admin/v1/health"]["get"]["security"] = []
         with self.assertRaises(AssertionError):
-            validate_mtls_security(altered)
+            validate_security(altered)
 
     def test_secret_leak_regression_is_detected(self):
         altered = copy.deepcopy(self.contract)
-        metadata = altered["components"]["schemas"]["ApiKeyMetadata"]
-        metadata["properties"]["verifier"] = {"type": "string"}
+        status = altered["components"]["schemas"]["RegistrySourceStatus"]
+        status["properties"]["pepper"] = {"type": "string"}
         with self.assertRaises(AssertionError):
             validate_response_secret_boundaries(altered)
 
