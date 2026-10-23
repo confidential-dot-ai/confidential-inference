@@ -66,21 +66,11 @@ gateway:
       secretName: candidate-gateway-admin-mtls
   service:
     type: ClusterIP
-  keyRegistry:
-    mode: dual
   shutdownGraceSeconds: 900
   endpointDrainSeconds: 35
   terminationGracePeriodSeconds: 960
   c8sSecrets:
     apiKeyPepper: {name: GATEWAY_API_KEY_PEPPER, sourcePath: /confidential-inference/gateway/api-key-pepper}
-  state:
-    enabled: true
-    absencePolicy: fail-closed
-    startupTimeoutSeconds: 300
-    volumeName: gwstate
-    c8sVolumeSource: /confidential-inference/volumes/gwstate
-    volumeDirectory: /mnt/c8s-data
-    databasePath: /mnt/c8s-data/gwstate/gateway.sqlite3
 
 inference:
   enabled: true
@@ -112,14 +102,22 @@ router:
 metricsCollector:
   enabled: true
   attestedWorkload: metrics-collector
-  remoteWrite:
-    enabled: true
-    url: https://admin.api.confidential.ai:9443/api/v1/write
-    address: 20.163.209.126
-    serverName: admin.api.confidential.ai
-    secretName: metrics-remote-write-mtls
-    destinationCidrs:
-      - 20.163.209.126/32
-
 kubeStateMetrics:
   attestedWorkload: kube-state-metrics
+
+telemetry:
+  enabled: true
+  deployment: candidate
+  metricsUrl: https://admin.api.confidential.ai:9443/api/v1/write
+  logsUrl: https://admin.api.confidential.ai:9443/loki/api/v1/push
+  destinationCidrs:
+    - 20.163.209.126/32
+  hostAliases:
+    - ip: 20.163.209.126
+      hostnames: [admin.api.confidential.ai]
+  metricsAuth:
+    type: mtls
+    secretName: metrics-remote-write-mtls
+  logsAuth:
+    type: mtls
+    secretName: metrics-remote-write-mtls

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["environment", "imagePullSecret", "images", "scheduling", "gateway", "inference", "router", "metricsCollector", "kubeStateMetrics", "attestationReceipts", "namedWorkloadProxy"],
+  "required": ["environment", "imagePullSecret", "images", "scheduling", "gateway", "inference", "router", "telemetry", "kubeStateMetrics", "attestationReceipts"],
   "properties": {
     "stagingValidation": {
       "type": "object", "additionalProperties": false, "required": ["enabled"],
@@ -32,39 +32,26 @@
     },
     "images": {
       "type": "object",
-      "required": ["gateway", "sglang", "sglangWorker", "metricsCollector", "dcgmExporter", "nodeExporter", "kubeStateMetrics", "c8sOperator"],
+      "required": ["gateway", "sglang", "sglangWorker", "telemetryCollector", "dcgmExporter", "nodeExporter", "kubeStateMetrics", "c8sOperator"],
       "additionalProperties": false,
       "properties": {
         "gateway": {"$ref": "#/definitions/image"},
         "sglang": {"$ref": "#/definitions/image"},
         "sglangWorker": {"$ref": "#/definitions/image"},
         "sglangRouter": {"$ref": "#/definitions/image"},
-        "logCollector": {"$ref": "#/definitions/image"},
         "rolloutClient": {"$ref": "#/definitions/image"},
-        "metricsCollector": {"$ref": "#/definitions/image"},
+        "telemetryCollector": {"$ref": "#/definitions/image"},
         "dcgmExporter": {"$ref": "#/definitions/image"},
         "nodeExporter": {"$ref": "#/definitions/image"},
         "kubeStateMetrics": {"$ref": "#/definitions/image"},
         "c8sOperator": {"type": "string", "pattern": "^ghcr\\.io/confidential-dot-ai/c8s-operator@sha256:[a-f0-9]{64}$"}
       }
     },
-    "namedWorkloadProxy": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["enabled"],
-      "properties": {
-        "usage": {"type":"object","additionalProperties":false,"required":["enabled","destinationCidrs","destinationPort"],"properties":{"enabled":{"type":"boolean"},"destinationPort":{"type":"integer","minimum":1024,"maximum":65535},"destinationCidrs":{"type":"array","uniqueItems":true,"maxItems":8,"items":{"type":"string","pattern":"^[0-9]{1,3}(?:\\.[0-9]{1,3}){3}/(?:[0-9]|[12][0-9]|3[0-2])$"}}}},
-        "enabled": {"type": "boolean"}
-      }
-    },
     "attestationReceipts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "legacyC8s615", "evidenceBaseUrl", "releaseId", "releaseBundleSha256", "policyMode", "targets", "certificateRenewInterval", "gatewayPort", "routerPort", "firstWorkerPort", "metricsCollectorPort", "kubeStateMetricsPort", "platform", "attestationApiPort", "resources"],
+      "required": ["evidenceBaseUrl", "releaseId", "releaseBundleSha256", "policyMode", "certificateRenewInterval", "attestationApiPort"],
       "properties": {
-        "enabled": {"type": "boolean"},
-        "gpuEvidenceFlagEnabled": {"type": "boolean"},
-        "legacyC8s615": {"type": "boolean"},
         "evidenceBaseUrl": {"type": "string", "pattern": "^https://[^/?#]+(?::[0-9]{1,5})?$"},
         "evidenceConnectHost": {"type": "string", "pattern": "^[A-Za-z0-9.:-]*$"},
         "evidenceEgressCidrs": {
@@ -77,7 +64,6 @@
         "policyMode": {"enum": ["operator", "static"]},
         "expectedOperatorPublicKeySha256": {"$ref": "#/definitions/sha256Digest"},
         "expectedOperatorKeySetSha256": {"$ref": "#/definitions/sha256Digest"},
-        "expectedStaticAllowlistSha256": {"$ref": "#/definitions/sha256Digest"},
         "cds": {
           "type": "object",
           "additionalProperties": false,
@@ -88,58 +74,13 @@
             "servedImagePolicy": {"type": "string", "maxLength": 262144}
           }
         },
-        "cdsRoutes": {"type": "boolean"},
-        "cdsPin": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "mrtd": {"$ref": "#/definitions/tdxMeasurementOrEmpty"},
-            "rtmr1": {"$ref": "#/definitions/tdxMeasurementOrEmpty"},
-            "rtmr2": {"$ref": "#/definitions/tdxMeasurementOrEmpty"}
-          }
-        },
-        "targets": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 64,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["target", "workload", "identity", "url"],
-            "properties": {
-              "target": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"},
-              "workload": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"},
-              "identity": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"},
-              "url": {"type": "string", "pattern": "^http://[^/?#]+:[0-9]{1,5}$"}
-            }
-          }
-        },
         "certificateRenewInterval": {"const": "30s"},
-        "gatewayPort": {"const": 8800},
-        "routerPort": {"const": 8801},
-        "firstWorkerPort": {"const": 8802},
-        "metricsCollectorPort": {"const": 8803},
-        "kubeStateMetricsPort": {"const": 8804},
-        "platform": {"const": "tdx"},
-        "attestationApiPort": {"const": 8400},
-        "attestationApiUrl": {"type": "string", "enum": ["", "unix:///run/c8s/workload-claims/attestation-api.sock"]},
-        "resources": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["requests", "limits"],
-          "properties": {
-            "requests": {"$ref": "#/definitions/resources"},
-            "limits": {"$ref": "#/definitions/resources"}
-          }
-        }
+        "attestationApiPort": {"const": 8400}
       },
       "allOf": [
         {
-          "if": {"properties": {"policyMode": {"const": "static"}}},
+          "if": {"properties": {"policyMode": {"const": "operator"}}},
           "then": {
-            "required": ["expectedStaticAllowlistSha256"]
-          },
-          "else": {
             "required": ["expectedOperatorPublicKeySha256", "expectedOperatorKeySetSha256"]
           }
         }
@@ -216,6 +157,18 @@
                   }
                 }
               }
+            },
+            "cache": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["enabled", "hostPath", "manifest", "endpoint", "egressCidrs"],
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "hostPath": {"type": "string", "pattern": "^/var/lib/models/[A-Za-z0-9._-]+$"},
+                "manifest": {"type": "string"},
+                "endpoint": {"type": "string", "pattern": "^https://[^/]+$"},
+                "egressCidrs": {"type": "array", "items": {"type": "string", "minLength": 1}}
+              }
             }
           }
         },
@@ -235,7 +188,7 @@
     },
     "gateway": {
       "type": "object",
-      "required": ["attestedWorkload", "shutdownGraceSeconds", "endpointDrainSeconds", "terminationGracePeriodSeconds", "service", "containerPorts", "protection", "c8sSecrets", "secrets", "state", "keyRegistry"],
+      "required": ["attestedWorkload", "shutdownGraceSeconds", "endpointDrainSeconds", "terminationGracePeriodSeconds", "service", "containerPorts", "protection", "c8sSecrets", "secrets", "admin"],
       "properties": {
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
         "shutdownGraceSeconds": {"type": "integer", "minimum": 1},
@@ -255,20 +208,13 @@
           "additionalProperties": false,
           "properties": {
             "public": {"const": 9443},
-            "metrics": {"const": 9090},
-            "tls": {"const": 9444}
+            "metrics": {"const": 9090}
           }
-        },
-        "meshTls": {
-          "type": "object",
-          "required": ["enabled"],
-          "additionalProperties": false,
-          "properties": {"enabled": {"type": "boolean"}}
         },
         "c8sSecrets": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["apiKeyPepper"],
+          "required": ["apiKeyPepper", "adminConfig"],
           "properties": {
             "apiKeyPepper": {
               "type": "object",
@@ -277,6 +223,15 @@
               "properties": {
                 "name": {"const": "GATEWAY_API_KEY_PEPPER"},
                 "sourcePath": {"const": "/confidential-inference/gateway/api-key-pepper"}
+              }
+            },
+            "adminConfig": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "sourcePath"],
+              "properties": {
+                "name": {"const": "product-usage"},
+                "sourcePath": {"const": "/confidential-inference/gateway/product-usage"}
               }
             }
           }
@@ -307,7 +262,7 @@
         },
         "secrets": {
           "type": "object",
-          "required": ["adminSigner"],
+          "required": ["adminSigner", "adminApiKey"],
           "additionalProperties": false,
           "properties": {
             "adminSigner": {
@@ -318,115 +273,126 @@
                 "secretName": {"$ref": "#/definitions/kubernetesName"},
                 "certificateKey": {"const": "client.crt"}
               }
+            },
+            "adminApiKey": {
+              "type": "object",
+              "required": ["secretName"],
+              "additionalProperties": false,
+              "properties": {
+                "secretName": {"$ref": "#/definitions/kubernetesName"}
+              }
             }
           }
         },
-        "state": {
+        "admin": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "absencePolicy", "startupTimeoutSeconds", "volumeName", "c8sVolumeSource", "volumeDirectory", "databasePath"],
+          "required": ["url", "address"],
           "properties": {
-            "enabled": {"type": "boolean"},
-            "absencePolicy": {"const": "fail-closed"},
-            "startupTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 600},
-            "volumeName": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]{0,10}[a-z0-9])?$"},
-            "c8sVolumeSource": {"type": "string", "pattern": "^/confidential-inference/volumes/[a-z0-9]([-a-z0-9]{0,10}[a-z0-9])?$"},
-            "volumeDirectory": {"const": "/mnt/c8s-data"},
-            "databasePath": {"type": "string", "pattern": "^/mnt/c8s-data/[a-z0-9-]{1,12}/gateway\\.sqlite3$"}
+            "url": {"type": "string", "pattern": "^https://[a-z0-9.-]+/[^?#]*$"},
+            "address": {"type": "string", "format": "ipv4"}
           }
         },
-        "keyRegistry": {
+        "usage": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["mode"],
+          "required": ["enabled", "models"],
           "properties": {
-            "mode": {"enum": ["local", "dual", "registry"]}
+            "enabled": {"type": "boolean"},
+            "models": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object", "additionalProperties": false, "required": ["served_model", "model_revision"],
+                "properties": {"served_model": {"type": "string", "minLength": 1}, "model_revision": {"type": "string", "minLength": 1}}
+              }
+            }
           }
         }
       }
     },
     "router": {
       "type": "object",
-      "required": ["attestedWorkload", "proxyPort"],
+      "required": ["attestedWorkload"],
       "properties": {
-        "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
-        "proxyPort": {"const": 9443}
+        "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"}
       }
     },
-    "metricsCollector": {
+    "telemetry": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "attestedWorkload", "resources", "approvedApiKeyLabels", "walSizeLimit", "tls", "remoteWrite", "kubeApi"],
+      "required": ["enabled", "attestedWorkload", "deployment", "relay", "metrics", "logs", "secretName", "traces",
+                   "kubeStateMetrics", "scrapeInterval", "otlpGrpcPort", "otlpHttpPort", "healthPort", "resources", "commonLabels", "labels", "spanAttributes"],
       "properties": {
         "enabled": {"type": "boolean"},
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
+        "deployment": {"type": "string", "pattern": "^(|[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)$"},
+        "relay": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["serverName", "address", "port"],
+          "properties": {
+            "serverName": {"anyOf": [{"const": ""}, {"type": "string", "format": "hostname"}]},
+            "address": {"anyOf": [{"const": ""}, {"type": "string", "format": "ipv4"}]},
+            "port": {"const": 443}
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tenantId", "clientId", "dataCollectionRule"],
+          "properties": {
+            "tenantId": {"type": "string", "pattern": "^(|[0-9a-f-]{36})$"},
+            "clientId": {"type": "string", "pattern": "^(|[0-9a-f-]{36})$"},
+            "dataCollectionRule": {"type": "string", "pattern": "^(|dcr-[0-9a-f]{32})$"}
+          }
+        },
+        "logs": {
+          "type": "object", "additionalProperties": false, "required": ["username"],
+          "properties": {"username": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"}}
+        },
+        "secretName": {"$ref": "#/definitions/kubernetesName"},
+        "traces": {
+          "type": "object", "additionalProperties": false, "required": ["enabled"],
+          "properties": {"enabled": {"type": "boolean"}}
+        },
+        "kubeStateMetrics": {
+          "type": "object", "additionalProperties": false, "required": ["target", "metrics"],
+          "properties": {
+            "target": {"type": "string", "pattern": "^(|[0-9]+(?:\\.[0-9]+){3}:[0-9]{1,5})$"},
+            "metrics": {"type": "string", "minLength": 1}
+          }
+        },
+        "scrapeInterval": {"type": "string", "pattern": "^[1-9][0-9]*s$"},
+        "otlpGrpcPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "otlpHttpPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "healthPort": {"type": "integer", "minimum": 1, "maximum": 65535},
         "resources": {"$ref": "#/definitions/resources"},
-        "approvedApiKeyLabels": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 32,
-          "uniqueItems": true,
-          "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"}
-        },
-        "walSizeLimit": {"type": "string", "pattern": "^[1-9][0-9]*(Mi|Gi)$"},
-        "kubeApi": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["port"],
+        "commonLabels": {"$ref": "#/definitions/labelNames"},
+        "labels": {
+          "type": "object", "additionalProperties": false, "required": ["gateway", "router", "worker", "gpu", "kubeStateMetrics"],
           "properties": {
-            "port": {"const": 6443}
+            "gateway": {"$ref": "#/definitions/labelNames"},
+            "router": {"$ref": "#/definitions/labelNames"},
+            "worker": {"$ref": "#/definitions/labelNames"},
+            "gpu": {"$ref": "#/definitions/labelNames"},
+            "kubeStateMetrics": {"$ref": "#/definitions/labelNames"}
           }
         },
-        "remoteWrite": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["enabled", "url", "address", "serverName", "secretName", "destinationCidrs", "queue"],
-          "properties": {
-            "enabled": {"type": "boolean"},
-            "url": {"type": "string", "pattern": "^https://[^/]+(?::[0-9]{1,5})?/api/v1/write$"},
-            "address": {"type": "string", "format": "ipv4"},
-            "serverName": {"type": "string", "format": "hostname"},
-            "secretName": {"$ref": "#/definitions/kubernetesName"},
-            "destinationCidrs": {
-              "type": "array",
-              "minItems": 1,
-              "maxItems": 4,
-              "uniqueItems": true,
-              "items": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+){3}/32$"}
-            },
-            "queue": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["capacity", "maxShards", "maxSamplesPerSend", "sampleAgeLimit"],
-              "properties": {
-                "capacity": {"type": "integer", "minimum": 1, "maximum": 100000},
-                "maxShards": {"type": "integer", "minimum": 1, "maximum": 16},
-                "maxSamplesPerSend": {"type": "integer", "minimum": 1, "maximum": 10000},
-                "sampleAgeLimit": {"const": "1h"}
-              }
-            }
-          }
-        },
-        "tls": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["enabled", "secretName", "clientCaSecretName"],
-          "properties": {
-            "enabled": {"type": "boolean"},
-            "secretName": {"$ref": "#/definitions/kubernetesName"},
-            "clientCaSecretName": {"$ref": "#/definitions/kubernetesName"}
-          }
+        "spanAttributes": {
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9_.]*$"}
         }
       }
     },
     "kubeStateMetrics": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "attestedWorkload", "port", "resources"],
+      "required": ["enabled", "attestedWorkload", "port", "kubeApiPort", "resources"],
       "properties": {
         "enabled": {"type": "boolean"},
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
         "port": {"const": 8080},
+        "kubeApiPort": {"const": 6443},
         "resources": {"$ref": "#/definitions/resources"}
       }
     },
@@ -452,12 +418,8 @@
     },
     "network": {
       "type": "object",
-      "required": ["adminMtlsCidrs", "clusterCidrs"],
+      "required": ["clusterCidrs"],
       "properties": {
-        "adminMtlsCidrs": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1}
-        },
         "clusterCidrs": {
           "type": "array",
           "minItems": 1,
@@ -467,6 +429,10 @@
     }
   },
   "definitions": {
+    "labelNames": {
+      "type": "array", "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"}
+    },
     "tdxMeasurementOrEmpty": {"type": "string", "pattern": "^(|[0-9a-f]{96})$"},
     "workloadPolicyName": {
       "type": "string",

@@ -24,7 +24,9 @@ The script never learns a value from a running container. A value that no
 pinned source can give (for example a node IP) is an error.
 
 `c8s allowlist derive` from the pinned c8s release builds each entry, so c8s
-itself decides which containers it injects and drops. The c8s core entries mirror the bootstrap seed: from c8s v0.47.0 as
+itself decides which containers it injects and drops. From the c8s release
+with the fixed seed layer (C8s #1031, SEED_LAYER_SINCE) the allowlist has only
+the application entries. Before it, the c8s core entries mirror the bootstrap seed: from c8s v0.47.0 as
 the chart renders it, one pinned entry per component shape and the router pod;
 before it, one floor entry per core image pinned to its complete image
 ENTRYPOINT beside the seed. The
@@ -87,12 +89,19 @@ CLAIMS_SOCKET_CONSUMERS = {"c8s-cert", "c8s-secret", "c8s-volume", "cds-attest"}
 # as a read-only host mount, which an exact policy must list; from this one a
 # host rule for it refuses the secrets grant, and no rule names it.
 CLAIMS_SOCKET_PLATFORM_SINCE = (0, 50, 0)
+# The first c8s release with the per-pod mesh (C8s #809): the webhook mounts the
+# certificate volume only into its own sidecars, so no workload container has it.
+PER_POD_MESH_SINCE = (0, 64, 0)
 # The first c8s release whose chart seed names one entry per component shape
 # (`<image>-<digest>-<shape>`), pins its args and mounts, and seeds the router
 # pod's composition (c8s #876, #878). From it the release mirrors the seed as
 # it is: a floor entry or a native router entry beside it would leave args,
 # mounts or env `any`, which `c8s allowlist lint --strict` refuses.
 SEED_PINS_COMPONENTS_SINCE = (0, 47, 0)
+# The first c8s release whose CDS keeps the node image's seed as a fixed
+# layer that an allowlist upload cannot drop (C8s #1031). From it the release
+# allowlist names only the application entries; it mirrors no seed entry.
+SEED_LAYER_SINCE = (0, 73, 0)
 CLAIMS_SOCKET_SOURCE = "/var/run/nri-image-policy"
 CLAIMS_SOCKET_DESTINATION = "/run/c8s/workload-claims"
 
@@ -100,10 +109,19 @@ CLAIMS_SOCKET_DESTINATION = "/run/c8s/workload-claims"
 def c8s_at_least(release: str | None, version: tuple[int, int, int]) -> bool:
     if release is None:
         return False
-    match = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-beta\.[1-9][0-9]*)?", release)
+    match = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-beta\.[1-9][0-9]*|-0\.[0-9]{14}-[0-9a-f]{12})?", release)
     if match is None:
         raise GenerationError(f"unsupported c8s release: {release}")
     return tuple(int(part) for part in match.groups()) >= version
+
+
+def feature_release(c8s: dict[str, Any]) -> str:
+    """The c8s release whose features the pinned c8s has, for the version gates.
+
+    A dev build (Go pseudo-version, staging only) names it in `baseRelease`: its
+    pseudo-version counts from the last tag, not from the release it previews.
+    """
+    return c8s.get("baseRelease", c8s["release"])
 
 
 class GenerationError(ValueError):
@@ -334,7 +352,10 @@ def container_mounts(
             raise GenerationError(f"{label}: mount {mount['name']} has a volume type the release cannot classify")
     # c8s adds these to every container of an opted-in pod.
     if "confidential.ai/cw" in annotations:
-        rules.append({"destination": annotations.get("confidential.ai/c8s-cert-dir", DEFAULT_CERT_DIR), "kind": "emptyDir"})
+        # c8s >= v0.64.0 (C8s #809, per-pod mesh) mounts the certificate
+        # volume only into its own sidecars.
+        if not c8s_at_least(c8s_release, PER_POD_MESH_SINCE):
+            rules.append({"destination": annotations.get("confidential.ai/c8s-cert-dir", DEFAULT_CERT_DIR), "kind": "emptyDir"})
         if annotations.get("confidential.ai/c8s-secrets"):
             rules.append({"destination": annotations.get("confidential.ai/c8s-secret-dir", DEFAULT_SECRET_DIR), "kind": "emptyDir"})
         if annotations.get("confidential.ai/c8s-volumes"):
@@ -412,6 +433,21 @@ def is_carved_out(container: dict[str, Any], core_digests: set[str], release: st
     return digest in core_digests and bool(command) and command[0] in INJECTED_ENTRYPOINTS
 
 
+def declared_egress(controller: dict[str, Any], item: dict[str, Any]) -> list[dict[str, Any]]:
+    """The exits of a policy item that declares `egress` (C8s #1047).
+
+    Each hostAliases address of the pod is one /32 exit on the declared port,
+    so the chart value that names the destination is also the exit.
+    """
+    if "egress" not in item:
+        return []
+    aliases = controller["spec"]["template"]["spec"].get("hostAliases", [])
+    if not aliases:
+        raise GenerationError(f"{item['controller']}: declares egress, and its pod has no hostAliases address")
+    return sorted(({"cidr": f"{alias['ip']}/32", "port": item["egress"]["port"]} for alias in aliases),
+                  key=lambda exit: (exit["cidr"], exit["port"]))
+
+
 def derive(
     executable: Path,
     name: str,
@@ -468,7 +504,10 @@ def floor_entry(image: str, entrypoint: list[str] | None = None) -> tuple[str, d
 
 
 def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
-    if not c8s_at_least(c8s["release"], (0, 44, 0)):
+    """The seed entries the release allowlist must mirror: none before c8s
+    v0.44.0 (floor entries instead) and none from SEED_LAYER_SINCE (CDS keeps
+    the seed beside the uploaded document)."""
+    if not c8s_at_least(feature_release(c8s), (0, 44, 0)) or c8s_at_least(feature_release(c8s), SEED_LAYER_SINCE):
         return {}
     path = ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json")
     record = read_json(path)
@@ -509,10 +548,10 @@ def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[s
     the canonical allowlist's entries byte for byte and the manifest contract
     can require equality.
 
-    The seed pins each component shape's command at the image entrypoint or at
-    the container's own command, which extends it (`/c8s get-cert`), so a seed
-    container of a core image must pin a command that starts with the
-    entrypoint. A core image the seed does not bind runs on the node, never as
+    The seed pins each component shape's command exactly: at the image
+    entrypoint, at a command that extends it (`/c8s get-cert`), or at a
+    command of its own (c8s v0.66.0+ runs the router's nginx image as
+    `/bin/sh /usr/lib/c8s/router-nginx/reload.sh`). A core image the seed does not bind runs on the node, never as
     a pod (nri-image-policy, volumed), and gets no entry: a floor entry for it
     would admit a component with open mounts and env, which strict lint
     refuses.
@@ -522,15 +561,13 @@ def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[s
             image = container.get("image", "")
             if image not in images:
                 continue
-            entrypoint = component_entrypoint(image, configs.get(image, {}))
-            argv = container.get("command", {}).get("argv") or []
-            if container.get("command", {}).get("policy") != "exact" or argv[:len(entrypoint)] != entrypoint:
+            if container.get("command", {}).get("policy") != "exact" or not container["command"].get("argv"):
                 raise GenerationError(f"seed entry {name} does not preserve its component command pin")
     return copy.deepcopy(seed)
 
 
 def native_core_entries(c8s: dict[str, Any], configs: dict[str, Any]) -> dict[str, Any]:
-    if not c8s_at_least(c8s["release"], (0, 44, 6)) or c8s_at_least(c8s["release"], SEED_PINS_COMPONENTS_SINCE):
+    if not c8s_at_least(feature_release(c8s), (0, 44, 6)) or c8s_at_least(feature_release(c8s), SEED_PINS_COMPONENTS_SINCE):
         return {}
     record = read_json(ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json"))
     helper = runpy.run_path(str(ROOT / "scripts/native_c8s_allowlist.py"))
@@ -592,7 +629,7 @@ def generate(
         mount_policies: dict[str, Any] = {}
         for container_name, container in containers.items():
             if is_carved_out(effective_process(container, image_env.get(container["image"], {})),
-                             core_digests, c8s["release"]):
+                             core_digests, feature_release(c8s)):
                 env_policies[container_name] = {"policy": "any"}
                 mount_policies[container_name] = {"policy": "any"}
                 continue
@@ -601,7 +638,7 @@ def generate(
                     "policy": "exact",
                     "values": container_env(controller, container, image_env, policy, cdi),
                 }
-                rules = container_mounts(controller, container, cdi, c8s_release=c8s["release"])
+                rules = container_mounts(controller, container, cdi, c8s_release=feature_release(c8s))
                 mount_policies[container_name] = {"policy": "exact", "rules": rules} if rules else {"policy": "deny"}
             except GenerationError as error:
                 errors.append(str(error))
@@ -617,16 +654,26 @@ def generate(
         entry = derive(executable, item["name"], explicit, env_policies, mount_policies, reads)
         # New c8s derive already omits injected names. Authored cds-attest
         # and allowlist-proxy must remain in the exact workload definition.
-        if not c8s_at_least(c8s["release"], (0, 41, 0)):
+        if not c8s_at_least(feature_release(c8s), (0, 41, 0)):
             for field in ("initContainers", "containers"):
                 entry[field] = [
                     c for c in entry.get(field, [])
                     if not (c["digest"] in core_digests and argv0(c) in INJECTED_ENTRYPOINTS)
                 ]
+        if exits := declared_egress(controller, item):
+            # C8s #1049: CDS refuses an entry with exits unless it is pinned
+            # like a secrets grant: no host mount rule, no open argv.
+            for container in entry.get("initContainers", []) + entry.get("containers", []):
+                if any(rule.get("kind") == "host" for rule in container.get("mounts", {}).get("rules", [])):
+                    errors.append(f"{item['name']}: an entry with egress has a host mount")
+                if container.get("mounts", {}).get("policy") not in {"exact", "deny"} or any(
+                        container.get(field, {}).get("policy") not in {"exact", "deny"} for field in ("command", "args")):
+                    errors.append(f"{item['name']}: an entry with egress must pin command, args and mounts")
+            entry["egress"] = exits
         workloads[item["name"]] = entry
     if errors:
         raise GenerationError("the release allowlist has unpinned inputs:\n  - " + "\n  - ".join(errors))
-    for name, entry in core_entries(c8s["coreImages"], image_env, c8s["release"], core_seed(c8s)).items():
+    for name, entry in core_entries(c8s["coreImages"], image_env, feature_release(c8s), core_seed(c8s)).items():
         if name in workloads:
             raise GenerationError(f"the core entry {name} collides with a workload")
         workloads[name] = entry
@@ -635,6 +682,10 @@ def generate(
             raise GenerationError(f"the native entry {name} collides with a workload")
         workloads[name] = entry
     canonical = canonicalize({"schema": "c8s.allowlist/v1", "workloads": workloads}, tool)
+    kept = json.loads(canonical)["workloads"]
+    for name, entry in workloads.items():
+        if kept[name].get("egress") != entry.get("egress"):
+            raise GenerationError(f"{name}: the pinned c8s does not keep the declared egress (needs C8s #1047)")
     with tempfile.TemporaryDirectory(prefix="release-allowlist-lint-") as directory:
         candidate = Path(directory) / "allowlist.json"
         candidate.write_bytes(canonical)
@@ -735,10 +786,7 @@ def refresh_image_config(profiles: tuple[release_profiles.Profile, ...]) -> dict
                 if isinstance(value, str) and value.startswith(release_profiles.REPOSITORY_IMAGES)
             }
             overlay = Path(directory) / f"{profile.name}.yaml"
-            tdx = read_json(release_profiles.node_manifest(profile))["tdx"]
-            # cds-attest pins CDS, which runs on the pinned node image (c8s #851).
-            pin = {name: tdx[name] for name in ("mrtd", "rtmr1", "rtmr2")}
-            overlay.write_text(json.dumps({"images": placeholder, "attestationReceipts": {"cdsPin": pin}}))
+            overlay.write_text(json.dumps({"images": placeholder}))
             policy = read_json(profile.policy)
             for controller in controllers(render_chart(policy, profile, overlay)).values():
                 pod = controller["spec"]["template"]["spec"]

@@ -11,17 +11,15 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use axum::middleware;
-use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use confidential_gateway::{
     GatewayConfig, TracingAuditSink,
-    admin_auth::{AdminRequestVerifier, MAX_CERTIFICATE_BYTES, require_signed_admin_request},
-    api_keys::{GatewayState, StateError, admin_router},
-    attestation::{
-        C8S_ATTESTATION_PROTOCOL, C8S_ATTESTATION_PROTOCOL_COMMIT, C8sAttestationConfig,
-        C8sAttestationProvider,
+    admin_auth::{
+        AdminRequestVerifier, MAX_API_KEY_HASHES_BYTES, MAX_CERTIFICATE_BYTES,
+        require_signed_admin_request,
     },
-    key_registry::KeyRegistryMode,
+    admin_client::{self, AdminClient},
+    api_keys::{KeyStore, admin_router},
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
     router_with_runtime_and_usage,
@@ -34,12 +32,35 @@ use hyper_util::rt::{TokioExecutor, TokioTimer};
 // workload-proxy client owns this loopback port and provides the authenticated
 // hop to the named router workload.
 const INFERENCE_UPSTREAM_URL: &str = "http://127.0.0.1:30001";
+// Inside the termination grace the chart leaves after the HTTP drain.
+const USAGE_FLUSH_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The only field of the admin client secret the gateway reads.
+#[derive(serde::Deserialize)]
+struct AdminSecret {
+    token: String,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "confidential-gateway")]
 struct Args {
-    #[arg(long, env = "GATEWAY_USAGE_CONFIG_FILE")]
-    usage_config_file: Option<PathBuf>,
+    // The admin client token: a CDS secret, JSON `{"token": ...}`
+    // (`crate::admin_client`). Other fields of the secret are ignored.
+    #[arg(
+        long,
+        env = "GATEWAY_ADMIN_CONFIG_FILE",
+        default_value = "/run/c8s/secrets/product-usage"
+    )]
+    admin_config_file: PathBuf,
+    // Where the key pull and usage events go, and which models usage is
+    // recorded for. They are environment, so the allowlist pins them: the
+    // control plane cannot point the gateway's exit at anything else.
+    #[arg(long, env = "GATEWAY_ADMIN_ENDPOINT", default_value = "")]
+    admin_endpoint: String,
+    #[arg(long, env = "GATEWAY_USAGE_MODELS", default_value = "{}")]
+    usage_models: String,
+    #[arg(long, env = "GATEWAY_USAGE_ENABLED", default_value_t = false)]
+    usage_enabled: bool,
     #[arg(long, env = "GATEWAY_ROUTER_NAMESPACE")]
     router_namespace: Option<String>,
     #[arg(long, env = "GATEWAY_RELEASE_SELECTION_FILE")]
@@ -50,25 +71,6 @@ struct Args {
     listen: SocketAddr,
     #[arg(long, env = "GATEWAY_METRICS_LISTEN", default_value = "0.0.0.0:9090")]
     metrics_listen: SocketAddr,
-    // The c8s router (v0.56.0 and later) dials its route backends over TLS
-    // 1.3 and requires the get-cert leaf of the named workload, so the
-    // gateway also serves the public router on this listener with the
-    // certificate c8s injects into the pod. The plaintext listener stays for
-    // older c8s routers.
-    #[arg(long, env = "GATEWAY_TLS_LISTEN")]
-    tls_listen: Option<SocketAddr>,
-    #[arg(
-        long,
-        env = "GATEWAY_TLS_CERT_FILE",
-        default_value = "/etc/c8s/certs/tls.crt"
-    )]
-    tls_cert_file: PathBuf,
-    #[arg(
-        long,
-        env = "GATEWAY_TLS_KEY_FILE",
-        default_value = "/etc/c8s/certs/tls.key"
-    )]
-    tls_key_file: PathBuf,
     #[arg(
         long,
         env = "GATEWAY_INFERENCE_URL",
@@ -83,8 +85,6 @@ struct Args {
     allow_direct_inference_url: bool,
     #[arg(long, env = "GATEWAY_MODEL", default_value = "")]
     model: String,
-    #[arg(long, env = "GATEWAY_C8S_RECEIPT_TARGETS", default_value = "")]
-    c8s_receipt_targets: String,
     #[arg(long, env = "GATEWAY_C8S_EVIDENCE_BASE_URL", default_value = "")]
     c8s_evidence_base_url: String,
     #[arg(long, env = "GATEWAY_C8S_EVIDENCE_CONNECT_HOST")]
@@ -92,7 +92,7 @@ struct Args {
     #[arg(long, env = "GATEWAY_RELEASE_ID", default_value = "")]
     release_id: String,
     #[arg(long, env = "GATEWAY_C8S_CDS_URL")]
-    cds_url: Option<String>,
+    cds_url: String,
     #[arg(long, env = "GATEWAY_C8S_IMAGE_POLICY")]
     cds_image_policy: Option<PathBuf>,
     #[arg(long, env = "GATEWAY_C8S_IMAGE_POLICY_SHA256", default_value = "")]
@@ -138,25 +138,6 @@ struct Args {
         default_value = ""
     )]
     expected_operator_key_set_sha256: String,
-    #[arg(long, env = "GATEWAY_C8S_POLICY_MODE", default_value = "operator")]
-    c8s_policy_mode: String,
-    // The gateway and c8s run in lockstep on one attestation protocol. c8s
-    // serves the same receipt `version` string in both protocols, so the
-    // gateway cannot detect the protocol from a receipt and must not probe.
-    // This flag exists to make the pin explicit in the deployment, not to
-    // select a second protocol: only the pinned value is accepted.
-    #[arg(
-        long,
-        env = "GATEWAY_C8S_ATTESTATION_PROTOCOL",
-        default_value = "v1-xwing"
-    )]
-    c8s_attestation_protocol: String,
-    #[arg(
-        long,
-        env = "GATEWAY_EXPECTED_STATIC_ALLOWLIST_SHA256",
-        default_value = ""
-    )]
-    expected_static_allowlist_sha256: String,
     #[arg(
         long,
         env = "GATEWAY_ATTESTATION_TIMEOUT_SECONDS",
@@ -173,53 +154,28 @@ struct Args {
     environment: String,
     #[arg(
         long,
-        env = "GATEWAY_STATE_DATABASE",
-        default_value = "/var/lib/confidential-gateway/gateway.sqlite3"
-    )]
-    state_database: PathBuf,
-    #[arg(
-        long,
-        env = "GATEWAY_STATE_ABSENCE_POLICY",
-        default_value = "fail-closed"
-    )]
-    state_absence_policy: String,
-    #[arg(long, env = "GATEWAY_STATE_ENABLED", default_value_t = false)]
-    state_enabled: bool,
-    // The serial the state-volume marker must name. Compiled as a constant
-    // for every deployment to date; confai-attached disks get their serials
-    // from the volume name (c8s-vol-<name>), so those clusters set this.
-    #[arg(
-        long,
-        env = "GATEWAY_STATE_DISK_SERIAL",
-        default_value = "confai-gateway-state"
-    )]
-    state_disk_serial: String,
-    // Where the state lives. "disk" is the legacy host disk with a root-owned
-    // marker. "c8s" is a c8s mutable encrypted volume that c8s volumed mounts
-    // after the pod starts.
-    #[arg(long, env = "GATEWAY_STATE_VOLUME", default_value = "disk")]
-    state_volume: String,
-    // The c8s volume name. Used only when GATEWAY_STATE_VOLUME is "c8s".
-    #[arg(long, env = "GATEWAY_STATE_VOLUME_NAME", default_value = "gwstate")]
-    state_volume_name: String,
-    #[arg(
-        long,
         env = "GATEWAY_API_KEY_PEPPER_FILE",
         default_value = "/run/c8s/secrets/GATEWAY_API_KEY_PEPPER"
     )]
     api_key_pepper_file: PathBuf,
-    #[arg(
-        long,
-        env = "GATEWAY_STATE_STARTUP_TIMEOUT_SECONDS",
-        default_value_t = 60
-    )]
-    state_startup_timeout_seconds: u64,
+    // c8s writes the secrets after the container starts.
+    #[arg(long, env = "GATEWAY_SECRET_WAIT_SECONDS", default_value_t = 300)]
+    secret_wait_seconds: u64,
     #[arg(
         long,
         env = "GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE",
         default_value = "/mnt/c8s-data/admin-auth/client.crt"
     )]
     admin_signer_certificate_file: PathBuf,
+    // SHA-256 of the accepted admin API keys, from the Kubernetes Secret
+    // gateway-admin-api-key. A missing file accepts only the v1 signature
+    // until the admin cutover (#186).
+    #[arg(
+        long,
+        env = "GATEWAY_ADMIN_API_KEY_HASHES_FILE",
+        default_value = "/mnt/c8s-data/admin-api-key/sha256"
+    )]
+    admin_api_key_hashes_file: PathBuf,
     #[arg(long, env = "GATEWAY_MAXIMUM_BODY_BYTES", default_value_t = 2_097_152)]
     maximum_body_bytes: usize,
     #[arg(long, env = "GATEWAY_UPSTREAM_TIMEOUT_SECONDS", default_value_t = 900)]
@@ -270,24 +226,26 @@ struct Args {
     endpoint_drain_seconds: u64,
     #[arg(long, env = "GATEWAY_TRUSTED_PROXY_CIDRS", value_delimiter = ',')]
     trusted_proxy_cidrs: Vec<ipnet::IpNet>,
-    /// How the gateway answers an API key check. `local` reads the
-    /// `api_keys` table alone. `dual` reads that table first, then the
-    /// pushed snapshot. `registry` reads the pushed snapshot alone and
-    /// disables the local mint. The admin VM pushes every snapshot; the
-    /// gateway never calls the admin VM, so this needs no URL and no
-    /// token.
-    #[arg(long, env = "GATEWAY_KEY_REGISTRY_MODE", default_value = "local")]
-    key_registry_mode: KeyRegistryMode,
 }
 
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    let log_export = std::env::var("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
+        .ok()
+        .map(otlp_log_export)
+        .transpose()?;
+    {
+        use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info".into()),
+            )
+            .with(tracing_subscriber::fmt::layer())
+            .with(log_export.as_ref().map(otlp_log_layer))
+            .init();
+    }
     let mut args = Args::parse();
     load_release_identity(&mut args)?;
     let releases = args
@@ -357,47 +315,33 @@ async fn main() -> Result<()> {
     });
     tracing::info!("gateway configuration validated");
 
-    let gateway_state = if args.state_enabled {
-        let state_result = (|| -> Result<GatewayState> {
-            let pepper = wait_for_bounded_file(
-                &args.api_key_pepper_file,
-                4_096,
-                Duration::from_secs(args.state_startup_timeout_seconds),
-            )?;
-            if args.state_volume == "c8s" {
-                open_c8s_state(
-                    &args.state_database,
-                    &pepper,
-                    &args.state_volume_name,
-                    Duration::from_secs(args.state_startup_timeout_seconds),
-                )
-            } else {
-                GatewayState::open_persistent(
-                    &args.state_database,
-                    pepper,
-                    &args.environment,
-                    &args.state_disk_serial,
-                )
-                .map_err(anyhow::Error::from)
-            }
-        })();
-        match state_result {
-            Ok(state) => state,
-            Err(error) => {
-                tracing::error!(error = %error, "the gateway entered outage-only mode");
-                GatewayState::outage_only().context("create the outage-only gateway state")?
-            }
-        }
-    } else {
-        tracing::warn!("the gateway state feature is disabled; the gateway uses outage-only mode");
-        GatewayState::outage_only().context("create the outage-only gateway state")?
-    };
-    let availability = gateway_state.availability_handle();
+    let secret_wait = Duration::from_secs(args.secret_wait_seconds);
     let metrics = Arc::new(GatewayMetrics::new(args.environment.clone()));
-    let gateway_state = gateway_state
-        .with_mode(args.key_registry_mode)
-        .with_environment(&args.environment)
-        .with_metrics(metrics.clone());
+    let pepper = wait_for_bounded_file(&args.api_key_pepper_file, 4_096, secret_wait)?;
+    let keys = Arc::new(
+        KeyStore::new(pepper, &args.environment)
+            .map_err(|_| anyhow::anyhow!("the API key pepper must be at least 32 bytes"))?
+            .with_metrics(metrics.clone()),
+    );
+    let secret: AdminSecret = serde_json::from_slice(&wait_for_bounded_file(
+        &args.admin_config_file,
+        65_536,
+        secret_wait,
+    )?)
+    .context("invalid admin client secret")?;
+    let admin_config = admin_client::Config {
+        endpoint: args.admin_endpoint.clone(),
+        token: secret.token,
+        tls_ca_pem: None,
+        connect_address: None,
+        models: serde_json::from_str(&args.usage_models).context("invalid GATEWAY_USAGE_MODELS")?,
+    };
+    let admin = Arc::new(AdminClient::new(&admin_config).map_err(anyhow::Error::msg)?);
+    tokio::spawn(admin_client::sync_keys(
+        admin.clone(),
+        keys.clone(),
+        metrics.clone(),
+    ));
     let timeout = Duration::from_secs(args.upstream_timeout_seconds);
     let http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -405,12 +349,7 @@ async fn main() -> Result<()> {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("build the internal inference client")?;
-    let attestation: Arc<dyn confidential_gateway::AttestationProvider> = if args.cds_url.is_some()
-    {
-        metadata_provider_with_runtime(&args, metrics.clone(), runtime.clone())?
-    } else {
-        bail!("GATEWAY_C8S_CDS_URL is required for policy metadata")
-    };
+    let attestation = metadata_provider_with_runtime(&args, metrics.clone(), runtime.clone())?;
     let attestation: Arc<dyn confidential_gateway::AttestationProvider> = match &releases {
         Some(releases) => Arc::new(
             confidential_gateway::release_settings::ReleaseMetadataProvider {
@@ -423,27 +362,18 @@ async fn main() -> Result<()> {
     let protection = protection_config(&args);
     let inference_model_id = args.model;
     let catalog_model_ids = vec![inference_model_id.clone()];
-    let usage = if let Some(path) = &args.usage_config_file {
-        if !args.state_enabled || !gateway_state.is_available() {
-            bail!("usage requires durable gateway state");
-        }
-        let config: confidential_gateway::usage::Config =
-            serde_json::from_slice(&read_bounded(path, 65_536)?)
-                .context("invalid usage configuration")?;
-        if config.environment != args.environment {
-            bail!("usage environment differs from gateway environment");
-        }
-        let path = args
-            .state_database
-            .parent()
-            .context("usage storage needs a state directory")?
-            .join("usage.sqlite3");
-        let recorder = confidential_gateway::usage::Recorder::open(&path, config)?;
-        recorder.spawn();
-        Some(recorder)
-    } else {
-        None
-    };
+    let usage = args.usage_enabled.then(|| {
+        // Each process is one producer instance; the pod hostname is fixed.
+        let instance = format!("gateway-{}", uuid::Uuid::new_v4().simple());
+        let recorder = confidential_gateway::usage::Recorder::new(
+            &instance,
+            admin_config.models.clone(),
+            confidential_gateway::usage::MAX_PENDING_EVENTS,
+            metrics.clone(),
+        );
+        tokio::spawn(recorder.clone().deliver(admin.clone()));
+        recorder
+    });
     let public = router_with_runtime_and_usage(
         GatewayConfig {
             catalog_model_ids,
@@ -453,10 +383,9 @@ async fn main() -> Result<()> {
             upstream_timeout: timeout,
             protection,
         },
-        Arc::new(gateway_state.clone()),
+        keys.clone(),
         Arc::new(TracingAuditSink),
         metrics.clone(),
-        availability,
         attestation,
         http,
         runtime.clone(),
@@ -469,32 +398,29 @@ async fn main() -> Result<()> {
     let admin_certificate =
         read_bounded(&args.admin_signer_certificate_file, MAX_CERTIFICATE_BYTES)
             .context("read the admin request signer certificate")?;
-    let admin_verifier = AdminRequestVerifier::from_certificate_pem(&admin_certificate)
+    let mut admin_verifier = AdminRequestVerifier::from_certificate_pem(&admin_certificate)
         .map_err(anyhow::Error::msg)
         .context("parse the admin request signer certificate")?;
-    let mut admin = admin_router(gateway_state);
-    if let Some(usage) = &usage {
-        admin = admin.merge(confidential_gateway::usage::admin_router(usage.clone()));
+    if args.admin_api_key_hashes_file.exists() {
+        let hashes = read_bounded(&args.admin_api_key_hashes_file, MAX_API_KEY_HASHES_BYTES)
+            .context("read the admin API key hashes")?;
+        admin_verifier = admin_verifier
+            .with_api_key_hashes(&hashes)
+            .map_err(anyhow::Error::msg)
+            .context("parse the admin API key hashes")?;
+    } else {
+        tracing::info!("no admin API key file; admin requests need the v1 signature");
     }
-    let admin = admin.layer(middleware::from_fn_with_state(
+    let admin_routes = admin_router(keys).layer(middleware::from_fn_with_state(
         admin_verifier,
         require_signed_admin_request,
     ));
-    let app = public.merge(admin);
+    let app = public.merge(admin_routes);
 
     let metrics_listener = tokio::net::TcpListener::bind(args.metrics_listen)
         .await
         .context("bind the private metrics listener")?;
     let mut private = metrics_router(metrics);
-    if let Some(usage) = usage {
-        private = private.route(
-            "/usage-status",
-            axum::routing::get(move || {
-                let usage = usage.clone();
-                async move { axum::Json(usage.status()) }
-            }),
-        );
-    }
     if let Some(releases) = releases {
         private = private.route(
             "/release-config",
@@ -538,37 +464,56 @@ async fn main() -> Result<()> {
         signal_handle.graceful_shutdown(Some(shutdown_grace));
     });
 
-    let mut public_server = axum_server::bind(args.listen).handle(shutdown_handle.clone());
+    let mut public_server = axum_server::bind(args.listen).handle(shutdown_handle);
     limits.apply(public_server.http_builder());
-    let plaintext = public_server.serve(
-        app.clone()
-            .into_make_service_with_connect_info::<SocketAddr>(),
-    );
-    let Some(tls_listen) = args.tls_listen else {
-        return plaintext.await.context("serve the public gateway");
-    };
-    let tls_config = RustlsConfig::from_pem_file(&args.tls_cert_file, &args.tls_key_file)
+    public_server
+        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await
-        .context("read the mesh TLS certificate and key")?;
-    tokio::spawn(reload_tls_certificate(
-        tls_config.clone(),
-        args.tls_cert_file.clone(),
-        args.tls_key_file.clone(),
-        TLS_RELOAD_INTERVAL,
-    ));
-    tracing::info!(listen = %tls_listen, "the gateway serves TLS with the mesh certificate");
-    let mut tls_server = axum_server::bind_rustls(tls_listen, tls_config).handle(shutdown_handle);
-    limits.apply(tls_server.http_builder());
-    let tls = tls_server.serve(app.into_make_service_with_connect_info::<SocketAddr>());
-    // Either listener stopping ends the process; Kubernetes restarts it.
-    tokio::try_join!(
-        async { plaintext.await.context("serve the public gateway") },
-        async { tls.await.context("serve the public gateway over TLS") },
-    )?;
+        .context("serve the public gateway")?;
+    // Every request has finished, so every usage event is queued.
+    if let Some(usage) = usage {
+        usage.flush(&admin, USAGE_FLUSH_TIMEOUT).await;
+    }
+    if let Some(log_export) = log_export {
+        let _ = tokio::task::spawn_blocking(move || log_export.shutdown()).await;
+    }
     Ok(())
 }
 
-/// HTTP limits shared by the plaintext and the TLS listener.
+/// Log export to the telemetry collector over OTLP/HTTP, on when the standard
+/// `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` is set. The SDK reads
+/// `OTEL_SERVICE_NAME`; both variables are pinned in the allowlist.
+fn otlp_log_export(endpoint: String) -> Result<opentelemetry_sdk::logs::SdkLoggerProvider> {
+    use opentelemetry_otlp::WithExportConfig;
+    let exporter = opentelemetry_otlp::LogExporter::builder()
+        .with_http()
+        .with_endpoint(endpoint)
+        .build()
+        .context("build the OTLP log exporter")?;
+    Ok(opentelemetry_sdk::logs::SdkLoggerProvider::builder()
+        .with_batch_exporter(exporter)
+        .build())
+}
+
+/// The layer that hands gateway log events to the OTLP provider. The
+/// exporter's own HTTP stack stays out, so an export never logs itself.
+fn otlp_log_layer<S>(
+    provider: &opentelemetry_sdk::logs::SdkLoggerProvider,
+) -> impl tracing_subscriber::Layer<S>
+where
+    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
+{
+    use tracing_subscriber::Layer;
+    opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(provider).with_filter(
+        tracing_subscriber::filter::filter_fn(|metadata| {
+            !["opentelemetry", "reqwest", "hyper", "h2", "tower"]
+                .iter()
+                .any(|target| metadata.target().starts_with(target))
+        }),
+    )
+}
+
+/// HTTP limits of the public listener.
 struct HttpLimits {
     header_timeout: Duration,
     maximum_headers: usize,
@@ -601,48 +546,6 @@ impl HttpLimits {
             .http2()
             .max_concurrent_streams(self.h2_streams)
             .max_header_list_size(self.h2_header_bytes);
-    }
-}
-
-const TLS_RELOAD_INTERVAL: Duration = Duration::from_secs(30);
-
-fn modified(path: &Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
-}
-
-/// Reload the mesh certificate when get-cert renews it. A failed reload
-/// keeps the certificate in use, and `seen` does not advance, so the next
-/// tick retries. That retry matters: get-cert writes the key and then the
-/// certificate, each atomically, so a tick between the two writes sees a
-/// new key with the old certificate and fails. c8s signals only nginx on
-/// renewal, so the gateway polls. The plaintext listener and this one stay
-/// side by side only until production runs a c8s router of v0.56.0 or later.
-async fn reload_tls_certificate(
-    config: RustlsConfig,
-    cert: PathBuf,
-    key: PathBuf,
-    interval: Duration,
-) {
-    let mut seen = (modified(&cert), modified(&key));
-    let mut tick = tokio::time::interval(interval);
-    tick.tick().await;
-    loop {
-        tick.tick().await;
-        let now = (modified(&cert), modified(&key));
-        if now == seen {
-            continue;
-        }
-        match config.reload_from_pem_file(&cert, &key).await {
-            Ok(()) => {
-                tracing::info!("the gateway reloaded the mesh TLS certificate");
-                seen = now;
-            }
-            Err(error) => {
-                tracing::error!(%error, "the gateway could not reload the mesh TLS certificate");
-            }
-        }
     }
 }
 
@@ -690,9 +593,6 @@ fn protection_config(args: &Args) -> ProtectionConfig {
         trusted_proxy_cidrs: args.trusted_proxy_cidrs.clone(),
     }
 }
-
-/// The only value `GATEWAY_C8S_ATTESTATION_PROTOCOL` accepts.
-const PINNED_C8S_ATTESTATION_PROTOCOL: &str = "v1-xwing";
 
 fn with_instance_header(app: axum::Router, identity: Option<&str>) -> Result<axum::Router> {
     let Some(identity) = identity else {
@@ -806,11 +706,7 @@ fn metadata_provider_with_runtime(
         .map_or(args.c8s_evidence_connect_host.as_deref(), |settings| {
             settings.connect_host.as_deref()
         });
-    let cds_url = url::Url::parse(
-        args.cds_url
-            .as_deref()
-            .context("GATEWAY_C8S_CDS_URL is required")?,
-    )?;
+    let cds_url = url::Url::parse(&args.cds_url)?;
     if cds_url.scheme() != "https"
         || cds_url.host_str().is_none()
         || !cds_url.username().is_empty()
@@ -922,10 +818,7 @@ fn validate_args(args: &Args) -> Result<()> {
     {
         bail!("DEPLOYMENT_ENVIRONMENT must be a DNS label");
     }
-    if args.listen.port() != 9443
-        || args.metrics_listen.port() != 9090
-        || args.tls_listen.is_some_and(|listen| listen.port() != 9444)
-    {
+    if args.listen.port() != 9443 || args.metrics_listen.port() != 9090 {
         bail!("the gateway listeners do not match the Kubernetes port contract");
     }
     if !args.allow_direct_inference_url && args.inference_url != INFERENCE_UPSTREAM_URL {
@@ -960,14 +853,8 @@ fn validate_args(args: &Args) -> Result<()> {
     {
         bail!("the public protection limits are outside the safe range");
     }
-    if args.state_absence_policy != "fail-closed" {
-        bail!("GATEWAY_STATE_ABSENCE_POLICY must be fail-closed");
-    }
-    if !(1..=600).contains(&args.state_startup_timeout_seconds) {
-        bail!("GATEWAY_STATE_STARTUP_TIMEOUT_SECONDS is outside the safe range");
-    }
-    if args.state_volume != "disk" && args.state_volume != "c8s" {
-        bail!("GATEWAY_STATE_VOLUME must be disk or c8s");
+    if !(1..=600).contains(&args.secret_wait_seconds) {
+        bail!("GATEWAY_SECRET_WAIT_SECONDS is outside the safe range");
     }
     if args.attestation_timeout_seconds == 0
         || args.attestation_timeout_seconds > 120
@@ -978,32 +865,7 @@ fn validate_args(args: &Args) -> Result<()> {
     if args.runtime_config_file.is_none() && (args.model.is_empty() || args.model.len() > 256) {
         bail!("GATEWAY_MODEL must identify one configured model");
     }
-    if args.cds_url.is_some() {
-        metadata_provider(args, Arc::new(GatewayMetrics::new("validation")))?;
-        return Ok(());
-    }
-    if args.c8s_attestation_protocol != PINNED_C8S_ATTESTATION_PROTOCOL {
-        bail!(
-            "GATEWAY_C8S_ATTESTATION_PROTOCOL must be {PINNED_C8S_ATTESTATION_PROTOCOL}: this build speaks {C8S_ATTESTATION_PROTOCOL} and runs in lockstep with c8s {C8S_ATTESTATION_PROTOCOL_COMMIT}"
-        );
-    }
-    C8sAttestationProvider::from_config_with_connect_host(
-        C8sAttestationConfig {
-            targets: &args.c8s_receipt_targets,
-            evidence_base_url: &args.c8s_evidence_base_url,
-            release_id: &args.release_id,
-            release_bundle_sha256: &args.release_bundle_sha256,
-            expected_operator_public_key_sha256: &args.expected_operator_public_key_sha256,
-            expected_operator_key_set_sha256: &args.expected_operator_key_set_sha256,
-            policy_mode: &args.c8s_policy_mode,
-            expected_static_allowlist_sha256: &args.expected_static_allowlist_sha256,
-            timeout: Duration::from_secs(args.attestation_timeout_seconds),
-            maximum_receipt_bytes: args.attestation_maximum_evidence_bytes,
-        },
-        args.c8s_evidence_connect_host.as_deref(),
-    )
-    .map_err(anyhow::Error::msg)
-    .context("validate the c8s receipt targets")?;
+    metadata_provider(args, Arc::new(GatewayMetrics::new("validation")))?;
     Ok(())
 }
 
@@ -1130,26 +992,6 @@ fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-// c8s volumed mounts the volume after the pod starts, so the first attempts can
-// see the bare emptyDir. Only a missing mount is retried; any other failure,
-// such as a corrupt database, stops at once.
-fn open_c8s_state(
-    database: &Path,
-    pepper: &[u8],
-    volume_name: &str,
-    timeout: Duration,
-) -> Result<GatewayState> {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match GatewayState::open_c8s_volume(database, pepper.to_vec(), volume_name) {
-            Err(StateError::Mount) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_secs(1));
-            }
-            result => return result.map_err(anyhow::Error::from),
-        }
-    }
-}
-
 // The probe follows symlinks, so a kubelet symlink whose target does not exist
 // yet is retried like a missing file.
 fn wait_for_bounded_file(path: &Path, limit: usize, timeout: Duration) -> Result<Vec<u8>> {
@@ -1175,27 +1017,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metadata_configuration_does_not_require_receipt_targets() {
+    fn metadata_configuration_requires_policy_pins() {
         let mut value = args();
-        value.cds_url = Some("https://cds.c8s-system.svc.cluster.local:8443".into());
-        value.cds_image_policy = Some(PathBuf::from("/mnt/c8s-data/image-policy/policy.json"));
-        value.cds_image_policy_sha256 = format!("sha256:{}", "0".repeat(64));
-        value.cds_served_image_policy = value.cds_image_policy.clone();
-        value.cds_served_image_policy_sha256 = value.cds_image_policy_sha256.clone();
-        value.c8s_receipt_targets.clear();
         assert!(validate_args(&value).is_ok());
         value.cds_image_policy_sha256 = "untrusted".into();
         assert!(validate_args(&value).is_err());
     }
 
     #[test]
+    fn the_cds_url_must_be_an_https_origin() {
+        let mut value = args();
+        for invalid in [
+            "http://cds.c8s-system.svc.cluster.local:8443",
+            "https://cds.c8s-system.svc.cluster.local:8443/path",
+            "https://user@cds.c8s-system.svc.cluster.local:8443",
+            "",
+        ] {
+            value.cds_url = invalid.to_owned();
+            assert!(validate_args(&value).is_err(), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
     fn runtime_evidence_can_supply_the_only_startup_url() -> Result<()> {
         let mut value = args();
-        value.cds_url = Some("https://cds.c8s-system.svc.cluster.local:8443".into());
-        value.cds_image_policy = Some(PathBuf::from("/mnt/c8s-data/image-policy/policy.json"));
-        value.cds_image_policy_sha256 = format!("sha256:{}", "0".repeat(64));
-        value.cds_served_image_policy = value.cds_image_policy.clone();
-        value.cds_served_image_policy_sha256 = value.cds_image_policy_sha256.clone();
         value.c8s_evidence_base_url.clear();
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("settings.json");
@@ -1246,28 +1091,27 @@ mod tests {
 
     fn args() -> Args {
         Args {
-            usage_config_file: None,
+            admin_config_file: PathBuf::from("/run/c8s/secrets/product-usage"),
+            admin_endpoint: "https://admin.example.com/api/usage/ingest".into(),
+            usage_models: "{}".into(),
+            usage_enabled: false,
             router_namespace: None,
             release_selection_file: None,
             runtime_config_file: None,
             listen: "0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()),
             metrics_listen: "0.0.0.0:9090".parse().unwrap_or_else(|_| unreachable!()),
-            tls_listen: None,
-            tls_cert_file: PathBuf::from("/etc/c8s/certs/tls.crt"),
-            tls_key_file: PathBuf::from("/etc/c8s/certs/tls.key"),
             inference_url: INFERENCE_UPSTREAM_URL.to_owned(),
             allow_direct_inference_url: false,
             model: "deepseek-ai/DeepSeek-V4-Flash-0731".to_owned(),
-            cds_url: None,
-            cds_image_policy: None,
-            cds_image_policy_sha256: String::new(),
-            cds_served_image_policy: None,
-            cds_served_image_policy_sha256: String::new(),
+            cds_url: "https://cds.c8s-system.svc.cluster.local:8443".to_owned(),
+            cds_image_policy: Some(PathBuf::from("/mnt/c8s-data/image-policy/policy.json")),
+            cds_image_policy_sha256: format!("sha256:{}", "0".repeat(64)),
+            cds_served_image_policy: Some(PathBuf::from("/mnt/c8s-data/image-policy/policy.json")),
+            cds_served_image_policy_sha256: format!("sha256:{}", "0".repeat(64)),
             c8s_verifier: PathBuf::from("/usr/local/bin/c8s"),
             attestation_cache_seconds: 10,
             release_url: None,
             gateway_instance_id: None,
-            c8s_receipt_targets: "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker=http://inference-worker-1-0.inference-workers:8802,metrics-collector|metrics-collector|metrics-collector=http://metrics-collector:8803,kube-state-metrics|kube-state-metrics|kube-state-metrics=http://kube-state-metrics:8804".to_owned(),
             c8s_evidence_base_url: "https://api.example.test".to_owned(),
             c8s_evidence_connect_host: None,
             release_id: "test-release".to_owned(),
@@ -1275,23 +1119,13 @@ mod tests {
             release_bundle_sha256: format!("sha256:{}", "1".repeat(64)),
             expected_operator_public_key_sha256: format!("sha256:{}", "2".repeat(64)),
             expected_operator_key_set_sha256: format!("sha256:{}", "3".repeat(64)),
-            c8s_policy_mode: "operator".to_owned(),
-            c8s_attestation_protocol: PINNED_C8S_ATTESTATION_PROTOCOL.to_owned(),
-            expected_static_allowlist_sha256: String::new(),
             attestation_timeout_seconds: 30,
             attestation_maximum_evidence_bytes: 1_048_576,
             environment: "production".to_owned(),
-            state_database: PathBuf::from("/var/lib/confidential-gateway/gateway.sqlite3"),
-            state_disk_serial: "confai-gateway-state".to_owned(),
-            state_volume: "disk".to_owned(),
-            state_volume_name: "gwstate".to_owned(),
-            state_absence_policy: "fail-closed".to_owned(),
-            state_enabled: false,
             api_key_pepper_file: PathBuf::from("/run/c8s/secrets/GATEWAY_API_KEY_PEPPER"),
-            state_startup_timeout_seconds: 60,
-            admin_signer_certificate_file: PathBuf::from(
-                "/mnt/c8s-data/admin-auth/client.crt",
-            ),
+            secret_wait_seconds: 300,
+            admin_signer_certificate_file: PathBuf::from("/mnt/c8s-data/admin-auth/client.crt"),
+            admin_api_key_hashes_file: PathBuf::from("/mnt/c8s-data/admin-api-key/sha256"),
             maximum_body_bytes: 2_097_152,
             upstream_timeout_seconds: 900,
             maximum_headers: 64,
@@ -1311,99 +1145,12 @@ mod tests {
             shutdown_grace_seconds: 900,
             endpoint_drain_seconds: 35,
             trusted_proxy_cidrs: Vec::new(),
-            key_registry_mode: KeyRegistryMode::Local,
         }
     }
 
     #[test]
     fn kubernetes_ports_and_internal_upstream_pass() {
         assert!(validate_args(&args()).is_ok());
-    }
-
-    fn write_certificate(directory: &Path, name: &str) -> Result<Vec<u8>> {
-        let certificate = rcgen::generate_simple_self_signed(vec![name.to_owned()])?;
-        std::fs::write(directory.join("tls.crt"), certificate.cert.pem())?;
-        std::fs::write(
-            directory.join("tls.key"),
-            certificate.signing_key.serialize_pem(),
-        )?;
-        Ok(certificate.cert.der().to_vec())
-    }
-
-    async fn served_certificate(port: u16) -> Result<Vec<u8>> {
-        // The router pins the leaf itself, so the client here only reads it.
-        let client = reqwest::Client::builder()
-            .tls_danger_accept_invalid_certs(true)
-            .tls_version_min(reqwest::tls::Version::TLS_1_3)
-            .tls_info(true)
-            .build()?;
-        let response = client
-            .get(format!("https://localhost:{port}/"))
-            .send()
-            .await?;
-        let info = response
-            .extensions()
-            .get::<reqwest::tls::TlsInfo>()
-            .context("no TLS info")?;
-        Ok(info
-            .peer_certificate()
-            .context("no peer certificate")?
-            .to_vec())
-    }
-
-    #[tokio::test]
-    async fn the_tls_listener_serves_and_reloads_the_mesh_certificate() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let first = write_certificate(directory.path(), "gateway-first")?;
-        let (cert, key) = (
-            directory.path().join("tls.crt"),
-            directory.path().join("tls.key"),
-        );
-        let config = RustlsConfig::from_pem_file(&cert, &key).await?;
-        tokio::spawn(reload_tls_certificate(
-            config.clone(),
-            cert.clone(),
-            key.clone(),
-            Duration::from_millis(50),
-        ));
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
-        let handle = axum_server::Handle::new();
-        let serve_handle = handle.clone();
-        tokio::spawn(async move {
-            axum_server::from_tcp_rustls(listener, config)
-                .handle(serve_handle)
-                .serve(
-                    axum::Router::new()
-                        .fallback(|| async { "ok" })
-                        .into_make_service(),
-                )
-                .await
-        });
-        assert_eq!(served_certificate(port).await?, first);
-        let second = write_certificate(directory.path(), "gateway-second")?;
-        let mut served = Vec::new();
-        for _ in 0..100 {
-            served = served_certificate(port).await?;
-            if served == second {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        handle.shutdown();
-        assert_eq!(served, second, "the renewed certificate was not served");
-        Ok(())
-    }
-
-    #[test]
-    fn the_tls_listener_must_use_its_kubernetes_port() {
-        let mut value = args();
-        value.tls_listen = Some("0.0.0.0:9444".parse().unwrap_or_else(|_| unreachable!()));
-        assert!(validate_args(&value).is_ok());
-        value.tls_listen = Some("0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()));
-        assert!(validate_args(&value).is_err());
-        value.tls_listen = Some("0.0.0.0:8443".parse().unwrap_or_else(|_| unreachable!()));
-        assert!(validate_args(&value).is_err());
     }
 
     #[test]
@@ -1424,19 +1171,10 @@ mod tests {
     }
 
     #[test]
-    fn custom_environment_and_receipt_target_contract_pass() {
+    fn custom_environment_and_model_pass() {
         let mut value = args();
         value.environment = "staging".to_owned();
         value.model = "staging-simulator".to_owned();
-        value.c8s_receipt_targets = "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802".to_owned();
-        assert!(validate_args(&value).is_ok());
-    }
-
-    #[test]
-    fn configured_environment_accepts_its_explicit_model() {
-        let mut value = args();
-        value.environment = "staging".to_owned();
-        value.c8s_receipt_targets = "gateway|gateway|gateway=http://127.0.0.1:8800,sglang-router|sglang-router|sglang-router=http://sglang-router:8801,inference-worker-0|inference-worker-0|inference-worker-0=http://inference-worker-0-0.inference-workers:8802,inference-worker-1|inference-worker-1|inference-worker-1=http://inference-worker-1-0.inference-workers:8802".to_owned();
         assert!(validate_args(&value).is_ok());
     }
 
@@ -1452,16 +1190,6 @@ mod tests {
     }
 
     #[test]
-    fn only_the_pinned_c8s_attestation_protocol_is_accepted() {
-        let mut value = args();
-        assert!(validate_args(&value).is_ok());
-        value.c8s_attestation_protocol = "v1-session-pubkey".to_owned();
-        assert!(validate_args(&value).is_err());
-        value.c8s_attestation_protocol = String::new();
-        assert!(validate_args(&value).is_err());
-    }
-
-    #[test]
     fn invalid_environment_name_fails() {
         let mut value = args();
         value.environment = "Invalid Environment".to_owned();
@@ -1469,34 +1197,18 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_state_and_attestation_configuration_fail() {
+    fn unsafe_secret_wait_and_attestation_configuration_fail() {
         let mut value = args();
-        value.state_absence_policy = "create-empty".to_owned();
+        value.secret_wait_seconds = 0;
         assert!(validate_args(&value).is_err());
-        value.state_absence_policy = "fail-closed".to_owned();
-        value.c8s_receipt_targets =
-            "gateway|gateway|gateway=https://attestation.example:8800".to_owned();
+        value.secret_wait_seconds = 300;
+        value.attestation_timeout_seconds = 0;
         assert!(validate_args(&value).is_err());
     }
 
     #[test]
-    fn every_key_registry_mode_needs_no_extra_configuration() {
-        // The admin VM pushes each snapshot over the signed admin channel,
-        // so no mode needs a registry URL, a token file or a poll interval.
-        for mode in [
-            KeyRegistryMode::Local,
-            KeyRegistryMode::Dual,
-            KeyRegistryMode::Registry,
-        ] {
-            let mut value = args();
-            value.key_registry_mode = mode;
-            assert!(validate_args(&value).is_ok());
-        }
-    }
-
-    #[test]
-    fn absent_state_inputs_fail_closed() {
-        let missing = PathBuf::from("/definitely-absent/confidential-gateway/state");
+    fn absent_mounted_inputs_fail_closed() {
+        let missing = PathBuf::from("/definitely-absent/confidential-gateway/pepper");
         assert!(read_bounded(&missing, 4_096).is_err());
     }
 
@@ -1738,5 +1450,60 @@ mod tests {
         value.expected_operator_key_set_sha256 = String::new();
         value.release_identity_file = Some(path);
         assert!(load_release_identity(&mut value).is_err());
+    }
+}
+
+#[cfg(test)]
+mod otlp_log_tests {
+    use anyhow::{Context, Result, anyhow};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use tracing_subscriber::layer::SubscriberExt;
+
+    /// One OTLP/HTTP request: its path and body.
+    fn receive_one(listener: &std::net::TcpListener) -> Result<(String, Vec<u8>)> {
+        let (stream, _) = listener.accept()?;
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let path = line.split(' ').nth(1).context("request line")?.to_owned();
+        let mut length = 0;
+        loop {
+            line.clear();
+            reader.read_line(&mut line)?;
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse()?;
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body)?;
+        reader
+            .get_mut()
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")?;
+        Ok((path, body))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_log_event_reaches_the_otlp_endpoint() -> Result<()> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}/v1/logs", listener.local_addr()?);
+        let server = std::thread::spawn(move || receive_one(&listener));
+        let provider = super::otlp_log_export(endpoint)?;
+        let subscriber = tracing_subscriber::registry().with(super::otlp_log_layer(&provider));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("gateway otlp test line");
+        });
+        tokio::task::spawn_blocking(move || provider.shutdown()).await??;
+        let (path, body) = server
+            .join()
+            .map_err(|_| anyhow!("the OTLP test server panicked"))??;
+        assert_eq!(path, "/v1/logs");
+        let needle = b"gateway otlp test line";
+        assert!(body.windows(needle.len()).any(|window| window == needle));
+        Ok(())
     }
 }

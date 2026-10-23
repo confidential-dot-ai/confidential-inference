@@ -107,14 +107,6 @@ gateway:
     perAddressConcurrency: 256
     requestsPerAddressPerSecond: 256
     perKeyConcurrency: 128
-  state:
-    enabled: true
-    absencePolicy: fail-closed
-    startupTimeoutSeconds: 300
-    volumeName: gwstate
-    c8sVolumeSource: /confidential-inference/volumes/gwstate
-    volumeDirectory: /mnt/c8s-data
-    databasePath: /mnt/c8s-data/gwstate/gateway.sqlite3
 
 inference:
   enabled: true
