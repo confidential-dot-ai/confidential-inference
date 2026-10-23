@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import runpy
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[2]
 MODULE = runpy.run_path(str(ROOT / "scripts/affected-release-images.py"))
 affected_images = MODULE["affected_images"]
 BASE_REF = MODULE["BASE_REF"]
+IMAGES = {image.image: image for image in MODULE["IMAGES"]}
+input_revision = MODULE["input_revision"]
 
 
 def names(paths: list[str]) -> list[str]:
@@ -72,6 +76,28 @@ class AffectedReleaseImagesTests(unittest.TestCase):
         self.assertIsNotNone(BASE_REF.fullmatch("a" * 40))
         self.assertIsNone(BASE_REF.fullmatch("main"))
         self.assertIsNone(BASE_REF.fullmatch("staging-v12"))
+
+    def test_input_revision_is_the_last_commit_that_changed_an_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            def git(*args: str) -> str:
+                return subprocess.check_output(
+                    ["git", "-C", tmp, "-c", "user.name=t", "-c", "user.email=t@t", *args], text=True
+                ).strip()
+
+            git("init", "-q")
+            (Path(tmp) / "images/log-collector").mkdir(parents=True)
+            (Path(tmp) / "images/log-collector/config.alloy").write_text("a\n")
+            git("add", ".")
+            git("commit", "-q", "-m", "inputs", "--date=@1700000000")
+            inputs = git("rev-parse", "HEAD")
+            (Path(tmp) / "README.md").write_text("b\n")
+            git("add", ".")
+            git("commit", "-q", "-m", "unrelated")
+            head = git("rev-parse", "HEAD")
+            self.assertEqual(
+                input_revision(IMAGES["log-collector"], head, cwd=tmp),
+                (inputs, git("show", "-s", "--format=%ct", inputs)),
+            )
 
 
 if __name__ == "__main__":
