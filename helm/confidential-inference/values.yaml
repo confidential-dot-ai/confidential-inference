@@ -26,32 +26,20 @@ images:
   kubeStateMetrics: ghcr.io/confidential-dot-ai/confidential-inference/kube-state-metrics@sha256:89c1fe0bbd01800eb7475825467b29d0268273e7c5be7b574c72b3370b5fc3f0
   c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:1468ac37566b0f198c41c56c098c32133c09279c08d549f7a57263d8b09d2b89
 
-# The gateway sends prompts through the c8s named-workload proxy. The proxy
-# verifies the router identity before it releases plaintext to the router.
-namedWorkloadProxy:
-  enabled: true
-
 c8s:
-  # The `app.kubernetes.io/name` label on the c8s front-door pod in the
-  # `c8s-system` namespace. The network policies select the front door by this
+  # The `app.kubernetes.io/name` label on the c8s front-door pod. The network policies select the front door by this
   # label. c8s renamed the component from `tls-lb` to `router` in c8s PR #606
   # (2026-09-14). Keep `tls-lb` for a c8s pin from before that commit. Set
   # `router` for a c8s pin from that commit or later. A wrong value makes the
   # front door -> gateway hop time out, because the namespace default-deny
   # policy drops it.
   frontDoorPodLabelName: tls-lb
+  # The namespace of the c8s front-door pod: `c8s-system` before c8s v0.66.0,
+  # `c8s-router` from v0.66.0 (c8s #814 runs the router as a mesh member in
+  # its own namespace).
+  frontDoorNamespace: c8s-system
 
 attestationReceipts:
-  enabled: true
-  # Older c8s releases accepted this cds-attest flag. Disable it when the
-  # pinned c8s binary does not list it in `c8s cds-attest --help`.
-  gpuEvidenceFlagEnabled: true
-  # Use the node-local attestation API and the two-field gateway target format
-  # on the production c8s 615 release.
-  legacyC8s615: false
-  # Set the node socket URL for measured images that provide it. An empty
-  # value keeps the HTTP endpoint of older node images.
-  attestationApiUrl: ""
   # This URL must be the c8s tls-lb front door. The gateway reads only c8s
   # discovery and allowlist evidence from it.
   evidenceBaseUrl: https://api.example.invalid
@@ -83,50 +71,12 @@ attestationReceipts:
     url: ""
     imagePolicy: ""
     servedImagePolicy: ""
-  # c8s v0.56.0 and later (c8s #851): every cds-attest sidecar routes by the
-  # signed route manifest that it polls from cds.url, and pins that CDS by the
-  # TDX measurements of the node image. The release build sets cdsPin from the
-  # pinned node manifest.
-  cdsRoutes: false
-  cdsPin:
-    mrtd: ""
-    rtmr1: ""
-    rtmr2: ""
-  targets:
-    - target: gateway
-      workload: gateway
-      identity: gateway
-      url: http://127.0.0.1:8800
-    - target: sglang-router
-      workload: sglang-router
-      identity: sglang-router
-      url: http://sglang-router:8801
-    - target: inference-worker-0
-      workload: inference-worker-0
-      identity: inference-worker-0
-      url: http://inference-worker-0-0.inference-workers:8802
-    - target: inference-worker-1
-      workload: inference-worker-1
-      identity: inference-worker-1
-      url: http://inference-worker-1-0.inference-workers:8802
   # A cached workload image can start after c8s issues the first, unnamed
   # certificate. Renew quickly so the next certificate contains the measured
-  # workload identity and the receipt sidecar becomes ready.
+  # workload identity.
   certificateRenewInterval: 30s
-  gatewayPort: 8800
-  routerPort: 8801
-  firstWorkerPort: 8802
-  metricsCollectorPort: 8803
-  kubeStateMetricsPort: 8804
-  platform: tdx
+  # The node-local attestation API that CDS uses to verify the requesting CVM.
   attestationApiPort: 8400
-  resources:
-    requests:
-      cpu: 25m
-      memory: 32Mi
-    limits:
-      cpu: 250m
-      memory: 128Mi
 
 runtimeConfig:
   # Enable for images that contain the gateway and router file readers.
@@ -165,14 +115,6 @@ gateway:
   containerPorts:
     public: 9443
     metrics: 9090
-    # The c8s router (v0.56.0 and later) dials route backends over TLS with
-    # the get-cert leaf of the named workload; the gateway serves the same
-    # router on this port with the certificate c8s injects in /etc/c8s/certs.
-    tls: 9444
-  meshTls:
-    # Turn off only for a gateway pod that c8s does not inject: without the
-    # certificate the gateway does not start.
-    enabled: true
   c8sSecrets:
     apiKeyPepper:
       name: GATEWAY_API_KEY_PEPPER
@@ -206,6 +148,10 @@ gateway:
     adminSigner:
       secretName: gateway-admin-mtls
       certificateKey: client.crt
+    # The SHA-256 hex of each accepted admin API key, one per line, at most
+    # two, under the Secret key `sha256`.
+    adminApiKey:
+      secretName: gateway-admin-api-key
   state:
     # The gateway keeps its API-key state on a c8s mutable encrypted volume.
     # Build the volume with `c8s volume create --mutable --name <volumeName>`,
@@ -282,6 +228,27 @@ inference:
         .model-lock-local-manifest.json: "0000000000000000000000000000000000000000000000000000000000000000"
       # expectedFileList: a list of {path, sha256} that replaces expectedFiles
       # (see the confidential-inference.expectedFiles helper).
+    # Plain model cache instead of the c8s model volume: the worker's
+    # fetch-model init container downloads the pinned revision from Hugging
+    # Face into the node's plain models disk (hostPath, public weights the
+    # host can read), and wait-for-model --plain-cache checks every file
+    # against the byte manifest on every start. Needs a node image that
+    # formats and mounts that disk read-write (C8s#1006). Allowlist rule G7
+    # refuses a secrets grant on an entry with a host mount: the worker drops
+    # the c8sVolumeSource read, and its workload policy entry must list no
+    # secretReads (tests/helm/test_render.py checks this).
+    cache:
+      enabled: false
+      hostPath: /var/lib/models/model
+      # The byte manifest file (`fetch-model manifest` output). Its SHA-256 is
+      # the mountVerification entry for revisionMetadata.
+      manifest: ""
+      endpoint: https://huggingface.co
+      # Hugging Face and its LFS/Xet CDN have no fixed addresses, and a
+      # NetworkPolicy cannot name hosts: the worker may reach these CIDRs on
+      # 443. The manifest pins every byte it downloads.
+      egressCidrs:
+        - 0.0.0.0/0
   port: 30000
   metricsPort: 29000
   # Name of the reasoning parser to pass as --reasoning-parser on the model
@@ -314,9 +281,6 @@ router:
   enabled: true
   replicas: 1
   port: 30000
-  # TLS port for the c8s named-workload server proxy. The Service exposes the
-  # application port and targets this port; it must remain pinned.
-  proxyPort: 9443
   metricsPort: 29000
   resources:
     cpu: "1"
@@ -327,19 +291,12 @@ metricsCollector:
   attestedWorkload: metrics-collector
   kubeApi:
     port: 6443
-  remoteWrite:
-    enabled: true
-    url: https://metrics.example.invalid/api/v1/write
-    address: 192.0.2.1
-    serverName: metrics.example.invalid
-    secretName: metrics-remote-write-mtls
-    destinationCidrs:
-      - 192.0.2.1/32
-    queue:
-      capacity: 10000
-      maxShards: 4
-      maxSamplesPerSend: 2000
-      sampleAgeLimit: 1h
+  # Prometheus remote_write queue to telemetry.metricsUrl.
+  queue:
+    capacity: 10000
+    maxShards: 4
+    maxSamplesPerSend: 2000
+    sampleAgeLimit: 1h
   tls:
     enabled: false
     secretName: prometheus-server-tls
@@ -365,6 +322,49 @@ nodeExporter:
   resources:
     cpu: 100m
     memory: 128Mi
+
+# The log collector (images/log-collector) sends the application containers'
+# logs to telemetry.logsUrl.
+logCollector:
+  enabled: false
+  attestedWorkload: log-collector
+
+# Where the collectors send telemetry: Prometheus remote_write for metrics and
+# the Loki push API for logs. The URLs, the deployment label and the
+# credentials are deployment values: the collectors read them from mounted
+# files, so they are not in the c8s allowlist. logsAuth.type is part of the log
+# collector's environment, so it is a release value.
+telemetry:
+  enabled: true
+  # The `deployment` label on every series and log line (none when empty).
+  deployment: ""
+  metricsUrl: https://telemetry.example.invalid/api/v1/write
+  logsUrl: https://telemetry.example.invalid/loki/api/v1/push
+  # Egress to the URLs (and auth.tokenUrl) on their ports.
+  destinationCidrs:
+    - 192.0.2.1/32
+  # Optional fixed addresses for the URL hostnames (pod hostAliases).
+  hostAliases: []
+  # The credentials of each receiver: metricsAuth for metricsUrl, logsAuth
+  # for logsUrl. Each one is:
+  # mtls:   client certificate; Secret keys tls.crt and tls.key.
+  # basic:  HTTP basic auth as `username`; Secret key password.
+  # oauth2: OAuth 2.0 client credentials as `clientId` from `tokenUrl`;
+  #         Secret key client-secret.
+  metricsAuth:
+    type: mtls
+    secretName: telemetry-auth
+    username: ""
+    clientId: ""
+    tokenUrl: ""
+    scopes: []
+  logsAuth:
+    type: mtls
+    secretName: telemetry-auth
+    username: ""
+    clientId: ""
+    tokenUrl: ""
+    scopes: []
 
 kubeStateMetrics:
   enabled: true

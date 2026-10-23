@@ -82,12 +82,13 @@ class ImagePublicationTests(unittest.TestCase):
         self.assertIn("if: inputs.publish && matrix.pass == 1", audit)
         self.assertIn("standard_pass_matrix", audit)
         self.assertIn("needs: [select-images, reproducibility-sglang-compare]\n", images)
-        self.assertIn("needs: [select-images, publish-standard, publish-sglang]\n", images)
-        self.assertEqual(images.count("--reproducibility-digest"), 2)
-        self.assertEqual(images.count("--pushed-digest"), 2)
+        self.assertIn("needs: [select-images, publish-standard, publish-sglang, publish-single]\n", images)
+        self.assertEqual(images.count("--reproducibility-digest"), 3)
+        self.assertEqual(images.count("--pushed-digest"), 3)
         self.assertIn("name: release-image-publication-${{ github.sha }}", images)
         self.assertNotIn("inputs.release_version", images)
-        self.assertIn('--release-commit "$(git rev-parse HEAD)" \\\n            --tag "$RELEASE_TAG" >> "$GITHUB_OUTPUT"', bundle)
+        self.assertIn('select=(--tag "$RELEASE_TAG")', bundle)
+        self.assertIn('--release-commit "$(git rev-parse HEAD)" \\\n            "${select[@]}" >> "$GITHUB_OUTPUT"', bundle)
         self.assertIn("scripts/find-image-publication-run.py", bundle)
         self.assertIn("name: ${{ steps.publication.outputs.artifact_name }}", bundle)
         self.assertIn("run-id: ${{ steps.publication.outputs.run_id }}", bundle)
@@ -96,8 +97,24 @@ class ImagePublicationTests(unittest.TestCase):
         self.assertIn("dist/allowlist.json#c8s allowlist", bundle)
         self.assertIn("dist/release-values.yaml#Release image values", bundle)
         self.assertNotIn("--base-release", bundle)
-        build = bundle[bundle.index("- name: Build the release at the tag commit"):]
+        build = bundle[bundle.index("- name: build release"):]
         self.assertIn("GH_TOKEN: ${{ github.token }}", build[:build.index("run: |")])
+
+    def test_an_unsigned_branch_build_signs_and_publishes_no_release(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT / ".github/workflows/release-bundle.yml").read_text())
+        steps = {step["name"]: step for job in workflow["jobs"].values() for step in job.get("steps", [])}
+        for name in ("validate tag", "sign bundle",
+                     "verify signature offline", "publish github release"):
+            self.assertEqual(steps[name].get("if"), "github.event_name == 'push'", name)
+        self.assertIn("v0.0.{0}-staging", workflow["env"]["RELEASE_TAG"])
+
+    def test_only_a_caller_can_skip_the_rebuild_audit(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT / ".github/workflows/release-images.yml").read_text())
+        triggers = workflow[True]
+        self.assertNotIn("single_build", triggers["workflow_dispatch"]["inputs"])
+        self.assertIn("single_build", triggers["workflow_call"]["inputs"])
 
     def test_build_requests_have_no_shared_cancellation_or_pending_slot(self):
         import yaml
@@ -124,8 +141,9 @@ class ImagePublicationTests(unittest.TestCase):
         jsonschema.Draft202012Validator.check_schema(schema)
 
 
-def run_response(runs: dict[int, str], artifacts: dict[str, list[int]], tag_message: str | None = None):
-    """A GitHub API stub: successful release-images runs on main by id and head commit.
+def run_response(runs: dict[int, str], artifacts: dict[str, list[int]], tag_message: str | None = None,
+                 branch: str = "main"):
+    """A GitHub API stub: successful release-images runs on `branch` by id and head commit.
 
     With tag_message, the release tag is annotated with that message.
     """
@@ -145,7 +163,7 @@ def run_response(runs: dict[int, str], artifacts: dict[str, list[int]], tag_mess
             "event": "workflow_dispatch",
             "path": ".github/workflows/release-images.yml",
             "conclusion": "success",
-            "head_branch": "main",
+            "head_branch": branch,
             "head_sha": runs[run_id],
             "repository": {"full_name": "confidential-dot-ai/confidential-inference"},
         }
@@ -203,6 +221,15 @@ class PublicationRunLookupTests(unittest.TestCase):
         FINDER.request_json = run_response({73: self.image}, {name: [73]})
         self.assertEqual(FINDER.find_nearest("https://api.github.test", "confidential-dot-ai/confidential-inference",
                                              "token", selector, self.repo), (self.image, 73))
+
+    def test_a_branch_run_is_trusted_only_by_a_build_of_that_branch(self):
+        name = FINDER.artifact_name(self.head)
+        api, repository = "https://api.github.test", "confidential-dot-ai/confidential-inference"
+        FINDER.request_json = run_response({73: self.head}, {name: [73]}, branch="conf-inf-integration")
+        with self.assertRaisesRegex(FINDER.LookupError, "changes an image build input"):
+            FINDER.find_nearest(api, repository, "token", self.head, self.repo)
+        self.assertEqual(FINDER.find_nearest(api, repository, "token", self.head, self.repo,
+                                             branches=("main", "conf-inf-integration")), (self.head, 73))
 
     def test_duplicate_publication_runs_fail_closed(self):
         name = FINDER.artifact_name(self.docs)

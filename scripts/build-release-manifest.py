@@ -827,8 +827,7 @@ def build(
     node = node_measurements(release_profiles.node_manifest(profile), spec)
     overlay = {
         "images": release_images(values, publication, base),
-        # cds-attest pins CDS, which runs on the pinned node image (c8s #851).
-        "attestationReceipts": {"releaseId": release_profiles.workload_release(tag), "cdsPin": node["tdx"]},
+        "attestationReceipts": {"releaseId": release_profiles.workload_release(tag)},
     }
     overlay_bytes = yaml.safe_dump(overlay, sort_keys=True).encode()
     values = release_profiles.merge_values(values, overlay)
