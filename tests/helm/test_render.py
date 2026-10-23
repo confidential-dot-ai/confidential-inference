@@ -156,6 +156,96 @@ def check_cds_nodeport_and_probe_budget() -> None:
                     assert container[probe].get('timeoutSeconds', 1) <= 5, (document['metadata']['name'], container['name'], probe)
 
 
+TELEMETRY = (
+    "--set", "telemetry.enabled=true",
+    "--set", "telemetry.deployment=test-deployment",
+    "--set", "telemetry.relay.serverName=relay.example.com",
+    "--set", "telemetry.relay.address=203.0.113.7",
+    "--set", "telemetry.metrics.tenantId=00000000-0000-0000-0000-000000000001",
+    "--set", "telemetry.metrics.clientId=00000000-0000-0000-0000-000000000002",
+    "--set", "telemetry.metrics.dataCollectionRule=dcr-" + "0" * 32,
+)
+
+
+def collector_config(documents: list[dict]) -> dict:
+    """The telemetry collector's pipeline, which is its one argument."""
+    collector = next(item for item in documents
+                     if item["kind"] == "Deployment" and item["metadata"]["name"] == "telemetry-collector")
+    (argument,) = collector["spec"]["template"]["spec"]["containers"][0]["args"]
+    assert argument.startswith("--config=yaml:")
+    return json.loads(argument.removeprefix("--config=yaml:"))
+
+
+def check_telemetry_collector() -> None:
+    """One stock collector is the only pod with an exit, and its argument pins what leaves."""
+    assert not any(item["metadata"]["name"].startswith("telemetry-") for item in render())
+    helm("template", "example", str(CHART), *NEUTRAL_MODE, "--set", "telemetry.enabled=true", success=False)
+
+    documents = render(*TELEMETRY, "--set", "telemetry.traces.enabled=true")
+    pods = {item["metadata"]["name"]: item["spec"]["template"]["spec"] for item in documents
+            if item["kind"] in {"Deployment", "StatefulSet"}}
+    # The collector and (stateless, #223) the gateway are the only pods with
+    # an exit; each exit is a hostAliases address and its one ipBlock.
+    exits = {name for name, pod in pods.items() if pod.get("hostAliases")}
+    assert "telemetry-collector" in exits and exits <= {"telemetry-collector", "gateway"}, exits
+    collector = pods["telemetry-collector"]
+    assert collector["hostAliases"] == [{"ip": "203.0.113.7", "hostnames": ["relay.example.com"]}]
+    assert PINNED.match(collector["containers"][0]["image"])
+    assert "env" not in collector["containers"][0]
+    assert collector["automountServiceAccountToken"] is False
+    # C8s #1049: an entry with egress has no host mount and a fixed argv.
+    assert not any("hostPath" in volume for volume in collector.get("volumes", []))
+    assert all("args" in container for container in collector["containers"])
+    for pod in (collector, pods["gateway"]):
+        # Per-pod mesh: no app container mounts the c8s certificate volume.
+        assert not any(mount["mountPath"] == "/etc/c8s/certs"
+                       for container in pod["containers"] for mount in container.get("volumeMounts", []))
+    policies = {item["metadata"]["name"]: item for item in documents if item["kind"] == "NetworkPolicy"}
+    blocks = [peer["ipBlock"]["cidr"] for policy in policies.values()
+              for rule in policy["spec"].get("egress", []) for peer in rule.get("to", []) if "ipBlock" in peer]
+    addresses = {alias["ip"] + "/32" for name in exits for alias in pods[name]["hostAliases"]}
+    assert sorted(blocks) == sorted(addresses) and "203.0.113.7/32" in blocks, blocks
+
+    config = collector_config(documents)
+    relay = "https://relay.example.com/"
+    assert config["exporters"]["prometheusremotewrite"]["endpoint"].startswith(relay + "prometheus/")
+    assert config["exporters"]["otlphttp/loki"]["logs_endpoint"] == relay + "otlp/v1/logs"
+    assert config["extensions"]["oauth2client"]["token_url"].startswith(relay + "entra/")
+    jobs = config["receivers"]["prometheus"]["config"]["scrape_configs"]
+    assert [job["job_name"] for job in jobs] == ["gateway", "sglang-router", "inference-worker-0", "inference-worker-1"]
+    for job in jobs:
+        (keep,) = job["metric_relabel_configs"]
+        assert keep["action"] == "labelkeep"
+        assert "__name__" in keep["regex"] and "prompt" not in keep["regex"]
+    targets = [target for job in jobs for static in job.get("static_configs", []) for target in static["targets"]]
+    targets += [name for job in jobs for sd in job.get("dns_sd_configs", []) for name in sd["names"]]
+    services = {item["metadata"]["name"]: item for item in documents if item["kind"] == "Service"}
+    # The mesh connects pods: every target is a pod address of a headless Service.
+    for target in targets:
+        host = target.split(":")[0].split(".")
+        service = services[host[1] if host[0].startswith("inference-worker-") else host[0]]
+        assert service["spec"]["clusterIP"] == "None", target
+    processors = config["processors"]
+    assert "keep_keys(spanevent.attributes, [])" in processors["transform/traces"]["trace_statements"]
+    assert not any("gen_ai.request.id" in statement for statement in processors["transform/traces"]["trace_statements"])
+    assert "keep_keys(log.attributes, [])" in processors["transform/logs"]["log_statements"]
+    assert config["service"]["pipelines"]["traces"]["exporters"] == ["spanmetrics"]
+
+    gateway = Gateway(documents)
+    assert gateway.env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] == "http://telemetry-collector.default.svc.cluster.local:4318/v1/logs"
+    assert "RUST_LOG" not in gateway.env
+    model = [item for item in yaml.safe_load_all(helm(
+        "template", "example", str(CHART), "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
+        *TELEMETRY, "--set", "telemetry.traces.enabled=true")) if item]
+    # GPU metrics: the worker image serves them (wait-for-model --gpu-metrics-port).
+    gpu_jobs = [job["job_name"] for job in collector_config(model)["receivers"]["prometheus"]["config"]["scrape_configs"]
+                if job["job_name"].startswith("inference-gpu-")]
+    assert gpu_jobs == ["inference-gpu-0", "inference-gpu-1"], gpu_jobs
+    worker = next(item for item in model if item["kind"] == "StatefulSet")["spec"]["template"]["spec"]["containers"][0]
+    assert "--enable-trace" in worker["args"] and "--otlp-traces-endpoint=telemetry-collector.default.svc.cluster.local:4317" in worker["args"]
+    assert not any(arg.startswith("--log-requests") for arg in worker["args"])
+
+
 def main() -> None:
     # The production release must route to a real Service.
     production = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
@@ -371,7 +461,9 @@ def main() -> None:
         for container in router["spec"]["template"]["spec"]["containers"]
         if container["name"] == "sglang-router"
     )
-    assert "--selector=app.kubernetes.io/component=inference-worker" in router_args
+    assert router_args[:3] == ["--worker-urls", "http://inference-worker-0-0.inference-workers:30000",
+                               "http://inference-worker-1-0.inference-workers:30000"]
+    assert not any(arg.startswith("--service-discovery") for arg in router_args)
     assert router["spec"]["strategy"]["rollingUpdate"] == {
         "maxUnavailable": 0,
         "maxSurge": 1,
@@ -381,15 +473,8 @@ def main() -> None:
         if item["kind"] == "Service" and item["metadata"]["name"] == "sglang-router"
     )
     assert "publishNotReadyAddresses" not in router_service["spec"]
-    router_role = next(
-        item for item in inference_documents
-        if item["kind"] == "Role" and item["metadata"]["name"] == "sglang-router-pods"
-    )
-    assert router_role["rules"] == [{
-        "apiGroups": [""],
-        "resources": ["pods"],
-        "verbs": ["get", "list", "watch"],
-    }]
+    assert not any(item["kind"] in {"Role", "RoleBinding"} and item["metadata"]["name"] == "sglang-router-pods"
+                   for item in inference_documents)
 
     # The attested GPU count annotation defaults to the per-pod allocation and
     # can be overridden when several workers share one node's GPUs.
@@ -425,7 +510,7 @@ def main() -> None:
         for rule in router_network_policy["spec"]["egress"]
         for port in rule.get("ports", [])
     }
-    assert {443, 6443}.issubset(router_egress_ports)
+    assert router_egress_ports == {30000}
 
     workers = [
         item for item in inference_documents
@@ -549,6 +634,7 @@ def main() -> None:
     check_override_replaces_strategy()
     check_front_door_namespace()
     check_cds_nodeport_and_probe_budget()
+    check_telemetry_collector()
     print("Helm neutral-default and safety tests passed.")
 
 
