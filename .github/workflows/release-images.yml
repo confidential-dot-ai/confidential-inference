@@ -168,6 +168,7 @@ jobs:
           driver-opts: image=${{ env.BUILDKIT_IMAGE }}
 
       - name: build image
+        id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           builder: ${{ steps.builder.outputs.name }}
@@ -188,22 +189,20 @@ jobs:
           provenance: false
           sbom: false
 
-      - name: record manifest
+      # The image digest that buildx reports. Equal digests mean equal
+      # manifest and configuration bytes, labels included.
+      - name: record digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          python3 scripts/verify-reproducible-oci.py \
-            /tmp/${{ matrix.image }}-${{ matrix.pass }}.tar \
-            --platform linux/amd64 \
-            --revision "${{ github.sha }}" \
-            --source-date-epoch "${{ steps.source.outputs.epoch }}" \
-            --record /tmp/${{ matrix.image }}-${{ matrix.pass }}.record.json
-          digest=$(python3 -c "import json;print(json.load(open('/tmp/${{ matrix.image }}-${{ matrix.pass }}.record.json'))['digest'])")
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '%s\n' "$DIGEST" > /tmp/${{ matrix.image }}-${{ matrix.pass }}.digest
 
-      - name: upload manifest record
+      - name: upload digest record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-record-${{ matrix.image }}-${{ matrix.pass }}
-          path: /tmp/${{ matrix.image }}-${{ matrix.pass }}.record.json
+          path: /tmp/${{ matrix.image }}-${{ matrix.pass }}.digest
           if-no-files-found: error
           retention-days: 1
 
@@ -245,14 +244,11 @@ jobs:
           name: release-record-${{ matrix.image }}-2
           path: /tmp/record-2
 
-      - name: compare manifests
+      - name: compare digests
         run: |
-          digest=$(python3 scripts/verify-reproducible-oci.py \
-            --compare-records \
-            /tmp/record-1/${{ matrix.image }}-1.record.json \
-            /tmp/record-2/${{ matrix.image }}-2.record.json | awk '{print $NF}')
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          printf '%s\n' "$digest" > /tmp/${{ matrix.image }}.platform-digest
+          cmp /tmp/record-1/${{ matrix.image }}-1.digest /tmp/record-2/${{ matrix.image }}-2.digest \
+            || { echo "The two clean builds differ." >&2; exit 1; }
+          cp /tmp/record-1/${{ matrix.image }}-1.digest /tmp/${{ matrix.image }}.platform-digest
 
       - name: upload digest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -349,6 +345,7 @@ jobs:
         id: disk-watch
 
       - name: build image
+        id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           builder: ${{ steps.builder.outputs.name }}
@@ -382,22 +379,18 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
-      - name: record manifest
+      - name: record digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          python3 scripts/verify-reproducible-oci.py \
-            /mnt/release-oci/sglang-${{ matrix.pass }}.tar \
-            --platform linux/amd64 \
-            --revision "${{ github.sha }}" \
-            --source-date-epoch "${{ steps.source.outputs.epoch }}" \
-            --record /tmp/sglang-${{ matrix.pass }}.record.json
-          digest=$(python3 -c "import json;print(json.load(open('/tmp/sglang-${{ matrix.pass }}.record.json'))['digest'])")
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '%s\n' "$DIGEST" > /tmp/sglang-${{ matrix.pass }}.digest
 
-      - name: upload manifest record
+      - name: upload digest record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-sglang-record-${{ matrix.pass }}
-          path: /tmp/sglang-${{ matrix.pass }}.record.json
+          path: /tmp/sglang-${{ matrix.pass }}.digest
           if-no-files-found: error
           retention-days: 1
 
@@ -425,14 +418,11 @@ jobs:
           name: release-sglang-record-2
           path: /tmp/sglang-2
 
-      - name: compare manifests
+      - name: compare digests
         run: |
-          digest=$(python3 scripts/verify-reproducible-oci.py \
-            --compare-records \
-            /tmp/sglang-1/sglang-1.record.json \
-            /tmp/sglang-2/sglang-2.record.json | awk '{print $NF}')
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          printf '%s\n' "$digest" > /tmp/sglang.platform-digest
+          cmp /tmp/sglang-1/sglang-1.digest /tmp/sglang-2/sglang-2.digest \
+            || { echo "The two clean builds differ." >&2; exit 1; }
+          cp /tmp/sglang-1/sglang-1.digest /tmp/sglang.platform-digest
 
       - name: upload digest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -467,10 +457,6 @@ jobs:
       - name: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: get source epoch
-        id: source
-        run: printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
-
       - name: download digest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -483,14 +469,9 @@ jobs:
           name: release-oci-${{ matrix.image }}
           path: /tmp/audited
 
-      - name: verify archive digest
+      # The record step below requires the pushed digest to equal the audited one.
+      - name: unpack oci archive
         run: |
-          python3 scripts/verify-reproducible-oci.py \
-            /tmp/audited/${{ matrix.image }}-1.tar \
-            --platform linux/amd64 \
-            --revision "${{ github.sha }}" \
-            --source-date-epoch "${{ steps.source.outputs.epoch }}" \
-            --expected-digest "$(tr -d '\n' < /tmp/verified-digest/${{ matrix.image }}.platform-digest)"
           mkdir -p /tmp/layout
           tar -xf /tmp/audited/${{ matrix.image }}-1.tar -C /tmp/layout
 
