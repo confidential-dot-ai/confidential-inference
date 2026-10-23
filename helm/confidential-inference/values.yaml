@@ -331,7 +331,8 @@ telemetry:
                        deployment, statefulset, daemonset, job_name, persistentvolumeclaim, storageclass, volume,
                        owner_kind, owner_name, owner_is_controller, created_by_kind, created_by_name, revision, image]
     # otelcol_* metrics (collector 0.163).
-    collector: [receiver, processor, exporter, transport, data_type, otel_signal, service_version]
+    # The receiver scrapes UTF-8 names, so dotted attributes keep their dots.
+    collector: [receiver, processor, exporter, transport, data_type, otel.signal, service_version]
   # SGLang span attributes that may reach spanmetrics. Request ids, finish
   # reason details and every span event attribute are dropped.
   spanAttributes:

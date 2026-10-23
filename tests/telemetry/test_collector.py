@@ -171,6 +171,7 @@ class CollectorTests(unittest.TestCase):
             for name, expected in (("metrics.json", "gateway_requests"), ("metrics.json", '"key_id"'),
                                    ("metrics.json", '"owner_kind"'),
                                    ("metrics.json", "otelcol_receiver_accepted_metric_points"),
+                                   ("metrics.json", '"otel.signal"'),
                                    ("metrics.json", "traces.span.metrics.duration"),
                                    ("spans.json", "gen_ai.usage.prompt_tokens"), ("logs.json", "Bearer [REDACTED]")):
                 self.assertTrue(expected in outputs[name], f"{expected} missing from {name}")
