@@ -3,6 +3,17 @@ logging {
   format = "json"
 }
 
+// The deployment sets the label, the receiver and its credentials as files
+// (/mnt/c8s-data/telemetry, /mnt/c8s-data/telemetry-auth). TELEMETRY_AUTH
+// selects the authentication: mtls, basic or oauth2 (auth/<type>.alloy).
+local.file "deployment" {
+  filename = "/mnt/c8s-data/telemetry/deployment"
+}
+
+import.file "auth" {
+  filename = "/etc/alloy/auth/" + sys.env("TELEMETRY_AUTH") + ".alloy"
+}
+
 discovery.kubernetes "application" {
   role = "pod"
   api_server = sys.env("KUBE_API_URL")
@@ -28,7 +39,7 @@ discovery.relabel "application" {
   }
   rule {
     target_label = "deployment"
-    replacement = sys.env("DEPLOYMENT_ID")
+    replacement = string.trim_space(local.file.deployment.content)
   }
   rule {
     source_labels = ["__meta_kubernetes_namespace"]
@@ -77,18 +88,7 @@ loki.process "application" {
     expression = "(?i)(Bearer[ \\t]+[A-Za-z0-9._~+/-]+)"
     replace = "[REDACTED]"
   }
-  forward_to = [loki.write.admin.receiver]
+  forward_to = [auth.writer.admin.receiver]
 }
 
-loki.write "admin" {
-  endpoint {
-    url = sys.env("LOKI_URL")
-    batch_size = "128KiB"
-    batch_wait = "1s"
-    tls_config {
-      cert_file = "/mnt/c8s-data/admin-client/tls.crt"
-      key_file = "/mnt/c8s-data/admin-client/tls.key"
-      min_version = "TLS12"
-    }
-  }
-}
+auth.writer "admin" {}
