@@ -44,6 +44,8 @@ images:
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang
   sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang-router
+  # The stock OpenTelemetry Collector (contrib 0.163.2), unmodified.
+  telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
