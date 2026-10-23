@@ -64,7 +64,6 @@ spec:
         confidential.ai/cw: sglang-router
         # The router reads its model routes once at start.
         checksum/config: {{ include "confidential-inference.modelRoutes" . | sha256sum }}
-        confidential.ai/c8s-renew-interval: {{ .Values.attestationReceipts.certificateRenewInterval | quote }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.router.metricsPort | quote }}
     spec:
