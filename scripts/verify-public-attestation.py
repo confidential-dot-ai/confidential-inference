@@ -513,7 +513,7 @@ def expected_targets(
 
 
 # Set by canonicalize_allowlist on every call, for the final report and for
-# scripts/ci-validate.sh output: which method produced the canonical bytes
+# test output: which method produced the canonical bytes
 # the verifier trusted. Not thread-safe, but this script is single-threaded.
 CANONICALIZATION_METHODS_USED: set[str] = set()
 
@@ -528,7 +528,7 @@ def canonicalize_allowlist(
     <file>` command (see scripts/c8s_allowlist_canonical.py); every c8s tag
     after that commit needs a live CDS connection to turn a file into
     canonical bytes via `c8s allowlist export`, which this offline verifier
-    cannot use. capabilities (the matched contracts/c8s-admission-source-lock.json
+    cannot use. capabilities (the matched release/inputs/c8s-source-lock.json
     entry's "capabilities" object) says which case applies:
 
     - {"allowlistCanonicalize": true} (or capabilities omitted, for backward
@@ -2147,7 +2147,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--node-source-lock", type=Path, help="required for release bundles older than v0.14.0")
     result.add_argument(
         "--c8s-source-lock", type=Path,
-        default=ROOT / "contracts/c8s-admission-source-lock.json",
+        default=ROOT / "release/inputs/c8s-source-lock.json",
     )
     result.add_argument("--allowlist", required=True, type=Path)
     result.add_argument(

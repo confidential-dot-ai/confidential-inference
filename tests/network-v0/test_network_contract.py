@@ -9,7 +9,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 CHART = ROOT / "helm/confidential-inference"
-CONTRACT = ROOT / "contracts/network-ports.yaml"
+CONTRACT = ROOT / "docs/network-ports.yaml"
 # The chart has no default for inference.mode. This constant marks a render
 # that only needs a chart to succeed, not a specific mode, so it picks the
 # GPU-free simulator backend.
@@ -75,7 +75,8 @@ class NetworkContractTests(unittest.TestCase):
 
     def test_gateway_ingress_accepts_the_front_door_and_metrics_only(self) -> None:
         ingress = named(self.documents, "NetworkPolicy", "gateway-ingress")["spec"]["ingress"]
-        self.assertEqual(ingress[0]["ports"], [{"protocol": "TCP", "port": 9443}])
+        # 9444 is the gateway's mesh-certificate TLS listener (#172).
+        self.assertEqual(ingress[0]["ports"], [{"protocol": "TCP", "port": 9443}, {"protocol": "TCP", "port": 9444}])
         self.assertEqual(
             ingress[0]["from"][0]["podSelector"]["matchLabels"],
             {"app.kubernetes.io/name": "tls-lb"},

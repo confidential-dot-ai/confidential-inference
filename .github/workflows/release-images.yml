@@ -42,8 +42,10 @@ env:
   BUILDKIT_IMAGE: moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
 
 jobs:
+  # A run on a branch publishes the images of an unsigned branch build
+  # (release-bundle.yml by workflow_dispatch). A signed release trusts only
+  # the runs on main (scripts/find-image-publication-run.py).
   select-images:
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -56,7 +58,7 @@ jobs:
       base_ref: ${{ steps.base.outputs.base_ref }}
       base_ref_commit: ${{ steps.base.outputs.base_ref_commit }}
     steps:
-      - name: Check out main with release history
+      - name: Check out the source with release history
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0

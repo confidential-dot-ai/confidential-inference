@@ -36,7 +36,7 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: c8s-system
+              kubernetes.io/metadata.name: {{ .Values.c8s.frontDoorNamespace }}
           podSelector:
             matchLabels:
               app.kubernetes.io/name: {{ .Values.c8s.frontDoorPodLabelName }}
@@ -85,6 +85,12 @@ spec:
     # host identity, so this rule names no peer either.
     - ports:
         - {protocol: TCP, port: 15001}
+    # c8s >= v0.66 (C8s #806): the node hands its injected credential clients
+    # (c8s-cert, c8s-secret, c8s-volume) the CDS NodePort on the address the
+    # target launched with, outside the inner cluster. The node's pod ruleset
+    # admits only that endpoint, so this rule names no peer.
+    - ports:
+        - {protocol: TCP, port: 30808}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -145,7 +151,7 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: c8s-system
+              kubernetes.io/metadata.name: {{ .Values.c8s.frontDoorNamespace }}
           podSelector:
             matchLabels:
               app.kubernetes.io/name: {{ .Values.c8s.frontDoorPodLabelName }}
@@ -423,3 +429,25 @@ spec:
       ports:
         - {protocol: TCP, port: {{ .Values.attestationReceipts.metricsCollectorPort }}}
     {{- end }}
+{{- if and .Values.inference.enabled .Values.inference.model.cache.enabled }}
+---
+# fetch-model downloads the pinned model revision from Hugging Face and its
+# LFS/Xet CDN, which have no fixed addresses. The byte manifest pins every
+# downloaded byte.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inference-worker-model-download
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: inference-worker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.inference.model.cache.egressCidrs }}
+        - ipBlock: {cidr: {{ . | quote }} }
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 443}
+{{- end }}
