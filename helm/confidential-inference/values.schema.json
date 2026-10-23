@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["environment", "imagePullSecret", "images", "scheduling", "gateway", "inference", "router", "metricsCollector", "kubeStateMetrics", "attestationReceipts"],
+  "required": ["environment", "imagePullSecret", "images", "scheduling", "gateway", "inference", "router", "telemetry", "kubeStateMetrics", "attestationReceipts"],
   "properties": {
     "stagingValidation": {
       "type": "object", "additionalProperties": false, "required": ["enabled"],
@@ -32,16 +32,15 @@
     },
     "images": {
       "type": "object",
-      "required": ["gateway", "sglang", "sglangWorker", "metricsCollector", "dcgmExporter", "nodeExporter", "kubeStateMetrics", "c8sOperator"],
+      "required": ["gateway", "sglang", "sglangWorker", "telemetryCollector", "dcgmExporter", "nodeExporter", "kubeStateMetrics", "c8sOperator"],
       "additionalProperties": false,
       "properties": {
         "gateway": {"$ref": "#/definitions/image"},
         "sglang": {"$ref": "#/definitions/image"},
         "sglangWorker": {"$ref": "#/definitions/image"},
         "sglangRouter": {"$ref": "#/definitions/image"},
-        "logCollector": {"$ref": "#/definitions/image"},
         "rolloutClient": {"$ref": "#/definitions/image"},
-        "metricsCollector": {"$ref": "#/definitions/image"},
+        "telemetryCollector": {"$ref": "#/definitions/image"},
         "dcgmExporter": {"$ref": "#/definitions/image"},
         "nodeExporter": {"$ref": "#/definitions/image"},
         "kubeStateMetrics": {"$ref": "#/definitions/image"},
@@ -306,80 +305,74 @@
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"}
       }
     },
-    "metricsCollector": {
+    "telemetry": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "attestedWorkload", "resources", "approvedApiKeyLabels", "walSizeLimit", "tls", "remoteWrite", "kubeApi"],
+      "required": ["enabled", "attestedWorkload", "deployment", "relay", "metrics", "logs", "secretName", "traces",
+                   "scrapeInterval", "otlpGrpcPort", "otlpHttpPort", "healthPort", "resources", "commonLabels", "labels", "spanAttributes"],
       "properties": {
         "enabled": {"type": "boolean"},
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
+        "deployment": {"type": "string", "pattern": "^(|[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)$"},
+        "relay": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["serverName", "address", "port"],
+          "properties": {
+            "serverName": {"anyOf": [{"const": ""}, {"type": "string", "format": "hostname"}]},
+            "address": {"anyOf": [{"const": ""}, {"type": "string", "format": "ipv4"}]},
+            "port": {"const": 443}
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tenantId", "clientId", "dataCollectionRule"],
+          "properties": {
+            "tenantId": {"type": "string", "pattern": "^(|[0-9a-f-]{36})$"},
+            "clientId": {"type": "string", "pattern": "^(|[0-9a-f-]{36})$"},
+            "dataCollectionRule": {"type": "string", "pattern": "^(|dcr-[0-9a-f]{32})$"}
+          }
+        },
+        "logs": {
+          "type": "object", "additionalProperties": false, "required": ["username"],
+          "properties": {"username": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"}}
+        },
+        "secretName": {"$ref": "#/definitions/kubernetesName"},
+        "traces": {
+          "type": "object", "additionalProperties": false, "required": ["enabled"],
+          "properties": {"enabled": {"type": "boolean"}}
+        },
+        "scrapeInterval": {"type": "string", "pattern": "^[1-9][0-9]*s$"},
+        "otlpGrpcPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "otlpHttpPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "healthPort": {"type": "integer", "minimum": 1, "maximum": 65535},
         "resources": {"$ref": "#/definitions/resources"},
-        "approvedApiKeyLabels": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 32,
-          "uniqueItems": true,
-          "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"}
-        },
-        "walSizeLimit": {"type": "string", "pattern": "^[1-9][0-9]*(Mi|Gi)$"},
-        "kubeApi": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["port"],
+        "commonLabels": {"$ref": "#/definitions/labelNames"},
+        "labels": {
+          "type": "object", "additionalProperties": false, "required": ["gateway", "router", "worker", "gpu"],
           "properties": {
-            "port": {"const": 6443}
+            "gateway": {"$ref": "#/definitions/labelNames"},
+            "router": {"$ref": "#/definitions/labelNames"},
+            "worker": {"$ref": "#/definitions/labelNames"},
+            "gpu": {"$ref": "#/definitions/labelNames"}
           }
         },
-        "remoteWrite": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["enabled", "url", "address", "serverName", "secretName", "destinationCidrs", "queue"],
-          "properties": {
-            "enabled": {"type": "boolean"},
-            "url": {"type": "string", "pattern": "^https://[^/]+(?::[0-9]{1,5})?/api/v1/write$"},
-            "address": {"type": "string", "format": "ipv4"},
-            "serverName": {"type": "string", "format": "hostname"},
-            "secretName": {"$ref": "#/definitions/kubernetesName"},
-            "destinationCidrs": {
-              "type": "array",
-              "minItems": 1,
-              "maxItems": 4,
-              "uniqueItems": true,
-              "items": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+){3}/32$"}
-            },
-            "queue": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["capacity", "maxShards", "maxSamplesPerSend", "sampleAgeLimit"],
-              "properties": {
-                "capacity": {"type": "integer", "minimum": 1, "maximum": 100000},
-                "maxShards": {"type": "integer", "minimum": 1, "maximum": 16},
-                "maxSamplesPerSend": {"type": "integer", "minimum": 1, "maximum": 10000},
-                "sampleAgeLimit": {"const": "1h"}
-              }
-            }
-          }
-        },
-        "tls": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["enabled", "secretName", "clientCaSecretName"],
-          "properties": {
-            "enabled": {"type": "boolean"},
-            "secretName": {"$ref": "#/definitions/kubernetesName"},
-            "clientCaSecretName": {"$ref": "#/definitions/kubernetesName"}
-          }
+        "spanAttributes": {
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9_.]*$"}
         }
       }
     },
     "kubeStateMetrics": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "attestedWorkload", "port", "resources"],
+      "required": ["enabled", "attestedWorkload", "port", "kubeApiPort", "resources"],
       "properties": {
         "enabled": {"type": "boolean"},
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
         "port": {"const": 8080},
+        "kubeApiPort": {"const": 6443},
         "resources": {"$ref": "#/definitions/resources"}
       }
     },
@@ -405,12 +398,8 @@
     },
     "network": {
       "type": "object",
-      "required": ["adminMtlsCidrs", "clusterCidrs"],
+      "required": ["clusterCidrs"],
       "properties": {
-        "adminMtlsCidrs": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1}
-        },
         "clusterCidrs": {
           "type": "array",
           "minItems": 1,
@@ -420,6 +409,10 @@
     }
   },
   "definitions": {
+    "labelNames": {
+      "type": "array", "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"}
+    },
     "tdxMeasurementOrEmpty": {"type": "string", "pattern": "^(|[0-9a-f]{96})$"},
     "workloadPolicyName": {
       "type": "string",

@@ -5,7 +5,7 @@ export PYTHONDONTWRITEBYTECODE=1
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
-python3 -m unittest discover -s tests/contracts -p 'test_*.py'
+python3 -m unittest discover -s tests/api -p 'test_*.py'
 python3 -m unittest discover -s tests/c8s-install-v0 -p 'test_*.py'
 python3 -m unittest discover -s tests/attestation-v0 -p 'test_*.py'
 python3 -m unittest discover -s tests/attestation-receipts-v0 -p 'test_*.py'

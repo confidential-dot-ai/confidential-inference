@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 VERIFIER = ROOT / "scripts/verify-workload-attestation.py"
-RELEASE_SOURCE = ROOT / "tests/contracts/fixtures/release-bundle.valid.json"
+RELEASE_SOURCE = ROOT / "tests/api/fixtures/release-bundle.valid.json"
 PRODUCTION_TARGETS = (
     "gateway",
     "sglang-router",

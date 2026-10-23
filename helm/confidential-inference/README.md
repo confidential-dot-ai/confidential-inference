@@ -41,7 +41,9 @@ names, or resource sizes. Keep those values in the operator repository.
 ## Upgrade and rollback
 
 `helm upgrade` and `helm rollback` roll the gateway and the router
-(`RollingUpdate`, one extra pod each). Set `runtimeConfig.releaseBundle` with `--set-file` to the
+(`RollingUpdate`, one extra pod each). The router Deployment (`sglang-router`)
+and the gateway's router Service (`router-headless`) keep their names across
+releases, so the old router serves until the new one is Ready. Set `runtimeConfig.releaseBundle` with `--set-file` to the
 verified `release-bundle.json` so the release selection changes with the
 release.
 

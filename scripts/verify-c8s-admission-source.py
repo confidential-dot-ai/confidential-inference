@@ -236,7 +236,7 @@ def main() -> int:
     parser.add_argument(
         "--lock",
         type=Path,
-        default=Path("contracts/c8s-admission-source-lock.json"),
+        default=Path("release/inputs/c8s-source-lock.json"),
     )
     parser.add_argument(
         "--commit",

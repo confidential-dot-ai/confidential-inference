@@ -347,7 +347,7 @@ class CredentialReleaseHardeningTests(unittest.TestCase):
         default_port = default_listen_line.strip().split()[1].lstrip(":")
         self.assertNotEqual(bootstrap_port, default_port)
 
-        contract = yaml.safe_load((ROOT / "contracts/network-ports.yaml").read_text())
+        contract = yaml.safe_load((ROOT / "docs/network-ports.yaml").read_text())
         contract_port = next(
             item for item in contract["ports"]
             if item["name"] == "c8s-credential-release-bootstrap"
