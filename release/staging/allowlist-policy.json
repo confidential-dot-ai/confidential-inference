@@ -30,6 +30,10 @@
       "controller": "Deployment/kube-state-metrics"
     },
     {
+      "name": "log-collector",
+      "controller": "Deployment/log-collector"
+    },
+    {
       "name": "metrics-collector",
       "controller": "Deployment/metrics-collector"
     },
