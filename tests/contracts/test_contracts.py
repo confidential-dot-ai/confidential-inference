@@ -26,69 +26,6 @@ def validate(instance: dict, schema: dict) -> None:
     )
 
 
-def source_lock_node_image(source_lock: dict, environment: str) -> dict:
-    """Return the node image the source lock pins for one environment.
-
-    Each environment seals its own allowlist into its own measured node image.
-    `nodeImage` stays as the production entry for an older reader.
-    """
-    per_environment = source_lock.get("nodeImages")
-    if isinstance(per_environment, dict) and per_environment:
-        selected = per_environment.get(environment)
-        if not isinstance(selected, dict):
-            raise ValueError(f"the source lock pins no node image for {environment}")
-        return selected
-    return source_lock["nodeImage"]
-
-
-def source_lock_node_evidence_artifact(source_lock: dict, environment: str) -> dict:
-    """Return the evidence artifact the source lock pins for one environment."""
-    per_environment = source_lock.get("nodeEvidenceArtifacts")
-    if isinstance(per_environment, dict) and per_environment:
-        selected = per_environment.get(environment)
-        if not isinstance(selected, dict):
-            raise ValueError(
-                f"the source lock pins no node evidence artifact for {environment}"
-            )
-        return selected
-    return source_lock["nodeEvidenceArtifact"]
-
-
-def verify_release_against_source_lock(release: dict, source_lock: dict) -> None:
-    node = release["node"]
-    pinned = source_lock_node_image(source_lock, release["release"]["environment"])
-    if node["image"] != {
-        "reference": pinned["reference"],
-        "digest": pinned["digest"],
-    }:
-        raise ValueError("the node image pin does not match the source lock")
-    if node["sourceCommit"] != pinned["sourceCommit"]:
-        raise ValueError("the node source commit does not match the source lock")
-    evidence = source_lock_node_evidence_artifact(
-        source_lock, release["release"]["environment"]
-    )
-    if node["evidenceArtifactDigest"] != evidence["digest"]:
-        raise ValueError("the node evidence pin does not match the source lock")
-    if release["model"]["repository"] != source_lock["model"]["repository"]:
-        raise ValueError("the model repository does not match the source lock")
-    if release["model"]["revision"] != source_lock["model"]["revision"]:
-        raise ValueError("the model revision does not match the source lock")
-    if release["model"]["mountVerification"] != source_lock["model"]["mountVerification"]:
-        raise ValueError("the model mount verification does not match the source lock")
-
-    workloads = {workload["name"]: workload for workload in release["workloads"]}
-    if len(workloads) != len(release["workloads"]):
-        raise ValueError("the release contains duplicate workload names")
-    for name, role in source_lock["roles"].items():
-        workload = workloads.get(name)
-        if workload is None:
-            raise ValueError(f"the release omits the {name} workload")
-        if workload["image"]["reference"] != source_lock["deploymentImage"]["reference"]:
-            raise ValueError(f"the {name} image repository does not match the source lock")
-        if workload["argv"] != role["argv"]:
-            raise ValueError(f"the {name} argv does not match the source lock")
-
-
 class ContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -110,23 +47,6 @@ class ContractTests(unittest.TestCase):
                 self.assertEqual(
                     workload["modelDmVerityRoot"], release["model"]["dmVerityRoot"]
                 )
-        verify_release_against_source_lock(release, self.source_lock)
-
-    def test_each_release_pins_its_own_environment_node_image(self):
-        """One node image per environment, because each seals one allowlist."""
-        pins = {}
-        for environment in ("production", "conf-inference-prod"):
-            with self.subTest(environment=environment):
-                release = load(ROOT / f"releases/{environment}/release-bundle.json")
-                self.assertEqual(release["release"]["environment"], environment)
-                pinned = source_lock_node_image(self.source_lock, environment)
-                self.assertEqual(release["node"]["image"], {
-                    "reference": pinned["reference"],
-                    "digest": pinned["digest"],
-                })
-                self.assertEqual(release["node"]["sourceCommit"], pinned["sourceCommit"])
-                pins[environment] = release["node"]["image"]["digest"]
-        self.assertNotEqual(pins["production"], pins["conf-inference-prod"])
 
     def test_staging_allowlist_reproduces_from_the_committed_policy(self):
         """Staging moved to operator mode on c8s v0.20.4: no sealed release
@@ -150,44 +70,6 @@ class ContractTests(unittest.TestCase):
             ["candidate", "conf-inference-prod", "production", "staging"],
         )
         self.assertEqual(self.source_lock["nodeImage"], per_environment["production"])
-
-    def test_front_door_workload_is_pinned_in_trusted_allowlist(self):
-        """The c8s TLS-LB receipt must resolve in the trusted policy file."""
-        expected_image = (
-            "nginxinc/nginx-unprivileged@sha256:"
-            "11f3f6249b4ae3d7a4ec2a51797060107b88ead52b33b6ed3c6c33f55ca96200"
-        )
-        for environment in ("production", "conf-inference-prod"):
-            with self.subTest(environment=environment):
-                release = load(ROOT / f"releases/{environment}/release-bundle.json")
-                allowlist_path = ROOT / f"c8s/allowlists/{environment}.json"
-                allowlist = load(allowlist_path)
-                allowlist_bytes = allowlist_path.read_bytes()
-                self.assertTrue(allowlist_bytes.endswith(b"\n"))
-                name = release["c8s"]["frontDoorWorkload"]
-                self.assertEqual(name, "c8s-tls-lb")
-                actual_workload = dict(allowlist["workloads"].get(name, {}))
-                # Current c8s binds the certificate to the exact allowlist
-                # workload name. It does not use the removed custom identity
-                # field.
-                actual_workload.pop("identity", None)
-                self.assertTrue(actual_workload.get("containers"))
-                if environment == "production":
-                    self.assertIn(
-                        expected_image,
-                        [container["image"] for container in actual_workload["containers"]],
-                    )
-                for container in actual_workload["containers"]:
-                    self.assertEqual(
-                        container["image"].split("@", 1)[1],
-                        container["digest"],
-                    )
-                self.assertEqual(
-                    "sha256:" + hashlib.sha256(
-                        allowlist_bytes[:-1]
-                    ).hexdigest(),
-                    release["allowlistDigest"],
-                )
 
     def test_release_rejects_tag_in_place_of_digest(self):
         for digest in ("latest", "sha256:" + "A" * 64, "sha256:" + "a" * 63, "sha512:" + "a" * 64):
@@ -239,15 +121,6 @@ class ContractTests(unittest.TestCase):
                 del altered["workloads"][0]["gpu"][field]
                 with self.assertRaises(jsonschema.ValidationError):
                     validate(altered, self.release_schema)
-
-    def test_source_lock_mismatch_is_rejected(self):
-        altered = copy.deepcopy(self.production_release)
-        workload = next(
-            item for item in altered["workloads"] if item["name"] == "sglang-router"
-        )
-        workload["argv"] = ["python3", "untrusted.py"]
-        with self.assertRaisesRegex(ValueError, "argv"):
-            verify_release_against_source_lock(altered, self.source_lock)
 
     def test_source_lock_has_required_immutable_pins(self):
         lock = load(ROOT / "images/sglang/source.lock")

@@ -18,10 +18,7 @@ receipts in a separate private repository.
   runs a real model in production and a GPU-free simulator in staging.
 - `images/sglang-router`: the separate router image and build inputs.
 - `services/maintenance-gateway`: the fallback API.
-- `images/control-plane-node`: historical consumer node profiles. Current
-  releases pin the c8s node image through `release/spec.yaml`.
 - `helm/confidential-inference`: the generic Kubernetes application chart.
-- `scripts/regenerate-c8s-allowlist.py`: c8s policy generation.
 - `scripts/verify-public-attestation.py`: policy metadata checks and historical receipt verification.
 - `contracts`: public API, attestation, and release contracts.
 
@@ -88,10 +85,6 @@ Current publication requires clean rebuild comparisons before an image can
 be published. Deployment consumes the verified artifacts. It does not build
 application images locally. Review the image publication record bound by the
 signed release. See [release publication](release/README.md).
-
-`scripts/rebuild-release-images.py` retains independent rebuild checks for
-older release inventories with a `workloads` list. Do not pass a current
-v0.14 release manifest to that historical inventory tool.
 
 ## Attestation trust inputs
 

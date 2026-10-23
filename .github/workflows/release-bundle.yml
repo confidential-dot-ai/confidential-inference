@@ -4,8 +4,19 @@ on:
   push:
     tags:
       - "v[0-9]*"
+  # An unsigned build of the dispatched branch, for a staging target with
+  # RELEASE_POLICY=unsigned (internal bin/deploy). It builds the same files
+  # as a staging release from the same steps, signs nothing, and creates no
+  # tag and no GitHub Release: the files stay a workflow artifact
+  # (unsigned-release-<name>, for `gh run download`), and the chart package
+  # goes to GHCR. Its name is v0.0.<run number>-staging, a version that no
+  # release tag uses, so its chart version never replaces a release's.
+  workflow_dispatch:
 
 permissions: {}
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || format('v0.0.{0}-staging', github.run_number) }}
 
 concurrency:
   group: signed-release-${{ github.ref_name }}
@@ -30,8 +41,6 @@ jobs:
 
       - name: Select the release profile
         id: profile
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           python3 scripts/release_profiles.py resolve --tag "$RELEASE_TAG" --format github \
             >> "$GITHUB_OUTPUT"
@@ -41,7 +50,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
-      name: ${{ needs.select-profile.outputs.signing_environment }}
+      name: ${{ github.event_name == 'push' && needs.select-profile.outputs.signing_environment || '' }}
     permissions:
       actions: read
       contents: read
@@ -67,9 +76,9 @@ jobs:
             --requirement scripts/requirements-release-signing.txt
 
       - name: Validate the release tag
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           # A fix uses a new patch version. Tags are never moved or reused.
           git fetch --no-tags origin \
@@ -117,16 +126,18 @@ jobs:
 
       # The release names the image publication of the nearest main commit at
       # or before the tag commit. No image build input may change in between.
+      # An unsigned branch build also takes a release-images run on its branch.
       - name: Find the image publication evidence
         id: publication
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          select=(--tag "$RELEASE_TAG")
+          [ "$GITHUB_EVENT_NAME" = push ] || select=(--branch "$GITHUB_REF_NAME")
           python3 scripts/find-image-publication-run.py \
             --repository "$GITHUB_REPOSITORY" \
             --release-commit "$(git rev-parse HEAD)" \
-            --tag "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+            "${select[@]}" >> "$GITHUB_OUTPUT"
 
       - name: Download the verified image publication evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -199,7 +210,6 @@ jobs:
       - name: Build the release at the tag commit
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           git rev-parse HEAD > dist/release-tag-commit.txt
           python3 scripts/build-release-manifest.py \
@@ -211,12 +221,14 @@ jobs:
             --output-dir dist
 
       - name: Create the keyless Sigstore bundle
+        if: github.event_name == 'push'
         run: |
           cosign sign-blob --yes \
             --bundle dist/release-bundle.sigstore.json \
             dist/release-bundle.json
 
       - name: Verify the release without network trust lookup
+        if: github.event_name == 'push'
         run: |
           python3 scripts/verify-release-bundle-signature.py \
             --bundle dist/release-bundle.json \
@@ -226,7 +238,7 @@ jobs:
       - name: Save the immutable workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: signed-release-${{ github.ref_name }}
+          name: ${{ github.event_name == 'push' && 'signed' || 'unsigned' }}-release-${{ env.RELEASE_TAG }}
           path: |
             dist/release-bundle.json
             dist/release-bundle.sigstore.json
@@ -251,7 +263,7 @@ jobs:
       - name: Download the verified release artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: signed-release-${{ github.ref_name }}
+          name: ${{ github.event_name == 'push' && 'signed' || 'unsigned' }}-release-${{ env.RELEASE_TAG }}
           path: dist
 
       - name: Install the pinned Helm
@@ -290,9 +302,9 @@ jobs:
             || { echo "The chart at $reference is not the signed package." >&2; exit 1; }
 
       - name: Publish new GitHub Release assets
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           expected_commit="$(tr -d '\n' < dist/release-tag-commit.txt)"
           case "$expected_commit" in
@@ -342,3 +354,18 @@ jobs:
             "dist/allowlist.json#c8s allowlist" \
             "dist/release-values.yaml#Release image values" \
             "${extra_assets[@]}"
+
+      # The target.env pins of an unsigned build (internal docs/runbooks/deploy.md).
+      - name: Report the unsigned build
+        if: github.event_name != 'push'
+        run: |
+          {
+            echo "### Unsigned build of $GITHUB_REF_NAME at $GITHUB_SHA"
+            echo
+            echo '```'
+            echo "RELEASE_POLICY=unsigned"
+            echo "RELEASE=$RELEASE_TAG"
+            echo "RELEASE_RUN=$GITHUB_RUN_ID"
+            echo "RELEASE_BUNDLE_SHA256=sha256:$(sha256sum < dist/release-bundle.json | cut -d' ' -f1)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

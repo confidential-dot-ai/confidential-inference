@@ -513,7 +513,7 @@ def expected_targets(
 
 
 # Set by canonicalize_allowlist on every call, for the final report and for
-# scripts/ci-validate.sh output: which method produced the canonical bytes
+# test output: which method produced the canonical bytes
 # the verifier trusted. Not thread-safe, but this script is single-threaded.
 CANONICALIZATION_METHODS_USED: set[str] = set()
 
