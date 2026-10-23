@@ -493,33 +493,6 @@ class ProcessTests(unittest.TestCase):
             MAN.require_allowlist_contract({"workloads": {**seed, "extra": shape}}, policy, [CORE], [], configs,
                                           "v0.47.0", core_seed=seed)
 
-    def test_from_the_seed_layer_release_the_allowlist_has_only_application_entries(self):
-        # C8s #1031: CDS keeps the node image's seed beside the uploaded
-        # document, so the release mirrors no seed entry.
-        shape = {"label": CORE, "initContainers": [], "containers": [{
-            "digest": GEN.split_image(CORE)[1], "image": CORE,
-            "command": {"policy": "exact", "argv": ["/c8s"]}, "args": {"policy": "exact", "argv": ["cds"]},
-            "mounts": {"policy": "exact", "rules": []}, "env": {"policy": "match", "variables": {}}}]}
-        seed = {"c8s-operator-" + "b" * 12 + "-01234567": shape}
-        configs = {CORE: {"entrypoint": ["/c8s"], "cmd": [], "env": []}}
-        record = {"sourceCommit": "a" * 40, "coreImages": [CORE],
-                  "allowlist": {"schema": "c8s.allowlist/v1", "workloads": seed}}
-        for release, mirrored in (("v0.72.0", seed), ("v0.73.0-beta.1", {}), ("v0.73.0", {})):
-            spec = {"release": release, "sourceCommit": "a" * 40, "coreImages": [CORE]}
-            with mock.patch.object(GEN, "read_json", return_value=record):
-                self.assertEqual(GEN.core_seed(spec), mirrored, release)
-        self.assertEqual(GEN.core_entries([CORE], {}), {})
-        # A dev build counts from the last tag; its baseRelease turns the gate on.
-        dev = {"release": "v0.72.1-0.20261023005616-90bd65abd955", "sourceCommit": "a" * 40, "coreImages": [CORE]}
-        with mock.patch.object(GEN, "read_json", return_value=record):
-            self.assertEqual(GEN.core_seed(dev), seed)
-            self.assertEqual(GEN.core_seed({**dev, "baseRelease": "v0.73.0"}), {})
-        policy = {"workloads": []}
-        MAN.require_allowlist_contract({"workloads": {}}, policy, [CORE], [], configs, "v0.73.0-beta.1", core_seed={})
-        with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
-            MAN.require_allowlist_contract({"workloads": seed}, policy, [CORE], [], configs, "v0.73.0-beta.1",
-                                          core_seed={})
-
     def test_core_seed_record_cannot_use_another_source_or_image_set(self):
         spec = {"release": "v0.59.1", "sourceCommit": "a" * 40, "coreImages": [CORE]}
         record = {"sourceCommit": spec["sourceCommit"], "coreImages": [CORE],
@@ -1004,11 +977,7 @@ class ManifestTests(unittest.TestCase):
                                           GEN.feature_release(spec["c8s"]), GEN.core_seed(spec["c8s"]))
 
         changed = json.loads(json.dumps(allowlist))
-        # The router is a seeded entry, and from the seed layer release CDS
-        # keeps it (no entry).
-        if GEN.c8s_at_least(GEN.feature_release(spec["c8s"]), GEN.SEED_LAYER_SINCE):
-            self.assertFalse(any(name.startswith("c8s-router") for name in changed["workloads"]))
-            return
+        # The router is a seeded entry.
         router_entry = next(name for name in changed["workloads"] if name.startswith("c8s-router"))
         changed["workloads"][router_entry]["containers"][0]["args"] = {"policy": "any"}
         with self.assertRaisesRegex(MAN.ManifestError, "entry c8s-router.* differs"):
