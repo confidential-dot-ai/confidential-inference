@@ -22,14 +22,15 @@ and pin the exact active bytes separately.
 
 - `gateway-inference.openapi.json`: public inference, model catalog, health,
   schema 3 discovery, and native c8s routes served by TLS-LB.
-- `gateway-admin.openapi.json`: signed API-key administration, key-store
-  export and import, and a temporary key-store freeze.
+- `gateway-admin.openapi.json`: the key registry snapshot. The gateway pulls
+  it from the admin (`GET /api/gateway/key-snapshot`); the admin may also
+  push it to the gateway's signed admin API.
+- `product-usage.md`: per-request usage events the gateway sends to the admin.
 - `maintenance-gateway.openapi.json`: public responses during an outage.
 
-Key-store export includes a pepper fingerprint, never the pepper or a
-plaintext API key. Import requires a matching pepper fingerprint. Conflicting
-records refuse the transaction. A freeze stops mint and revoke operations
-and expires after ten minutes.
+The gateway keeps no state on disk. The admin key registry is the only key
+store. A snapshot carries peppered key hashes and a pepper fingerprint, never
+the pepper or a plaintext API key.
 
 ## Maintenance
 

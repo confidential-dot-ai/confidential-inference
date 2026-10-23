@@ -7,8 +7,7 @@ use axum::{
     routing::post,
 };
 use confidential_gateway::{
-    ApiKeyVerifier, AttestationError, AttestationProvider, AuditEvent, AuditSink,
-    GatewayAvailability, GatewayConfig,
+    ApiKeyVerifier, AttestationError, AttestationProvider, AuditEvent, AuditSink, GatewayConfig,
     metrics::GatewayMetrics,
     protection::{ProtectionConfig, ProtectionState},
     router,
@@ -103,7 +102,6 @@ async fn invalid_key_and_attestation_floods_do_not_consume_inference_slots() {
         Arc::new(Keys),
         Arc::new(Audit),
         Arc::new(GatewayMetrics::new("test")),
-        GatewayAvailability::default(),
         Arc::new(SlowAttestation),
         reqwest::Client::new(),
     );
@@ -200,7 +198,6 @@ async fn metadata_app(config: ProtectionConfig, provider: Arc<HeldMetadata>) -> 
         Arc::new(Keys),
         Arc::new(Audit),
         Arc::new(GatewayMetrics::new("test")),
-        GatewayAvailability::default(),
         provider,
         reqwest::Client::new(),
     )

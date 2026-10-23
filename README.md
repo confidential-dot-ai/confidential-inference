@@ -43,7 +43,7 @@ cargo build -p confidential-gateway
 ```
 
 A standalone production-style gateway needs verified CDS access, release
-configuration, an admin certificate, and its protected state volume. A local
+configuration, an admin certificate, and the admin that serves its API keys. A local
 binary alone does not supply these dependencies.
 
 For a local forwarding check, use the gateway integration test. It creates

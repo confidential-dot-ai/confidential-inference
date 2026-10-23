@@ -23,8 +23,10 @@ build"). An installer that verifies those digests needs no checkout.
 
 The gateway uses one internal HTTP service behind c8s TLS-LB. Public inference
 requests and signed admin requests use that same entry path. The gateway reads
-its API-key pepper from c8s application-secret memory. It stores API-key state
-on an operator-supplied persistent volume.
+its API-key pepper and its admin client configuration from c8s
+application-secret memory. It keeps no state on disk: it pulls the API keys
+from the admin (`gateway.admin` is its egress), is Ready only once it holds
+them, and sends usage events back to the admin (`gateway.usage.enabled`).
 
 `attestationReceipts.cds` configures schema 3 metadata: the CDS origin and
 policy documents supplied by the deployment and pinned through release identity.
@@ -38,11 +40,10 @@ names, or resource sizes. Keep those values in the operator repository.
 
 ## Upgrade and rollback
 
-`helm upgrade` and `helm rollback` replace the gateway pod (`Recreate`: c8s
-opens its state volume for one pod) and roll the router (`RollingUpdate`,
-one extra pod). The router Deployment (`sglang-router`) and the gateway's
-router Service (`router-headless`) keep their names across releases, so the
-old router serves until the new one is Ready. Set `runtimeConfig.releaseBundle` with `--set-file` to the
+`helm upgrade` and `helm rollback` roll the gateway and the router
+(`RollingUpdate`, one extra pod each). The router Deployment (`sglang-router`)
+and the gateway's router Service (`router-headless`) keep their names across
+releases, so the old router serves until the new one is Ready. Set `runtimeConfig.releaseBundle` with `--set-file` to the
 verified `release-bundle.json` so the release selection changes with the
 release.
 
