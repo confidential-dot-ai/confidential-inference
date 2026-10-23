@@ -501,45 +501,6 @@ def extend_cdi_record(c8s_repo: Path, confos_repo: Path | None, old: dict[str, A
 # ---------------------------------------------------------------------------
 
 
-def regenerate_core_seed(c8s_repo: Path, c8s: dict[str, Any]) -> None:
-    """Render the measured node seed with the exact mkosi.sync inputs.
-
-    The seed is recorded in the canonical allowlist form, so a release
-    allowlist that mirrors its entries (c8s v0.47.0 and later) holds them
-    byte for byte.
-    """
-    if tuple(int(x) for x in TAG.fullmatch(c8s["release"]).groups()[:3]) < (0, 44, 0):
-        return
-    sync = (c8s_repo / "node-guest-image/c8s/mkosi.sync").read_text()
-    rke2 = re.search(r'^RKE2_VERSION="(v[0-9]+\.[0-9]+\.[0-9]+)\+', sync, re.MULTILINE)
-    helm = re.search(r'^HELM_VERSION="(v[0-9.]+)"', sync, re.MULTILINE)
-    if rke2 is None or helm is None:
-        raise BumpError("mkosi.sync has no RKE2_VERSION or HELM_VERSION")
-    if not run(["helm", "version", "--short"]).startswith(helm.group(1) + "+"):
-        raise BumpError(f"the seed render needs helm {helm.group(1)}")
-    command = ["go", "run", "./cmd/c8s", "node-image", "render", "--hardware-platform", "tdx",
-               "--kube-version", rke2.group(1)]
-    for flag, name in (("image", "c8s-operator"), ("cds-image", "cds"), ("armtls-mesh-image", "armtls-mesh")):
-        image = next((image for image in c8s["coreImages"] if image.partition("@")[0] == REGISTRY + name), None)
-        if image is None:
-            raise BumpError(f"the node seed lacks {name}")
-        repository, digest = image.split("@")
-        command += [f"--{flag}-repository", repository, f"--{flag}-digest", digest]
-    with tempfile.TemporaryDirectory(prefix="c8s-core-seed-") as directory:
-        run([*command, "--output-dir", directory], cwd=c8s_repo, env=go_env())
-        seed = json.loads((Path(directory) / "allowlist-seed.json").read_text())
-        generator = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
-        seed = json.loads(generator["canonicalize"](seed, None))
-        native = runpy.run_path(str(ROOT / "scripts/native_c8s_allowlist.py"))
-        integration = list(yaml.safe_load_all((Path(directory) / "c8s-integration.yaml").read_text()))
-        router = native["router_controller"](integration)
-    path = ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    write_json(path, {"sourceCommit": c8s["sourceCommit"], "coreImages": c8s["coreImages"],
-                      "hardwarePlatform": "tdx", "kubeVersion": rke2.group(1), "helmVersion": helm.group(1),
-                      "allowlist": seed, "nativeRouter": router})
-
-
 def regenerate(moved: list[release_profiles.Profile]) -> None:
     # Profiles can share a node manifest, so each file is fetched once.
     fetched: set[Path] = set()
@@ -629,7 +590,6 @@ def main() -> int:
                                 args.protocol_diff_out.resolve() if args.protocol_review else None)
         extend_cdi_record(c8s_repo, args.confos_repo.resolve() if args.confos_repo else None, old, new)
 
-        regenerate_core_seed(c8s_repo, new)
         regenerate(moved)
         regenerate_staging_fixture(c8s_repo, moved)
         check(c8s_repo, commit)
