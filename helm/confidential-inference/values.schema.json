@@ -64,7 +64,6 @@
         "policyMode": {"enum": ["operator", "static"]},
         "expectedOperatorPublicKeySha256": {"$ref": "#/definitions/sha256Digest"},
         "expectedOperatorKeySetSha256": {"$ref": "#/definitions/sha256Digest"},
-        "expectedStaticAllowlistSha256": {"$ref": "#/definitions/sha256Digest"},
         "cds": {
           "type": "object",
           "additionalProperties": false,
@@ -80,11 +79,8 @@
       },
       "allOf": [
         {
-          "if": {"properties": {"policyMode": {"const": "static"}}},
+          "if": {"properties": {"policyMode": {"const": "operator"}}},
           "then": {
-            "required": ["expectedStaticAllowlistSha256"]
-          },
-          "else": {
             "required": ["expectedOperatorPublicKeySha256", "expectedOperatorKeySetSha256"]
           }
         }
@@ -192,7 +188,7 @@
     },
     "gateway": {
       "type": "object",
-      "required": ["attestedWorkload", "shutdownGraceSeconds", "endpointDrainSeconds", "terminationGracePeriodSeconds", "service", "containerPorts", "protection", "c8sSecrets", "secrets", "state", "keyRegistry"],
+      "required": ["attestedWorkload", "shutdownGraceSeconds", "endpointDrainSeconds", "terminationGracePeriodSeconds", "service", "containerPorts", "protection", "c8sSecrets", "secrets", "admin"],
       "properties": {
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
         "shutdownGraceSeconds": {"type": "integer", "minimum": 1},
@@ -218,7 +214,7 @@
         "c8sSecrets": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["apiKeyPepper"],
+          "required": ["apiKeyPepper", "adminConfig"],
           "properties": {
             "apiKeyPepper": {
               "type": "object",
@@ -227,6 +223,15 @@
               "properties": {
                 "name": {"const": "GATEWAY_API_KEY_PEPPER"},
                 "sourcePath": {"const": "/confidential-inference/gateway/api-key-pepper"}
+              }
+            },
+            "adminConfig": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "sourcePath"],
+              "properties": {
+                "name": {"const": "product-usage"},
+                "sourcePath": {"const": "/confidential-inference/gateway/product-usage"}
               }
             }
           }
@@ -279,26 +284,28 @@
             }
           }
         },
-        "state": {
+        "admin": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "absencePolicy", "startupTimeoutSeconds", "volumeName", "c8sVolumeSource", "volumeDirectory", "databasePath"],
+          "required": ["url", "address"],
           "properties": {
-            "enabled": {"type": "boolean"},
-            "absencePolicy": {"const": "fail-closed"},
-            "startupTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 600},
-            "volumeName": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]{0,10}[a-z0-9])?$"},
-            "c8sVolumeSource": {"type": "string", "pattern": "^/confidential-inference/volumes/[a-z0-9]([-a-z0-9]{0,10}[a-z0-9])?$"},
-            "volumeDirectory": {"const": "/mnt/c8s-data"},
-            "databasePath": {"type": "string", "pattern": "^/mnt/c8s-data/[a-z0-9-]{1,12}/gateway\\.sqlite3$"}
+            "url": {"type": "string", "pattern": "^https://[a-z0-9.-]+/[^?#]*$"},
+            "address": {"type": "string", "format": "ipv4"}
           }
         },
-        "keyRegistry": {
+        "usage": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["mode"],
+          "required": ["enabled", "models"],
           "properties": {
-            "mode": {"enum": ["local", "dual", "registry"]}
+            "enabled": {"type": "boolean"},
+            "models": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object", "additionalProperties": false, "required": ["served_model", "model_revision"],
+                "properties": {"served_model": {"type": "string", "minLength": 1}, "model_revision": {"type": "string", "minLength": 1}}
+              }
+            }
           }
         }
       }

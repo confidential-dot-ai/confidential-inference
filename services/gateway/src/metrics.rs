@@ -11,8 +11,8 @@ use std::{
 
 use axum::{Router, response::IntoResponse, routing::get};
 use prometheus::{
-    Gauge, Histogram, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts,
-    Registry, TextEncoder, core::Collector,
+    Gauge, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge,
+    IntGaugeVec, Opts, Registry, TextEncoder, core::Collector,
 };
 
 const HISTOGRAM_BUCKETS: &[f64] = &[
@@ -66,7 +66,11 @@ pub struct GatewayMetrics {
     key_registry_revision: IntGauge,
     key_registry_pepper_mismatch_rows: IntGauge,
     key_registry_pepper_mismatch: IntGauge,
-    api_key_accepted: IntCounterVec,
+    key_registry_fetch_failures: IntCounterVec,
+    usage_events_dropped: IntCounter,
+    usage_events_pending: IntGauge,
+    usage_send_failures: IntCounterVec,
+    usage_events_rejected: IntCounterVec,
 }
 
 /// Metric names, labels and buckets are compile-time constants, so the
@@ -261,7 +265,7 @@ impl GatewayMetrics {
                 r,
                 Gauge::new(
                     "gateway_key_registry_stale_seconds",
-                    "Seconds since the last applied key registry snapshot push",
+                    "Seconds since the last applied or acknowledged key registry snapshot",
                 ),
             ),
             key_registry_push_rejections: counter(
@@ -285,11 +289,35 @@ impl GatewayMetrics {
                 "gateway_key_registry_pepper_mismatch",
                 "One while the last pushed key registry snapshot named a different pepper than the gateway holds",
             ),
-            api_key_accepted: counter(
+            key_registry_fetch_failures: counter(
                 r,
-                "gateway_api_key_accepted_total",
-                "Count of accepted API key authentications by source",
-                &["source"],
+                "gateway_key_registry_fetch_failed_total",
+                "Count of failed key snapshot pulls from the admin by reason",
+                &["reason"],
+            ),
+            usage_events_dropped: register(
+                r,
+                IntCounter::new(
+                    "gateway_usage_events_dropped_total",
+                    "Usage events dropped because the in-memory queue was full",
+                ),
+            ),
+            usage_events_pending: gauge(
+                r,
+                "gateway_usage_events_pending",
+                "Usage events waiting for the admin to acknowledge them",
+            ),
+            usage_send_failures: counter(
+                r,
+                "gateway_usage_send_failed_total",
+                "Count of failed usage event batch sends by reason",
+                &["reason"],
+            ),
+            usage_events_rejected: counter(
+                r,
+                "gateway_usage_events_rejected_total",
+                "Usage events dropped because the admin refused them, by HTTP status",
+                &["status"],
             ),
             registry,
         }
@@ -453,8 +481,8 @@ impl GatewayMetrics {
             .inc_by(amount);
     }
 
-    /// Record how many seconds have passed since the last successful key
-    /// applied key registry snapshot push. The push route sets it.
+    /// Record how many seconds have passed since the last applied or
+    /// acknowledged key registry snapshot. The key pull loop sets it.
     pub fn set_key_registry_stale_seconds(&self, seconds: f64) {
         self.key_registry_stale_seconds.set(seconds);
     }
@@ -490,9 +518,33 @@ impl GatewayMetrics {
         self.key_registry_pepper_mismatch.set(i64::from(mismatch));
     }
 
-    /// Count one authenticated request by which key source matched it.
-    pub fn record_api_key_accepted(&self, source: &'static str) {
-        self.api_key_accepted.with_label_values(&[source]).inc();
+    /// Count one failed key snapshot pull under a fixed reason code.
+    pub fn record_key_registry_fetch_failure(&self, reason: &'static str) {
+        self.key_registry_fetch_failures
+            .with_label_values(&[reason])
+            .inc();
+    }
+
+    /// Count one usage event dropped from a full queue.
+    pub fn record_usage_event_dropped(&self) {
+        self.usage_events_dropped.inc();
+    }
+
+    pub fn set_usage_events_pending(&self, pending: usize) {
+        self.usage_events_pending
+            .set(i64::try_from(pending).unwrap_or(i64::MAX));
+    }
+
+    /// Count one usage event the admin refused and the gateway dropped.
+    pub fn record_usage_event_rejected(&self, status: u16) {
+        self.usage_events_rejected
+            .with_label_values(&[status.to_string()])
+            .inc();
+    }
+
+    /// Count one failed usage batch send under a fixed reason code.
+    pub fn record_usage_send_failure(&self, reason: &'static str) {
+        self.usage_send_failures.with_label_values(&[reason]).inc();
     }
 
     /// Only the contract's bounded `OpenAI` finish reasons are emitted.
@@ -657,9 +709,7 @@ mod tests {
         metrics.set_key_registry_revision(42);
         metrics.set_key_registry_pepper_mismatch_rows(2);
         metrics.set_key_registry_pepper_mismatch(true);
-        metrics.record_api_key_accepted("local");
-        metrics.record_api_key_accepted("registry");
-        metrics.record_api_key_accepted("registry");
+        metrics.record_key_registry_fetch_failure("unreachable");
         let rendered = metrics.render_prometheus();
 
         for name in [
@@ -668,7 +718,7 @@ mod tests {
             "gateway_key_registry_revision",
             "gateway_key_registry_pepper_mismatch_rows",
             "gateway_key_registry_pepper_mismatch",
-            "gateway_api_key_accepted_total",
+            "gateway_key_registry_fetch_failed_total",
         ] {
             assert!(rendered.contains(name), "missing {name}");
         }
@@ -685,12 +735,8 @@ mod tests {
                 .render_prometheus()
                 .contains("gateway_key_registry_pepper_mismatch{env=\"staging\"} 0")
         );
-        assert!(
-            rendered.contains("gateway_api_key_accepted_total{source=\"local\",env=\"staging\"} 1")
-        );
-        assert!(
-            rendered
-                .contains("gateway_api_key_accepted_total{source=\"registry\",env=\"staging\"} 2")
-        );
+        assert!(rendered.contains(
+            "gateway_key_registry_fetch_failed_total{reason=\"unreachable\",env=\"staging\"} 1"
+        ));
     }
 }

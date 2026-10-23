@@ -12,6 +12,7 @@
     {
       "name": "gateway",
       "controller": "Deployment/gateway",
+      "egress": {"port": 443},
       "secretReads": [
         "/confidential-inference/gateway/api-key-pepper",
         "/confidential-inference/gateway/product-usage"
