@@ -25,7 +25,8 @@ expected_simulator = f'LABEL ai.confidential.sglang.simulator.revision="{lock["o
 expected_simulator_patch = f'LABEL ai.confidential.sglang.simulator.patch.sha256="{lock["optimizations"]["sglang"]["simulator"]["patch"]["sha256"]}"'
 expected_simulator_parser_flags_noop_patch = f'LABEL ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256="{lock["optimizations"]["sglang"]["simulator"]["parserFlagsNoopPatch"]["sha256"]}"'
 expected_flashinfer = f'LABEL ai.confidential.flashinfer.version="{lock["optimizations"]["flashInfer"]["version"]}"'
-for expected in (expected_from, expected_source, expected_revision, expected_patch, expected_simulator, expected_simulator_patch, expected_simulator_parser_flags_noop_patch, expected_flashinfer):
+expected_dcgm_exporter = f'FROM {lock["dcgmExporter"]["reference"]}@{lock["dcgmExporter"]["digest"]} AS dcgm-exporter'
+for expected in (expected_from, expected_dcgm_exporter, expected_source, expected_revision, expected_patch, expected_simulator, expected_simulator_patch, expected_simulator_parser_flags_noop_patch, expected_flashinfer):
     if expected not in dockerfile.splitlines():
         raise SystemExit(f"the Dockerfile does not match source.lock: {expected}")
 

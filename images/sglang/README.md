@@ -16,7 +16,7 @@ The worker also selects the canonical CUDA runtime and verifies that it exports
 `cudaDeviceReset`. It does not select TileLang's limited CUDA stub.
 FlashInfer 0.6.17 already contains the merged global-timer and multicast-free workspace fixes.
 
-The image also contains the public `wait_for_model.py`, `fetch_model.py` and `gpu_metrics.py` repository files.
+The image also contains the public `wait_for_model.py` and `fetch_model.py` repository files.
 The gate waits for the late c8s mount and checks its read-only dm-verity source.
 With `--plain-cache` the path is instead a read-only plain cache disk (public weights the
 host can read); the byte check below is then the only integrity check, on every start.
@@ -27,9 +27,13 @@ The gate also checks the model revision, metadata digests, model index, and weig
 The gate then hashes every file on the volume against the byte manifest. The release pins the
 manifest's SHA-256 with `--expected-file`. A missing, extra, resized, or changed file fails the gate.
 The gate fails closed before SGLang starts.
-Each worker starts one local GPU metrics endpoint after the model mount passes.
-The endpoint reads only the four GPUs assigned to that worker. It exports use, memory,
-temperature, and ECC counters. It does not export GPU identifiers or request data.
+Each worker starts NVIDIA's dcgm-exporter after the model mount passes.
+The image copies the binary and the DCGM libraries from the official
+`nvcr.io/nvidia/k8s/dcgm-exporter` image at the digest in `source.lock`.
+The exporter runs DCGM embedded in its own process (no separate host engine).
+It sees only the GPUs granted to that worker. `dcgm-counters.csv` is NVIDIA's
+`default-counters.csv` with the error, ECC, NVLink error, clock event and
+confidential-compute fields enabled. It exports no request data.
 The image also defines no role command.
 Kubernetes supplies the worker command and arguments at launch time.
 The router has a separate image and digest under

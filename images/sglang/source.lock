@@ -9,6 +9,13 @@
     "reference": "docker.io/lmsysorg/sglang",
     "digest": "sha256:bde16a8447b19e89056b9eea06c72be6c02801dc89d528c9ea90c53368fd74bf"
   },
+  "dcgmExporter": {
+    "reference": "nvcr.io/nvidia/k8s/dcgm-exporter",
+    "tag": "4.6.1-4.8.4",
+    "digest": "sha256:148b0c025e5f2850256816fa33754fbf4733b7a086697a95613fc0ba3db5b003",
+    "version": "4.8.4",
+    "dcgmVersion": "4.6.1"
+  },
   "optimizations": {
     "policy": "official-deepseek-baseline-plus-reviewed-confidential-compute-fixes",
     "patch": {
@@ -106,7 +113,6 @@
         "--expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
         "--expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547",
         "--gpu-metrics-port=29000",
-        "--gpu-metrics-worker=sglang-0",
         "--",
         "python3",
         "-m",
@@ -142,7 +148,6 @@
         "--expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
         "--expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547",
         "--gpu-metrics-port=29000",
-        "--gpu-metrics-worker=sglang-1",
         "--",
         "python3",
         "-m",
@@ -210,7 +215,6 @@
           "--expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
           "--expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547",
           "--gpu-metrics-port=29000",
-          "--gpu-metrics-worker=sglang-0",
           "--",
           "python3",
           "-m",
@@ -247,7 +251,6 @@
           "--expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
           "--expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547",
           "--gpu-metrics-port=29000",
-          "--gpu-metrics-worker=sglang-1",
           "--",
           "python3",
           "-m",
