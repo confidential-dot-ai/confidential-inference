@@ -7,7 +7,8 @@
     "ghcr.io/confidential-dot-ai/node-guest-base@sha256:8d05da0c62d03045d2eb73ae36eab4166df2a348e8cd32d12541bac25d3391d5",
     "ghcr.io/confidential-dot-ai/node-guest-base@sha256:905045caf6c448f3e13a366091b8285a65edea9d98b4da3a23ae5f119d5e4c20",
     "ghcr.io/confidential-dot-ai/node-guest-base@sha256:47b83664b068224f71511233bd469a65738d4e60d8ff90fa99d79a3bbabf55ca",
-    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:1a2e290c3b5a321a0ba4e71f8ea82569cd6a08412e87c7f710dfb1eae474804f"
+    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:1a2e290c3b5a321a0ba4e71f8ea82569cd6a08412e87c7f710dfb1eae474804f",
+    "ghcr.io/confidential-dot-ai/node-guest-base@sha256:bb8890760104025cf3efbc65babc6b52d71b78e713e66a6b19cde760bb574cd8"
   ],
   "driverInputs": {
     "confosFetchGpuSha256": "sha256:004956a003792b42017ea2933ddf558dcef43ab28534553b5e0cfa2a84397f87"
