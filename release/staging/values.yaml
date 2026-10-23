@@ -84,6 +84,9 @@ telemetry:
     tenantId: 693babab-0ab8-4ffb-8b5c-eb8aef3b10d1
     clientId: c486ee14-1dca-4c1d-af4f-be163302ff44
     dataCollectionRule: dcr-50a134d921ce434a86bcd8f01ab93b6e
+  # C8s's platform kube-state-metrics (needs the c8s with its allow policy).
+  kubeStateMetrics:
+    target: 10.53.0.11:8080
 
 # c8s v0.66.0+ runs the router in its own namespace (c8s #814; chart value
 # from confidential-inference #203).
