@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the actual image against local Kubernetes and Loki test servers."""
 import argparse
+import base64
 import datetime
 import ctypes
 import ctypes.util
@@ -81,7 +82,13 @@ def decode_push(body):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True, help="The approved published collector image, pinned by digest")
+    parser.add_argument("--auth", choices=["mtls", "basic", "oauth2"], default="mtls", help="TELEMETRY_AUTH of the run")
     args = parser.parse_args()
+    expected_authorization = None
+    if args.auth == "basic":
+        expected_authorization = "Basic " + base64.b64encode(b"collector-test:test-password").decode()
+    elif args.auth == "oauth2":
+        expected_authorization = "Bearer test-access-token"
     if "@sha256:" not in args.image:
         parser.error("Select a published image by digest")
     received = []
@@ -168,6 +175,24 @@ def main():
 
     class Loki(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
+            if self.path == "/token":
+                form = urllib.parse.parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())
+                basic = "Basic " + base64.b64encode(b"collector-test:test-client-secret").decode()
+                if form.get("grant_type") != ["client_credentials"] or (
+                        self.headers.get("Authorization") != basic
+                        and (form.get("client_id"), form.get("client_secret")) != (["collector-test"], ["test-client-secret"])):
+                    self.send_error(401)
+                    return
+                body = json.dumps({"access_token": "test-access-token", "token_type": "Bearer", "expires_in": 3600}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.headers.get("Authorization") != expected_authorization:
+                self.send_error(401)
+                return
             received.append(decode_push(self.rfile.read(int(self.headers["Content-Length"]))))
             self.send_response(204)
             self.end_headers()
@@ -180,8 +205,9 @@ def main():
         root.chmod(0o755)
         sa = root / "serviceaccount"
         client = root / "client"
-        sa.mkdir(mode=0o755)
-        client.mkdir(mode=0o755)
+        telemetry = root / "telemetry"
+        for path in [sa, client, telemetry]:
+            path.mkdir(mode=0o755)
         key = ec.generate_private_key(ec.SECP256R1())
         name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "collector-test")])
         cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
@@ -197,7 +223,13 @@ def main():
         (sa / "ca.crt").write_bytes(cert_pem)
         (client / "tls.crt").write_bytes(cert_pem)
         (client / "tls.key").write_bytes(key_pem)
-        for path in list(sa.iterdir())+list(client.iterdir()):
+        (client / "password").write_text("test-password")
+        (client / "client-secret").write_text("test-client-secret")
+        (telemetry / "client-id").write_text("collector-test")
+        (telemetry / "scopes.json").write_text('["logs.write"]')
+        (telemetry / "deployment").write_text("test-deployment")
+        (telemetry / "username").write_text("collector-test\n")
+        for path in list(sa.iterdir())+list(client.iterdir())+list(telemetry.iterdir()):
             path.chmod(0o644)
         kube = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Kubernetes)
         kube.daemon_threads = True
@@ -208,9 +240,12 @@ def main():
         loki.daemon_threads = True
         loki_tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         loki_tls.load_cert_chain(client / "tls.crt", client / "tls.key")
-        loki_tls.load_verify_locations(cafile=sa / "ca.crt")
-        loki_tls.verify_mode = ssl.CERT_REQUIRED
+        if args.auth == "mtls":
+            loki_tls.load_verify_locations(cafile=sa / "ca.crt")
+            loki_tls.verify_mode = ssl.CERT_REQUIRED
         loki.socket = loki_tls.wrap_socket(loki.socket, server_side=True)
+        (telemetry / "logs-url").write_text("https://127.0.0.1:"+str(loki.server_port)+"/loki/api/v1/push\n")
+        (telemetry / "token-url").write_text("https://127.0.0.1:"+str(loki.server_port)+"/token")
         for server in [kube, loki]:
             threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
@@ -218,12 +253,12 @@ def main():
                        "--cpus", "1", "--memory", "256m", "--read-only", "--cap-drop", "ALL",
                        "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:uid=65532,gid=65532,size=64m",
                        "--volume", str(sa)+":/var/run/secrets/kubernetes.io/serviceaccount:ro",
-                       "--volume", str(client)+":/mnt/c8s-data/admin-client:ro"]
+                       "--volume", str(telemetry)+":/mnt/c8s-data/telemetry:ro",
+                       "--volume", str(client)+":/mnt/c8s-data/telemetry-auth:ro"]
             for key, value in {"KUBE_API_URL": "https://127.0.0.1:"+str(kube.server_port),
                                "LOG_NAMESPACE": "confidential-inference", "LOG_APPLICATION": "confidential-inference",
-                               "DEPLOYMENT_ID": "test-deployment",
-                               "SSL_CERT_FILE": "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
-                               "LOKI_URL": "https://127.0.0.1:"+str(loki.server_port)+"/loki/api/v1/push"}.items():
+                               "TELEMETRY_AUTH": args.auth,
+                               "SSL_CERT_FILE": "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"}.items():
                 command += ["-e", key+"="+value]
             command += [args.image]
             subprocess.run(command, check=True, capture_output=True)
@@ -246,7 +281,7 @@ def main():
             assert all(set(stream["stream"]) <= {"deployment", "namespace", "pod", "container"} for stream in streams)
             print(json.dumps({"passed": True, "checks": ["authenticated Kubernetes log reads",
                              "namespace selection", "helper exclusion", "deployment labels",
-                             "sensitive-field rejection", "Bearer redaction", "mTLS log delivery",
+                             "sensitive-field rejection", "Bearer redaction", args.auth+" log delivery",
                              "non-root readonly container", "one read per container with several ports"]}))
         finally:
             subprocess.run(["docker", "rm", "--force", container], capture_output=True)

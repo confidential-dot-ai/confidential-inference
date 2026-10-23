@@ -87,6 +87,9 @@ CLAIMS_SOCKET_CONSUMERS = {"c8s-cert", "c8s-secret", "c8s-volume", "cds-attest"}
 # as a read-only host mount, which an exact policy must list; from this one a
 # host rule for it refuses the secrets grant, and no rule names it.
 CLAIMS_SOCKET_PLATFORM_SINCE = (0, 50, 0)
+# The first c8s release with the per-pod mesh (C8s #809): the webhook mounts the
+# certificate volume only into its own sidecars, so no workload container has it.
+PER_POD_MESH_SINCE = (0, 64, 0)
 # The first c8s release whose chart seed names one entry per component shape
 # (`<image>-<digest>-<shape>`), pins its args and mounts, and seeds the router
 # pod's composition (c8s #876, #878). From it the release mirrors the seed as
@@ -334,7 +337,10 @@ def container_mounts(
             raise GenerationError(f"{label}: mount {mount['name']} has a volume type the release cannot classify")
     # c8s adds these to every container of an opted-in pod.
     if "confidential.ai/cw" in annotations:
-        rules.append({"destination": annotations.get("confidential.ai/c8s-cert-dir", DEFAULT_CERT_DIR), "kind": "emptyDir"})
+        # c8s >= v0.64.0 (C8s #809, per-pod mesh) mounts the certificate
+        # volume only into its own sidecars.
+        if not c8s_at_least(c8s_release, PER_POD_MESH_SINCE):
+            rules.append({"destination": annotations.get("confidential.ai/c8s-cert-dir", DEFAULT_CERT_DIR), "kind": "emptyDir"})
         if annotations.get("confidential.ai/c8s-secrets"):
             rules.append({"destination": annotations.get("confidential.ai/c8s-secret-dir", DEFAULT_SECRET_DIR), "kind": "emptyDir"})
         if annotations.get("confidential.ai/c8s-volumes"):
@@ -509,10 +515,10 @@ def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[s
     the canonical allowlist's entries byte for byte and the manifest contract
     can require equality.
 
-    The seed pins each component shape's command at the image entrypoint or at
-    the container's own command, which extends it (`/c8s get-cert`), so a seed
-    container of a core image must pin a command that starts with the
-    entrypoint. A core image the seed does not bind runs on the node, never as
+    The seed pins each component shape's command exactly: at the image
+    entrypoint, at a command that extends it (`/c8s get-cert`), or at a
+    command of its own (c8s v0.66.0+ runs the router's nginx image as
+    `/bin/sh /usr/lib/c8s/router-nginx/reload.sh`). A core image the seed does not bind runs on the node, never as
     a pod (nri-image-policy, volumed), and gets no entry: a floor entry for it
     would admit a component with open mounts and env, which strict lint
     refuses.
@@ -522,9 +528,7 @@ def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[s
             image = container.get("image", "")
             if image not in images:
                 continue
-            entrypoint = component_entrypoint(image, configs.get(image, {}))
-            argv = container.get("command", {}).get("argv") or []
-            if container.get("command", {}).get("policy") != "exact" or argv[:len(entrypoint)] != entrypoint:
+            if container.get("command", {}).get("policy") != "exact" or not container["command"].get("argv"):
                 raise GenerationError(f"seed entry {name} does not preserve its component command pin")
     return copy.deepcopy(seed)
 

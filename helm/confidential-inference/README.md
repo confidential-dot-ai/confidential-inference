@@ -29,8 +29,7 @@ on an operator-supplied persistent volume.
 `attestationReceipts.cds` configures schema 3 metadata: the CDS origin and
 policy documents supplied by the deployment and pinned through release identity.
 The gateway verifies CDS before reading the active policy and operator keys.
-The current gateway does not collect `attestationReceipts.targets` receipts.
-Those target settings remain for historical releases. Read
+Read
 [the gateway contract](../../services/gateway/ATTESTATION.md) and
 [client verification](../../docs/verification.md).
 
@@ -41,7 +40,9 @@ names, or resource sizes. Keep those values in the operator repository.
 
 `helm upgrade` and `helm rollback` replace the gateway pod (`Recreate`: c8s
 opens its state volume for one pod) and roll the router (`RollingUpdate`,
-one extra pod). Set `runtimeConfig.releaseBundle` with `--set-file` to the
+one extra pod). The router Deployment (`sglang-router`) and the gateway's
+router Service (`router-headless`) keep their names across releases, so the
+old router serves until the new one is Ready. Set `runtimeConfig.releaseBundle` with `--set-file` to the
 verified `release-bundle.json` so the release selection changes with the
 release.
 

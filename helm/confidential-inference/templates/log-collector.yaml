@@ -1,0 +1,102 @@
+{{- if .Values.logCollector.enabled }}
+{{- if not .Values.telemetry.enabled }}
+{{- fail "logCollector.enabled needs telemetry.enabled" }}
+{{- end }}
+{{- with .Values.telemetry }}
+# The log collector reads these files; they are not in the c8s allowlist.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: log-collector-telemetry
+  labels:
+    {{- include "confidential-inference.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: log-collector
+data:
+  deployment: {{ .deployment | quote }}
+  logs-url: {{ .logsUrl | quote }}
+  username: {{ .logsAuth.username | quote }}
+  client-id: {{ .logsAuth.clientId | quote }}
+  token-url: {{ .logsAuth.tokenUrl | quote }}
+  scopes.json: {{ toJson .logsAuth.scopes | quote }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: log-collector
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: log-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "confidential-inference.selector" (dict "root" . "component" "log-collector") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        confidential.ai/cw: {{ .Values.logCollector.attestedWorkload }}
+        confidential.ai/c8s-renew-interval: {{ .Values.attestationReceipts.certificateRenewInterval | quote }}
+      labels:
+        {{- include "confidential-inference.selector" (dict "root" . "component" "log-collector") | nindent 8 }}
+        confidential.ai/environment: {{ .Values.environment | quote }}
+    spec:
+      {{- with .Values.telemetry.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      enableServiceLinks: false
+      # A fixed hostname keeps HOSTNAME exact in the c8s allowlist.
+      hostname: log-collector
+      serviceAccountName: log-collector
+      automountServiceAccountToken: true
+      securityContext:
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: alloy
+          image: {{ required "images.logCollector is required with logCollector.enabled" .Values.images.logCollector }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KUBE_API_URL
+              value: https://kubernetes.default.svc:443
+            - name: LOG_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: LOG_APPLICATION
+              value: {{ include "confidential-inference.name" . }}
+            - name: TELEMETRY_AUTH
+              value: {{ .Values.telemetry.logsAuth.type }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          volumeMounts:
+            - name: data
+              mountPath: /tmp
+            - name: telemetry
+              mountPath: /mnt/c8s-data/telemetry
+              readOnly: true
+            - name: telemetry-auth
+              mountPath: /mnt/c8s-data/telemetry-auth
+              readOnly: true
+      volumes:
+        - name: data
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: telemetry
+          configMap:
+            name: log-collector-telemetry
+        - name: telemetry-auth
+          secret:
+            secretName: {{ .Values.telemetry.logsAuth.secretName }}
+            defaultMode: 0440
+{{- end }}
