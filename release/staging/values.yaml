@@ -23,9 +23,9 @@ gateway:
   usage:
     enabled: true
     models:
-      hf-internal-testing/tiny-random-LlamaForCausalLM:
-        served_model: hf-internal-testing/tiny-random-LlamaForCausalLM
-        model_revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998
+      deepseek-ai/DeepSeek-V4-Flash-0731:
+        served_model: deepseek-ai/DeepSeek-V4-Flash-0731
+        model_revision: 9e165c30e2704aec5d9d593cce3eebd58bbef1cb
   protection:
     # The node mesh proxy opens the final connection to the gateway.
     # Keep Pod proxies and the staging node network in the trusted scope.
@@ -43,7 +43,7 @@ attestationReceipts:
   # pod. The CDS armTLS certificate names no host; the gateway pins it by
   # attestation. The deployment supplies the two policy documents.
   cds:
-    url: https://10.43.58.194:30808
+    url: https://172.21.250.23:30808
 
 # kube-state-metrics needs the Kubernetes API, which a c8s >= v0.64 mesh member
 # pod cannot reach.
@@ -51,37 +51,20 @@ kubeStateMetrics:
   enabled: false
 
 inference:
-  mode: simulator
-  gpusPerReplica: 0
-  gpuArchitectures: []
-  attestedGpuCount: 0
-  resources:
-    cpu: '2'
-    memory: 16Gi
-  # The model pins of release/staging/spec.yaml.
+  # GPU TEST (gpu-20261023a): the production model on one 4-GPU worker,
+  # opened from a copy of the production encrypted model volume.
+  mode: model
+  replicas: 1
+  attestedWorkloads: [inference-worker-0]
   model:
-    name: hf-internal-testing/tiny-random-LlamaForCausalLM
-    revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998
-    mountVerification:
-      expectedFileList:
-        - path: .model-lock-local-manifest.json
-          sha256: d39aa41f901cb2cb07087157bcdc9c8ec32b6bf1e82c5018df35eff8cad6522e
-        - path: config.json
-          sha256: 5b52782dd9a2b8a4eb87f321448a61cd56cf0764493a1ff73f327259e14ab382
-        - path: tokenizer_config.json
-          sha256: 1847d0a066bd2bd9fb9cb01a2141e7f3befb0a915689878903c3a4dad0f761f9
-  simulator:
-    validateModelMount: true
-    outputMode: BLOCKING
-    maxTotalTokens: 8192
-    maxRunningRequests: 48
-    chatTemplate: chatml
+    c8sVolumeSource: /confidential-inference/model-updates/worker-uf0b4c47afe
+    volumeNames: [md5bca183f9f]
 
 # Telemetry to the admin-next relay (admin/vm/caddy in the internal
 # repository). Its address is the telemetry collector's one allowlist exit.
 telemetry:
   enabled: true
-  deployment: staging-20260926
+  deployment: gpu-20261023a
   relay:
     serverName: ci-admin-next-loki.centralus.cloudapp.azure.com
     address: 172.173.67.102
