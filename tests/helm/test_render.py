@@ -446,6 +446,8 @@ def main() -> None:
         assert 'releaseBundleSha256' not in final.identity
         assert checksum(transition.deployment) != checksum(final.deployment)
         assert transition.deployment['spec']['template']['spec'] == final.deployment['spec']['template']['spec']
+        # The allowlist is rendered without a bundle; bin/deploy sets one.
+        assert final.deployment['spec']['template']['spec'] == runtime_gateway.deployment['spec']['template']['spec']
     assert not any('subPath' in mount for mount in runtime_gateway.container['volumeMounts'])
     final_documents = render("--set", "attestationReceipts.releaseId=v0.14.18", "--set-json", routes_json)
     runtime_router = next(item for item in runtime_documents if item['kind'] == 'Deployment'
