@@ -883,6 +883,43 @@ struct AttestationQuery {
     nonce: Option<String>,
 }
 
+async fn metadata_attestation_response(state: &AppState) -> Response<Body> {
+    let started = Instant::now();
+    let result = state.attestation_provider.response(&[0; 32]).await;
+    let status = if result.is_ok() { 200 } else { 503 };
+    state
+        .metrics
+        .record_attestation_response(status, started.elapsed().as_secs_f64());
+    match result {
+        Ok(document) => {
+            let mut response = Json(document).into_response();
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("no-store, max-age=0"),
+            );
+            response
+        }
+        // Same diagnosis channel as the nonce path below: the detail names
+        // the failed step and never carries evidence or key material.
+        Err(
+            AttestationError::Unavailable(detail)
+            | AttestationError::Invalid(detail)
+            | AttestationError::ProtocolMismatch(detail),
+        ) => {
+            tracing::warn!(step = %detail, "attestation metadata is unavailable");
+            let mut response = detailed_client_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "attestation_unavailable",
+                &detail,
+            );
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            response
+        }
+    }
+}
+
 async fn attestation_response(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AttestationQuery>,
@@ -893,27 +930,7 @@ async fn attestation_response(
         return protection::overload("attestation_capacity");
     };
     if !state.attestation_provider.requires_nonce() {
-        let started = Instant::now();
-        let result = state.attestation_provider.response(&[0; 32]).await;
-        let status = if result.is_ok() { 200 } else { 503 };
-        state
-            .metrics
-            .record_attestation_response(status, started.elapsed().as_secs_f64());
-        return if let Ok(document) = result {
-            let mut response = Json(document).into_response();
-            response.headers_mut().insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("no-store, max-age=0"),
-            );
-            response
-        } else {
-            let mut response =
-                client_error(StatusCode::SERVICE_UNAVAILABLE, "attestation_unavailable");
-            response
-                .headers_mut()
-                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
-            response
-        };
+        return metadata_attestation_response(&state).await;
     }
     let header_values = headers.get_all("x-attestation-nonce");
     if header_values.iter().count() > 1 {
@@ -1195,6 +1212,38 @@ mod tests {
             assert!(document.get("nonce").is_none());
             assert!(document.get("receipts").is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn metadata_attestation_failure_names_the_failed_step() {
+        struct Failing;
+        #[async_trait::async_trait]
+        impl AttestationProvider for Failing {
+            fn requires_nonce(&self) -> bool {
+                false
+            }
+            async fn response(&self, _: &[u8; 32]) -> Result<Value, AttestationError> {
+                Err(AttestationError::Unavailable("GET CDS metadata".to_owned()))
+            }
+        }
+        let response = app_with_attestation(GatewayAvailability::default(), Arc::new(Failing))
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/attestation")
+                    .body(Body::empty())
+                    .unwrap_or_else(|error| panic!("{error:?}")),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        let document: Value =
+            serde_json::from_slice(&body).unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(document["error"]["code"], "attestation_unavailable");
+        assert_eq!(document["error"]["detail"], "GET CDS metadata");
     }
 
     #[tokio::test]

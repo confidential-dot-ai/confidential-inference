@@ -18,11 +18,12 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use confidential_gateway::{
     ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig, UnavailableAttestation,
     admin_client::{self, AdminClient, Config},
-    api_keys::KeyStore,
+    api_keys::{KeyStore, admin_router},
     metrics::GatewayMetrics,
+    metrics::MetricsSource,
     protection::ProtectionConfig,
     router_with_runtime_and_usage,
-    usage::{MAX_PENDING_EVENTS, Model, Recorder},
+    usage::{MAX_PENDING_EVENTS, Model, Outcome, Recorder},
 };
 use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
@@ -41,6 +42,8 @@ impl AuditSink for Audit {
 struct Admin {
     events: Mutex<Vec<Value>>,
     failing: Mutex<bool>,
+    /// Answer 413 for a larger batch (0: no limit).
+    max_batch: Mutex<usize>,
 }
 
 fn snapshot() -> Value {
@@ -110,6 +113,13 @@ async fn start_admin(
                         return StatusCode::SERVICE_UNAVAILABLE.into_response();
                     }
                     let events = body["events"].as_array().cloned().unwrap_or_default();
+                    let max_batch = *admin.max_batch.lock().unwrap_or_else(|_| unreachable!());
+                    if max_batch > 0 && events.len() > max_batch {
+                        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+                    }
+                    if events.iter().any(|event| event["key_id"] == "key_poison") {
+                        return StatusCode::BAD_REQUEST.into_response();
+                    }
                     let count = events.len();
                     admin
                         .events
@@ -281,4 +291,125 @@ fn the_admin_endpoint_must_be_https() {
     assert!(AdminClient::new(&config).is_ok());
     config.token = "short".into();
     assert!(AdminClient::new(&config).is_err());
+}
+
+#[tokio::test]
+async fn a_refused_batch_is_split_and_only_the_refused_event_is_dropped()
+-> Result<(), Box<dyn std::error::Error>> {
+    let admin = Arc::new(Admin::default());
+    *admin.max_batch.lock().unwrap_or_else(|_| unreachable!()) = 3;
+    let (address, ca) = start_admin(admin.clone()).await?;
+    let client = AdminClient::new(&client_config(address, &ca))?;
+    let metrics = Arc::new(GatewayMetrics::new("staging"));
+    let models = BTreeMap::from([(
+        "model-a".to_owned(),
+        Model {
+            served_model: "model-a".into(),
+            model_revision: "revision-1".into(),
+        },
+    )]);
+    let recorder = Recorder::new("gateway-test", models, MAX_PENDING_EVENTS, metrics.clone());
+    for key in [
+        "key_1",
+        "key_2",
+        "key_poison",
+        "key_3",
+        "key_4",
+        "key_5",
+        "key_6",
+    ] {
+        let mut request = recorder.reserve(key, "model-a").ok_or("unknown model")?;
+        request.finish(Outcome::Completed);
+    }
+    // 413 for more than 3 events, 400 for a batch with the poison event:
+    // neither blocks the queue.
+    recorder.send_pending(&client).await?;
+    assert_eq!(recorder.pending(), 0);
+    let stored: Vec<_> = admin
+        .events
+        .lock()
+        .unwrap_or_else(|_| unreachable!())
+        .iter()
+        .map(|event| event["key_id"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(
+        stored,
+        ["key_1", "key_2", "key_3", "key_4", "key_5", "key_6"]
+    );
+    let rendered = metrics.render_prometheus();
+    assert!(
+        rendered.contains("gateway_usage_events_rejected_total{status=\"400\",env=\"staging\"} 1"),
+        "{rendered}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn with_no_egress_a_push_makes_the_gateway_ready_and_failed_pulls_keep_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Nothing listens at the admin address: every pull and send fails, as
+    // under the c8s per-pod mesh before declared egress (C8s#1047). The
+    // gateway is not ready until a snapshot lands.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let ca = rcgen::generate_simple_self_signed(vec!["admin.test".to_owned()])?
+        .cert
+        .pem();
+    let client = Arc::new(AdminClient::new(&client_config(closed, &ca))?);
+    let metrics = Arc::new(GatewayMetrics::new("staging"));
+    let keys = Arc::new(KeyStore::new(PEPPER.to_vec(), "staging").map_err(|e| format!("{e:?}"))?);
+    tokio::spawn(admin_client::sync_keys(
+        client.clone(),
+        keys.clone(),
+        metrics.clone(),
+    ));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!keys.is_ready());
+
+    let response = admin_router(keys.clone())
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/admin/v1/api-keys/snapshot")
+                .header("content-type", "application/json")
+                .body(Body::from(snapshot().to_string()))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(keys.is_ready());
+
+    // The next pull fails too; the pushed keys stay and the gateway stays ready.
+    tokio::time::sleep(Duration::from_millis(5_500)).await;
+    let rendered = metrics.render_prometheus();
+    assert!(
+        rendered.contains(
+            "gateway_key_registry_fetch_failed_total{reason=\"unreachable\",env=\"staging\"} 2"
+        ),
+        "{rendered}"
+    );
+    assert_eq!(
+        keys.verify("synthetic-key").as_deref(),
+        Some("key_admin_exact_id")
+    );
+
+    // Usage cannot leave: the queue keeps the newest events up to its bound.
+    let models = BTreeMap::from([(
+        "model-a".to_owned(),
+        Model {
+            served_model: "model-a".into(),
+            model_revision: "revision-1".into(),
+        },
+    )]);
+    let recorder = Recorder::new("gateway-test", models, 3, metrics.clone());
+    for key in ["key_1", "key_2", "key_3", "key_4", "key_5"] {
+        let mut request = recorder.reserve(key, "model-a").ok_or("unknown model")?;
+        request.finish(Outcome::Completed);
+    }
+    assert_eq!(recorder.send_pending(&client).await, Err("unreachable"));
+    assert_eq!(recorder.pending(), 3);
+    let rendered = metrics.render_prometheus();
+    assert!(
+        rendered.contains("gateway_usage_events_dropped_total{env=\"staging\"} 2"),
+        "{rendered}"
+    );
+    Ok(())
 }

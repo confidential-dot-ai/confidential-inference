@@ -20,7 +20,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{admin_client::AdminClient, metrics::GatewayMetrics};
+use crate::{
+    admin_client::{AdminClient, SendError},
+    metrics::GatewayMetrics,
+};
 
 /// About 250 bytes per event, so a full queue holds about 25 MiB.
 pub const MAX_PENDING_EVENTS: usize = 100_000;
@@ -178,18 +181,35 @@ impl Recorder {
     }
 
     /// Send queued events in batches until the queue is empty or a send
-    /// fails.
+    /// fails in a way that can pass later.
+    ///
+    /// A batch the admin refuses (400, 413, 422) never blocks the queue: it
+    /// is split in halves until the refused events stand alone, and each
+    /// refused single event is dropped, counted and logged.
     ///
     /// # Errors
     ///
-    /// Returns the reason code of the failed send.
+    /// Returns the reason code of a send that can pass later.
     pub async fn send_pending(&self, client: &AdminClient) -> Result<(), &'static str> {
-        while let Some((last, events)) = self.batch(MAX_BATCH_EVENTS) {
-            if let Err(reason) = client.send_events(&events).await {
-                self.metrics.record_usage_send_failure(reason);
-                return Err(reason);
+        let mut limit = MAX_BATCH_EVENTS;
+        while let Some((last, events)) = self.batch(limit) {
+            match client.send_events(&events).await {
+                Ok(()) => {
+                    self.acknowledge(last);
+                    limit = MAX_BATCH_EVENTS;
+                }
+                Err(SendError::Rejected(_)) if events.len() > 1 => limit = events.len() / 2,
+                Err(SendError::Rejected(status)) => {
+                    self.acknowledge(last);
+                    self.metrics.record_usage_event_rejected(status);
+                    tracing::error!(status, "the admin refused a usage event; dropped it");
+                    limit = MAX_BATCH_EVENTS;
+                }
+                Err(SendError::Retry(reason)) => {
+                    self.metrics.record_usage_send_failure(reason);
+                    return Err(reason);
+                }
             }
-            self.acknowledge(last);
         }
         Ok(())
     }

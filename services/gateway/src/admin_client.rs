@@ -1,13 +1,15 @@
 //! The gateway's HTTPS client to the admin: it pulls the key snapshot and
 //! sends usage events.
 //!
-//! The configuration is the CDS secret `/confidential-inference/gateway/product-usage`
-//! (JSON), which c8s releases only to the attested gateway. `endpoint` is the
-//! admin's usage ingest URL; the key snapshot is served on the same origin at
-//! [`KEY_SNAPSHOT_PATH`]. The URL's host is the TLS name the gateway checks.
-//! `tls_ca_pem`, when set, is the only CA the gateway trusts for the admin;
-//! otherwise the image's public roots are used. `token` authenticates the
-//! gateway to the admin, which maps it to one environment and key realm.
+//! `endpoint` is the admin's usage ingest URL and `models` the models usage is
+//! recorded for; the gateway takes both from its pinned environment
+//! (`GATEWAY_ADMIN_ENDPOINT`, `GATEWAY_USAGE_MODELS`). The key snapshot is
+//! served on the same origin at [`KEY_SNAPSHOT_PATH`]. The URL's host is the
+//! TLS name the gateway checks against the image's public roots. `token`, the
+//! only field of the CDS secret `/confidential-inference/gateway/product-usage`
+//! the gateway reads, authenticates it to the admin, which maps it to one
+//! environment and key realm. `tls_ca_pem` and `connect_address` are for
+//! tests against a local admin.
 
 use std::{collections::BTreeMap, net::IpAddr, sync::Arc, time::Duration};
 
@@ -47,6 +49,15 @@ pub struct Config {
     /// model whose response may supply its token counts.
     #[serde(default)]
     pub models: BTreeMap<String, Model>,
+}
+
+/// Why a usage batch was not delivered.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SendError {
+    /// The admin refused this batch (status code); it must not be sent again.
+    Rejected(u16),
+    /// A failure that can pass later (reason code).
+    Retry(&'static str),
 }
 
 pub struct AdminClient {
@@ -134,8 +145,11 @@ impl AdminClient {
     ///
     /// # Errors
     ///
-    /// Returns a short reason code for a transport error or a non-2xx status.
-    pub async fn send_events(&self, events: &[Event]) -> Result<(), &'static str> {
+    /// `SendError::Rejected` when the admin refuses the batch itself (400,
+    /// 413, 422): sending it again cannot succeed. `SendError::Retry` for a
+    /// transport error or any other status, such as 5xx, 429 or a wrong
+    /// token (401), which can succeed later.
+    pub async fn send_events(&self, events: &[Event]) -> Result<(), SendError> {
         let response = self
             .http
             .post(self.events_url.clone())
@@ -143,11 +157,17 @@ impl AdminClient {
             .json(&serde_json::json!({ "events": events }))
             .send()
             .await
-            .map_err(|_| "unreachable")?;
-        if !response.status().is_success() {
-            return Err("http_status");
+            .map_err(|_| SendError::Retry("unreachable"))?;
+        let status = response.status();
+        if matches!(status.as_u16(), 400 | 413 | 422) {
+            return Err(SendError::Rejected(status.as_u16()));
         }
-        bounded_body(response, MAX_RESPONSE_BYTES).await?;
+        if !status.is_success() {
+            return Err(SendError::Retry("http_status"));
+        }
+        bounded_body(response, MAX_RESPONSE_BYTES)
+            .await
+            .map_err(SendError::Retry)?;
         Ok(())
     }
 }

@@ -88,6 +88,15 @@ spec:
     spec:
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.scheduling.gatewayNodeName | quote }}
+      # The admin address is also the gateway's allowlist exit (C8s #1047);
+      # no DNS answer can move it.
+      {{- $admin := urlParse (required "gateway.admin.url is required" .Values.gateway.admin.url) }}
+      {{- if or (ne $admin.scheme "https") (contains ":" $admin.host) }}
+      {{- fail "gateway.admin.url must be https on the default port" }}
+      {{- end }}
+      hostAliases:
+        - ip: {{ required "gateway.admin.address is required" .Values.gateway.admin.address | quote }}
+          hostnames: [{{ $admin.host | quote }}]
       enableServiceLinks: false
       # A fixed hostname keeps HOSTNAME exact in the c8s allowlist.
       hostname: gateway
@@ -204,9 +213,15 @@ spec:
             {{- end }}
             - name: GATEWAY_ADMIN_CONFIG_FILE
               value: {{ printf "/run/c8s/secrets/%s" .Values.gateway.c8sSecrets.adminConfig.name | quote }}
+            # What the gateway sends and where: pinned in the allowlist with
+            # the rest of the environment. The secret holds only the token.
+            - name: GATEWAY_ADMIN_ENDPOINT
+              value: {{ .Values.gateway.admin.url | quote }}
             {{- if .Values.gateway.usage.enabled }}
             - name: GATEWAY_USAGE_ENABLED
               value: "true"
+            - name: GATEWAY_USAGE_MODELS
+              value: {{ toJson .Values.gateway.usage.models | quote }}
             {{- end }}
             - name: GATEWAY_API_KEY_PEPPER_FILE
               value: {{ printf "/run/c8s/secrets/%s" .Values.gateway.c8sSecrets.apiKeyPepper.name | quote }}
@@ -216,8 +231,13 @@ spec:
               value: /mnt/c8s-data/admin-api-key/..data/sha256
             - name: DEPLOYMENT_ENVIRONMENT
               value: {{ .Values.environment | quote }}
-            - name: GATEWAY_METRICS_API_KEY_LABEL_ALLOWLIST
-              value: {{ join "," .Values.metricsCollector.approvedApiKeyLabels | quote }}
+            {{- if .Values.telemetry.enabled }}
+            # OTLP log export to the telemetry collector (standard SDK variables).
+            - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+              value: {{ printf "http://telemetry-collector.%s.svc.cluster.local:%v/v1/logs" .Release.Namespace .Values.telemetry.otlpHttpPort | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: gateway
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.gateway.containerPorts.public }}

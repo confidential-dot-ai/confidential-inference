@@ -1,0 +1,296 @@
+{{- /*
+The telemetry collector: the stock OpenTelemetry Collector (contrib) and the
+only pod of the release with an exit out of the TEE. Its allowlist entry
+declares one egress, TCP to telemetry.relay.address, port telemetry.relay.port
+(C8s #1047). The whole pipeline is one argument, so `args: exact` in the
+allowlist pins what is scraped, what is dropped, and where it is sent.
+Credentials come from the telemetry.secretName Secret; they cannot change the
+destination.
+*/ -}}
+{{- define "confidential-inference.telemetry.config" -}}
+{{- $t := .Values.telemetry -}}
+{{- $relay := printf "https://%s" $t.relay.serverName -}}
+{{- $ns := .Release.Namespace -}}
+{{- $auth := "/mnt/c8s-data/telemetry-relay" -}}
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:{{ $t.healthPort }}
+  oauth2client:
+    client_id: {{ $t.metrics.clientId | quote }}
+    client_secret_file: {{ printf "%s/entra-client-secret" $auth }}
+    token_url: {{ printf "%s/entra/%s/oauth2/v2.0/token" $relay $t.metrics.tenantId | quote }}
+    scopes: ["https://monitor.azure.com/.default"]
+  basicauth/loki:
+    client_auth:
+      username: {{ $t.logs.username | quote }}
+      password: {{ printf "${file:%s/loki-password}" $auth | quote }}
+receivers:
+  prometheus:
+    config:
+      global:
+        scrape_interval: {{ $t.scrapeInterval }}
+        scrape_timeout: 10s
+      scrape_configs:
+        - job_name: gateway
+          dns_sd_configs:
+            - names: [{{ printf "telemetry-gateway.%s.svc.cluster.local" $ns | quote }}]
+              type: A
+              port: {{ .Values.gateway.containerPorts.metrics }}
+          relabel_configs:
+            - {target_label: component, replacement: gateway}
+          # Prometheus anchors the regex.
+          metric_relabel_configs:
+            - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.gateway)) | quote }}}
+        - job_name: sglang-router
+          dns_sd_configs:
+            - names: [{{ printf "telemetry-router.%s.svc.cluster.local" $ns | quote }}]
+              type: A
+              port: {{ .Values.router.metricsPort }}
+          relabel_configs:
+            - {target_label: component, replacement: sglang-router}
+          metric_relabel_configs:
+            - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.router)) | quote }}}
+        {{- if .Values.inference.enabled }}
+        {{- range $index := until (int .Values.inference.replicas) }}
+        {{- $host := printf "inference-worker-%d-0.inference-workers.%s.svc.cluster.local" $index $ns }}
+        - job_name: {{ printf "inference-worker-%d" $index }}
+          static_configs:
+            - targets: [{{ printf "%s:%v" $host $.Values.inference.port | quote }}]
+              labels: {component: inference-worker, replica: {{ printf "inference-worker-%d" $index | quote }}}
+          metric_relabel_configs:
+            - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.worker)) | quote }}}
+        {{- if gt (int $.Values.inference.gpusPerReplica) 0 }}
+        - job_name: {{ printf "inference-gpu-%d" $index }}
+          static_configs:
+            - targets: [{{ printf "%s:%v" $host $.Values.inference.metricsPort | quote }}]
+              labels: {component: inference-gpu, replica: {{ printf "inference-worker-%d" $index | quote }}}
+          metric_relabel_configs:
+            - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.gpu)) | quote }}}
+        {{- end }}
+        {{- end }}
+        {{- end }}
+        {{- with $t.kubeStateMetrics }}
+        {{- if .target }}
+        # C8s's platform kube-state-metrics: C8s gives member pods a fixed,
+        # measured exit to this one address. Pod health series only.
+        - job_name: kube-state-metrics
+          static_configs:
+            - targets: [{{ .target | quote }}]
+              labels: {component: kube-state-metrics}
+          metric_relabel_configs:
+            - {source_labels: [__name__], action: keep, regex: {{ .metrics | quote }}}
+            - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.kubeStateMetrics)) | quote }}}
+        {{- end }}
+        {{- end }}
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:{{ $t.otlpGrpcPort }}
+      http:
+        endpoint: 0.0.0.0:{{ $t.otlpHttpPort }}
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+  batch: {}
+  # A second gate behind labelkeep: only the listed labels leave.
+  transform/metrics:
+    error_mode: ignore
+    metric_statements:
+      - {{ printf "keep_keys(datapoint.attributes, %s)" (toJson (concat $t.commonLabels $t.labels.gateway $t.labels.router $t.labels.worker $t.labels.gpu $t.labels.kubeStateMetrics | uniq | sortAlpha)) | quote }}
+  resource/identity:
+    attributes:
+      - {key: deployment.environment, value: {{ .Values.environment | quote }}, action: upsert}
+      - {key: service.namespace, value: {{ $t.deployment | quote }}, action: upsert}
+  # SGLang spans carry no prompt or response text, but a request id from the
+  # client, a matched stop string on abort, and event attributes. Keep only
+  # the counters, timings and ranks below; spans leave only as spanmetrics.
+  transform/traces:
+    error_mode: ignore
+    trace_statements:
+      - 'keep_keys(resource.attributes, ["service.name"])'
+      - {{ printf "keep_keys(span.attributes, %s)" (toJson $t.spanAttributes) | quote }}
+      - 'keep_keys(spanevent.attributes, [])'
+  transform/logs:
+    error_mode: ignore
+    log_statements:
+      - 'keep_keys(resource.attributes, ["service.name"])'
+      - 'keep_keys(log.attributes, [])'
+      - 'replace_pattern(log.body, "(?i)bearer\\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]")'
+connectors:
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [5ms, 25ms, 100ms, 250ms, 500ms, 1s, 2s, 5s, 10s, 30s, 60s, 120s]
+    dimensions: []
+    metrics_flush_interval: 30s
+exporters:
+  prometheusremotewrite:
+    endpoint: {{ printf "%s/prometheus/dataCollectionRules/%s/streams/Microsoft-PrometheusMetrics/api/v1/write?api-version=2023-04-24" $relay $t.metrics.dataCollectionRule | quote }}
+    auth: {authenticator: oauth2client}
+    external_labels:
+      environment: {{ .Values.environment | quote }}
+      deployment: {{ $t.deployment | quote }}
+    target_info: {enabled: false}
+    resource_to_telemetry_conversion: {enabled: false}
+  otlphttp/loki:
+    logs_endpoint: {{ printf "%s/otlp/v1/logs" $relay | quote }}
+    auth: {authenticator: basicauth/loki}
+service:
+  extensions: [health_check, oauth2client, basicauth/loki]
+  telemetry:
+    logs: {level: info}
+    metrics: {level: none}
+  pipelines:
+    metrics:
+      receivers: [prometheus]
+      processors: [memory_limiter, transform/metrics, resource/identity, batch]
+      exporters: [prometheusremotewrite]
+    {{- if $t.traces.enabled }}
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/traces]
+      exporters: [spanmetrics]
+    metrics/spans:
+      receivers: [spanmetrics]
+      processors: [resource/identity, batch]
+      exporters: [prometheusremotewrite]
+    {{- end }}
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/logs, resource/identity, batch]
+      exporters: [otlphttp/loki]
+{{- end -}}
+
+{{- define "confidential-inference.source.telemetry" -}}
+{{- if .Values.telemetry.enabled }}
+{{- $t := .Values.telemetry }}
+{{- $_ := required "telemetry.relay.serverName is required" $t.relay.serverName }}
+{{- $_ := required "telemetry.relay.address is required" $t.relay.address }}
+{{- $_ := required "telemetry.deployment is required" $t.deployment }}
+{{- $_ := required "telemetry.metrics.tenantId is required" $t.metrics.tenantId }}
+{{- $_ := required "telemetry.metrics.clientId is required" $t.metrics.clientId }}
+{{- $_ := required "telemetry.metrics.dataCollectionRule is required" $t.metrics.dataCollectionRule }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry-collector
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: telemetry-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "confidential-inference.selector" (dict "root" . "component" "telemetry-collector") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        confidential.ai/cw: {{ $t.attestedWorkload }}
+      labels:
+        {{- include "confidential-inference.selector" (dict "root" . "component" "telemetry-collector") | nindent 8 }}
+        confidential.ai/environment: {{ .Values.environment | quote }}
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.scheduling.gatewayNodeName | quote }}
+      # The relay address is also the allowlist exit; no DNS answer can move it.
+      hostAliases:
+        - ip: {{ $t.relay.address | quote }}
+          hostnames: [{{ $t.relay.serverName | quote }}]
+      enableServiceLinks: false
+      # A fixed hostname keeps HOSTNAME exact in the c8s allowlist.
+      hostname: telemetry-collector
+      serviceAccountName: confidential-inference
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: otelcol
+          image: {{ .Values.images.telemetryCollector }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - {{ printf "--config=yaml:%s" (include "confidential-inference.telemetry.config" . | fromYaml | toJson) | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+          ports:
+            - {name: otlp-grpc, containerPort: {{ $t.otlpGrpcPort }}}
+            - {name: otlp-http, containerPort: {{ $t.otlpHttpPort }}}
+            - {name: health, containerPort: {{ $t.healthPort }}}
+          resources:
+            requests:
+              cpu: {{ $t.resources.cpu | quote }}
+              memory: {{ $t.resources.memory }}
+            limits:
+              memory: {{ $t.resources.memory }}
+          readinessProbe:
+            httpGet: {path: /, port: health}
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet: {path: /, port: health}
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: relay-auth
+              mountPath: /mnt/c8s-data/telemetry-relay
+              readOnly: true
+      volumes:
+        - name: relay-auth
+          secret:
+            secretName: {{ $t.secretName }}
+            defaultMode: 0440
+---
+# Headless Services: the mesh connects pod to pod, so every client and every
+# scrape resolves pod addresses.
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-collector
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: telemetry-collector
+spec:
+  clusterIP: None
+  selector:
+    {{- include "confidential-inference.selector" (dict "root" . "component" "telemetry-collector") | nindent 4 }}
+  ports:
+    - {name: otlp-grpc, port: {{ $t.otlpGrpcPort }}, targetPort: otlp-grpc}
+    - {name: otlp-http, port: {{ $t.otlpHttpPort }}, targetPort: otlp-http}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-gateway
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  clusterIP: None
+  selector:
+    {{- include "confidential-inference.selector" (dict "root" . "component" "gateway") | nindent 4 }}
+  ports:
+    - {name: metrics, port: {{ .Values.gateway.containerPorts.metrics }}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-router
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sglang-router
+spec:
+  clusterIP: None
+  selector:
+    {{- include "confidential-inference.selector" (dict "root" . "component" "sglang-router") | nindent 4 }}
+  ports:
+    - {name: metrics, port: {{ .Values.router.metricsPort }}}
+{{- end }}
+{{- end -}}
+{{- include "confidential-inference.applyWorkloadOverrides" (dict "root" . "body" (include "confidential-inference.source.telemetry" .)) }}

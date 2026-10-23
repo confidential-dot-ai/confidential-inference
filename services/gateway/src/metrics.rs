@@ -70,6 +70,7 @@ pub struct GatewayMetrics {
     usage_events_dropped: IntCounter,
     usage_events_pending: IntGauge,
     usage_send_failures: IntCounterVec,
+    usage_events_rejected: IntCounterVec,
 }
 
 /// Metric names, labels and buckets are compile-time constants, so the
@@ -312,6 +313,12 @@ impl GatewayMetrics {
                 "Count of failed usage event batch sends by reason",
                 &["reason"],
             ),
+            usage_events_rejected: counter(
+                r,
+                "gateway_usage_events_rejected_total",
+                "Usage events dropped because the admin refused them, by HTTP status",
+                &["status"],
+            ),
             registry,
         }
     }
@@ -526,6 +533,13 @@ impl GatewayMetrics {
     pub fn set_usage_events_pending(&self, pending: usize) {
         self.usage_events_pending
             .set(i64::try_from(pending).unwrap_or(i64::MAX));
+    }
+
+    /// Count one usage event the admin refused and the gateway dropped.
+    pub fn record_usage_event_rejected(&self, status: u16) {
+        self.usage_events_rejected
+            .with_label_values(&[status.to_string()])
+            .inc();
     }
 
     /// Count one failed usage batch send under a fixed reason code.

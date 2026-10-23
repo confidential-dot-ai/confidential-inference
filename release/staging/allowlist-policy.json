@@ -12,6 +12,7 @@
     {
       "name": "gateway",
       "controller": "Deployment/gateway",
+      "egress": {"port": 443},
       "secretReads": [
         "/confidential-inference/gateway/api-key-pepper",
         "/confidential-inference/gateway/product-usage"
@@ -25,13 +26,11 @@
       "name": "inference-worker-1",
       "controller": "StatefulSet/inference-worker-1"
     },
+
     {
-      "name": "kube-state-metrics",
-      "controller": "Deployment/kube-state-metrics"
-    },
-    {
-      "name": "metrics-collector",
-      "controller": "Deployment/metrics-collector"
+      "name": "telemetry-collector",
+      "controller": "Deployment/telemetry-collector",
+      "egress": {"port": 443}
     },
     {
       "name": "sglang-router",

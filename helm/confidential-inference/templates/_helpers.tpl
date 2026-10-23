@@ -14,6 +14,12 @@ app.kubernetes.io/part-of: {{ include "confidential-inference.name" .root }}
 app.kubernetes.io/component: {{ .component }}
 {{- end }}
 
+{{- /* The headless router Service. The gateway accepts `sglang-router` or a
+       `router-` name here. */}}
+{{- define "confidential-inference.routerService" -}}
+router-headless
+{{- end }}
+
 {{/*
 The inference node of one worker. scheduling.inferenceNodeNames lists one node
 per worker index. An empty list places every worker on

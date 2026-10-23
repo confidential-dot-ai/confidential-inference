@@ -146,11 +146,14 @@ spec:
             requests:
               cpu: {{ .Values.kubeStateMetrics.resources.cpu | quote }}
               memory: {{ .Values.kubeStateMetrics.resources.memory }}
+          # c8s >= v0.64 forwards only HTTP probes through the per-pod mesh.
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /healthz
               port: metrics
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /healthz
               port: metrics
 {{- end }}
 ---

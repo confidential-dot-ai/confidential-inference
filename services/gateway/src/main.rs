@@ -35,16 +35,30 @@ const INFERENCE_UPSTREAM_URL: &str = "http://127.0.0.1:30001";
 // Inside the termination grace the chart leaves after the HTTP drain.
 const USAGE_FLUSH_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// The only field of the admin client secret the gateway reads.
+#[derive(serde::Deserialize)]
+struct AdminSecret {
+    token: String,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "confidential-gateway")]
 struct Args {
-    // The admin client configuration: a CDS secret (`crate::admin_client`).
+    // The admin client token: a CDS secret, JSON `{"token": ...}`
+    // (`crate::admin_client`). Other fields of the secret are ignored.
     #[arg(
         long,
         env = "GATEWAY_ADMIN_CONFIG_FILE",
         default_value = "/run/c8s/secrets/product-usage"
     )]
     admin_config_file: PathBuf,
+    // Where the key pull and usage events go, and which models usage is
+    // recorded for. They are environment, so the allowlist pins them: the
+    // control plane cannot point the gateway's exit at anything else.
+    #[arg(long, env = "GATEWAY_ADMIN_ENDPOINT", default_value = "")]
+    admin_endpoint: String,
+    #[arg(long, env = "GATEWAY_USAGE_MODELS", default_value = "{}")]
+    usage_models: String,
     #[arg(long, env = "GATEWAY_USAGE_ENABLED", default_value_t = false)]
     usage_enabled: bool,
     #[arg(long, env = "GATEWAY_ROUTER_NAMESPACE")]
@@ -217,11 +231,21 @@ struct Args {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    let log_export = std::env::var("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
+        .ok()
+        .map(otlp_log_export)
+        .transpose()?;
+    {
+        use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info".into()),
+            )
+            .with(tracing_subscriber::fmt::layer())
+            .with(log_export.as_ref().map(otlp_log_layer))
+            .init();
+    }
     let mut args = Args::parse();
     load_release_identity(&mut args)?;
     let releases = args
@@ -299,12 +323,19 @@ async fn main() -> Result<()> {
             .map_err(|_| anyhow::anyhow!("the API key pepper must be at least 32 bytes"))?
             .with_metrics(metrics.clone()),
     );
-    let admin_config: admin_client::Config = serde_json::from_slice(&wait_for_bounded_file(
+    let secret: AdminSecret = serde_json::from_slice(&wait_for_bounded_file(
         &args.admin_config_file,
         65_536,
         secret_wait,
     )?)
-    .context("invalid admin client configuration")?;
+    .context("invalid admin client secret")?;
+    let admin_config = admin_client::Config {
+        endpoint: args.admin_endpoint.clone(),
+        token: secret.token,
+        tls_ca_pem: None,
+        connect_address: None,
+        models: serde_json::from_str(&args.usage_models).context("invalid GATEWAY_USAGE_MODELS")?,
+    };
     let admin = Arc::new(AdminClient::new(&admin_config).map_err(anyhow::Error::msg)?);
     tokio::spawn(admin_client::sync_keys(
         admin.clone(),
@@ -443,7 +474,43 @@ async fn main() -> Result<()> {
     if let Some(usage) = usage {
         usage.flush(&admin, USAGE_FLUSH_TIMEOUT).await;
     }
+    if let Some(log_export) = log_export {
+        let _ = tokio::task::spawn_blocking(move || log_export.shutdown()).await;
+    }
     Ok(())
+}
+
+/// Log export to the telemetry collector over OTLP/HTTP, on when the standard
+/// `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` is set. The SDK reads
+/// `OTEL_SERVICE_NAME`; both variables are pinned in the allowlist.
+fn otlp_log_export(endpoint: String) -> Result<opentelemetry_sdk::logs::SdkLoggerProvider> {
+    use opentelemetry_otlp::WithExportConfig;
+    let exporter = opentelemetry_otlp::LogExporter::builder()
+        .with_http()
+        .with_endpoint(endpoint)
+        .build()
+        .context("build the OTLP log exporter")?;
+    Ok(opentelemetry_sdk::logs::SdkLoggerProvider::builder()
+        .with_batch_exporter(exporter)
+        .build())
+}
+
+/// The layer that hands gateway log events to the OTLP provider. The
+/// exporter's own HTTP stack stays out, so an export never logs itself.
+fn otlp_log_layer<S>(
+    provider: &opentelemetry_sdk::logs::SdkLoggerProvider,
+) -> impl tracing_subscriber::Layer<S>
+where
+    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
+{
+    use tracing_subscriber::Layer;
+    opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(provider).with_filter(
+        tracing_subscriber::filter::filter_fn(|metadata| {
+            !["opentelemetry", "reqwest", "hyper", "h2", "tower"]
+                .iter()
+                .any(|target| metadata.target().starts_with(target))
+        }),
+    )
 }
 
 /// HTTP limits of the public listener.
@@ -1025,6 +1092,8 @@ mod tests {
     fn args() -> Args {
         Args {
             admin_config_file: PathBuf::from("/run/c8s/secrets/product-usage"),
+            admin_endpoint: "https://admin.example.com/api/usage/ingest".into(),
+            usage_models: "{}".into(),
             usage_enabled: false,
             router_namespace: None,
             release_selection_file: None,
@@ -1381,5 +1450,60 @@ mod tests {
         value.expected_operator_key_set_sha256 = String::new();
         value.release_identity_file = Some(path);
         assert!(load_release_identity(&mut value).is_err());
+    }
+}
+
+#[cfg(test)]
+mod otlp_log_tests {
+    use anyhow::{Context, Result, anyhow};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use tracing_subscriber::layer::SubscriberExt;
+
+    /// One OTLP/HTTP request: its path and body.
+    fn receive_one(listener: &std::net::TcpListener) -> Result<(String, Vec<u8>)> {
+        let (stream, _) = listener.accept()?;
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let path = line.split(' ').nth(1).context("request line")?.to_owned();
+        let mut length = 0;
+        loop {
+            line.clear();
+            reader.read_line(&mut line)?;
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse()?;
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body)?;
+        reader
+            .get_mut()
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")?;
+        Ok((path, body))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_log_event_reaches_the_otlp_endpoint() -> Result<()> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}/v1/logs", listener.local_addr()?);
+        let server = std::thread::spawn(move || receive_one(&listener));
+        let provider = super::otlp_log_export(endpoint)?;
+        let subscriber = tracing_subscriber::registry().with(super::otlp_log_layer(&provider));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("gateway otlp test line");
+        });
+        tokio::task::spawn_blocking(move || provider.shutdown()).await??;
+        let (path, body) = server
+            .join()
+            .map_err(|_| anyhow!("the OTLP test server panicked"))??;
+        assert_eq!(path, "/v1/logs");
+        let needle = b"gateway otlp test line";
+        assert!(body.windows(needle.len()).any(|window| window == needle));
+        Ok(())
     }
 }
