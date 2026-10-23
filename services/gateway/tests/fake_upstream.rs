@@ -14,7 +14,7 @@ use axum::{
     routing::post,
 };
 use confidential_gateway::{
-    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig, UnavailableAttestation,
+    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig,
     metrics::GatewayMetrics, router,
 };
 use serde_json::{Value, json};
@@ -89,7 +89,6 @@ async fn runtime_models_change_without_interrupting_an_active_request()
         Arc::new(Keys),
         Arc::new(Audit),
         Arc::new(GatewayMetrics::new("test")),
-        Arc::new(UnavailableAttestation),
         reqwest::Client::new(),
         Some(runtime.clone()),
         None,
@@ -202,7 +201,6 @@ async fn router_file_change_moves_new_requests_and_tracks_the_old_request()
         Arc::new(Keys),
         Arc::new(Audit),
         metrics.clone(),
-        Arc::new(UnavailableAttestation),
         client,
         Some(runtime.clone()),
         Some(namespace),
@@ -387,7 +385,6 @@ fn app_with_client(address: SocketAddr, client: reqwest::Client) -> Router {
         Arc::new(Keys),
         Arc::new(Audit),
         Arc::new(GatewayMetrics::new("test")),
-        Arc::new(UnavailableAttestation),
         client,
     )
 }

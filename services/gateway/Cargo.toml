@@ -9,7 +9,6 @@ publish = false
 
 [dependencies]
 anyhow = "1.0.102"
-async-trait = "0.1.89"
 async-stream = "0.3.6"
 axum = { version = "0.8.9", features = ["http1", "json"] }
 axum-server = "0.7.2"
@@ -32,7 +31,6 @@ prometheus = { version = "0.14.0", default-features = false, features = ["proces
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "stream", "rustls"] }
 ring = "0.17.14"
 rustls = "0.23.37"
-rustls-pemfile = "2.2.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"

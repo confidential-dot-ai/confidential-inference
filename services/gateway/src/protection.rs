@@ -37,7 +37,6 @@ pub struct ProtectionConfig {
     pub inference_queue: usize,
     pub queue_timeout: Duration,
     pub per_key_concurrency: usize,
-    pub attestation_concurrency: usize,
     pub requests_per_address_per_second: u32,
     pub trusted_proxy_cidrs: Vec<IpNet>,
 }
@@ -56,7 +55,6 @@ impl Default for ProtectionConfig {
             inference_queue: 64,
             queue_timeout: Duration::from_secs(2),
             per_key_concurrency: 4,
-            attestation_concurrency: 4,
             requests_per_address_per_second: 30,
             trusted_proxy_cidrs: Vec::new(),
         }
@@ -69,7 +67,6 @@ pub struct ProtectionState {
     runtime: Option<Arc<MountedConfig<GatewaySettings>>>,
     inference_slots: Arc<Capacity>,
     inference_admission: Arc<Capacity>,
-    attestation_slots: Arc<Capacity>,
     public_requests: Arc<Capacity>,
     address_slots: Arc<Mutex<BTreeMap<IpAddr, Arc<Capacity>>>>,
     key_slots: Arc<Mutex<BTreeMap<String, Arc<Capacity>>>>,
@@ -101,7 +98,6 @@ impl ProtectionState {
                     .inference_concurrency
                     .saturating_add(config.inference_queue),
             )),
-            attestation_slots: Arc::new(Capacity::new(config.attestation_concurrency)),
             public_requests: Arc::new(Capacity::new(config.global_request_concurrency)),
             address_slots: Arc::new(Mutex::new(BTreeMap::new())),
             key_slots: Arc::new(Mutex::new(BTreeMap::new())),
@@ -129,7 +125,6 @@ impl ProtectionState {
             config.inference_queue = settings.inference_queue;
             config.queue_timeout = Duration::from_secs(settings.queue_timeout_seconds);
             config.per_key_concurrency = settings.per_key_concurrency;
-            config.attestation_concurrency = settings.attestation_concurrency;
             config.requests_per_address_per_second = settings.requests_per_address_per_second;
         }
         (config, revision)
@@ -145,8 +140,6 @@ impl ProtectionState {
                 .saturating_add(config.inference_queue),
             revision,
         );
-        self.attestation_slots
-            .resize_at_revision(config.attestation_concurrency, revision);
         self.public_requests
             .resize_at_revision(config.global_request_concurrency, revision);
         (config, revision)
@@ -192,19 +185,6 @@ impl ProtectionState {
             _admission: admission,
             _execution: execution,
         })
-    }
-
-    /// Reserve one attestation slot without waiting.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when all attestation slots are in use.
-    pub fn attestation_permit(&self) -> Result<CapacityPermit, CapacityError> {
-        self.refresh_limits();
-        self.attestation_slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|()| CapacityError)
     }
 
     fn accept_address(&self, address: IpAddr) -> bool {

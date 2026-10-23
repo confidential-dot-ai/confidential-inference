@@ -151,11 +151,6 @@ jobs:
           for suite in api image-workflow images/gateway images/sglang model-mount-v0 network-v0 release-v1; do
             run python3 -m unittest discover -s "tests/$suite" -p 'test_*.py'
           done
-          for test in test_attestation_metadata test_verify_release_manifest test_gpu_evidence \
-                      test_operator_key_set_read test_staging_control_allowlist test_tls_binding; do
-            run python3 -m unittest discover -s tests/attestation-v0 -p "$test.py"
-          done
-          run python3 -m unittest discover -s tests/attestation-v0 -p test_verify_public_attestation.py -k WorkloadAttestationSchemaTests
           run python3 -m unittest discover -s tests/release-v0 -p test_release_signature.py
           exit "$failed"
 

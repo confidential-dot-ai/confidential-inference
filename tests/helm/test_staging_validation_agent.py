@@ -27,12 +27,11 @@ class StagingAgentTests(unittest.TestCase):
                         AGENT['read_task_secret'](object(), object())
 
     def test_native_configuration_status_and_public_inference_are_permitted(self):
-        for path in ('/runtime-config', '/release-config', '/metrics'):
+        for path in ('/runtime-config', '/metrics'):
             self.check(f'http://{GATEWAY}:9090{path}')
         for path in ('/model-routes', '/model-routes/status', '/health', '/readiness'):
             self.check(f'http://{ROUTER}:30000{path}')
         self.check(f'http://{GATEWAY}:9443/v1/chat/completions', 'POST', body='{}')
-        self.check(f'http://{GATEWAY}:9443/attestation?nonce=public-test')
 
     def test_mutations_unlisted_targets_and_unbounded_inputs_are_rejected(self):
         urls = [f'http://{GATEWAY}:9443/admin/v1/api-keys/snapshot',

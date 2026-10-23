@@ -12,7 +12,7 @@ use axum::{
     routing::post,
 };
 use confidential_gateway::{
-    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig, UnavailableAttestation,
+    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig,
     metrics::{GatewayMetrics, MetricsSource},
     router,
 };
@@ -214,7 +214,6 @@ fn app(address: SocketAddr, metrics: Arc<GatewayMetrics>) -> Router {
         Arc::new(Keys),
         Arc::new(Audit),
         metrics,
-        Arc::new(UnavailableAttestation),
         reqwest::Client::new(),
     )
 }
