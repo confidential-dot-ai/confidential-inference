@@ -191,6 +191,9 @@ def check_telemetry_collector() -> None:
     assert PINNED.match(collector["containers"][0]["image"])
     assert "env" not in collector["containers"][0]
     assert collector["automountServiceAccountToken"] is False
+    # C8s #1049: an entry with egress has no host mount and a fixed argv.
+    assert not any("hostPath" in volume for volume in collector.get("volumes", []))
+    assert all("args" in container for container in collector["containers"])
     policies = {item["metadata"]["name"]: item for item in documents if item["kind"] == "NetworkPolicy"}
     blocks = [peer["ipBlock"]["cidr"] for policy in policies.values()
               for rule in policy["spec"].get("egress", []) for peer in rule.get("to", []) if "ipBlock" in peer]
