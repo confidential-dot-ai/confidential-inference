@@ -1226,7 +1226,7 @@ mod tests {
                 Err(AttestationError::Unavailable("GET CDS metadata".to_owned()))
             }
         }
-        let response = app_with_attestation(GatewayAvailability::default(), Arc::new(Failing))
+        let response = app_with(Arc::new(Keys), Arc::new(Failing))
             .oneshot(
                 Request::builder()
                     .uri("/v1/attestation")
