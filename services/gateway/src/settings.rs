@@ -9,8 +9,10 @@ pub struct GatewaySettings {
     pub schema_version: u32,
     #[serde(default)]
     pub router_service: Option<String>,
+    // The chart still renders `evidence`, `attestationCacheSeconds` and
+    // `attestationConcurrency`; the gateway reads none of them.
     #[serde(default)]
-    pub evidence: Option<EvidenceSettings>,
+    pub evidence: Option<serde_json::Value>,
     pub catalog_model_ids: Vec<String>,
     pub inference_model_ids: Vec<String>,
     pub maximum_body_bytes: usize,
@@ -28,35 +30,6 @@ pub struct GatewaySettings {
     pub requests_per_address_per_second: u32,
 }
 
-/// Public TLS origin and optional connection address.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EvidenceSettings {
-    pub base_url: String,
-    #[serde(default)]
-    pub connect_host: Option<String>,
-}
-
-impl EvidenceSettings {
-    /// Validate addresses without changing TLS trust or doing network I/O.
-    ///
-    /// # Errors
-    /// Return an error for an unsafe origin or invalid connection host.
-    pub fn validate(&self) -> Result<(), String> {
-        let url = crate::attestation::parse_evidence_base_url(&self.base_url)?;
-        if self.base_url.len() > 2048 || url.scheme() != "https" {
-            return Err("evidence URL must be an HTTPS origin".into());
-        }
-        if let Some(host) = &self.connect_host {
-            if host.is_empty() || host.len() > 253 {
-                return Err("invalid evidence connection host".into());
-            }
-            url::Host::parse(host).map_err(|_| "invalid evidence connection host".to_owned())?;
-        }
-        Ok(())
-    }
-}
-
 impl GatewaySettings {
     /// Validate the fields the process arguments cannot express. The startup
     /// argument checks bound the numeric limits.
@@ -64,9 +37,6 @@ impl GatewaySettings {
     /// # Errors
     /// Returns an error for unsafe settings or inconsistent model lists.
     pub fn validate(&self) -> Result<(), String> {
-        if let Some(evidence) = &self.evidence {
-            evidence.validate()?;
-        }
         let names_valid = |names: &[String]| {
             names.len() <= 1024
                 && names
@@ -98,54 +68,5 @@ impl GatewaySettings {
             return Err("invalid gateway settings".into());
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn evidence_rejects_unsafe_addresses() {
-        for origin in [
-            "http://api.example.test",
-            "http://127.0.0.1",
-            "https://user:password@api.example.test",
-            "https://api.example.test/path",
-            "https://api.example.test?query=1",
-            "https://api.example.test#fragment",
-            "file:///tmp/evidence",
-        ] {
-            let settings = EvidenceSettings {
-                base_url: origin.into(),
-                connect_host: None,
-            };
-            assert!(settings.validate().is_err(), "accepted {origin}");
-        }
-        for host in [
-            "",
-            "router:443",
-            "https://router",
-            "router/path",
-            "user@router",
-            "router?query=1",
-        ] {
-            let settings = EvidenceSettings {
-                base_url: "https://api.example.test".into(),
-                connect_host: Some(host.into()),
-            };
-            assert!(settings.validate().is_err(), "accepted {host}");
-        }
-        for host in [
-            "c8s-router.c8s-system.svc.cluster.local",
-            "127.0.0.1",
-            "[::1]",
-        ] {
-            let settings = EvidenceSettings {
-                base_url: "https://api.example.test".into(),
-                connect_host: Some(host.into()),
-            };
-            assert!(settings.validate().is_ok(), "rejected {host}");
-        }
     }
 }

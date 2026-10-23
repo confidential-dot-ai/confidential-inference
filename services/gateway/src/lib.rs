@@ -1,22 +1,21 @@
 //! The public confidential inference gateway.
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Query, Request, State},
+    extract::{Request, State},
     http::{HeaderMap, HeaderValue, Response, StatusCode, header},
     middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
 };
-use base64::Engine as _;
 use futures_util::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use tower_http::{
     cors::{AllowHeaders, Any, CorsLayer},
@@ -27,13 +26,10 @@ use uuid::Uuid;
 pub mod admin_auth;
 pub mod admin_client;
 pub mod api_keys;
-pub mod attestation;
-pub mod attestation_metadata;
 pub mod key_registry;
 pub mod metrics;
 mod model_response;
 pub mod protection;
-pub mod release_settings;
 pub mod settings;
 pub mod usage;
 
@@ -102,96 +98,21 @@ struct AppState {
     keys: Arc<dyn ApiKeyVerifier>,
     audit: Arc<dyn AuditSink>,
     metrics: Arc<GatewayMetrics>,
-    attestation_provider: Arc<dyn AttestationProvider>,
-    nonces: Arc<Mutex<NonceStore>>,
     protection: Arc<ProtectionState>,
     usage: Option<Arc<usage::Recorder>>,
 }
 
-#[async_trait::async_trait]
-pub trait AttestationProvider: Send + Sync + 'static {
-    /// Legacy evidence needs a caller nonce; policy metadata does not.
-    fn requires_nonce(&self) -> bool {
-        true
-    }
-    /// Create evidence for one caller nonce.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when evidence is unavailable or invalid.
-    async fn response(&self, nonce: &[u8; 32]) -> Result<Value, AttestationError>;
-}
-
-#[derive(Clone, Debug)]
-pub enum AttestationError {
-    /// The producer could not reach or read an upstream evidence source. The
-    /// string names the step that failed and carries no evidence bytes.
-    Unavailable(String),
-    /// The producer read the evidence and rejected it. The string names the
-    /// check that refused it and carries no evidence bytes.
-    Invalid(String),
-    /// The c8s node speaks a different attestation protocol than this build.
-    /// The string names the cause and comes from the c8s error body.
-    ProtocolMismatch(String),
-}
-
-pub struct UnavailableAttestation;
-
-#[async_trait::async_trait]
-impl AttestationProvider for UnavailableAttestation {
-    async fn response(&self, _: &[u8; 32]) -> Result<Value, AttestationError> {
-        Err(AttestationError::Unavailable(
-            "this gateway build has no attestation producer configured".to_owned(),
-        ))
-    }
-}
-
 /// The largest `maximum_body_bytes` a deployment can configure.
 pub const MAXIMUM_BODY_BYTES_CEILING: usize = 8 * 1024 * 1024;
-const NONCE_CAPACITY: usize = 4_096;
-const NONCE_TTL: Duration = Duration::from_secs(15 * 60);
-
-#[derive(Default)]
-struct NonceStore {
-    used: std::collections::BTreeMap<[u8; 32], Instant>,
-}
-
-impl NonceStore {
-    fn reserve(&mut self, nonce: [u8; 32]) -> bool {
-        let now = Instant::now();
-        self.used.retain(|_, timestamp| {
-            now.checked_duration_since(*timestamp)
-                .is_none_or(|age| age < NONCE_TTL)
-        });
-        if self.used.contains_key(&nonce) || self.used.len() >= NONCE_CAPACITY {
-            return false;
-        }
-        self.used.insert(nonce, now);
-        true
-    }
-
-    fn release_failed(&mut self, nonce: &[u8; 32]) {
-        self.used.remove(nonce);
-    }
-}
 
 pub fn router(
     config: GatewayConfig,
     keys: Arc<dyn ApiKeyVerifier>,
     audit: Arc<dyn AuditSink>,
     metrics: Arc<GatewayMetrics>,
-    attestation_provider: Arc<dyn AttestationProvider>,
     http: reqwest::Client,
 ) -> Router {
-    router_with_usage(
-        config,
-        keys,
-        audit,
-        metrics,
-        attestation_provider,
-        http,
-        None,
-    )
+    router_with_usage(config, keys, audit, metrics, http, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -200,7 +121,6 @@ pub fn router_with_usage(
     keys: Arc<dyn ApiKeyVerifier>,
     audit: Arc<dyn AuditSink>,
     metrics: Arc<GatewayMetrics>,
-    attestation_provider: Arc<dyn AttestationProvider>,
     http: reqwest::Client,
     usage: Option<Arc<usage::Recorder>>,
 ) -> Router {
@@ -216,8 +136,6 @@ pub fn router_with_usage(
         keys,
         audit,
         metrics,
-        attestation_provider,
-        nonces: Arc::new(Mutex::new(NonceStore::default())),
         protection: protection.clone(),
         usage,
     });
@@ -227,8 +145,6 @@ pub fn router_with_usage(
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/completions", post(completions))
-        .route("/attestation", get(attestation_response))
-        .route("/v1/attestation", get(attestation_response))
         // The handler enforces the configured limit with the API error body.
         // This layer only bounds the largest limit the settings accept.
         .layer(RequestBodyLimitLayer::new(MAXIMUM_BODY_BYTES_CEILING))
@@ -245,7 +161,6 @@ pub fn router_with_usage(
                     header::AUTHORIZATION,
                     header::CONTENT_TYPE,
                     header::ACCEPT,
-                    header::HeaderName::from_static("x-attestation-nonce"),
                 ])),
         )
         .with_state(state)
@@ -734,135 +649,6 @@ fn has_output_delta(value: &Value) -> bool {
         })
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AttestationQuery {
-    nonce: Option<String>,
-}
-
-async fn metadata_attestation_response(state: &AppState) -> Response<Body> {
-    let started = Instant::now();
-    let result = state.attestation_provider.response(&[0; 32]).await;
-    let status = if result.is_ok() { 200 } else { 503 };
-    state
-        .metrics
-        .record_attestation_response(status, started.elapsed().as_secs_f64());
-    match result {
-        Ok(document) => {
-            let mut response = Json(document).into_response();
-            response.headers_mut().insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("no-store, max-age=0"),
-            );
-            response
-        }
-        // Same diagnosis channel as the nonce path below: the detail names
-        // the failed step and never carries evidence or key material.
-        Err(
-            AttestationError::Unavailable(detail)
-            | AttestationError::Invalid(detail)
-            | AttestationError::ProtocolMismatch(detail),
-        ) => {
-            tracing::warn!(step = %detail, "attestation metadata is unavailable");
-            let mut response = detailed_client_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "attestation_unavailable",
-                &detail,
-            );
-            response
-                .headers_mut()
-                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
-            response
-        }
-    }
-}
-
-async fn attestation_response(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<AttestationQuery>,
-    headers: HeaderMap,
-) -> Response<Body> {
-    let Ok(_permit) = state.protection.attestation_permit() else {
-        state.metrics.record_rejection("attestation_capacity");
-        return protection::overload("attestation_capacity");
-    };
-    if !state.attestation_provider.requires_nonce() {
-        return metadata_attestation_response(&state).await;
-    }
-    let header_values = headers.get_all("x-attestation-nonce");
-    if header_values.iter().count() > 1 {
-        return client_error(StatusCode::BAD_REQUEST, "ambiguous_nonce");
-    }
-    let header_nonce = header_values
-        .iter()
-        .next()
-        .and_then(|value| value.to_str().ok());
-    if query.nonce.is_some() && header_nonce.is_some() {
-        return client_error(StatusCode::BAD_REQUEST, "ambiguous_nonce");
-    }
-    let encoded = query.nonce.as_deref().or(header_nonce);
-    let Some(encoded) = encoded else {
-        return client_error(StatusCode::BAD_REQUEST, "nonce_required");
-    };
-    if encoded.len() != 43 {
-        return client_error(StatusCode::BAD_REQUEST, "invalid_nonce");
-    }
-    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded) else {
-        return client_error(StatusCode::BAD_REQUEST, "invalid_nonce");
-    };
-    if base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes) != encoded {
-        return client_error(StatusCode::BAD_REQUEST, "invalid_nonce");
-    }
-    let Ok(nonce) = <[u8; 32]>::try_from(bytes) else {
-        return client_error(StatusCode::BAD_REQUEST, "invalid_nonce");
-    };
-    let reserved = state
-        .nonces
-        .lock()
-        .map(|mut store| store.reserve(nonce))
-        .unwrap_or(false);
-    if !reserved {
-        return client_error(StatusCode::CONFLICT, "nonce_rejected");
-    }
-    match state.attestation_provider.response(&nonce).await {
-        Ok(response) => {
-            let mut response = (StatusCode::OK, Json(response)).into_response();
-            response.headers_mut().insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("no-store, max-age=0"),
-            );
-            response
-        }
-        // Every 5xx this handler emits names the step that failed. The
-        // gateway runs where kubelet logs and exec are disabled, so the
-        // response body is the only diagnosis channel. The detail never
-        // carries evidence bytes, key material, or a nonce.
-        Err(AttestationError::Invalid(detail)) => {
-            release_failed_nonce(&state, &nonce);
-            detailed_client_error(StatusCode::BAD_GATEWAY, "attestation_invalid", &detail)
-        }
-        Err(AttestationError::Unavailable(detail)) => {
-            release_failed_nonce(&state, &nonce);
-            detailed_client_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "attestation_unavailable",
-                &detail,
-            )
-        }
-        // A protocol mismatch is version skew between this gateway and c8s.
-        // It is not failed attestation, and it gets its own code and a detail
-        // string so the cause is visible in the response itself.
-        Err(AttestationError::ProtocolMismatch(detail)) => {
-            release_failed_nonce(&state, &nonce);
-            detailed_client_error(
-                StatusCode::BAD_GATEWAY,
-                "attestation_protocol_mismatch",
-                &detail,
-            )
-        }
-    }
-}
-
 enum Authentication {
     Active(String),
     Revoked(String),
@@ -888,12 +674,6 @@ fn authenticate(state: &AppState, headers: &HeaderMap) -> Authentication {
         Authentication::Revoked(key_id)
     } else {
         Authentication::Invalid
-    }
-}
-
-fn release_failed_nonce(state: &AppState, nonce: &[u8; 32]) {
-    if let Ok(mut store) = state.nonces.lock() {
-        store.release_failed(nonce);
     }
 }
 
@@ -930,18 +710,6 @@ fn inference_unavailable() -> Response<Body> {
         .headers_mut()
         .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
     response
-}
-
-fn detailed_client_error(status: StatusCode, code: &'static str, detail: &str) -> Response<Body> {
-    (
-        status,
-        Json(json!({"error":{
-            "code": code,
-            "message": status.canonical_reason().unwrap_or("Request failed."),
-            "detail": detail,
-        }})),
-    )
-        .into_response()
 }
 
 fn safe_retry_after(headers: &HeaderMap) -> Option<HeaderValue> {
@@ -1002,14 +770,10 @@ mod tests {
     }
 
     fn app() -> Router {
-        app_with(Arc::new(Keys), Arc::new(UnavailableAttestation))
+        app_with_keys(Arc::new(Keys))
     }
 
     fn app_with_keys(keys: Arc<dyn ApiKeyVerifier>) -> Router {
-        app_with(keys, Arc::new(UnavailableAttestation))
-    }
-
-    fn app_with(keys: Arc<dyn ApiKeyVerifier>, provider: Arc<dyn AttestationProvider>) -> Router {
         router(
             GatewayConfig {
                 catalog_model_ids: vec!["deepseek".to_owned()],
@@ -1022,85 +786,12 @@ mod tests {
             keys,
             Arc::new(Audit),
             Arc::new(GatewayMetrics::new("test")),
-            provider,
             reqwest::Client::new(),
         )
     }
 
     fn authorization() -> (&'static str, &'static str) {
         ("authorization", "Bearer accepted")
-    }
-
-    #[tokio::test]
-    async fn metadata_attestation_needs_no_key_nonce_or_live_inference_upstream() {
-        struct Metadata;
-        #[async_trait::async_trait]
-        impl AttestationProvider for Metadata {
-            fn requires_nonce(&self) -> bool {
-                false
-            }
-            async fn response(&self, _: &[u8; 32]) -> Result<Value, AttestationError> {
-                Ok(json!({"schemaVersion": 3, "c8s": {"operatorKeys": []}}))
-            }
-        }
-        // The configured inference address has no listener and no key is
-        // loaded. Attestation must still work.
-        for path in ["/attestation", "/v1/attestation"] {
-            let response = app_with(Arc::new(NotReadyKeys), Arc::new(Metadata))
-                .oneshot(
-                    Request::builder()
-                        .uri(path)
-                        .body(Body::empty())
-                        .unwrap_or_else(|error| panic!("{error:?}")),
-                )
-                .await
-                .unwrap_or_else(|error| panic!("{error:?}"));
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(
-                response.headers()[header::CACHE_CONTROL],
-                "no-store, max-age=0"
-            );
-            let body = to_bytes(response.into_body(), 1024)
-                .await
-                .unwrap_or_else(|error| panic!("{error:?}"));
-            let document: Value =
-                serde_json::from_slice(&body).unwrap_or_else(|error| panic!("{error:?}"));
-            assert_eq!(document["schemaVersion"], 3);
-            assert!(document.get("nonce").is_none());
-            assert!(document.get("receipts").is_none());
-        }
-    }
-
-    #[tokio::test]
-    async fn metadata_attestation_failure_names_the_failed_step() {
-        struct Failing;
-        #[async_trait::async_trait]
-        impl AttestationProvider for Failing {
-            fn requires_nonce(&self) -> bool {
-                false
-            }
-            async fn response(&self, _: &[u8; 32]) -> Result<Value, AttestationError> {
-                Err(AttestationError::Unavailable("GET CDS metadata".to_owned()))
-            }
-        }
-        let response = app_with(Arc::new(Keys), Arc::new(Failing))
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/attestation")
-                    .body(Body::empty())
-                    .unwrap_or_else(|error| panic!("{error:?}")),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{error:?}"));
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(response.headers()[header::RETRY_AFTER], "1");
-        let body = to_bytes(response.into_body(), 1024)
-            .await
-            .unwrap_or_else(|error| panic!("{error:?}"));
-        let document: Value =
-            serde_json::from_slice(&body).unwrap_or_else(|error| panic!("{error:?}"));
-        assert_eq!(document["error"]["code"], "attestation_unavailable");
-        assert_eq!(document["error"]["detail"], "GET CDS metadata");
     }
 
     #[tokio::test]
@@ -1280,69 +971,6 @@ mod tests {
             serde_json::from_slice::<Value>(&body).unwrap_or_default()["error"]["code"],
             "key_registry_not_ready"
         );
-    }
-
-    #[tokio::test]
-    async fn a_failed_attestation_does_not_burn_the_nonce() {
-        let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([4_u8; 32]);
-        let app = app();
-        let first = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/attestation?nonce={nonce}"))
-                    .body(Body::empty())
-                    .unwrap_or_else(|_| unreachable!()),
-            )
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(first.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let replay = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/attestation?nonce={nonce}"))
-                    .body(Body::empty())
-                    .unwrap_or_else(|_| unreachable!()),
-            )
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(replay.status(), StatusCode::SERVICE_UNAVAILABLE);
-    }
-
-    struct Evidence;
-
-    #[async_trait::async_trait]
-    impl AttestationProvider for Evidence {
-        async fn response(&self, _: &[u8; 32]) -> Result<Value, AttestationError> {
-            Ok(json!({"evidence":"test"}))
-        }
-    }
-
-    #[tokio::test]
-    async fn a_successful_attestation_nonce_is_single_use() {
-        let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([5_u8; 32]);
-        let app = app_with(Arc::new(Keys), Arc::new(Evidence));
-        let first = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/attestation?nonce={nonce}"))
-                    .body(Body::empty())
-                    .unwrap_or_else(|_| unreachable!()),
-            )
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(first.status(), StatusCode::OK);
-        let replay = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/attestation?nonce={nonce}"))
-                    .body(Body::empty())
-                    .unwrap_or_else(|_| unreachable!()),
-            )
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(replay.status(), StatusCode::CONFLICT);
     }
 
     #[test]

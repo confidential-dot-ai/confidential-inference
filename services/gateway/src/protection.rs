@@ -33,7 +33,6 @@ pub struct ProtectionConfig {
     pub inference_queue: usize,
     pub queue_timeout: Duration,
     pub per_key_concurrency: usize,
-    pub attestation_concurrency: usize,
     pub requests_per_address_per_second: u32,
     pub trusted_proxy_cidrs: Vec<IpNet>,
 }
@@ -52,7 +51,6 @@ impl Default for ProtectionConfig {
             inference_queue: 64,
             queue_timeout: Duration::from_secs(2),
             per_key_concurrency: 4,
-            attestation_concurrency: 4,
             requests_per_address_per_second: 30,
             trusted_proxy_cidrs: Vec::new(),
         }
@@ -64,7 +62,6 @@ pub struct ProtectionState {
     pub config: ProtectionConfig,
     inference_slots: Arc<Semaphore>,
     inference_admission: Arc<Semaphore>,
-    attestation_slots: Arc<Semaphore>,
     public_requests: Arc<Semaphore>,
     address_slots: Arc<Mutex<BTreeMap<IpAddr, Arc<Semaphore>>>>,
     key_slots: Arc<Mutex<BTreeMap<String, Arc<Semaphore>>>>,
@@ -96,7 +93,6 @@ impl ProtectionState {
                     .inference_concurrency
                     .saturating_add(config.inference_queue),
             )),
-            attestation_slots: Arc::new(Semaphore::new(config.attestation_concurrency)),
             public_requests: Arc::new(Semaphore::new(config.global_request_concurrency)),
             address_slots: Arc::new(Mutex::new(BTreeMap::new())),
             key_slots: Arc::new(Mutex::new(BTreeMap::new())),
@@ -136,18 +132,6 @@ impl ProtectionState {
             _admission: admission,
             _execution: execution,
         })
-    }
-
-    /// Reserve one attestation slot without waiting.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when all attestation slots are in use.
-    pub fn attestation_permit(&self) -> Result<OwnedSemaphorePermit, CapacityError> {
-        self.attestation_slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| CapacityError)
     }
 
     fn accept_address(&self, address: IpAddr) -> bool {

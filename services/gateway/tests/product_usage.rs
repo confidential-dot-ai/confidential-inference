@@ -16,7 +16,7 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use confidential_gateway::{
-    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig, UnavailableAttestation,
+    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig,
     admin_client::{self, AdminClient, Config},
     api_keys::{KeyStore, admin_router},
     metrics::GatewayMetrics,
@@ -217,7 +217,6 @@ async fn keys_come_from_the_admin_and_usage_goes_back_as_events()
         keys.clone(),
         Arc::new(Audit),
         metrics.clone(),
-        Arc::new(UnavailableAttestation),
         reqwest::Client::new(),
         Some(recorder.clone()),
     );

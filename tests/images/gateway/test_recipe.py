@@ -16,8 +16,6 @@ LOCK = json.loads((RECIPE / "source.lock").read_text(encoding="utf-8"))
 DOCKERIGNORE = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
 BUILD_SCRIPT = (RECIPE / "build.sh").read_text(encoding="utf-8")
 
-VERIFIER_IMAGE = "ghcr.io/confidential-dot-ai/c8s-operator"
-VERIFIER_DIGEST = "sha256:0b86d0541d101e259e7879706bc68acf32fd084603b6180577bc53bdc99a796c"
 BUILD_IMAGE = "docker.io/library/rust"
 BUILD_DIGEST = "sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55"
 RUNTIME_IMAGE = "gcr.io/distroless/cc-debian12"
@@ -37,7 +35,6 @@ class GatewayImageRecipeTests(unittest.TestCase):
         from_lines = [line for line in instructions() if line.upper().startswith("FROM ")]
         self.assertEqual(
             [
-                f"FROM {VERIFIER_IMAGE}@{VERIFIER_DIGEST} AS c8s-verifier",
                 f"FROM {BUILD_IMAGE}@{BUILD_DIGEST} AS build",
                 f"FROM {RUNTIME_IMAGE}@{RUNTIME_DIGEST}",
             ],

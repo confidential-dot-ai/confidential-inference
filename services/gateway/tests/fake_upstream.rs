@@ -14,8 +14,7 @@ use axum::{
     routing::post,
 };
 use confidential_gateway::{
-    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig, UnavailableAttestation,
-    metrics::GatewayMetrics, router,
+    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig, metrics::GatewayMetrics, router,
 };
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
@@ -164,7 +163,6 @@ fn app_with_client(address: SocketAddr, client: reqwest::Client) -> Router {
         Arc::new(Keys),
         Arc::new(Audit),
         Arc::new(GatewayMetrics::new("test")),
-        Arc::new(UnavailableAttestation),
         client,
     )
 }

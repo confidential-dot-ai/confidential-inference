@@ -28,12 +28,13 @@ application-secret memory. It keeps no state on disk: it pulls the API keys
 from the admin (`gateway.admin` is its egress), is Ready only once it holds
 them, and sends usage events back to the admin (`gateway.usage.enabled`).
 
-`attestationReceipts.cds` configures schema 3 metadata: the CDS origin and
-policy documents supplied by the deployment and pinned through release identity.
-The gateway verifies CDS before reading the active policy and operator keys.
-Read
-[the gateway contract](../../services/gateway/ATTESTATION.md) and
-[client verification](../../docs/verification.md).
+The gateway no longer serves `/attestation` (clients verify the front door with
+TEErminator; see [client verification](../../docs/verification.md)). The chart
+still renders the gateway's former attestation inputs (`attestationReceipts`
+except `certificateRenewInterval` and `attestationApiPort`,
+`runtimeConfig.releaseBundle`, the `gateway-release-identity` ConfigMap); the
+gateway ignores them. They go once production runs a release built from this
+chart.
 
 The chart does not own public addresses, DNS, secret-manager paths, machine
 names, or resource sizes. Keep those values in the operator repository.

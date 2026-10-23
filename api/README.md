@@ -8,20 +8,15 @@ endpoint and [release documentation](../release/README.md) for publication.
 - `release-manifest.schema.json`: signed release manifest for v0.14.0 and
   later. It records source, image digests, node measurements, publication
   evidence, and the initial policy.
-- `workload-attestation.schema.json`: schema 3 release and active-policy
-  metadata. It also retains schema 2 for historical responses. Schema 3
-  requires no API key or nonce and has no aggregate workload receipts.
 - `environment-spec.schema.json`: deployment environment input format.
 
-The gateway reads the active policy and operator public keys through verified
-CDS access. See [the gateway contract](../services/gateway/ATTESTATION.md).
 The active policy can differ from the signed initial policy. Clients review
 and pin the exact active bytes separately.
 
 ## Gateway APIs
 
 - `gateway-inference.openapi.json`: public inference, model catalog, health,
-  schema 3 discovery, and native c8s routes served by TLS-LB.
+  and native c8s routes served by TLS-LB.
 - `gateway-admin.openapi.json`: the key registry snapshot. The gateway pulls
   it from the admin (`GET /api/gateway/key-snapshot`); the admin may also
   push it to the gateway's signed admin API.
@@ -39,7 +34,7 @@ the pepper or a plaintext API key.
 ## Historical contracts
 
 - `release-bundle.schema.json`: release inventory format before v0.14.0.
-  The v0 verifiers still validate old releases against it.
+  The release signature check still validates old releases against it.
 
 The network port and observability references moved to
 [docs/network-ports.yaml](../docs/network-ports.yaml) and

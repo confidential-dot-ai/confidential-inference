@@ -1,7 +1,6 @@
 # Threat model
 
-This document describes the current version 3 discovery and client-verification
-contract. For exact commands, read [verification.md](verification.md).
+This document describes the current client-verification contract. For exact commands, read [verification.md](verification.md).
 Historical files under `releases/production/`, `c8s/`, and the old node profile
 do not describe the current serving cluster.
 
@@ -23,20 +22,14 @@ Release-signing and policy-update authority remain part of the review.
 A signature identifies an authorized release; it does not prove that its code
 has no defects or that every signed future release is acceptable to you.
 
-## Discovery and connection verification
+## Connection verification
 
-`/attestation` is public and needs no API key or nonce. Version 3 returns release
-and permitted-workload metadata, native C8s discovery, and operator public keys.
-The gateway verifies CDS and pins its TLS certificate before it reads policy
-and keys. See [gateway attestation](../services/gateway/ATTESTATION.md).
-
-Metadata is not a connection proof or a complete running-workload inventory.
-TEErminator separately obtains fresh C8s evidence. With the full image tuple,
-exact reviewed allowlist, workload, and TLS name configured, it rejects a
-connection that does not meet those pins before forwarding application data.
-The internal request path must remain protected by the reviewed C8s and
-application controls. Front-door verification alone is not a receipt from
-every serving worker.
+TEErminator obtains fresh C8s evidence from the front door. With the full
+image tuple, exact reviewed allowlist, workload, and TLS name configured, it
+rejects a connection that does not meet those pins before forwarding
+application data. The internal request path must remain protected by the
+reviewed C8s and application controls. Front-door verification alone is not a
+receipt from every serving worker.
 
 ## Policy and configuration protection
 
@@ -154,6 +147,4 @@ not require issuing an unrestricted administrator credential.
   select the releases, policy, and update authority that they accept.
 
 The exact current verification procedure and dated deployment findings are in
-[verification.md](verification.md). Historical version 2 proofs remain useful
-for audits of those releases; they do not substitute for version 3 connection
-verification.
+[verification.md](verification.md).

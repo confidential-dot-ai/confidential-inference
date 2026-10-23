@@ -34,14 +34,12 @@
     "inferenceConcurrency": 64,
     "inferenceQueueDepth": 64,
     "inferenceQueueTimeoutSeconds": 2,
-    "perApiKeyInferenceConcurrency": 4,
-    "attestationConcurrency": 4
+    "perApiKeyInferenceConcurrency": 4
   },
   "tags": [
     {"name": "health", "description": "Liveness and readiness."},
     {"name": "models", "description": "The advertised model catalog."},
     {"name": "inference", "description": "OpenAI-compatible chat and legacy completions."},
-    {"name": "attestation", "description": "Public release and C8s policy metadata. No API key is required."},
     {"name": "tls-lb-static", "description": "Paths that the c8s tls-lb nginx process serves directly. Nginx never forwards these to the gateway process."}
   ],
   "paths": {
@@ -244,38 +242,12 @@
         }
       }
     },
-    "/attestation": {
-      "get": {
-        "operationId": "getAttestationCanonical",
-        "tags": ["attestation"],
-        "summary": "Read release and C8s policy metadata",
-        "description": "Version 3 needs no API key or nonce. It returns release metadata, the active CDS allowlist, native C8s discovery, and operator public keys read over an attested CDS connection. It does not contact inference workers or SGLang Router. Version 2 can remain in service during a gateway update. Clients verify their inference connection separately.",
-        "responses": {
-          "200": {"$ref": "#/components/responses/AttestationOk"},
-          "429": {"$ref": "#/components/responses/AttestationCapacity"},
-          "503": {"$ref": "#/components/responses/AttestationUnavailable"}
-        }
-      }
-    },
-    "/v1/attestation": {
-      "get": {
-        "operationId": "getAttestation",
-        "tags": ["attestation"],
-        "summary": "Read release and C8s policy metadata",
-        "description": "Version 3 needs no API key or nonce. It returns release metadata, the active CDS allowlist, native C8s discovery, and operator public keys read over an attested CDS connection. It does not contact inference workers or SGLang Router. Version 2 can remain in service during a gateway update. Clients verify their inference connection separately.",
-        "responses": {
-          "200": {"$ref": "#/components/responses/AttestationOk"},
-          "429": {"$ref": "#/components/responses/AttestationCapacity"},
-          "503": {"$ref": "#/components/responses/AttestationUnavailable"}
-        }
-      }
-    },
     "/v1/discovery": {
       "get": {
         "operationId": "getV1Discovery",
         "tags": ["tls-lb-static"],
         "summary": "Read the static c8s discovery document",
-        "description": "Nginx aliases this path directly to a local file. The gateway process never sees this request. The response is the discovery document that services/gateway/ATTESTATION.md describes as the c8s TLS-LB front door (`GATEWAY_C8S_EVIDENCE_BASE_URL` reads this same document from the internal side).",
+        "description": "Nginx aliases this path directly to a local file. The gateway process never sees this request. The response is the c8s TLS-LB front door's discovery document.",
         "responses": {
           "200": {
             "description": "The c8s discovery document. Nginx sets `Cache-Control: no-store` and serves it from the local filesystem, not from the gateway.",
@@ -317,7 +289,7 @@
         "operationId": "getC8sWellKnown",
         "tags": ["tls-lb-static"],
         "summary": "Read a c8s well-known evidence route",
-        "description": "Nginx proxies every `/.well-known/c8s/*` path straight to the internal c8s evidence service on port 8800. It never forwards these to the gateway process. TEErminator uses `/.well-known/c8s/attest-lb` for fresh evidence bound to the public TLS certificate. This proof is separate from `/attestation` metadata. See docs/verification.md.",
+        "description": "Nginx proxies every `/.well-known/c8s/*` path straight to the internal c8s evidence service on port 8800. It never forwards these to the gateway process. TEErminator uses `/.well-known/c8s/attest-lb` for fresh evidence bound to the public TLS certificate. See docs/verification.md.",
         "parameters": [
           {
             "name": "path",
@@ -702,39 +674,6 @@
               "inferenceUnavailable": {"value": {"error": {"code": "inference_unavailable", "message": "Inference is temporarily unavailable."}}},
               "keyRegistryNotReady": {"value": {"error": {"code": "key_registry_not_ready", "message": "Service Unavailable"}}}
             }
-          }
-        }
-      },
-      "AttestationOk": {
-        "description": "Public policy metadata. The gateway sets Cache-Control: no-store, max-age=0. The internal cache has a short lifetime and never returns expired data after a failed refresh. The complete response schema accepts versions 2 and 3 during gateway replacement.",
-        "headers": {
-          "Cache-Control": {"schema": {"const": "no-store, max-age=0"}},
-          "X-Confidential-Gateway": {"description": "Optional gateway slot identifier for rollout checks. It is not an attestation proof.", "schema": {"type": "string", "maxLength": 63}}
-        },
-        "content": {
-          "application/json": {
-            "schema": {"$ref": "workload-attestation.schema.json"}
-          }
-        }
-      },
-      "AttestationCapacity": {
-        "description": "The attestation concurrency limit is full (4 concurrent requests by default; `GATEWAY_ATTESTATION_CONCURRENCY`).",
-        "headers": {
-          "Retry-After": {"schema": {"const": "1"}}
-        },
-        "content": {
-          "application/json": {
-            "schema": {"$ref": "#/components/schemas/GatewayError"},
-            "example": {"error": {"code": "attestation_capacity", "message": "Too Many Requests"}}
-          }
-        }
-      },
-      "AttestationUnavailable": {
-        "description": "The gateway could not refresh verified CDS policy metadata. The response includes Retry-After: 1. Retry with backoff.",
-        "content": {
-          "application/json": {
-            "schema": {"$ref": "#/components/schemas/GatewayError"},
-            "example": {"error": {"code": "attestation_unavailable", "message": "Service Unavailable"}}
           }
         }
       }
