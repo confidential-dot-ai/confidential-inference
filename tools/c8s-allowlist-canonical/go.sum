@@ -1,7 +1,7 @@
 github.com/confidential-dot-ai/attestation-go v0.8.1 h1:E1U3zcSqiyemqPzYNDYjb3RLGgAzds6nG/jI8GHYd8Y=
 github.com/confidential-dot-ai/attestation-go v0.8.1/go.mod h1:kOYIqCounvl1Ca9SM5AMiop5ePI1V6VEfLR14bWf9hk=
-github.com/confidential-dot-ai/c8s v0.72.1-0.20261023005616-90bd65abd955 h1:XaCpSar2Z17HrLnPk/l8ILxTOzQaouZytZfE9EuSbCY=
-github.com/confidential-dot-ai/c8s v0.72.1-0.20261023005616-90bd65abd955/go.mod h1:hCXwhQcNm24JT0S0PTXzytceElt0iZhFaE2ei7qm9m4=
+github.com/confidential-dot-ai/c8s v0.72.1-0.20261023054311-dd7dc4fa24e4 h1:IL0dGkCmotr/EKjZpRlobA7I0M/0xxGJhkxkCzKSJyc=
+github.com/confidential-dot-ai/c8s v0.72.1-0.20261023054311-dd7dc4fa24e4/go.mod h1:hCXwhQcNm24JT0S0PTXzytceElt0iZhFaE2ei7qm9m4=
 github.com/fxamacker/cbor/v2 v2.9.6 h1:NHZPxuUjJXQjX9itA785y/5NKSlI4HQ+S7noZsmI7hs=
 github.com/fxamacker/cbor/v2 v2.9.6/go.mod h1:4EaZp6ClVunETjQ4GHmGNzysDK91Lr+r6Yz6tJqzVCw=
 github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=

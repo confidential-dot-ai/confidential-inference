@@ -565,6 +565,11 @@ class ProcessTests(unittest.TestCase):
             with mock.patch.object(GEN, "read_json", return_value=record):
                 self.assertEqual(GEN.core_seed(spec), mirrored, release)
         self.assertEqual(GEN.core_entries([CORE], configs, "v0.73.0-beta.1", {}), {})
+        # A dev build counts from the last tag; its baseRelease turns the gate on.
+        dev = {"release": "v0.72.1-0.20261023005616-90bd65abd955", "sourceCommit": "a" * 40, "coreImages": [CORE]}
+        with mock.patch.object(GEN, "read_json", return_value=record):
+            self.assertEqual(GEN.core_seed(dev), seed)
+            self.assertEqual(GEN.core_seed({**dev, "baseRelease": "v0.73.0"}), {})
         policy = {"workloads": []}
         MAN.require_allowlist_contract({"workloads": {}}, policy, [CORE], [], configs, "v0.73.0-beta.1", core_seed={})
         with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
@@ -661,6 +666,7 @@ class ManifestTests(unittest.TestCase):
         for profile, allowed in ((STAGING, True), (PRODUCTION, False)):
             spec = copy.deepcopy(PROFILES.read_spec(profile))
             spec["c8s"]["release"] = "v0.73.0-beta.1"
+            spec["c8s"].pop("baseRelease", None)
             with self.subTest(profile=profile.name), mock.patch.object(PROFILES, "read_spec", return_value=spec):
                 if allowed:
                     MAN.read_spec(profile)
@@ -1036,7 +1042,7 @@ class ManifestTests(unittest.TestCase):
         # Use the real CDS process ordering that publication generates.
         allowlist = json.loads(GEN.canonicalize(allowlist, None))
         MAN.require_allowlist_contract(allowlist, policy, core, documents, configs,
-                                      spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
+                                      GEN.feature_release(spec["c8s"]), GEN.core_seed(spec["c8s"]), native)
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
@@ -1046,21 +1052,25 @@ class ManifestTests(unittest.TestCase):
         changed["workloads"].pop("inference-worker-1")
         with self.assertRaisesRegex(MAN.ManifestError, "entries differ"):
             MAN.require_allowlist_contract(changed, policy, core, documents, configs,
-                                          spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
+                                          GEN.feature_release(spec["c8s"]), GEN.core_seed(spec["c8s"]), native)
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"]["sglang-router"]["containers"][0]["args"]["argv"][1] = \
             "--service-discovery-namespace=wrong"
         with self.assertRaisesRegex(MAN.ManifestError, "process differs"):
             MAN.require_allowlist_contract(changed, policy, core, documents, configs,
-                                          spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
+                                          GEN.feature_release(spec["c8s"]), GEN.core_seed(spec["c8s"]), native)
 
         changed = json.loads(json.dumps(allowlist))
-        # The router is a native entry before c8s v0.47.0 and a seeded one after.
+        # The router is a native entry before c8s v0.47.0, a seeded one after,
+        # and from the seed layer release CDS keeps it (no entry).
+        if GEN.c8s_at_least(GEN.feature_release(spec["c8s"]), GEN.SEED_LAYER_SINCE):
+            self.assertFalse(any(name.startswith("c8s-router") for name in changed["workloads"]))
+            return
         router_entry = next(name for name in changed["workloads"] if name.startswith("c8s-router"))
         changed["workloads"][router_entry]["containers"][0]["args"] = {"policy": "any"}
         with self.assertRaisesRegex(MAN.ManifestError, "entry c8s-router.* differs"):
             MAN.require_allowlist_contract(changed, policy, core, documents, configs,
-                                          spec["c8s"]["release"], GEN.core_seed(spec["c8s"]), native)
+                                          GEN.feature_release(spec["c8s"]), GEN.core_seed(spec["c8s"]), native)
 
     def test_each_node_manifest_belongs_to_the_layer_that_pins_c8s(self):
         for profile in PROFILES.load():

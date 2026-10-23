@@ -115,6 +115,15 @@ def c8s_at_least(release: str | None, version: tuple[int, int, int]) -> bool:
     return tuple(int(part) for part in match.groups()) >= version
 
 
+def feature_release(c8s: dict[str, Any]) -> str:
+    """The c8s release whose features the pinned c8s has, for the version gates.
+
+    A dev build (Go pseudo-version, staging only) names it in `baseRelease`: its
+    pseudo-version counts from the last tag, not from the release it previews.
+    """
+    return c8s.get("baseRelease", c8s["release"])
+
+
 class GenerationError(ValueError):
     """The release allowlist cannot be generated from pinned inputs."""
 
@@ -498,7 +507,7 @@ def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
     """The seed entries the release allowlist must mirror: none before c8s
     v0.44.0 (floor entries instead) and none from SEED_LAYER_SINCE (CDS keeps
     the seed beside the uploaded document)."""
-    if not c8s_at_least(c8s["release"], (0, 44, 0)) or c8s_at_least(c8s["release"], SEED_LAYER_SINCE):
+    if not c8s_at_least(feature_release(c8s), (0, 44, 0)) or c8s_at_least(feature_release(c8s), SEED_LAYER_SINCE):
         return {}
     path = ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json")
     record = read_json(path)
@@ -558,7 +567,7 @@ def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[s
 
 
 def native_core_entries(c8s: dict[str, Any], configs: dict[str, Any]) -> dict[str, Any]:
-    if not c8s_at_least(c8s["release"], (0, 44, 6)) or c8s_at_least(c8s["release"], SEED_PINS_COMPONENTS_SINCE):
+    if not c8s_at_least(feature_release(c8s), (0, 44, 6)) or c8s_at_least(feature_release(c8s), SEED_PINS_COMPONENTS_SINCE):
         return {}
     record = read_json(ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json"))
     helper = runpy.run_path(str(ROOT / "scripts/native_c8s_allowlist.py"))
@@ -620,7 +629,7 @@ def generate(
         mount_policies: dict[str, Any] = {}
         for container_name, container in containers.items():
             if is_carved_out(effective_process(container, image_env.get(container["image"], {})),
-                             core_digests, c8s["release"]):
+                             core_digests, feature_release(c8s)):
                 env_policies[container_name] = {"policy": "any"}
                 mount_policies[container_name] = {"policy": "any"}
                 continue
@@ -629,7 +638,7 @@ def generate(
                     "policy": "exact",
                     "values": container_env(controller, container, image_env, policy, cdi),
                 }
-                rules = container_mounts(controller, container, cdi, c8s_release=c8s["release"])
+                rules = container_mounts(controller, container, cdi, c8s_release=feature_release(c8s))
                 mount_policies[container_name] = {"policy": "exact", "rules": rules} if rules else {"policy": "deny"}
             except GenerationError as error:
                 errors.append(str(error))
@@ -645,7 +654,7 @@ def generate(
         entry = derive(executable, item["name"], explicit, env_policies, mount_policies, reads)
         # New c8s derive already omits injected names. Authored cds-attest
         # and allowlist-proxy must remain in the exact workload definition.
-        if not c8s_at_least(c8s["release"], (0, 41, 0)):
+        if not c8s_at_least(feature_release(c8s), (0, 41, 0)):
             for field in ("initContainers", "containers"):
                 entry[field] = [
                     c for c in entry.get(field, [])
@@ -664,7 +673,7 @@ def generate(
         workloads[item["name"]] = entry
     if errors:
         raise GenerationError("the release allowlist has unpinned inputs:\n  - " + "\n  - ".join(errors))
-    for name, entry in core_entries(c8s["coreImages"], image_env, c8s["release"], core_seed(c8s)).items():
+    for name, entry in core_entries(c8s["coreImages"], image_env, feature_release(c8s), core_seed(c8s)).items():
         if name in workloads:
             raise GenerationError(f"the core entry {name} collides with a workload")
         workloads[name] = entry
@@ -777,10 +786,7 @@ def refresh_image_config(profiles: tuple[release_profiles.Profile, ...]) -> dict
                 if isinstance(value, str) and value.startswith(release_profiles.REPOSITORY_IMAGES)
             }
             overlay = Path(directory) / f"{profile.name}.yaml"
-            tdx = read_json(release_profiles.node_manifest(profile))["tdx"]
-            # cds-attest pins CDS, which runs on the pinned node image (c8s #851).
-            pin = {name: tdx[name] for name in ("mrtd", "rtmr1", "rtmr2")}
-            overlay.write_text(json.dumps({"images": placeholder, "attestationReceipts": {"cdsPin": pin}}))
+            overlay.write_text(json.dumps({"images": placeholder}))
             policy = read_json(profile.policy)
             for controller in controllers(render_chart(policy, profile, overlay)).values():
                 pod = controller["spec"]["template"]["spec"]
