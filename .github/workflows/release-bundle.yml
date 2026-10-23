@@ -244,6 +244,9 @@ jobs:
       - name: sign bundle
         if: github.event_name == 'push'
         run: |
+          # A dev c8s build (a Go pseudo-version) is for unsigned staging builds only.
+          jq -e '.c8s.release | test("^v[0-9]+\\.[0-9]+\\.[0-9]+(-beta\\.[1-9][0-9]*)?$")' dist/release-bundle.json > /dev/null \
+            || { echo "A signed release must pin a c8s release tag, not a dev build." >&2; exit 1; }
           cosign sign-blob --yes \
             --bundle dist/release-bundle.sigstore.json \
             dist/release-bundle.json
