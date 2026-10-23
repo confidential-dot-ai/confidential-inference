@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import re
 import subprocess
@@ -119,21 +120,30 @@ def affected_images(paths: list[str]) -> list[Image]:
     ]
 
 
-def input_revision(image: Image, head: str, cwd: str | None = None) -> tuple[str, str]:
-    """The newest commit up to head that changed one of the image's inputs, and its commit time.
+# The SOURCE_DATE_EPOCH of a build stamped by input_revision: 1980-01-01,
+# the earliest time a ZIP entry (a wheel) can hold.
+INPUT_EPOCH = "315532800"
 
-    A build that stamps this commit and time (instead of head's) gives the
-    same digest for the same inputs, so a build of a later commit does not
-    roll pods whose image did not change.
+
+def input_revision(image: Image, head: str, cwd: str | None = None) -> tuple[str, str]:
+    """A content id of the image's inputs at head, and a fixed source epoch.
+
+    The id is the SHA-1 of the image's `git ls-tree -r` lines (mode, object id,
+    path). It depends on the input files only, not on the commit that holds
+    them, so two commits with the same inputs (a branch and its merge into
+    main) give the same image digest, and an upgrade rolls only changed images.
     """
-    output = subprocess.check_output(
-        ["git", "log", "-1", "--format=%H %ct", head, "--", *(f":(glob){path}" for path in image.paths)],
-        text=True,
-        cwd=cwd,
-    ).split()
-    if len(output) != 2:
-        raise ValueError(f"no commit up to {head} touches the inputs of {image.image}")
-    return output[0], output[1]
+    listing = subprocess.check_output(["git", "ls-tree", "-r", "-z", "--full-tree", head], cwd=cwd)
+    entries = [
+        entry
+        for entry in listing.split(b"\0")
+        if entry and any(
+            fnmatch.fnmatchcase(entry.split(b"\t", 1)[1].decode(), pattern) for pattern in image.paths
+        )
+    ]
+    if not entries:
+        raise ValueError(f"{head} has none of the inputs of {image.image}")
+    return hashlib.sha1(b"\0".join(entries)).hexdigest(), INPUT_EPOCH
 
 
 def changed_paths(base_ref: str, head: str) -> list[str]:
