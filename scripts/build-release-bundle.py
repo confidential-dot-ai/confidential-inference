@@ -1198,7 +1198,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chart", type=Path, default=ROOT / "helm/confidential-inference")
     parser.add_argument("--values", type=Path)
     parser.add_argument("--source-lock", type=Path, default=ROOT / "images/sglang/source.lock")
-    parser.add_argument("--schema", type=Path, default=ROOT / "contracts/release-bundle.schema.json")
+    parser.add_argument("--schema", type=Path, default=ROOT / "api/release-bundle.schema.json")
     parser.add_argument(
         "--release-trust-policy",
         type=Path,

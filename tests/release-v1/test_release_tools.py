@@ -1080,7 +1080,7 @@ class ManifestTests(unittest.TestCase):
                 NODE.check_measurements(json.loads(data))
 
     def test_the_schema_refuses_deployment_values(self):
-        schema = json.loads((ROOT / "contracts/release-manifest.schema.json").read_text())
+        schema = json.loads((ROOT / "api/release-manifest.schema.json").read_text())
         properties = set(schema["properties"])
         for forbidden in ("meshCa", "operatorPublicKeySha256", "operatorKeySetSha256", "target"):
             self.assertNotIn(forbidden, properties)

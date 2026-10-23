@@ -50,7 +50,7 @@ profile values files:
 
 | Asset | Contents |
 | --- | --- |
-| `release-bundle.json` | The release manifest. The workflow signs it. It must match `contracts/release-manifest.schema.json` |
+| `release-bundle.json` | The release manifest. The workflow signs it. It must match `api/release-manifest.schema.json` |
 | `allowlist.json` | The exact c8s allowlist of the release, in canonical bytes. The manifest binds its SHA-256 as `allowlist.sha256`; `allowlist.path` names the profile, for example `release/staging/allowlist.json` |
 | `release-values.yaml` | The repository image digests and `attestationReceipts.releaseId` (the tag) as a Helm values file. Apply it after the profile values files. The manifest binds its SHA-256 as `releaseValues.sha256`; `releaseValues.path` names the profile, for example `release/staging/release-values.yaml`. Each image in it is also in the manifest `images` |
 | `confidential-inference-X.Y.Z.tgz` | The chart package of the source commit, written by the staging release build at version X.Y.Z (the tag without `v` and `-staging`). The manifest binds its SHA-256 as `chart.archiveSha256` and the registry reference the publish job pushes it to as `chart.reference` (`ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference:X.Y.Z`); the SHA-256 is the digest of the chart layer there. A production release of the same commit builds no package: its manifest binds the staging package, so production promotes the chart staging verified. `chart.sha256` stays the tree hash of `helm/confidential-inference` at the tag |

@@ -50,7 +50,7 @@ jobs:
               scripts/*.py|images/*/*.py) python=true ;;
               helm/confidential-inference/*) helm_app=true ;;
               helm/maintenance-gateway/*) helm_maintenance=true ;;
-              contracts/*.json|c8s/*.json|releases/*.json|images/*/source.lock)
+              api/*.json|c8s/*.json|releases/*.json|images/*/source.lock)
                 config=true
                 ;;
               .github/workflows/pr.yml)
@@ -116,8 +116,8 @@ jobs:
           python3 -m unittest discover -s tests/release-v1 -p 'test_*.py'
           python3 -m unittest discover -s tests/attestation-v0 -p test_attestation_metadata.py
           python3 -m unittest discover -s tests/attestation-v0 -p test_verify_release_manifest.py
-          python3 -m unittest discover -s tests/contracts -p test_contracts.py -k WorkloadAttestationFixtureTests
-          python3 -m unittest discover -s tests/contracts -p test_contracts.py -k GatewayInferenceContractTests
+          python3 -m unittest discover -s tests/api -p test_contracts.py -k WorkloadAttestationFixtureTests
+          python3 -m unittest discover -s tests/api -p test_contracts.py -k GatewayInferenceContractTests
 
       - name: Set up Helm
         if: steps.changes.outputs.helm_app == 'true' || steps.changes.outputs.helm_maintenance == 'true'
@@ -144,4 +144,4 @@ jobs:
               *.json|*/source.lock) python3 -m json.tool "$path" >/dev/null ;;
             esac
           done < <(git diff --name-only -z "$BASE_SHA" "$GITHUB_SHA" -- \
-            'contracts/**' 'c8s/**' 'releases/**' 'images/*/source.lock')
+            'api/**' 'c8s/**' 'releases/**' 'images/*/source.lock')

@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/build-release-bundle.py"
 CONFIGS = ROOT / "tests/release-v0/image-configs.fixture.json"
 INSTALL = ROOT / "tests/release-v0/c8s-install.fixture.json"
-VALUES = ROOT / "tests/contracts/values-sglang.yaml"
+VALUES = ROOT / "tests/api/values-sglang.yaml"
 
 
 class ReleaseBundleTests(unittest.TestCase):
@@ -157,7 +157,7 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertEqual(first_bytes, second_path.read_bytes())
 
         bundle = json.loads(first_bytes)
-        schema = json.loads((ROOT / "contracts/release-bundle.schema.json").read_text())
+        schema = json.loads((ROOT / "api/release-bundle.schema.json").read_text())
         jsonschema.Draft202012Validator(schema).validate(bundle)
         workloads = {item["name"]: item for item in bundle["workloads"]}
         self.assertEqual(
@@ -235,12 +235,12 @@ class ReleaseBundleTests(unittest.TestCase):
 
     def test_version_one_bundle_remains_valid_without_build_metadata(self) -> None:
         bundle = json.loads(
-            (ROOT / "tests/contracts/fixtures/release-bundle.valid.json").read_text()
+            (ROOT / "tests/api/fixtures/release-bundle.valid.json").read_text()
         )
         bundle["schemaVersion"] = 1
         for workload in bundle["workloads"]:
             workload.pop("build", None)
-        schema = json.loads((ROOT / "contracts/release-bundle.schema.json").read_text())
+        schema = json.loads((ROOT / "api/release-bundle.schema.json").read_text())
         jsonschema.Draft202012Validator(schema).validate(bundle)
 
     def test_static_c8s_release_omits_operator_key_commitments(self) -> None:
@@ -387,13 +387,13 @@ class ReleaseBundleTests(unittest.TestCase):
 
     def test_release_schema_static_mode_forbids_operator_commitments(self) -> None:
         bundle = json.loads(
-            (ROOT / "tests/contracts/fixtures/release-bundle.valid.json").read_text()
+            (ROOT / "tests/api/fixtures/release-bundle.valid.json").read_text()
         )
         bundle["c8s"]["policyMode"] = "static"
         bundle["c8s"].pop("operatorPublicKeySha256")
         bundle["c8s"].pop("operatorKeySetSha256")
         bundle["c8s"].pop("meshCa")
-        schema = json.loads((ROOT / "contracts/release-bundle.schema.json").read_text())
+        schema = json.loads((ROOT / "api/release-bundle.schema.json").read_text())
         jsonschema.Draft202012Validator(schema).validate(bundle)
 
         bundle["c8s"]["operatorPublicKeySha256"] = "sha256:" + "4" * 64

@@ -375,7 +375,7 @@ def main() -> None:
         item for item in yaml.safe_load_all(
             helm(
                 "template", "example", str(CHART), "--namespace", "inference",
-                "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
+                "--values", str(ROOT / "tests/api/values-sglang.yaml"),
             )
         ) if item
     ]
@@ -421,7 +421,7 @@ def main() -> None:
         item for item in yaml.safe_load_all(
             helm(
                 "template", "example", str(CHART), "--namespace", "inference",
-                "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
+                "--values", str(ROOT / "tests/api/values-sglang.yaml"),
                 "--set", "inference.attestedGpuCount=8",
             )
         ) if item
@@ -485,7 +485,7 @@ def main() -> None:
         item for item in yaml.safe_load_all(
             helm(
                 "template", "example", str(CHART), "--namespace", "inference",
-                "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
+                "--values", str(ROOT / "tests/api/values-sglang.yaml"),
                 "--set", "attestationReceipts.gpuEvidenceFlagEnabled=false",
             )
         ) if item
@@ -508,7 +508,7 @@ def main() -> None:
         item for item in yaml.safe_load_all(
             helm(
                 "template", "example", str(CHART), "--namespace", "inference",
-                "--values", str(ROOT / "tests/contracts/values-sglang-simulator.yaml"),
+                "--values", str(ROOT / "tests/api/values-sglang-simulator.yaml"),
             )
         ) if item
     ]
@@ -539,7 +539,7 @@ def main() -> None:
         item for item in yaml.safe_load_all(
             helm(
                 "template", "example", str(CHART), "--namespace", "inference",
-                "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
+                "--values", str(ROOT / "tests/api/values-sglang.yaml"),
                 "--set-string", "inference.attestedWorkloads[0]=inference-worker-0-release-2",
                 "--set-string", "inference.attestedWorkloads[1]=inference-worker-1-release-2",
             )
