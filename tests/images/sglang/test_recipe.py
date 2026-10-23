@@ -40,8 +40,12 @@ class SGLangImageRecipeTests(unittest.TestCase):
 
     def test_from_uses_the_exact_digest_without_a_tag(self) -> None:
         from_lines = [line for line in instructions() if line.upper().startswith("FROM ")]
-        self.assertEqual([f"FROM {EXPECTED_IMAGE}@{EXPECTED_DIGEST}"], from_lines)
-        self.assertNotRegex(from_lines[0], r"lmsysorg/sglang:[^@\s]+")
+        dcgm = LOCK["dcgmExporter"]
+        self.assertEqual(
+            [f"FROM {dcgm['reference']}@{dcgm['digest']} AS dcgm-exporter", f"FROM {EXPECTED_IMAGE}@{EXPECTED_DIGEST}"],
+            from_lines,
+        )
+        self.assertNotRegex(from_lines[1], r"lmsysorg/sglang:[^@\s]+")
 
     def test_labels_record_the_source_and_base_pins(self) -> None:
         required = {
@@ -68,13 +72,13 @@ class SGLangImageRecipeTests(unittest.TestCase):
             "patch_flashinfer_cuda_ipc.py",
             "wait_for_model.py",
             "fetch_model.py",
-            "gpu_metrics.py",
+            "dcgm-counters.csv",
             "patches/sglang-simulator-parser-flags-noop.patch",
         ):
             self.assertIn(f"source={source}", DOCKERFILE)
         self.assertIn("install -D -m 0555 /run-src/wait-for-model", DOCKERFILE)
         self.assertIn("install -D -m 0555 /run-src/fetch-model", DOCKERFILE)
-        self.assertIn("install -D -m 0555 /run-src/gpu-metrics", DOCKERFILE)
+        self.assertIn("install -D -m 0555 /run-dcgm/usr/bin/dcgm-exporter", DOCKERFILE)
         self.assertIn("git apply --check --directory=python", DOCKERFILE)
         self.assertIn("git apply --directory=python", DOCKERFILE)
 
@@ -144,13 +148,12 @@ class SGLangImageRecipeTests(unittest.TestCase):
             for role in LOCK["roles"].values()
         }
         self.assertEqual({"sglang.launch_server", "sglang_router.launch_router"}, modules)
-        for worker_index, role_name in enumerate(("inference-worker-0", "inference-worker-1")):
+        for role_name in ("inference-worker-0", "inference-worker-1"):
             argv = LOCK["roles"][role_name]["argv"]
             self.assertEqual("/usr/local/bin/wait-for-model", argv[0])
             self.assertIn("sglang.launch_server", argv)
             # Each worker has a separate pod network, so both can use one port.
             self.assertIn("--gpu-metrics-port=29000", argv)
-            self.assertIn(f"--gpu-metrics-worker=sglang-{worker_index}", argv)
             for argument in (
                 "--tp=4",
                 "--moe-runner-backend=flashinfer_mxfp4",
@@ -191,7 +194,7 @@ class SGLangImageRecipeTests(unittest.TestCase):
             "source.lock",
             "wait_for_model.py",
             "fetch_model.py",
-            "gpu_metrics.py",
+            "dcgm-counters.csv",
             "patch_flashinfer_cuda_ipc.py",
         }
         actual = {path.name for path in RECIPE.iterdir() if path.is_file()}

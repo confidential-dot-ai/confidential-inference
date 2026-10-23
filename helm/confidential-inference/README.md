@@ -31,7 +31,7 @@ them, and sends usage events back to the admin (`gateway.usage.enabled`).
 The gateway no longer serves `/attestation` (clients verify the front door with
 TEErminator; see [client verification](../../docs/verification.md)). The chart
 still renders the gateway's former attestation inputs (`attestationReceipts`
-except `certificateRenewInterval` and `attestationApiPort`,
+except `attestationApiPort`,
 `runtimeConfig.releaseBundle`, the `gateway-release-identity` ConfigMap); the
 gateway ignores them. They go once production runs a release built from this
 chart.
@@ -48,6 +48,8 @@ releases, so the old router serves until the new one is Ready. Set `runtimeConfi
 verified `release-bundle.json` so the release selection changes with the
 release. The gateway and the router read their configuration files once at
 start. A `checksum/config` pod annotation rolls them when the files change.
+The gateway does not read the release selection, so a release that changes
+neither its image nor its settings does not roll it.
 
 The inference workers use `updateStrategy: OnDelete`. Helm updates their
 StatefulSets, but a worker keeps its old pod until you delete it. Each worker

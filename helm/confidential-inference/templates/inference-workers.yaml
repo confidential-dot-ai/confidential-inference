@@ -77,7 +77,6 @@ spec:
         confidential.ai/environment: {{ $.Values.environment | quote }}
       annotations:
         confidential.ai/cw: inference-worker-{{ $index }}
-        confidential.ai/c8s-renew-interval: {{ $.Values.attestationReceipts.certificateRenewInterval | quote }}
         {{- if and $modelMount (not $cache.enabled) }}
         confidential.ai/c8s-volumes: {{ printf "%s=%s" $volumeName $.Values.inference.model.c8sVolumeSource | quote }}
         confidential.ai/c8s-volume-dir: {{ $.Values.inference.model.volumeDirectory | quote }}
@@ -157,7 +156,6 @@ spec:
             - --expected-file={{ $file }}
             {{- end }}
             - --gpu-metrics-port={{ $.Values.inference.metricsPort }}
-            - --gpu-metrics-worker=sglang-{{ $index }}
             - --
             {{- end }}
             {{- if $simulatorMode }}
@@ -197,7 +195,6 @@ spec:
             - --expected-file={{ $file }}
             {{- end }}
             - --gpu-metrics-port={{ $.Values.inference.metricsPort }}
-            - --gpu-metrics-worker=sglang-{{ $index }}
             - --
             - python3
             - -m

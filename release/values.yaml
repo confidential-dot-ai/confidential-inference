@@ -67,7 +67,6 @@ attestationReceipts:
     url: https://c8s-cds.c8s-system.svc.cluster.local:8443
   expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  certificateRenewInterval: 30s
   attestationApiPort: 8400
 
 gateway:
@@ -354,7 +353,6 @@ workloadOverrides:
             - --expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b
             - --expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
             - --gpu-metrics-port=29000
-            - --gpu-metrics-worker=sglang-0
             - --
             - python3
             - -m
@@ -439,7 +437,6 @@ workloadOverrides:
             - --expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b
             - --expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
             - --gpu-metrics-port=29000
-            - --gpu-metrics-worker=sglang-1
             - --
             - python3
             - -m
