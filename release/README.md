@@ -145,7 +145,8 @@ registry.
 Use one command to move every profile to a new c8s tag:
 
 ```sh
-scripts/bump-c8s.py --tag vX.Y.Z --c8s-repo <clean c8s checkout at the tag>
+scripts/bump-c8s.py --tag vX.Y.Z --c8s-repo <clean c8s checkout at the tag> \
+  --seed <the node image's /usr/lib/c8s/allowlist-seed.json>
 ```
 
 For a signed beta, select the profile explicitly and use `--allow-beta`.
@@ -153,7 +154,7 @@ Production can use a beta when the deployment calls for it. The signature
 check still requires the exact beta workflow and source commit.
 
 It needs `crane`, Go, and read access to the c8s Go module. It changes the c8s
-pins, the source lock, the node manifests, and the image config, and then
+pins, the source lock, the seed record, the node manifests, and the image config, and then
 runs the release checks. The next release build generates the allowlist with
 the new c8s CLI. The script stops when the attestation protocol files or the
 NVIDIA inputs of the node image change. Do those steps by hand. Review the
@@ -166,8 +167,9 @@ generator combines five pinned sources: the image configuration, the chart
 pod specification, the `kubernetes` Service variables and `HOSTNAME`, the
 mounts that the c8s webhook adds, and the NVIDIA CDI record for GPU
 containers. `c8s allowlist derive` of the pinned c8s release writes each
-entry. The c8s core images get unrestricted entries, as the c8s bootstrap seed
-names them. `tools/c8s-allowlist-canonical`, built against the pinned c8s
+entry. The c8s core entries mirror the node image's bootstrap seed byte for
+byte (`inputs/c8s-seeds/<source commit>.json`): CDS serves the uploaded
+allowlist as it is, so it must carry the seed. `tools/c8s-allowlist-canonical`, built against the pinned c8s
 module, writes the canonical bytes. `c8s allowlist lint --strict` must pass,
 except for the findings in `accepted-lint-findings.json`. The generator fails
 on any other finding, and on a listed finding that no longer appears. Today

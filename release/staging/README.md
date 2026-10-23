@@ -77,11 +77,10 @@ mount rules, the gateway pepper secret grant, and encrypted-volume inputs.
 Refresh the image configuration record with the dependency bump. Preserve
 strict policy lint and verify that arbitrary component command overrides fail.
 
-From C8s v0.73.0 (C8s #1031) CDS keeps the node image's seed itself, and the
-allowlist has only the application entries. A profile that pins an older C8s
-(production at v0.59.1) mirrors the measured node seed recorded in
-`release/inputs/c8s-seeds/<source-commit>.json`; delete that record when
-production moves to v0.73.0 or later.
+The allowlist mirrors the node image's seed recorded in
+`release/inputs/c8s-seeds/<source-commit>.json`. `scripts/pin-local-c8s.py`
+records it from the build directory's `allowlist-seed.json`. Delete a record
+when no profile pins its commit.
 
 ## In-cluster validation client
 

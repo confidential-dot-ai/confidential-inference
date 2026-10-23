@@ -24,11 +24,9 @@ The script never learns a value from a running container. A value that no
 pinned source can give (for example a node IP) is an error.
 
 `c8s allowlist derive` from the pinned c8s release builds each entry, so c8s
-itself decides which containers it injects and drops. From the c8s release
-with the fixed seed layer (C8s #1031, SEED_LAYER_SINCE) the allowlist has only
-the application entries. Before it, the c8s core entries mirror the bootstrap
-seed in release/inputs/c8s-seeds/ as the chart renders it: one pinned entry per
-component shape and the router pod. The
+itself decides which containers it injects and drops. The c8s core entries
+mirror the bootstrap seed in release/inputs/c8s-seeds/ byte for byte as the
+chart renders it: one pinned entry per component shape and the router pod. The
 pinned Go tool in tools/c8s-allowlist-canonical writes the canonical bytes,
 and `c8s allowlist lint --strict` must pass.
 
@@ -90,10 +88,6 @@ CLAIMS_SOCKET_PLATFORM_SINCE = (0, 50, 0)
 # The first c8s release with the per-pod mesh (C8s #809): the webhook mounts the
 # certificate volume only into its own sidecars, so no workload container has it.
 PER_POD_MESH_SINCE = (0, 64, 0)
-# The first c8s release whose CDS keeps the node image's seed as a fixed
-# layer that an allowlist upload cannot drop (C8s #1031). From it the release
-# allowlist names only the application entries; it mirrors no seed entry.
-SEED_LAYER_SINCE = (0, 73, 0)
 CLAIMS_SOCKET_SOURCE = "/var/run/nri-image-policy"
 CLAIMS_SOCKET_DESTINATION = "/run/c8s/workload-claims"
 
@@ -465,10 +459,7 @@ def derive(
 
 
 def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
-    """The seed entries the release allowlist must mirror: none from
-    SEED_LAYER_SINCE (CDS keeps the seed beside the uploaded document)."""
-    if c8s_at_least(feature_release(c8s), SEED_LAYER_SINCE):
-        return {}
+    """The seed entries the release allowlist must mirror."""
     path = ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json")
     record = read_json(path)
     if record.get("sourceCommit") != c8s["sourceCommit"] or record.get("coreImages") != c8s["coreImages"]:
