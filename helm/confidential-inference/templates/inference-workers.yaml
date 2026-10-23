@@ -155,6 +155,11 @@ spec:
             - --trust-remote-code
             - --enable-metrics
             - --enable-cache-report
+            {{- if and $.Values.telemetry.enabled $.Values.telemetry.traces.enabled }}
+            - --enable-trace
+            - --trace-modules=request
+            - {{ printf "--otlp-traces-endpoint=telemetry-collector.%s.svc.cluster.local:%v" $.Release.Namespace $.Values.telemetry.otlpGrpcPort }}
+            {{- end }}
             - --host=0.0.0.0
             - --port={{ $.Values.inference.port }}
             {{- end }}

@@ -65,9 +65,21 @@ inference:
     maxRunningRequests: 48
     chatTemplate: chatml
 
-metricsCollector:
-  remoteWrite:
-    enabled: false
+# Telemetry to the admin-next relay (admin/vm/caddy in the internal
+# repository). Its address is the telemetry collector's one allowlist exit.
+# Enable it with the c8s bump that has declared egress (C8s #1047): set
+# enabled, add the telemetry-collector entry with "egress": {"port": 443} to
+# allowlist-policy.json, and regenerate the fixture with scripts/bump-c8s.py.
+telemetry:
+  enabled: false
+  deployment: staging-20260926
+  relay:
+    serverName: ci-admin-next-loki.centralus.cloudapp.azure.com
+    address: 172.173.67.102
+  metrics:
+    tenantId: 693babab-0ab8-4ffb-8b5c-eb8aef3b10d1
+    clientId: c486ee14-1dca-4c1d-af4f-be163302ff44
+    dataCollectionRule: dcr-50a134d921ce434a86bcd8f01ab93b6e
 
 images:
   c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:97f6f5ac2e35cd635787ec95aaad842c321eb8c0f6df5a63de34c574ddae2d6e

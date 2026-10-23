@@ -249,8 +249,13 @@ spec:
               value: /mnt/c8s-data/admin-auth/..data/client.crt
             - name: DEPLOYMENT_ENVIRONMENT
               value: {{ .Values.environment | quote }}
-            - name: GATEWAY_METRICS_API_KEY_LABEL_ALLOWLIST
-              value: {{ join "," .Values.metricsCollector.approvedApiKeyLabels | quote }}
+            {{- if .Values.telemetry.enabled }}
+            # OTLP log export to the telemetry collector (standard SDK variables).
+            - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+              value: {{ printf "http://telemetry-collector.%s.svc.cluster.local:%v/v1/logs" .Release.Namespace .Values.telemetry.otlpHttpPort | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: gateway
+            {{- end }}
             - name: GATEWAY_KEY_REGISTRY_MODE
               value: {{ .Values.gateway.keyRegistry.mode | quote }}
           ports:

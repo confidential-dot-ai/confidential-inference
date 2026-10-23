@@ -1,11 +1,11 @@
 {
-  "docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24": {
+  "docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849": {
     "cmd": [
-      "--config.file=/etc/prometheus/prometheus.yml",
-      "--storage.tsdb.path=/prometheus"
+      "--config",
+      "/etc/otelcol-contrib/config.yaml"
     ],
     "entrypoint": [
-      "/bin/prometheus"
+      "/otelcol-contrib"
     ],
     "env": [
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

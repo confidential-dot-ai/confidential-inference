@@ -80,7 +80,8 @@ class NetworkContractTests(unittest.TestCase):
             ingress[0]["from"][0]["podSelector"]["matchLabels"],
             {"app.kubernetes.io/name": "tls-lb"},
         )
-        self.assertEqual(ingress[1]["ports"], [{"protocol": "TCP", "port": 9090}])
+        # The metrics port opens only to the telemetry collector, when it runs.
+        self.assertEqual(len(ingress), 1)
 
     def test_front_door_pod_label_is_a_chart_value(self) -> None:
         """c8s PR #606 renamed the front-door component `tls-lb` to `router`.
@@ -158,36 +159,6 @@ class NetworkContractTests(unittest.TestCase):
                 for policy in policies
             )
             self.assertTrue(allowed, workload["metadata"]["name"])
-
-    def test_metrics_never_scrape_a_confidential_workload_through_its_service(self) -> None:
-        # The c8s mesh guard drops a connection to a confidential workload
-        # through a Service address, so each such scrape must target pods.
-        rendered = subprocess.run(
-            ["helm", "template", "example", str(CHART), *NEUTRAL_MODE,
-             "--set", "kubeStateMetrics.enabled=true"],
-            cwd=ROOT, check=True, text=True, capture_output=True,
-        ).stdout
-        documents = [item for item in yaml.safe_load_all(rendered) if item]
-        confidential = [
-            item["spec"]["template"]["metadata"]["labels"] for item in documents
-            if item["kind"] in {"Deployment", "StatefulSet", "DaemonSet"}
-            and "confidential.ai/cw" in item["spec"]["template"]["metadata"].get("annotations", {})
-        ]
-        services = {
-            item["metadata"]["name"] for item in documents
-            if item["kind"] == "Service"
-            and any(selects({"matchLabels": item["spec"].get("selector", {})}, labels)
-                    for labels in confidential)
-        }
-        self.assertIn("kube-state-metrics", services)
-        config = yaml.safe_load(named(documents, "ConfigMap", "metrics-collector")["data"]["prometheus.yml"])
-        targets = [
-            (job["job_name"], target.rsplit(":", 1)[0])
-            for job in config["scrape_configs"]
-            for static in job.get("static_configs", [])
-            for target in static["targets"]
-        ]
-        self.assertEqual([item for item in targets if item[1] in services], [])
 
     def test_application_limits_match_the_public_contract(self) -> None:
         expected = self.contract["publicProtection"]["application"]

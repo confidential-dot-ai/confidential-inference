@@ -418,6 +418,21 @@ def is_carved_out(container: dict[str, Any], core_digests: set[str], release: st
     return digest in core_digests and bool(command) and command[0] in INJECTED_ENTRYPOINTS
 
 
+def declared_egress(controller: dict[str, Any], item: dict[str, Any]) -> list[dict[str, Any]]:
+    """The exits of a policy item that declares `egress` (C8s #1047).
+
+    Each hostAliases address of the pod is one /32 exit on the declared port,
+    so the chart value that names the destination is also the exit.
+    """
+    if "egress" not in item:
+        return []
+    aliases = controller["spec"]["template"]["spec"].get("hostAliases", [])
+    if not aliases:
+        raise GenerationError(f"{item['controller']}: declares egress, and its pod has no hostAliases address")
+    return sorted(({"cidr": f"{alias['ip']}/32", "port": item["egress"]["port"]} for alias in aliases),
+                  key=lambda exit: (exit["cidr"], exit["port"]))
+
+
 def derive(
     executable: Path,
     name: str,
@@ -629,6 +644,8 @@ def generate(
                     c for c in entry.get(field, [])
                     if not (c["digest"] in core_digests and argv0(c) in INJECTED_ENTRYPOINTS)
                 ]
+        if exits := declared_egress(controller, item):
+            entry["egress"] = exits
         workloads[item["name"]] = entry
     if errors:
         raise GenerationError("the release allowlist has unpinned inputs:\n  - " + "\n  - ".join(errors))
@@ -641,6 +658,10 @@ def generate(
             raise GenerationError(f"the native entry {name} collides with a workload")
         workloads[name] = entry
     canonical = canonicalize({"schema": "c8s.allowlist/v1", "workloads": workloads}, tool)
+    kept = json.loads(canonical)["workloads"]
+    for name, entry in workloads.items():
+        if kept[name].get("egress") != entry.get("egress"):
+            raise GenerationError(f"{name}: the pinned c8s does not keep the declared egress (needs C8s #1047)")
     with tempfile.TemporaryDirectory(prefix="release-allowlist-lint-") as directory:
         candidate = Path(directory) / "allowlist.json"
         candidate.write_bytes(canonical)
