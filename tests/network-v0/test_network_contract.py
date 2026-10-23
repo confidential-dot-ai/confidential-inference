@@ -9,7 +9,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 CHART = ROOT / "helm/confidential-inference"
-CONTRACT = ROOT / "contracts/network-ports.yaml"
+CONTRACT = ROOT / "docs/network-ports.yaml"
 # The chart has no default for inference.mode. This constant marks a render
 # that only needs a chart to succeed, not a specific mode, so it picks the
 # GPU-free simulator backend.
