@@ -235,7 +235,7 @@ def check_telemetry_collector() -> None:
     assert gateway.env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] == "http://telemetry-collector.default.svc.cluster.local:4318/v1/logs"
     assert "RUST_LOG" not in gateway.env
     model = [item for item in yaml.safe_load_all(helm(
-        "template", "example", str(CHART), "--values", str(ROOT / "tests/contracts/values-sglang.yaml"),
+        "template", "example", str(CHART), "--values", str(ROOT / "tests/api/values-sglang.yaml"),
         *TELEMETRY, "--set", "telemetry.traces.enabled=true")) if item]
     # GPU metrics: the worker image serves them (wait-for-model --gpu-metrics-port).
     gpu_jobs = [job["job_name"] for job in collector_config(model)["receivers"]["prometheus"]["config"]["scrape_configs"]
