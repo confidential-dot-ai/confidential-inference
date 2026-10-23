@@ -40,7 +40,9 @@ names, or resource sizes. Keep those values in the operator repository.
 
 `helm upgrade` and `helm rollback` replace the gateway pod (`Recreate`: c8s
 opens its state volume for one pod) and roll the router (`RollingUpdate`,
-one extra pod). Set `runtimeConfig.releaseBundle` with `--set-file` to the
+one extra pod). The router Deployment (`sglang-router`) and the gateway's
+router Service (`router-headless`) keep their names across releases, so the
+old router serves until the new one is Ready. Set `runtimeConfig.releaseBundle` with `--set-file` to the
 verified `release-bundle.json` so the release selection changes with the
 release.
 

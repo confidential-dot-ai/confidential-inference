@@ -279,6 +279,11 @@ pub async fn enforce_public_limits(
             );
         };
         if !slots.contains_key(&client) && slots.len() >= ADDRESS_CAPACITY {
+            // Each permit holds a reference, so an entry with no other
+            // reference has no request in flight.
+            slots.retain(|_, slot| Arc::strong_count(slot) > 1);
+        }
+        if !slots.contains_key(&client) && slots.len() >= ADDRESS_CAPACITY {
             return error(StatusCode::TOO_MANY_REQUESTS, "address_capacity", Some("1"));
         }
         slots
@@ -440,6 +445,32 @@ mod tests {
             .extensions_mut()
             .insert(ConnectInfo(SocketAddr::new(peer, 1234)));
         request
+    }
+
+    #[tokio::test]
+    async fn idle_address_slots_do_not_lock_out_new_addresses() {
+        let state = Arc::new(ProtectionState::new(ProtectionConfig::default()));
+        {
+            let mut slots = state
+                .address_slots
+                .lock()
+                .unwrap_or_else(|_| unreachable!());
+            for index in 0..ADDRESS_CAPACITY {
+                let address = IpAddr::V6(std::net::Ipv6Addr::from(index as u128));
+                slots.insert(address, Arc::new(Capacity::new(1)));
+            }
+        }
+        let app = Router::new().route("/", get(|| async { "ok" })).layer(
+            axum::middleware::from_fn_with_state(state, enforce_public_limits),
+        );
+        let request = request("/", "192.0.2.1".parse().unwrap_or_else(|_| unreachable!()));
+        assert_eq!(
+            app.oneshot(request)
+                .await
+                .unwrap_or_else(|_| unreachable!())
+                .status(),
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]

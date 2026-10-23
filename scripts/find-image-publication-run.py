@@ -3,7 +3,9 @@
 
 The evidence of a release is the publication artifact of the nearest
 first-parent ancestor of the release commit, the commit itself included,
-that a successful release-images run on main published. The walk stops at a
+that a successful release-images run on main published. An unsigned branch
+build (release-bundle.yml by workflow_dispatch) also trusts the runs on its
+own branch (--branch); a signed release trusts main only. The walk stops at a
 commit that changes an image build input: older evidence cannot hold the
 images of the release. build-release-manifest.py checks the same boundary.
 The selector of the release commit decides what an input is, so a change of
@@ -79,6 +81,7 @@ def trusted_runs(
     token: str,
     artifact_name: str,
     source_commit: str,
+    branches: tuple[str, ...] = ("main",),
 ) -> list[int]:
     if COMMIT.fullmatch(source_commit) is None:
         raise LookupError("source commit must be a full lowercase Git commit")
@@ -100,7 +103,7 @@ def trusted_runs(
             run.get("event") == "workflow_dispatch"
             and run.get("path") == ".github/workflows/release-images.yml"
             and run.get("conclusion") == "success"
-            and run.get("head_branch") == "main"
+            and run.get("head_branch") in branches
             and run.get("head_sha") == source_commit
             and (run.get("repository") or {}).get("full_name") == repository
         ):
@@ -147,6 +150,7 @@ def find_nearest(
     release_commit: str,
     repo: Path = ROOT,
     selected_run: int | None = None,
+    branches: tuple[str, ...] = ("main",),
 ) -> tuple[str, int]:
     """Return the image source commit and run of the evidence of a release commit.
 
@@ -157,7 +161,7 @@ def find_nearest(
     commits = git("rev-list", "--first-parent", f"--max-count={MAX_COMMITS}", release_commit,
                   repo=repo).split()
     for commit in commits:
-        runs = trusted_runs(api_url, repository, token, artifact_name(commit), commit)
+        runs = trusted_runs(api_url, repository, token, artifact_name(commit), commit, branches)
         if runs and selected_run is not None:
             if selected_run not in runs:
                 raise LookupError(f"the tag names run {selected_run}, which is not a trusted "
@@ -171,7 +175,7 @@ def find_nearest(
         if changes_images(commit, repo):
             raise LookupError(
                 f"{commit} changes an image build input, and no successful release-images run "
-                "on main published its images; run release-images at or after it"
+                f"on {' or '.join(branches)} published its images; run release-images at or after it"
             )
     raise LookupError(f"no image publication in the last {MAX_COMMITS} commits of {release_commit}")
 
@@ -181,6 +185,7 @@ def main() -> int:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--release-commit", required=True)
     parser.add_argument("--tag", help="The release tag, whose annotation can name the run")
+    parser.add_argument("--branch", help="An unsigned branch build: also trust the release-images runs on this branch")
     parser.add_argument("--api-url", default=os.environ.get("GITHUB_API_URL", "https://api.github.com"))
     parser.add_argument("--token-env", default="GITHUB_TOKEN")
     args = parser.parse_args()
@@ -193,6 +198,7 @@ def main() -> int:
         selected = named_run(api_url, args.repository, token, args.tag) if args.tag else None
         commit, run_id = find_nearest(
             api_url, args.repository, token, args.release_commit, selected_run=selected,
+            branches=("main", args.branch) if args.branch else ("main",),
         )
     except LookupError as error:
         print(f"find-image-publication-run: {error}", file=sys.stderr)

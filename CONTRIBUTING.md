@@ -6,11 +6,8 @@ make a change or create a release.
 Open an issue before you make a large change. Keep each pull request small and
 focused.
 
-Before you submit a change, run:
-
-```sh
-V0_ALLOW_MISSING_PINNED_ROUTER_IMAGE=1 bash scripts/ci-validate.sh
-```
+Every pull request runs the `tests` job of `.github/workflows/pr.yml`. To run
+the suites before you submit a change, run the commands of that job.
 
 Do not add live addresses, credentials, private infrastructure, benchmark
 results, or generated build files. Pin container images and workflow actions

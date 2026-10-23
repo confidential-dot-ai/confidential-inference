@@ -18,7 +18,7 @@ from typing import Any
 import jsonschema
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = ROOT / "contracts/image-publication-manifest.schema.json"
+SCHEMA_PATH = ROOT / "api/image-publication-manifest.schema.json"
 SCHEMA = "confidential.ai/image-publication-manifest/v2"
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 REGISTRY = "ghcr.io/confidential-dot-ai/confidential-inference"
