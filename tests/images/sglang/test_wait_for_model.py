@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "images/sglang/wait_for_model.py"
 REVISION = "9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
 REPOSITORY = "deepseek-ai/DeepSeek-V4-Flash-0731"
