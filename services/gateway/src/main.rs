@@ -195,6 +195,7 @@ async fn main() -> Result<()> {
     }
     validate_args(&args)?;
     tracing::info!("gateway configuration validated");
+    tracing::info!("upgrade-sim: test build marker");
 
     let secret_wait = Duration::from_secs(args.secret_wait_seconds);
     let metrics = Arc::new(GatewayMetrics::new(args.environment.clone()));
