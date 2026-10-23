@@ -11,7 +11,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:36551072eea38c8cf959dc60d351692fb2e8ebd40e98cef590e008045cb1e91e": {
+  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:2f239c3bf43a6cb7df07800d14504e873d1d182266096827697e845e2d4c2eee": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",
@@ -31,7 +31,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4efd8e5311066f79325c26f1e8e31fb0e7899a2cbbc2ae4a3312d9363b84d925": {
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:1d69e51480b4de6ed9de0b8c184d9d42b58a0665e4f1f50230b80568816abad6": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
@@ -51,6 +51,17 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
+  "ghcr.io/confidential-dot-ai/cds@sha256:227a143025a74fa7de0e5e06f9729a3035d92cc8738e602b1c2ce81a27f81388": {
+    "cmd": [],
+    "entrypoint": [
+      "/c8s",
+      "cds"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+    ]
+  },
   "ghcr.io/confidential-dot-ai/cds@sha256:aaf6a581487d27b24228ceb10e4a600e1ae1a4b405d0f6f4b8f95422ae8ba204": {
     "cmd": [],
     "entrypoint": [
@@ -62,18 +73,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/cds@sha256:b5361120d9d75e7fd99c483148ba1ad9913d9489a075206eaefea01b779da8f3": {
-    "cmd": [],
-    "entrypoint": [
-      "/c8s",
-      "cds"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
-    ]
-  },
-  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:21e87bc9ef3b5151689be3c9e0a6fe56c75e66cc4fc2eacafca2d7f0712467bf": {
+  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:513f1b50c2b417b0ddaf89f49c4913395b9e60d2c9355cb2ab04ce50d96692cd": {
     "cmd": [
       "--config",
       "/etc/nri/conf.d/image-policy.yaml"
@@ -99,7 +99,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/volumed@sha256:35f9a86d31d3ecfffa85f1653c2a5656c73923d1dc3ee95973595d2faa525079": {
+  "ghcr.io/confidential-dot-ai/volumed@sha256:781940760369aebbbaa8f5535ac3b16f97b3d246190c4ee75ba89f3ed18c79ec": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",
