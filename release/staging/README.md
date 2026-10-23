@@ -74,18 +74,14 @@ Applications serve plain HTTP inside their pods. The c8s per-pod mesh
 mounts `/etc/c8s/certs` only into its own sidecars. Keep exact environment and
 mount rules, the gateway pepper secret grant, and encrypted-volume inputs.
 
-For C8s 0.44 and later, core policy entries pin the complete image ENTRYPOINT.
-The nginx pin also includes its `nginx` command.
 Refresh the image configuration record with the dependency bump. Preserve
 strict policy lint and verify that arbitrary component command overrides fail.
 
-The dependency bump also records the embedded C8s chart's measured node seed
-in `release/inputs/c8s-seeds/<source-commit>.json`. It uses the Helm and RKE2
-versions from the selected source's `mkosi.sync`, the TDX platform, and the
-release component digests. Policy generation preserves each matching baked
-core entry exactly. Components that do not run as pods in the baked node
-(for example the NRI installer and volume daemon) retain their image command
-pins for upload coverage. They do not get arbitrary shell commands.
+From C8s v0.73.0 (C8s #1031) CDS keeps the node image's seed itself, and the
+allowlist has only the application entries. A profile that pins an older C8s
+(production at v0.59.1) mirrors the measured node seed recorded in
+`release/inputs/c8s-seeds/<source-commit>.json`; delete that record when
+production moves to v0.73.0 or later.
 
 ## In-cluster validation client
 
