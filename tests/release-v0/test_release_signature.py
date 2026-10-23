@@ -13,7 +13,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 VERIFY = ROOT / "scripts/verify-release-bundle-signature.py"
 PRODUCTION = ROOT / "releases/production/release-bundle.json"
-INTEGRATION_STAGING = ROOT / "releases/integration-staging/release-bundle.json"
 POLICY = ROOT / "releases/trust/release-signing-policy.json"
 TRUSTED_ROOT = ROOT / "releases/trust/sigstore-public-good-trusted-root.json"
 WORKFLOW = ROOT / ".github/workflows/release-bundle.yml"
@@ -62,8 +61,8 @@ class ReleaseSignatureTests(unittest.TestCase):
         self.assertIn("release-bundle.yml@refs/tags/{release}", policy["certificateIdentityTemplate"])
 
     def test_shared_policy_rejects_a_tag_environment_mismatch(self) -> None:
-        release = json.loads(INTEGRATION_STAGING.read_text())
-        release["release"]["environment"] = "production"
+        release = json.loads(PRODUCTION.read_text())
+        release["release"]["environment"] = "staging"
         validate_policy = runpy.run_path(str(RELEASE_SIGNATURE))["validate_policy"]
         with self.assertRaisesRegex(ValueError, "environment does not match"):
             validate_policy(release)
