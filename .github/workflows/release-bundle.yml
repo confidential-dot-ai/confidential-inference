@@ -220,6 +220,8 @@ jobs:
       - name: build c8s cli
         env:
           GOPRIVATE: github.com/confidential-dot-ai/*
+          # setup-go installs the Go of the pinned c8s; the canonical tool may need a newer one.
+          GOTOOLCHAIN: auto
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
           (cd c8s-source && go build -o "$RUNNER_TEMP/bin/c8s" ./cmd/c8s)
