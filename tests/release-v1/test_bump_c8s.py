@@ -119,6 +119,19 @@ class BumpTests(unittest.TestCase):
         original.pop("c8s"); updated.pop("c8s")
         self.assertEqual(original, updated)
 
+    def test_a_release_tag_drops_the_dev_build_base_release(self):
+        dev = SPEC_TEXT.replace("  # The c8s release.\n",
+                                "  # The release the dev build previews.\n  baseRelease: v0.73.0\n  # The c8s release.\n", 1)
+        self.assertIn("baseRelease", dev)
+        path = self.write(dev)
+        value = self.new_c8s()
+        self.assertNotIn("baseRelease", value)
+        with mock.patch.object(BUMP, "ROOT", path.parent):
+            BUMP.pin_c8s_mapping(path, value)
+        self.assertEqual(BUMP.yaml.safe_load(path.read_text())["c8s"], value)
+        self.assertNotIn("previews", path.read_text())
+        self.assertIn("  # The c8s release.\n", path.read_text())
+
     def test_the_c8s_edit_keeps_every_other_byte(self):
         path = self.write(SPEC_TEXT)
         with mock.patch.object(BUMP, "ROOT", path.parent):
