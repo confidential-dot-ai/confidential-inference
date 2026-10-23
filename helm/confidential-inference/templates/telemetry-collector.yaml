@@ -69,6 +69,19 @@ receivers:
         {{- end }}
         {{- end }}
         {{- end }}
+        {{- with $t.kubeStateMetrics }}
+        {{- if .target }}
+        # C8s's platform kube-state-metrics: C8s gives member pods a fixed,
+        # measured exit to this one address. Pod health series only.
+        - job_name: kube-state-metrics
+          static_configs:
+            - targets: [{{ .target | quote }}]
+              labels: {component: kube-state-metrics}
+          metric_relabel_configs:
+            - {source_labels: [__name__], action: keep, regex: {{ .metrics | quote }}}
+            - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.kubeStateMetrics)) | quote }}}
+        {{- end }}
+        {{- end }}
   otlp:
     protocols:
       grpc:
@@ -85,7 +98,7 @@ processors:
   transform/metrics:
     error_mode: ignore
     metric_statements:
-      - {{ printf "keep_keys(datapoint.attributes, %s)" (toJson (concat $t.commonLabels $t.labels.gateway $t.labels.router $t.labels.worker $t.labels.gpu | uniq | sortAlpha)) | quote }}
+      - {{ printf "keep_keys(datapoint.attributes, %s)" (toJson (concat $t.commonLabels $t.labels.gateway $t.labels.router $t.labels.worker $t.labels.gpu $t.labels.kubeStateMetrics | uniq | sortAlpha)) | quote }}
   resource/identity:
     attributes:
       - {key: deployment.environment, value: {{ .Values.environment | quote }}, action: upsert}
