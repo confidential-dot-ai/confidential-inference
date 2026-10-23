@@ -14,6 +14,12 @@ app.kubernetes.io/part-of: {{ include "confidential-inference.name" .root }}
 app.kubernetes.io/component: {{ .component }}
 {{- end }}
 
+{{- /* The headless router Service. The gateway accepts `sglang-router` or a
+       `router-` name here. */}}
+{{- define "confidential-inference.routerService" -}}
+router-headless
+{{- end }}
+
 {{- define "confidential-inference.cdsAttestSidecar" -}}
 - name: cds-attest
   image: {{ .root.Values.images.c8sOperator }}
@@ -179,4 +185,24 @@ operator keys come from that pinned CDS.
 - --cds-url={{ required "attestationReceipts.cds.url is required with cdsRoutes" $receipts.cds.url }}
 - --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd is required with cdsRoutes" $pin.mrtd }}
 - --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1 is required with cdsRoutes" $pin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2 is required with cdsRoutes" $pin.rtmr2 }}
+{{- end }}
+
+{{/* Egress to the telemetry endpoints: the destination CIDRs on the ports of
+     the metrics, logs and token URLs (443 when a URL names no port). */}}
+{{- define "confidential-inference.telemetryEgress" -}}
+{{- $ports := dict -}}
+{{- range $url := list .Values.telemetry.metricsUrl .Values.telemetry.logsUrl .Values.telemetry.metricsAuth.tokenUrl .Values.telemetry.logsAuth.tokenUrl -}}
+{{- if $url -}}
+{{- $host := (urlParse $url).host -}}
+{{- $_ := set $ports (ternary (last (splitList ":" $host)) "443" (contains ":" $host)) true -}}
+{{- end -}}
+{{- end -}}
+- to:
+    {{- range .Values.telemetry.destinationCidrs }}
+    - ipBlock: {cidr: {{ . | quote }} }
+    {{- end }}
+  ports:
+    {{- range keys $ports | sortAlpha }}
+    - {protocol: TCP, port: {{ . }} }
+    {{- end }}
 {{- end }}

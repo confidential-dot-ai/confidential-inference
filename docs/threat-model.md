@@ -117,9 +117,11 @@ at the C8s commit in your selected release; group names alone grant no rights.
 
 The operator role can read pod logs, Kubernetes Secrets, and ConfigMaps.
 Protect request data and confidential keys from those readable resources.
-The gateway's admin signer certificate is a Kubernetes Secret
-(`gateway-admin-mtls`); whoever can write that Secret and restart the gateway
-holds the gateway admin channel. The gateway refuses an API-key snapshot with
+The gateway's admin credentials are Kubernetes Secrets: the admin signer
+certificate (`gateway-admin-mtls`) and the SHA-256 of each admin API key
+(`gateway-admin-api-key`). Reading the hashes does not give a usable key, but
+whoever can write either Secret and restart the gateway holds the gateway
+admin channel. The gateway refuses an API-key snapshot with
 a lower revision than the one it holds, so that channel cannot roll the key
 set back through the snapshot route; it can still remove keys, which is a
 denial of service, not a loss of confidentiality.

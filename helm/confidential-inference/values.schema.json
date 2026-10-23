@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["environment", "imagePullSecret", "images", "scheduling", "gateway", "inference", "router", "metricsCollector", "kubeStateMetrics", "attestationReceipts", "namedWorkloadProxy"],
+  "required": ["environment", "imagePullSecret", "images", "scheduling", "gateway", "inference", "router", "metricsCollector", "kubeStateMetrics", "attestationReceipts", "namedWorkloadProxy", "telemetry"],
   "properties": {
     "stagingValidation": {
       "type": "object", "additionalProperties": false, "required": ["enabled"],
@@ -307,7 +307,7 @@
         },
         "secrets": {
           "type": "object",
-          "required": ["adminSigner"],
+          "required": ["adminSigner", "adminApiKey"],
           "additionalProperties": false,
           "properties": {
             "adminSigner": {
@@ -317,6 +317,14 @@
               "properties": {
                 "secretName": {"$ref": "#/definitions/kubernetesName"},
                 "certificateKey": {"const": "client.crt"}
+              }
+            },
+            "adminApiKey": {
+              "type": "object",
+              "required": ["secretName"],
+              "additionalProperties": false,
+              "properties": {
+                "secretName": {"$ref": "#/definitions/kubernetesName"}
               }
             }
           }
@@ -356,7 +364,7 @@
     "metricsCollector": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "attestedWorkload", "resources", "approvedApiKeyLabels", "walSizeLimit", "tls", "remoteWrite", "kubeApi"],
+      "required": ["enabled", "attestedWorkload", "resources", "approvedApiKeyLabels", "walSizeLimit", "tls", "queue", "kubeApi"],
       "properties": {
         "enabled": {"type": "boolean"},
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
@@ -377,34 +385,15 @@
             "port": {"const": 6443}
           }
         },
-        "remoteWrite": {
+        "queue": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "url", "address", "serverName", "secretName", "destinationCidrs", "queue"],
+          "required": ["capacity", "maxShards", "maxSamplesPerSend", "sampleAgeLimit"],
           "properties": {
-            "enabled": {"type": "boolean"},
-            "url": {"type": "string", "pattern": "^https://[^/]+(?::[0-9]{1,5})?/api/v1/write$"},
-            "address": {"type": "string", "format": "ipv4"},
-            "serverName": {"type": "string", "format": "hostname"},
-            "secretName": {"$ref": "#/definitions/kubernetesName"},
-            "destinationCidrs": {
-              "type": "array",
-              "minItems": 1,
-              "maxItems": 4,
-              "uniqueItems": true,
-              "items": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+){3}/32$"}
-            },
-            "queue": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["capacity", "maxShards", "maxSamplesPerSend", "sampleAgeLimit"],
-              "properties": {
-                "capacity": {"type": "integer", "minimum": 1, "maximum": 100000},
-                "maxShards": {"type": "integer", "minimum": 1, "maximum": 16},
-                "maxSamplesPerSend": {"type": "integer", "minimum": 1, "maximum": 10000},
-                "sampleAgeLimit": {"const": "1h"}
-              }
-            }
+            "capacity": {"type": "integer", "minimum": 1, "maximum": 100000},
+            "maxShards": {"type": "integer", "minimum": 1, "maximum": 16},
+            "maxSamplesPerSend": {"type": "integer", "minimum": 1, "maximum": 10000},
+            "sampleAgeLimit": {"const": "1h"}
           }
         },
         "tls": {
@@ -417,6 +406,42 @@
             "clientCaSecretName": {"$ref": "#/definitions/kubernetesName"}
           }
         }
+      }
+    },
+    "logCollector": {
+      "type": "object", "additionalProperties": false, "required": ["enabled", "attestedWorkload"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"}
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "deployment", "metricsUrl", "logsUrl", "destinationCidrs", "hostAliases", "metricsAuth", "logsAuth"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "deployment": {"type": "string", "pattern": "^([a-z0-9][a-z0-9-]{0,62})?$"},
+        "metricsUrl": {"type": "string", "pattern": "^https://[^/?#]+/[^#]*$"},
+        "logsUrl": {"type": "string", "pattern": "^https://[^/?#]+/[^?#]*$"},
+        "destinationCidrs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+){3}/[0-9]{1,2}$"}
+        },
+        "hostAliases": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["ip", "hostnames"],
+            "properties": {
+              "ip": {"type": "string", "format": "ipv4"},
+              "hostnames": {"type": "array", "minItems": 1, "items": {"type": "string", "format": "hostname"}}
+            }
+          }
+        },
+        "metricsAuth": {"$ref": "#/definitions/telemetryAuth"},
+        "logsAuth": {"$ref": "#/definitions/telemetryAuth"}
       }
     },
     "kubeStateMetrics": {
@@ -467,6 +492,23 @@
     }
   },
   "definitions": {
+    "telemetryAuth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "secretName", "username", "clientId", "tokenUrl", "scopes"],
+      "properties": {
+        "type": {"enum": ["mtls", "basic", "oauth2"]},
+        "secretName": {"$ref": "#/definitions/kubernetesName"},
+        "username": {"type": "string"},
+        "clientId": {"type": "string"},
+        "tokenUrl": {"type": "string", "pattern": "^(|https://[^/?#]+/[^#]*)$"},
+        "scopes": {"type": "array", "items": {"type": "string"}}
+      },
+      "allOf": [
+        {"if": {"properties": {"type": {"const": "basic"}}}, "then": {"properties": {"username": {"minLength": 1}}}},
+        {"if": {"properties": {"type": {"const": "oauth2"}}}, "then": {"properties": {"clientId": {"minLength": 1}, "tokenUrl": {"minLength": 1}}}}
+      ]
+    },
     "tdxMeasurementOrEmpty": {"type": "string", "pattern": "^(|[0-9a-f]{96})$"},
     "workloadPolicyName": {
       "type": "string",
