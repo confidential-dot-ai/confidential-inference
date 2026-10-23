@@ -1077,7 +1077,7 @@ class ManifestTests(unittest.TestCase):
         MAN.release_signature.validate_release_schema(moved)
 
     def test_a_dev_c8s_build_is_for_staging_only(self):
-        schema = json.loads((ROOT / "contracts/release-manifest.schema.json").read_text())
+        schema = json.loads(MAN.MANIFEST_SCHEMA.read_text())
         dev = "v0.72.1-0.20261023005616-90bd65abd955"
         jsonschema.validate(dev, schema["properties"]["c8s"]["properties"]["release"])
         rules = {"allOf": [rule for rule in schema["allOf"] if "environment" in json.dumps(rule["if"])]}
