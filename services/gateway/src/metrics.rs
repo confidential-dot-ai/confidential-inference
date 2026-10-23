@@ -127,6 +127,12 @@ impl GatewayMetrics {
             "Gateway process passed startup configuration checks",
         );
         configured.set(1);
+        #[cfg(target_os = "linux")]
+        registry
+            .register(Box::new(
+                prometheus::process_collector::ProcessCollector::for_self(),
+            ))
+            .unwrap_or_else(|error| unreachable!("invalid process collector: {error}"));
         Self {
             attestation_responses: counter(
                 r,
@@ -647,6 +653,13 @@ mod tests {
         assert!(!rendered.contains("unbounded-value"));
         assert!(!rendered.contains("prompt"));
         assert!(!rendered.contains("Authorization"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn renders_process_metrics() {
+        let rendered = GatewayMetrics::new("staging").render_prometheus();
+        assert!(rendered.contains("process_resident_memory_bytes{env=\"staging\"}"));
     }
 
     #[test]
