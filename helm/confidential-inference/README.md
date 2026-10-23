@@ -45,7 +45,8 @@ names, or resource sizes. Keep those values in the operator repository.
 and the gateway's router Service (`router-headless`) keep their names across
 releases, so the old router serves until the new one is Ready. Set `runtimeConfig.releaseBundle` with `--set-file` to the
 verified `release-bundle.json` so the release selection changes with the
-release.
+release. The gateway and the router read their configuration files once at
+start. A `checksum/config` pod annotation rolls them when the files change.
 
 The inference workers use `updateStrategy: OnDelete`. Helm updates their
 StatefulSets, but a worker keeps its old pod until you delete it. Each worker

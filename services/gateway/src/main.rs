@@ -22,9 +22,9 @@ use confidential_gateway::{
     api_keys::{KeyStore, admin_router},
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
-    router_with_runtime_and_usage,
-    runtime_config::MountedConfig,
-    runtime_settings::GatewaySettings,
+    release_settings::{ReleaseMetadataProvider, ReleaseSettings},
+    router_with_usage,
+    settings::GatewaySettings,
 };
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 
@@ -41,7 +41,7 @@ struct AdminSecret {
     token: String,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "confidential-gateway")]
 struct Args {
     // The admin client token: a CDS secret, JSON `{"token": ...}`
@@ -65,6 +65,8 @@ struct Args {
     router_namespace: Option<String>,
     #[arg(long, env = "GATEWAY_RELEASE_SELECTION_FILE")]
     release_selection_file: Option<PathBuf>,
+    // The chart's settings ConfigMap, read once at start. Its values replace
+    // the matching arguments below.
     #[arg(long, env = "GATEWAY_RUNTIME_CONFIG_FILE")]
     runtime_config_file: Option<PathBuf>,
     #[arg(long, env = "GATEWAY_LISTEN", default_value = "0.0.0.0:9443")]
@@ -251,68 +253,30 @@ async fn main() -> Result<()> {
     let releases = args
         .release_selection_file
         .as_ref()
-        .map(|path| {
-            MountedConfig::<confidential_gateway::release_settings::ReleaseSettings>::open(
-                path.clone(),
-                1024 * 1024,
-                confidential_gateway::release_settings::ReleaseSettings::validate,
-            )
-            .map(Arc::new)
-            .map_err(anyhow::Error::msg)
+        .map(|path| -> Result<ReleaseSettings> {
+            Ok(serde_json::from_slice(&read_bounded(path, 1024 * 1024)?)?)
         })
         .transpose()
         .context("load release selection")?;
     if let Some(releases) = &releases {
-        let snapshot = releases.snapshot();
-        args.release_id.clone_from(&snapshot.selected().id);
-        args.release_url = Some(snapshot.selected().url.clone());
+        args.release_id.clone_from(&releases.selected().id);
+        args.release_url = Some(releases.selected().url.clone());
         args.release_bundle_sha256
-            .clone_from(&snapshot.selected().bundle_sha256);
+            .clone_from(&releases.selected().bundle_sha256);
     }
-    let runtime = args
-        .runtime_config_file
-        .as_ref()
-        .map(|path| {
-            MountedConfig::<GatewaySettings>::open(path.clone(), 256 * 1024, |settings| {
-                validate_runtime_settings(
-                    settings,
-                    args.router_namespace.as_deref(),
-                    args.allow_direct_inference_url,
-                    args.c8s_evidence_base_url.is_empty(),
-                )
-            })
-            .map(Arc::new)
-            .map_err(anyhow::Error::msg)
-        })
-        .transpose()
-        .context("load gateway runtime settings")?;
-    let _runtime_watcher = runtime.as_ref().map(|config| {
-        let namespace = args.router_namespace.clone();
-        let direct = args.allow_direct_inference_url;
-        let require_evidence = args.c8s_evidence_base_url.is_empty();
-        config.watch(
-            move |settings| {
-                validate_runtime_settings(settings, namespace.as_deref(), direct, require_evidence)
-            },
-            Duration::from_secs(5),
-        )
-    });
-    if let Some(runtime) = &runtime {
-        let snapshot = runtime.snapshot();
-        args.model = snapshot
-            .inference_model_ids
-            .first()
-            .cloned()
-            .unwrap_or_default();
+    // The HTTP/2 stream limit keeps the startup argument; the settings file
+    // does not change it.
+    let limits = HttpLimits::from_args(&args)?;
+    let mut catalog_model_ids = vec![args.model.clone()];
+    let mut inference_model_ids = vec![args.model.clone()];
+    if let Some(path) = args.runtime_config_file.clone() {
+        let settings: GatewaySettings = serde_json::from_slice(&read_bounded(&path, 256 * 1024)?)
+            .context("parse the gateway settings")?;
+        apply_settings(&mut args, &settings).context("load gateway settings")?;
+        catalog_model_ids = settings.catalog_model_ids;
+        inference_model_ids = settings.inference_model_ids;
     }
     validate_args(&args)?;
-    let limits = HttpLimits::from_args(&args)?;
-    let _release_watcher = releases.as_ref().map(|config| {
-        config.watch(
-            confidential_gateway::release_settings::ReleaseSettings::validate,
-            Duration::from_secs(5),
-        )
-    });
     tracing::info!("gateway configuration validated");
 
     let secret_wait = Duration::from_secs(args.secret_wait_seconds);
@@ -349,19 +313,15 @@ async fn main() -> Result<()> {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("build the internal inference client")?;
-    let attestation = metadata_provider_with_runtime(&args, metrics.clone(), runtime.clone())?;
-    let attestation: Arc<dyn confidential_gateway::AttestationProvider> = match &releases {
-        Some(releases) => Arc::new(
-            confidential_gateway::release_settings::ReleaseMetadataProvider {
-                policy: attestation,
-                releases: releases.clone(),
-            },
-        ),
+    let attestation = metadata_provider(&args, metrics.clone())?;
+    let attestation: Arc<dyn confidential_gateway::AttestationProvider> = match releases {
+        Some(releases) => Arc::new(ReleaseMetadataProvider {
+            policy: attestation,
+            releases,
+        }),
         None => attestation,
     };
     let protection = protection_config(&args);
-    let inference_model_id = args.model;
-    let catalog_model_ids = vec![inference_model_id.clone()];
     let usage = args.usage_enabled.then(|| {
         // Each process is one producer instance; the pod hostname is fixed.
         let instance = format!("gateway-{}", uuid::Uuid::new_v4().simple());
@@ -374,10 +334,10 @@ async fn main() -> Result<()> {
         tokio::spawn(recorder.clone().deliver(admin.clone()));
         recorder
     });
-    let public = router_with_runtime_and_usage(
+    let public = router_with_usage(
         GatewayConfig {
             catalog_model_ids,
-            inference_model_ids: vec![inference_model_id],
+            inference_model_ids,
             upstream_base_url: args.inference_url.trim_end_matches('/').to_owned(),
             maximum_body_bytes: args.maximum_body_bytes,
             upstream_timeout: timeout,
@@ -388,10 +348,6 @@ async fn main() -> Result<()> {
         metrics.clone(),
         attestation,
         http,
-        runtime.clone(),
-        args.router_namespace
-            .clone()
-            .filter(|_| args.allow_direct_inference_url),
         usage.clone(),
     );
     let public = with_instance_header(public, args.gateway_instance_id.as_deref())?;
@@ -420,25 +376,7 @@ async fn main() -> Result<()> {
     let metrics_listener = tokio::net::TcpListener::bind(args.metrics_listen)
         .await
         .context("bind the private metrics listener")?;
-    let mut private = metrics_router(metrics);
-    if let Some(releases) = releases {
-        private = private.route(
-            "/release-config",
-            axum::routing::get(move || {
-                let releases = releases.clone();
-                async move { axum::Json(releases.status()) }
-            }),
-        );
-    }
-    if let Some(runtime) = runtime {
-        private = private.route(
-            "/runtime-config",
-            axum::routing::get(move || {
-                let runtime = runtime.clone();
-                async move { axum::Json(runtime.status()) }
-            }),
-        );
-    }
+    let private = metrics_router(metrics);
     tokio::spawn(async move {
         if let Err(error) = axum::serve(metrics_listener, private).await {
             tracing::error!(%error, "the metrics listener stopped");
@@ -660,52 +598,13 @@ fn metadata_provider(
     args: &Args,
     metrics: Arc<GatewayMetrics>,
 ) -> Result<Arc<dyn confidential_gateway::AttestationProvider>> {
-    let runtime = args
-        .runtime_config_file
-        .as_ref()
-        .map(|path| {
-            MountedConfig::<GatewaySettings>::open(
-                path.clone(),
-                256 * 1024,
-                GatewaySettings::validate,
-            )
-            .map(Arc::new)
-            .map_err(anyhow::Error::msg)
-        })
-        .transpose()?;
-    metadata_provider_with_runtime(args, metrics, runtime)
-}
-
-fn metadata_provider_with_runtime(
-    args: &Args,
-    metrics: Arc<GatewayMetrics>,
-    runtime: Option<Arc<MountedConfig<GatewaySettings>>>,
-) -> Result<Arc<dyn confidential_gateway::AttestationProvider>> {
     use confidential_gateway::attestation::{
         evidence_connection, mesh_ca_certificates, parse_evidence_base_url,
     };
     use confidential_gateway::attestation_metadata::{CdsMetadataSource, MetadataProvider};
     validate_metadata_identity(args)?;
     let timeout = Duration::from_secs(args.attestation_timeout_seconds);
-    // Preserve the startup fallback if a later runtime update removes evidence.
-    // Without that fallback, the watcher requires evidence in every snapshot.
-    let evidence = runtime
-        .as_ref()
-        .filter(|_| args.c8s_evidence_base_url.is_empty())
-        .and_then(|config| config.snapshot().evidence.clone());
-    let base = parse_evidence_base_url(
-        evidence
-            .as_ref()
-            .map_or(args.c8s_evidence_base_url.as_str(), |settings| {
-                settings.base_url.as_str()
-            }),
-    )
-    .map_err(anyhow::Error::msg)?;
-    let connect_host = evidence
-        .as_ref()
-        .map_or(args.c8s_evidence_connect_host.as_deref(), |settings| {
-            settings.connect_host.as_deref()
-        });
+    let base = parse_evidence_base_url(&args.c8s_evidence_base_url).map_err(anyhow::Error::msg)?;
     let cds_url = url::Url::parse(&args.cds_url)?;
     if cds_url.scheme() != "https"
         || cds_url.host_str().is_none()
@@ -721,7 +620,7 @@ fn metadata_provider_with_runtime(
         .timeout(timeout)
         .connect_timeout(timeout.min(Duration::from_secs(10)))
         .redirect(reqwest::redirect::Policy::none());
-    if let Some(host) = connect_host {
+    if let Some(host) = &args.c8s_evidence_connect_host {
         client = evidence_connection(client, &base, host).map_err(anyhow::Error::msg)?;
     }
     for cert in mesh_ca_certificates().map_err(anyhow::Error::msg)? {
@@ -774,8 +673,7 @@ fn metadata_provider_with_runtime(
             args.attestation_maximum_evidence_bytes,
             metrics,
         )
-        .map_err(anyhow::Error::msg)?
-        .with_runtime(runtime),
+        .map_err(anyhow::Error::msg)?,
     ))
 }
 
@@ -832,7 +730,8 @@ fn validate_args(args: &Args) -> Result<()> {
     {
         bail!("GATEWAY_INFERENCE_URL must be an http(s) URL");
     }
-    if args.maximum_body_bytes == 0 || args.maximum_body_bytes > 16 * 1024 * 1024 {
+    if !(1024..=confidential_gateway::MAXIMUM_BODY_BYTES_CEILING).contains(&args.maximum_body_bytes)
+    {
         bail!("GATEWAY_MAXIMUM_BODY_BYTES is outside the safe range");
     }
     if !(1..=256).contains(&args.maximum_headers)
@@ -862,28 +761,59 @@ fn validate_args(args: &Args) -> Result<()> {
     {
         bail!("the attestation client limits are outside the safe range");
     }
-    if args.runtime_config_file.is_none() && (args.model.is_empty() || args.model.len() > 256) {
+    if args.model.is_empty() || args.model.len() > 256 {
         bail!("GATEWAY_MODEL must identify one configured model");
     }
     metadata_provider(args, Arc::new(GatewayMetrics::new("validation")))?;
     Ok(())
 }
 
-fn validate_runtime_settings(
-    settings: &GatewaySettings,
-    namespace: Option<&str>,
-    direct: bool,
-    require_evidence: bool,
-) -> Result<(), String> {
-    settings.validate()?;
-    if require_evidence && settings.evidence.is_none() {
-        return Err("runtime evidence settings are required without a startup evidence URL".into());
+/// Replace the matching arguments with the settings file. `validate_args`
+/// then bounds the numeric values.
+fn apply_settings(args: &mut Args, settings: &GatewaySettings) -> Result<()> {
+    settings.validate().map_err(anyhow::Error::msg)?;
+    if let Some(evidence) = &settings.evidence {
+        args.c8s_evidence_base_url.clone_from(&evidence.base_url);
+        args.c8s_evidence_connect_host
+            .clone_from(&evidence.connect_host);
+    } else if args.c8s_evidence_base_url.is_empty() {
+        bail!("the settings need evidence without a startup evidence URL");
     }
-    if settings.router_service.is_some() && (!direct || namespace.is_none()) {
-        return Err(
-            "router Service reload needs the fixed namespace and direct-router mode".into(),
+    if let Some(service) = &settings.router_service {
+        let (Some(namespace), true) = (&args.router_namespace, args.allow_direct_inference_url)
+        else {
+            bail!("a router Service needs the fixed namespace and direct-router mode");
+        };
+        validate_router_namespace(Some(namespace), &args.inference_url)?;
+        // The namespace and port are startup trust inputs. The settings can
+        // select only a router Service in this namespace.
+        let origin = url::Url::parse(&args.inference_url)?;
+        let port = origin
+            .port_or_known_default()
+            .context("the fixed router origin has no port")?;
+        args.inference_url = format!(
+            "{}://{service}.{namespace}.svc.cluster.local:{port}",
+            origin.scheme()
         );
     }
+    args.model = settings
+        .inference_model_ids
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    args.attestation_cache_seconds = settings.attestation_cache_seconds;
+    args.maximum_body_bytes = settings.maximum_body_bytes;
+    args.upstream_timeout_seconds = settings.upstream_timeout_seconds;
+    args.body_timeout_seconds = settings.body_timeout_seconds;
+    args.stream_idle_timeout_seconds = settings.stream_idle_timeout_seconds;
+    args.global_request_concurrency = settings.global_request_concurrency;
+    args.per_address_concurrency = settings.per_address_concurrency;
+    args.inference_concurrency = settings.inference_concurrency;
+    args.inference_queue = settings.inference_queue;
+    args.queue_timeout_seconds = settings.queue_timeout_seconds;
+    args.per_key_concurrency = settings.per_key_concurrency;
+    args.attestation_concurrency = settings.attestation_concurrency;
+    args.requests_per_address_per_second = settings.requests_per_address_per_second;
     Ok(())
 }
 
@@ -1038,30 +968,66 @@ mod tests {
         }
     }
 
-    #[test]
-    fn runtime_evidence_can_supply_the_only_startup_url() -> Result<()> {
-        let mut value = args();
-        value.c8s_evidence_base_url.clear();
-        let directory = tempfile::tempdir()?;
-        let path = directory.path().join("settings.json");
-        let mut settings: GatewaySettings = serde_json::from_value(serde_json::json!({
-            "schemaVersion":1,"revision":1,"evidence":{"baseUrl":"https://candidate.example.test"},
+    fn settings(router_service: Option<&str>) -> GatewaySettings {
+        let mut value = serde_json::json!({
+            "schemaVersion":1,"evidence":{"baseUrl":"https://candidate.example.test"},
             "catalogModelIds":["test"],"inferenceModelIds":["test"],"maximumBodyBytes":1024,
             "upstreamTimeoutSeconds":30,"bodyTimeoutSeconds":10,"streamIdleTimeoutSeconds":20,
-            "attestationCacheSeconds":10,"globalRequestConcurrency":256,"perAddressConcurrency":16,
+            "attestationCacheSeconds":3,"globalRequestConcurrency":256,"perAddressConcurrency":16,
             "inferenceConcurrency":1,"inferenceQueue":0,"queueTimeoutSeconds":2,"perKeyConcurrency":4,
             "attestationConcurrency":4,"requestsPerAddressPerSecond":30
-        }))?;
-        fs::write(&path, serde_json::to_vec(&settings)?)?;
-        value.runtime_config_file = Some(path.clone());
-        assert!(validate_args(&value).is_ok());
-        assert!(validate_runtime_settings(&settings, None, false, true).is_ok());
-        settings.evidence = None;
-        assert!(validate_runtime_settings(&settings, None, false, true).is_err());
-        assert!(validate_runtime_settings(&settings, None, false, false).is_ok());
-        fs::write(path, serde_json::to_vec(&settings)?)?;
+        });
+        if let Some(service) = router_service {
+            value["routerService"] = service.into();
+        }
+        serde_json::from_value(value).unwrap_or_else(|_| unreachable!())
+    }
+
+    #[test]
+    fn settings_replace_the_matching_arguments() -> Result<()> {
+        let mut value = args();
+        value.c8s_evidence_base_url.clear();
+        value.inference_url = "http://sglang-router:30000".into();
+        value.allow_direct_inference_url = true;
+        value.router_namespace = Some("confidential-inference".into());
+        apply_settings(&mut value, &settings(Some("router-headless")))?;
+        assert_eq!(
+            value.c8s_evidence_base_url,
+            "https://candidate.example.test"
+        );
+        assert_eq!(
+            value.inference_url,
+            "http://router-headless.confidential-inference.svc.cluster.local:30000"
+        );
+        assert_eq!(value.model, "test");
+        assert_eq!(value.inference_concurrency, 1);
+        assert_eq!(value.attestation_cache_seconds, 3);
+        validate_args(&value)?;
+        // The settings cannot raise a limit past the argument bounds.
+        let mut limits = settings(None);
+        limits.per_key_concurrency = 4096;
+        let mut value = args();
+        apply_settings(&mut value, &limits)?;
         assert!(validate_args(&value).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn settings_need_evidence_and_a_fixed_router_namespace() {
+        let mut value = args();
+        let mut without_evidence = settings(None);
+        without_evidence.evidence = None;
+        assert!(apply_settings(&mut value.clone(), &without_evidence).is_ok());
+        value.c8s_evidence_base_url.clear();
+        assert!(apply_settings(&mut value, &without_evidence).is_err());
+        let mut value = args();
+        assert!(apply_settings(&mut value, &settings(Some("router-headless"))).is_err());
+        value.allow_direct_inference_url = true;
+        value.inference_url = "http://sglang-router:30000".into();
+        assert!(apply_settings(&mut value, &settings(Some("router-headless"))).is_err());
+        value.router_namespace = Some("confidential-inference".into());
+        assert!(apply_settings(&mut value, &settings(Some("other"))).is_err());
+        assert!(apply_settings(&mut value, &settings(Some("router-headless"))).is_ok());
     }
 
     #[tokio::test]

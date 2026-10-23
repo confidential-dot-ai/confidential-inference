@@ -12,7 +12,7 @@ The schema also accepts version 2 during gateway replacement.
 | `release.id` | Selected release identifier. |
 | `release.url` | Public release URL. |
 | `release.bundleSha256` | Digest of the release bundle. |
-| `releaseSelection` | Desired release and its match with the reported CDS policy, when runtime selection is enabled. |
+| `releaseSelection` | Desired release and its match with the reported CDS policy, when the release selection file is set. |
 | `c8s.activeAllowlist.document` | Parsed JSON from CDS `/allowlist`. |
 | `c8s.activeAllowlist.sha256` | SHA-256 of the exact CDS response bytes. |
 | `c8s.activeAllowlist.url` | Public allowlist download URL. |
@@ -70,17 +70,15 @@ The public-key fingerprints must equal the set read by the verifier.
 A missing key set is accepted only when CDS reports that writes are disabled.
 A connection or verification error is not an empty key set.
 
-The runtime `evidence` object selects the front door for native discovery.
+The settings file's `evidence` object selects the front door for native discovery.
 `baseUrl` is an HTTPS origin. Its hostname remains the expected TLS name.
 The optional `connectHost` selects a connection address without changing that
 name or the TLS port. Omitting `connectHost` uses normal DNS for the origin.
 Discovery keeps certificate checks enabled and refuses redirects.
 
-Without runtime `evidence`, `GATEWAY_C8S_EVIDENCE_BASE_URL` and
-`GATEWAY_C8S_EVIDENCE_CONNECT_HOST` remain startup fallbacks for existing
-installations. If no startup URL is set, runtime `evidence` is required and
-cannot be removed by a later update. CDS addresses and trust pins remain
-startup inputs.
+Without a settings file `evidence` object, `GATEWAY_C8S_EVIDENCE_BASE_URL`
+and `GATEWAY_C8S_EVIDENCE_CONNECT_HOST` supply the addresses. One of the two
+is required.
 
 ## Load protection
 
@@ -92,15 +90,20 @@ Refresh waits, upstream requests, verifier output, policy files, and response
 bodies have limits. A failed refresh returns 503 with `Retry-After: 1`.
 The response has `Cache-Control: no-store, max-age=0`.
 
-## Runtime release selection
+## Release selection and settings files
 
-`GATEWAY_RELEASE_SELECTION_FILE` selects a mounted configuration file.
-It contains `schemaVersion: 1`, an increasing `revision`,
-`selectedBundleSha256`, and `releaseBundles`. Each bundle is a JSON string
-that preserves the exact bytes of its signed release asset. Deployment tools
-verify signatures and build evidence before they write this configuration.
-The gateway derives the release name, public URL, bundle hash, and policy hash
-from these bytes. It does not download an asset during a request.
+The gateway reads both files once at start. The chart renders them into
+ConfigMaps and puts a `checksum/config` annotation on the gateway pod
+template, so a change rolls the gateway pods (`RollingUpdate`). Invalid data
+stops startup.
+
+`GATEWAY_RELEASE_SELECTION_FILE` selects the release selection file.
+It contains `schemaVersion: 1`, `selectedBundleSha256`, and `releaseBundles`.
+Each bundle is a JSON string that preserves the exact bytes of its signed
+release asset. Deployment tools verify signatures and build evidence before
+they write this configuration. The gateway derives the release name, public
+URL, bundle hash, and policy hash from these bytes. It does not download an
+asset during a request.
 
 The selected bundle takes precedence when several releases share a policy.
 If the reported CDS policy matches another unique configured bundle, the
@@ -109,25 +112,11 @@ If no unique bundle matches, `release` is null and `releaseSelection.status`
 is `pending`. The client verifier rejects that state. The CDS allowlist stays
 in the response. A desired release is not a claim that its policy is enforced.
 
-The file watcher watches the mount directory. A five-second polling fallback
-handles missed events. Configuration status is available at `/release-config`
-on the private metrics listener. It shows desired and accepted revisions,
-hashes, and errors. These fields are operational information, not TEE evidence.
-Invalid updates retain the accepted configuration. Invalid startup data stops
-startup. A rollback writes the previous contents with a new revision.
-
-`GATEWAY_RUNTIME_CONFIG_FILE` selects the gateway settings file. It controls
-the model catalog and admitted models, body limit, request timeouts, capacity
-and queue limits, request rate, attestation cache duration, and evidence addresses. The accepted
-status is at `/runtime-config` on the same private listener. Each request
-keeps its model and timeout snapshot. A capacity decrease preserves active
-permits and blocks new admission until usage falls. Queued requests keep
-their deadline and use the current execution capacity. HTTP clients, rate
-windows, and request counters are not replaced on reload.
-
-To change the evidence address during candidate promotion, update the existing
-runtime ConfigMap. Keep all other settings and increase `revision`. For example,
-the `settings.json` document can contain:
+`GATEWAY_RUNTIME_CONFIG_FILE` selects the gateway settings file. It sets the
+model catalog and admitted models, body limit, request timeouts, capacity and
+queue limits, request rate, attestation cache duration, and evidence
+addresses. Its values replace the matching startup arguments, and the same
+argument bounds apply. For example, `settings.json` can contain:
 
 ```json
 "evidence": {
@@ -136,46 +125,19 @@ the `settings.json` document can contain:
 }
 ```
 
-After the front door has a valid certificate for the production hostname,
-change `baseUrl` to `https://api.example.test` with another increased revision.
-Use the existing Kubernetes API access to apply the ConfigMap. Do not put the
-file under a `subPath` mount. Check the accepted revision and errors at the
-private `/runtime-config` endpoint, then check public `/attestation`.
-No reload request or temporary pod is needed.
-
-The next metadata request after an accepted address change drops the old
-successful cache or failure cooldown and creates a client for the new address.
-Later refreshes reuse that client. A refresh already in progress finishes with
-its old address snapshot. A change to another setting retains the client and
-cache. Invalid configuration retains the last accepted settings. An unreachable
-address or a TLS failure returns 503; it does not disable verification or
-silently use the old address. The runtime status reports configuration
-acceptance, not a successful network or attestation check. CDS trust pins and
-startup TLS roots do not change with these addresses.
+An unreachable address or a TLS failure returns 503; it does not disable
+verification. CDS trust pins and TLS roots do not depend on these addresses.
 
 The optional `routerService` setting selects `sglang-router` or a Service
 whose name starts with `router-`. It needs the fixed startup input
 `GATEWAY_ROUTER_NAMESPACE` and direct-router mode. It cannot select another
-namespace, port, or external URL. New requests use the new Service hostname.
-Active requests keep their old target and HTTP connection. The HTTP client
-keeps separate connection pools for the two hostnames.
-The target keeps the startup protocol and port.
+namespace, port, or external URL. The target keeps the protocol and port of
+`GATEWAY_INFERENCE_URL`.
 
-`gateway_router_requests_active` counts authenticated requests that retain
-each router target. This includes body reads, queued requests, and open
-streams. Deployment must check this counter as well as the old router's
-active-request counter before removal. A ready new router alone does not
-prove that the old route has drained.
+`gateway_router_requests_active` counts authenticated requests that hold the
+router target. This includes body reads, queued requests, and open streams.
 
-Runtime status also reports `retiredSnapshotReaders`. Old requests and streams
-keep their configuration snapshot until they close. When removing a model,
-stop new gateway admission first. Wait until the previous snapshot readers
-reach zero before removing its router alias. This allows traffic for other
-models to continue. Reload waits if 64 old snapshots still have readers; the
-polling fallback retries after requests drain.
-
-Secrets, CDS trust pins, authentication settings, listener settings, and
-worker initialization remain startup inputs. Mount configuration directories
+Mount configuration directories
 without `subPath`. Use `<mount>/file.json`, not a timestamp directory, as the
 configured path. ConfigMap contents are not C8s image measurements. Clients
 must still verify the signed release and the inference connection.

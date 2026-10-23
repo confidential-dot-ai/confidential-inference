@@ -1,7 +1,4 @@
-# The new gateway and router images load configuration from mounted files.
 runtimeConfig:
-  enabled: true
-  revision: 1
   attestationCacheSeconds: 3
   modelRoutes:
     deepseek-ai/DeepSeek-V4-Flash-0731:
