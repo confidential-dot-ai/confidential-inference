@@ -79,13 +79,16 @@ receivers:
         {{- with $t.kubeStateMetrics }}
         {{- if .target }}
         # C8s's platform kube-state-metrics: C8s gives member pods a fixed,
-        # measured exit to this one address. Pod health series only.
+        # measured exit to this one address.
         - job_name: kube-state-metrics
           static_configs:
             - targets: [{{ .target | quote }}]
               labels: {component: kube-state-metrics}
           metric_relabel_configs:
             - {source_labels: [__name__], action: keep, regex: {{ .metrics | quote }}}
+            # One series per list entry, told apart only by free-form labels
+            # (toleration and taint keys and values, addresses).
+            - {source_labels: [__name__], action: drop, regex: "kube_pod_tolerations|kube_pod_ips|kube_node_spec_taint|kube_node_status_addresses"}
             - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.kubeStateMetrics)) | quote }}}
         {{- end }}
         {{- end }}
