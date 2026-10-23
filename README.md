@@ -20,7 +20,7 @@ receipts in a separate private repository.
 - `services/maintenance-gateway`: the fallback API.
 - `helm/confidential-inference`: the generic Kubernetes application chart.
 - `scripts/verify-public-attestation.py`: policy metadata checks and historical receipt verification.
-- `contracts`: public API, attestation, and release contracts.
+- `api`: public API, attestation, and release schemas.
 
 ## Build and publish
 

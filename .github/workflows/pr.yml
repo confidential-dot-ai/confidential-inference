@@ -45,7 +45,7 @@ jobs:
               scripts/*.py|images/*/*.py) python=true ;;
               helm/confidential-inference/*) helm_app=true ;;
               helm/maintenance-gateway/*) helm_maintenance=true ;;
-              contracts/*.json|c8s/*.json|releases/*.json|images/*/source.lock)
+              api/*.json|c8s/*.json|releases/*.json|images/*/source.lock)
                 config=true
                 ;;
               .github/workflows/pr.yml)
@@ -120,7 +120,7 @@ jobs:
               *.json|*/source.lock) python3 -m json.tool "$path" >/dev/null ;;
             esac
           done < <(git diff --name-only -z "$BASE_SHA" "$GITHUB_SHA" -- \
-            'contracts/**' 'c8s/**' 'releases/**' 'images/*/source.lock')
+            'api/**' 'c8s/**' 'releases/**' 'images/*/source.lock')
 
   # Every test suite, on every pull request: together they take about a minute.
   tests:
@@ -148,7 +148,7 @@ jobs:
         run: |
           failed=0
           run() { echo "::group::$*"; "$@" || { echo "::error::failed: $*"; failed=1; }; echo "::endgroup::"; }
-          for suite in contracts image-workflow images/gateway images/sglang model-mount-v0 network-v0 release-v1; do
+          for suite in api image-workflow images/gateway images/sglang model-mount-v0 network-v0 release-v1; do
             run python3 -m unittest discover -s "tests/$suite" -p 'test_*.py'
           done
           for test in test_attestation_metadata test_verify_release_manifest test_gpu_evidence \

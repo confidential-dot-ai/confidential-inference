@@ -19,7 +19,7 @@ def b64(value: bytes) -> str:
 class WorkloadAttestationSchemaTests(unittest.TestCase):
     def test_versioned_inference_worker_policy_names_are_valid(self):
         schema = json.loads(
-            (ROOT / "contracts/workload-attestation.schema.json").read_text()
+            (ROOT / "api/workload-attestation.schema.json").read_text()
         )
         nonce = b64(b"n" * 32)
         receipt = {
@@ -133,7 +133,7 @@ class WorkloadAttestationSchemaTests(unittest.TestCase):
 
     def test_tee_webpki_requires_a_separate_front_door_receipt(self):
         schema = json.loads(
-            (ROOT / "contracts/workload-attestation.schema.json").read_text()
+            (ROOT / "api/workload-attestation.schema.json").read_text()
         )
         # Reuse the complete response built by the preceding contract test.
         # The test data below is intentionally small because this check targets

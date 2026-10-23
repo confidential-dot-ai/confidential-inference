@@ -40,9 +40,9 @@ import c8s_allowlist_canonical
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RESPONSE_SCHEMA = ROOT / "contracts/workload-attestation.schema.json"
-RELEASE_SCHEMA = ROOT / "contracts/release-bundle.schema.json"
-MANIFEST_SCHEMA = ROOT / "contracts/release-manifest.schema.json"
+RESPONSE_SCHEMA = ROOT / "api/workload-attestation.schema.json"
+RELEASE_SCHEMA = ROOT / "api/release-bundle.schema.json"
+MANIFEST_SCHEMA = ROOT / "api/release-manifest.schema.json"
 MANIFEST_SCHEMA_ID = "confidential.ai/release-manifest/v1"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_ALLOWLIST_BYTES = 8 * 1024 * 1024

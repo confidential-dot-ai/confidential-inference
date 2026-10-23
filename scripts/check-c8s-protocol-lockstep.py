@@ -3,7 +3,7 @@
 fixtures' receipt field set, match the pinned c8s commit's real protocol.
 
 `version` is identical text (`c8s/attest-pq/v1`) on both c8s protocols (see
-`contracts/README.md`), so nothing on the wire tells a stale gateway it is
+`api/README.md`), so nothing on the wire tells a stale gateway it is
 speaking to the wrong one; it must know the protocol in advance. This script
 is the deploy-time guard: it reads the c8s route table and receipt field set
 this repo already captured, read-only, into
