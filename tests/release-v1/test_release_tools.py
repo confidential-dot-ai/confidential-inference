@@ -497,12 +497,30 @@ class ProcessTests(unittest.TestCase):
         spec = {"release": "v0.59.1", "sourceCommit": "a" * 40, "coreImages": [CORE]}
         record = {"sourceCommit": spec["sourceCommit"], "coreImages": [CORE],
                   "allowlist": {"schema": "c8s.allowlist/v1", "workloads": {}}}
-        with mock.patch.object(GEN, "read_json", return_value=record):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(GEN, "ROOT", Path(directory)):
+            path = Path(directory) / "release/inputs/c8s-seeds" / (spec["sourceCommit"] + ".json")
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(record))
             self.assertEqual(GEN.core_seed(spec), {})
-        for field, value in (("sourceCommit", "b" * 40), ("coreImages", [])):
-            with mock.patch.object(GEN, "read_json", return_value={**record, field: value}):
+            for field, value in (("sourceCommit", "b" * 40), ("coreImages", [])):
+                path.write_text(json.dumps({**record, field: value}))
                 with self.assertRaisesRegex(GEN.GenerationError, "differ from the profile"):
                     GEN.core_seed(spec)
+
+    def test_without_a_record_the_core_seed_is_the_release_asset_of_the_node_image_platform(self):
+        seed = {"schema": "c8s.allowlist/v1", "workloads": {"c8s-router-" + "0" * 12: {}}}
+        spec = {"release": "v0.74.0", "sourceCommit": "a" * 40, "coreImages": [CORE],
+                "nodeImage": {"tag": "rke2-tdx-cdi-v0.74.0"}}
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(GEN, "ROOT", Path(directory)), \
+                mock.patch.object(GEN.c8s_release, "allowlist_seed", return_value=seed) as asset:
+            self.assertEqual(GEN.core_seed(spec), seed["workloads"])
+            asset.assert_called_once_with("v0.74.0", "a" * 40, "tdx")
+            asset.side_effect = GEN.c8s_release.ReleaseError("does not verify")
+            with self.assertRaisesRegex(GEN.GenerationError, "does not verify"):
+                GEN.core_seed(spec)
+            with self.assertRaisesRegex(GEN.GenerationError, "names no platform"):
+                GEN.core_seed({**spec, "nodeImage": {"tag": "custom"}})
+
 
     def test_process_contract_accepts_canonical_order_but_refuses_duplicates_and_changes(self):
         main = {"name": "main", "image": IMAGE, "command": ["/entry"], "args": ["--x"]}
