@@ -121,7 +121,7 @@ def feature_release(c8s: dict[str, Any]) -> str:
     A dev build (Go pseudo-version, staging only) names it in `baseRelease`: its
     pseudo-version counts from the last tag, not from the release it previews.
     """
-    return c8s.get("baseRelease", feature_release(c8s))
+    return c8s.get("baseRelease", c8s["release"])
 
 
 class GenerationError(ValueError):
