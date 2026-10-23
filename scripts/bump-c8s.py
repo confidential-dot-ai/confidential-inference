@@ -74,7 +74,10 @@ RELEASE_TESTS = ROOT / "tests/release-v1/test_release_tools.py"
 NODE = runpy.run_path(str(ROOT / "scripts/fetch-node-manifest.py"))
 REGISTRY = "ghcr.io/confidential-dot-ai/"
 C8S_MODULE = "github.com/confidential-dot-ai/c8s"
-TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-beta\.([1-9][0-9]*))?$")
+# A c8s release tag, or the Go pseudo-version of an untagged c8s commit (a dev
+# build for staging, published under the image tags dev-<commit 12>).
+TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+                 r"(?:-beta\.([1-9][0-9]*)|-0\.[0-9]{14}-([0-9a-f]{12}))?$")
 # The c8s file that pins the confidential-os-builder ref of the node image, and
 # the confidential-os-builder script that pins the NVIDIA driver and toolkit.
 BUILD_PINS = ".github/build-pins.json"
@@ -85,6 +88,11 @@ PROTOCOL_TREES = ("pkg/types",)
 
 class BumpError(RuntimeError):
     """A step needs a person."""
+
+
+def image_tag(tag: str) -> str:
+    commit = TAG.fullmatch(tag).group(5)
+    return f"dev-{commit}" if commit else tag
 
 
 def run(command: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
@@ -160,7 +168,7 @@ def modern_core_images(c8s_repo: Path, commit: str, tag: str) -> list[str]:
         repository = image.get("repository", "")
         if not repository.startswith(REGISTRY):
             raise BumpError("a tag-locked C8s component has an unexpected repository")
-        core.append(f"{repository}@{digest(f'{repository}:{tag}')}")
+        core.append(f"{repository}@{digest(f'{repository}:{image_tag(tag)}')}")
     nginx = values["router"]["nginx"]["image"]
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", nginx.get("digest", "")):
         raise BumpError("the selected C8s chart nginx image has no immutable digest")
@@ -173,12 +181,12 @@ def modern_core_images(c8s_repo: Path, commit: str, tag: str) -> list[str]:
 def new_c8s(tag: str, commit: str, old: dict[str, Any], renamed_mesh: bool = False,
             c8s_repo: Path | None = None) -> dict[str, Any]:
     """Return the c8s mapping of the tag in the shape of the old one."""
-    old_tag = old["release"]
+    old_tag = image_tag(old["release"])
     node, artifact = old["nodeImage"], old["nodeManifestArtifact"]
     if node["tag"] != f"rke2-tdx-cdi-{old_tag}" or artifact["tag"] != f"rke2-tdx-{old_tag}":
         raise BumpError("the node image tags do not follow the c8s release tag; edit them by hand")
     reference = node["reference"]
-    artifact_digest = digest(f"{reference}:rke2-tdx-{tag}")
+    artifact_digest = digest(f"{reference}:rke2-tdx-{image_tag(tag)}")
     if tuple(int(part) for part in TAG.fullmatch(tag).groups()[:3]) >= (0, 44, 0):
         if c8s_repo is None:
             raise BumpError("modern C8s core image pins require the selected source checkout")
@@ -196,9 +204,10 @@ def new_c8s(tag: str, commit: str, old: dict[str, Any], renamed_mesh: bool = Fal
         "sourceCommit": commit,
         "coreImages": core,
     })
-    value["nodeImage"].update({"tag": f"rke2-tdx-cdi-{tag}", "digest": digest(f"{reference}:rke2-tdx-cdi-{tag}")})
+    node_tag = f"rke2-tdx-cdi-{image_tag(tag)}"
+    value["nodeImage"].update({"tag": node_tag, "digest": digest(f"{reference}:{node_tag}")})
     value["nodeManifestArtifact"].update({
-        "tag": f"rke2-tdx-{tag}",
+        "tag": f"rke2-tdx-{image_tag(tag)}",
         "digest": artifact_digest,
         "manifestJson": NODE["manifest_json_digest"](reference, artifact_digest),
     })
@@ -556,7 +565,8 @@ def check(c8s_repo: Path, commit: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--allow-beta", action="store_true", help="permit a signed beta for explicitly named profiles")
-    parser.add_argument("--tag", required=True, help="the c8s release tag, for example v0.33.8")
+    parser.add_argument("--tag", required=True,
+                        help="the c8s release tag, for example v0.33.8, or the Go pseudo-version of a dev build")
     parser.add_argument("--c8s-repo", required=True, type=Path, help="a clean c8s checkout at the tag")
     parser.add_argument("--profile", action="append", help="a profile to move (default: every profile)")
     parser.add_argument("--confos-repo", type=Path, help="a confidential-os-builder checkout")
@@ -567,18 +577,22 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if not TAG.fullmatch(args.tag):
-            raise BumpError("--tag must be vX.Y.Z or vX.Y.Z-beta.N")
-        if "-beta." in args.tag and (not args.allow_beta or not args.profile):
-            raise BumpError("beta requires --allow-beta and an explicit --profile")
+            raise BumpError("--tag must be vX.Y.Z, vX.Y.Z-beta.N or a c8s Go pseudo-version")
+        dev = TAG.fullmatch(args.tag).group(5)
+        if "-beta." in args.tag and (not args.allow_beta or args.profile != ["staging"]):
+            raise BumpError("beta requires --allow-beta and --profile staging")
+        if dev and args.profile != ["staging"]:
+            raise BumpError("an unsigned dev c8s build moves only --profile staging")
         if args.protocol_review != (args.protocol_diff_out is not None):
             raise BumpError("--protocol-review and --protocol-diff-out go together")
         verified = c8s_release.verify_c8s_tag(args.tag, allow_beta=True) if "-beta." in args.tag else None
         c8s_repo = args.c8s_repo.resolve()
-        commit = git(c8s_repo, "rev-parse", f"{args.tag}^{{commit}}")
+        ref = dev or args.tag
+        commit = git(c8s_repo, "rev-parse", f"{ref}^{{commit}}")
         if verified is not None and verified["commit"] != commit:
             raise BumpError("the verified release commit differs from the local tag")
         if git(c8s_repo, "rev-parse", "HEAD") != commit or git(c8s_repo, "status", "--porcelain"):
-            raise BumpError(f"--c8s-repo must be a clean checkout at {args.tag}")
+            raise BumpError(f"--c8s-repo must be a clean checkout at {ref}")
         if git(ROOT, "status", "--porcelain"):
             raise BumpError("the repository must be clean")
         everyone = release_profiles.load()
@@ -594,7 +608,7 @@ def main() -> int:
         if any(value != olds[0] for value in olds):
             raise BumpError("the moved profiles pin different c8s releases; move them one at a time")
         old = olds[0]
-        renamed = "armtls-mesh-image" in git(c8s_repo, "grep", "-e", "armtls-mesh-image", "-e", "ratls-mesh-image", args.tag, "--", "cmd", "internal")
+        renamed = "armtls-mesh-image" in git(c8s_repo, "grep", "-e", "armtls-mesh-image", "-e", "ratls-mesh-image", ref, "--", "cmd", "internal")
         new = new_c8s(args.tag, commit, old, renamed_mesh=renamed, c8s_repo=c8s_repo)
 
         pin_profiles(moved, everyone, new)

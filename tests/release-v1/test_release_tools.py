@@ -657,6 +657,17 @@ class ManifestTests(unittest.TestCase):
         MAN.read_spec(PRODUCTION)
         MAN.read_spec(STAGING)
 
+    def test_only_staging_may_pin_a_c8s_beta(self):
+        for profile, allowed in ((STAGING, True), (PRODUCTION, False)):
+            spec = copy.deepcopy(PROFILES.read_spec(profile))
+            spec["c8s"]["release"] = "v0.73.0-beta.1"
+            with self.subTest(profile=profile.name), mock.patch.object(PROFILES, "read_spec", return_value=spec):
+                if allowed:
+                    MAN.read_spec(profile)
+                else:
+                    with self.assertRaisesRegex(MAN.ManifestError, "stable c8s release"):
+                        MAN.read_spec(profile)
+
     def test_the_spec_names_no_version_because_the_tag_is_the_version(self):
         spec = MAN.read_spec(PRODUCTION)
         with self.assertRaisesRegex(MAN.ManifestError, "the tag is the version"):
@@ -1088,6 +1099,16 @@ class ManifestTests(unittest.TestCase):
             self.assertNotIn(forbidden, properties)
         self.assertFalse(schema["additionalProperties"])
         jsonschema.Draft202012Validator.check_schema(schema)
+
+    def test_a_dev_c8s_build_is_for_staging_only(self):
+        schema = json.loads((ROOT / "contracts/release-manifest.schema.json").read_text())
+        dev = "v0.72.1-0.20261023005616-90bd65abd955"
+        jsonschema.validate(dev, schema["properties"]["c8s"]["properties"]["release"])
+        rules = {"allOf": [rule for rule in schema["allOf"] if "environment" in json.dumps(rule["if"])]}
+        jsonschema.validate({"release": {"environment": "staging"}, "c8s": {"release": dev}}, rules)
+        jsonschema.validate({"release": {"environment": "production"}, "c8s": {"release": "v0.72.0"}}, rules)
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate({"release": {"environment": "production"}, "c8s": {"release": dev}}, rules)
 
 
 class ChartArchiveTests(unittest.TestCase):

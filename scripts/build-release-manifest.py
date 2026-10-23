@@ -100,7 +100,7 @@ REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 IMAGE_SELECTOR = runpy.run_path(str(ROOT / "scripts/affected-release-images.py"))
 ALLOWLIST_GENERATOR = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
 PUBLICATION = runpy.run_path(str(ROOT / "scripts/image-publication-manifest.py"))
-C8S_VERSION = re.compile(rf"^{release_profiles.VERSION}(?:-beta\.([1-9][0-9]*))?$")
+C8S_VERSION = re.compile(rf"^{release_profiles.VERSION}(?:-beta\.([1-9][0-9]*)|-0\.[0-9]{{14}}-[0-9a-f]{{12}})?$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
@@ -145,7 +145,11 @@ def read_spec(profile: release_profiles.Profile) -> dict[str, Any]:
         spec = release_profiles.read_spec(profile)
     except release_profiles.ProfileError as error:
         raise ManifestError(str(error)) from error
-    return validate_spec(spec)
+    spec = validate_spec(spec)
+    # A C8s beta is signed under the beta identity; production keeps the stable (main) one.
+    require(profile.environment != "production" or "-beta." not in spec["c8s"]["release"],
+            "a production release must pin a stable c8s release")
+    return spec
 
 
 def validate_spec(spec: Any) -> dict[str, Any]:
@@ -158,7 +162,7 @@ def validate_spec(spec: Any) -> dict[str, Any]:
     c8s = spec["c8s"]
     require(isinstance(c8s, dict), "c8s must be a mapping")
     require(isinstance(c8s.get("release"), str) and C8S_VERSION.fullmatch(c8s["release"]) is not None,
-            "c8s.release must be vX.Y.Z or vX.Y.Z-beta.N")
+            "c8s.release must be vX.Y.Z, vX.Y.Z-beta.N or a c8s Go pseudo-version")
     require(isinstance(c8s.get("sourceCommit"), str) and COMMIT.fullmatch(c8s["sourceCommit"]) is not None,
             "c8s.sourceCommit must be a full Git commit")
     node = c8s.get("nodeImage", {})
