@@ -68,7 +68,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: In
-        values: [gateway, sglang-router, inference-worker, metrics-collector, kube-state-metrics]
+        values: [gateway, sglang-router, inference-worker, metrics-collector, kube-state-metrics{{ if .Values.logCollector.enabled }}, log-collector{{ end }}]
   policyTypes: [Egress]
   egress:
     - to:
@@ -359,13 +359,8 @@ spec:
         - {protocol: TCP, port: {{ .Values.dcgmExporter.port }}}
         - {protocol: TCP, port: {{ .Values.nodeExporter.port }}}
         - {protocol: TCP, port: {{ .Values.kubeStateMetrics.port }}}
-    {{- if .Values.metricsCollector.remoteWrite.enabled }}
-    - to:
-        {{- range .Values.metricsCollector.remoteWrite.destinationCidrs }}
-        - ipBlock: {cidr: {{ . | quote }} }
-        {{- end }}
-      ports:
-        - {protocol: TCP, port: 9443}
+    {{- if .Values.telemetry.enabled }}
+    {{- include "confidential-inference.telemetryEgress" . | nindent 4 }}
     {{- end }}
     # Cilium can enforce either the Service port or the translated API-server
     # port. Standard NetworkPolicy cannot select the kube-apiserver entity.
@@ -387,6 +382,23 @@ spec:
         - {protocol: TCP, port: 443}
         - {protocol: TCP, port: {{ .Values.metricsCollector.kubeApi.port }}}
 ---
+{{- if .Values.logCollector.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: log-collector-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: log-collector
+  policyTypes: [Egress]
+  egress:
+    {{- include "confidential-inference.telemetryEgress" . | nindent 4 }}
+    - ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: {{ .Values.metricsCollector.kubeApi.port }}}
+---
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -411,3 +423,25 @@ spec:
       ports:
         - {protocol: TCP, port: {{ .Values.attestationReceipts.metricsCollectorPort }}}
     {{- end }}
+{{- if and .Values.inference.enabled .Values.inference.model.cache.enabled }}
+---
+# fetch-model downloads the pinned model revision from Hugging Face and its
+# LFS/Xet CDN, which have no fixed addresses. The byte manifest pins every
+# downloaded byte.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inference-worker-model-download
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: inference-worker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.inference.model.cache.egressCidrs }}
+        - ipBlock: {cidr: {{ . | quote }} }
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 443}
+{{- end }}

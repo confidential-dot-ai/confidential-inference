@@ -11,7 +11,6 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PREPARE = ROOT / "scripts/prepare-signed-release.py"
 VERIFY = ROOT / "scripts/verify-release-bundle-signature.py"
 PRODUCTION = ROOT / "releases/production/release-bundle.json"
 INTEGRATION_STAGING = ROOT / "releases/integration-staging/release-bundle.json"
@@ -20,15 +19,8 @@ TRUSTED_ROOT = ROOT / "releases/trust/sigstore-public-good-trusted-root.json"
 WORKFLOW = ROOT / ".github/workflows/release-bundle.yml"
 RELEASE_SIGNATURE = ROOT / "scripts/release_signature.py"
 LOCK = ROOT / "scripts/requirements-release-signing.txt"
-PRE_HISTORY_RELEASES = ROOT / "releases/pre-history-releases.json"
 SIGNATURE_MODULE = runpy.run_path(str(RELEASE_SIGNATURE))
 environment_for_tag = SIGNATURE_MODULE["environment_for_tag"]
-
-
-def pre_history_bundle_paths() -> set[Path]:
-    """Return bundles whose source commits predate this repository."""
-    entries = json.loads(PRE_HISTORY_RELEASES.read_text())["bundles"]
-    return {(ROOT / entry["path"]).resolve() for entry in entries}
 
 
 class ReleaseSignatureTests(unittest.TestCase):
@@ -69,83 +61,6 @@ class ReleaseSignatureTests(unittest.TestCase):
         )
         self.assertIn("release-bundle.yml@refs/tags/{release}", policy["certificateIdentityTemplate"])
 
-    def test_prepare_keeps_the_exact_release_bytes(self) -> None:
-        pre_history = pre_history_bundle_paths()
-        validate_release_schema = runpy.run_path(str(RELEASE_SIGNATURE))[
-            "validate_release_schema"
-        ]
-        for source in (PRODUCTION, INTEGRATION_STAGING):
-            with self.subTest(source=source):
-                release = json.loads(source.read_text())
-                if source.resolve() in pre_history:
-                    validate_release_schema(release)
-                    self.assertEqual(
-                        release["source"]["repository"],
-                        "https://github.com/confidential-dot-ai/confidential-inference",
-                    )
-                    continue
-                with tempfile.TemporaryDirectory() as temporary:
-                    output = Path(temporary) / "release-bundle.json"
-                    tag_commit = Path(temporary) / "release-tag-commit.txt"
-                    result = subprocess.run(
-                        [
-                            "python3", str(PREPARE),
-                            "--source", str(source),
-                            "--output", str(output),
-                            "--tag-commit-output", str(tag_commit),
-                            "--tag", release["release"]["name"],
-                        ],
-                        cwd=ROOT,
-                        text=True,
-                        capture_output=True,
-                        check=False,
-                    )
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(output.read_bytes(), source.read_bytes())
-                    self.assertEqual(
-                        tag_commit.read_text().strip(),
-                        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
-                    )
-
-    def test_prepare_rejects_a_tag_for_the_other_environment(self) -> None:
-        release = json.loads(INTEGRATION_STAGING.read_text())
-        with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "release-bundle.json"
-            result = subprocess.run(
-                [
-                    "python3", str(PREPARE),
-                    "--source", str(INTEGRATION_STAGING),
-                    "--output", str(output),
-                    "--tag", "v0.13.0",
-                ],
-                cwd=ROOT,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("environment does not match", result.stderr)
-            self.assertFalse(output.exists())
-
-    def test_prepare_rejects_a_different_tag(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "release-bundle.json"
-            result = subprocess.run(
-                [
-                    "python3", str(PREPARE),
-                    "--source", str(PRODUCTION),
-                    "--output", str(output),
-                    "--tag", "v0-wrong-tag",
-                ],
-                cwd=ROOT,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("differs from the tag", result.stderr)
-            self.assertFalse(output.exists())
-
     def test_shared_policy_rejects_a_tag_environment_mismatch(self) -> None:
         release = json.loads(INTEGRATION_STAGING.read_text())
         release["release"]["environment"] = "production"
@@ -153,30 +68,13 @@ class ReleaseSignatureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "environment does not match"):
             validate_policy(release)
 
-    def test_prepare_and_verifier_reject_an_incomplete_release(self) -> None:
+    def test_verifier_rejects_an_incomplete_release(self) -> None:
         release = json.loads(PRODUCTION.read_text())
         release.pop("workloads")
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             source = directory / "release.json"
             source.write_text(json.dumps(release))
-            output = directory / "output.json"
-            result = subprocess.run(
-                [
-                    "python3", str(PREPARE),
-                    "--source", str(source),
-                    "--output", str(output),
-                    "--tag", release["release"]["name"],
-                ],
-                cwd=ROOT,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("release-bundle schema", result.stderr)
-            self.assertFalse(output.exists())
-
             cosign = directory / "cosign"
             cosign.write_text("#!/bin/sh\nexit 1\n")
             cosign.chmod(0o755)
@@ -195,36 +93,16 @@ class ReleaseSignatureTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("release-bundle schema", result.stderr)
 
-    def test_prepare_rejects_a_dangling_output_symlink(self) -> None:
-        release = json.loads(PRODUCTION.read_text())
-        release["source"]["commit"] = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
-        ).strip()
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            source = directory / "source-release-bundle.json"
-            source.write_text(json.dumps(release))
-            output = directory / "release.json"
-            output.symlink_to(directory / "missing-target")
-            result = subprocess.run(
-                [
-                    "python3", str(PREPARE),
-                    "--source", str(source),
-                    "--output", str(output),
-                    "--tag", release["release"]["name"],
-                ],
-                cwd=ROOT,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("output already exists", result.stderr)
-
     def test_workflow_uses_keyless_oidc_and_refuses_asset_replacement(self) -> None:
         workflow = WORKFLOW.read_text()
         self.assertIn("id-token: write", workflow)
-        self.assertIn("name: ${{ needs.select-profile.outputs.signing_environment }}", workflow)
+        # The signing environment (and its protection rules) applies to tag
+        # pushes only; a dispatched unsigned branch build runs without it.
+        self.assertIn(
+            "name: ${{ github.event_name == 'push' && "
+            "needs.select-profile.outputs.signing_environment || '' }}",
+            workflow,
+        )
         profiles = (ROOT / "release/profiles.json").read_text(encoding="utf-8")
         self.assertIn('"signed-release-production"', profiles)
         self.assertIn('"signed-release-staging"', profiles)

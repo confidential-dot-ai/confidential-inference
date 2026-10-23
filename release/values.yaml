@@ -44,7 +44,7 @@ images:
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang
   sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang-router
-  # Signed artifact for the separately installed log collector.
+  # The log collector (logCollector below).
   logCollector: ghcr.io/confidential-dot-ai/confidential-inference/log-collector
   metricsCollector: docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
@@ -162,17 +162,31 @@ router:
 metricsCollector:
   enabled: true
   attestedWorkload: metrics-collector
-  remoteWrite:
-    enabled: true
-    url: https://admin.api.confidential.ai:9443/api/v1/write
-    address: 20.163.209.126
-    serverName: admin.api.confidential.ai
-    secretName: metrics-remote-write-mtls
-    destinationCidrs:
-      - 20.163.209.126/32
 
 kubeStateMetrics:
   attestedWorkload: kube-state-metrics
+
+logCollector:
+  enabled: true
+
+# The production receiver authenticates the collectors' client certificate
+# (logsAuth.type is part of the signed log collector). The deployment sets the
+# rest in its own values: deployment, the URLs, the CIDRs and host aliases.
+telemetry:
+  enabled: true
+  metricsUrl: https://admin.api.confidential.ai:9443/api/v1/write
+  logsUrl: https://admin.api.confidential.ai:9443/loki/api/v1/push
+  destinationCidrs:
+    - 20.163.209.126/32
+  hostAliases:
+    - ip: 20.163.209.126
+      hostnames: [admin.api.confidential.ai]
+  metricsAuth:
+    type: mtls
+    secretName: metrics-remote-write-mtls
+  logsAuth:
+    type: mtls
+    secretName: metrics-remote-write-mtls
 
 # Current workload changes. Unchanged fields come from the chart.
 workloadOverridesEnabled: true
@@ -201,7 +215,7 @@ workloadOverrides:
             - name: GATEWAY_RELEASE_SELECTION_FILE
               value: /mnt/c8s-data/release-selection/releases.json
             - name: GATEWAY_INFERENCE_URL
-              value: http://router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}.confidential-inference.svc.cluster.local:30000
+              value: http://router-headless.confidential-inference.svc.cluster.local:30000
             - name: GATEWAY_ALLOW_DIRECT_INFERENCE_URL
               value: 'true'
             - name: GATEWAY_MAXIMUM_HEADERS
@@ -243,6 +257,8 @@ workloadOverrides:
               value: /run/c8s/secrets/GATEWAY_API_KEY_PEPPER
             - name: GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE
               value: /mnt/c8s-data/admin-auth/..data/client.crt
+            - name: GATEWAY_ADMIN_API_KEY_HASHES_FILE
+              value: /mnt/c8s-data/admin-api-key/..data/sha256
             - name: DEPLOYMENT_ENVIRONMENT
               value: production
             - name: GATEWAY_METRICS_API_KEY_LABEL_ALLOWLIST
@@ -325,6 +341,14 @@ workloadOverrides:
               - key: client.crt
                 path: client.crt
               secretName: gateway-admin-mtls
+          - name: admin-api-key
+            secret:
+              defaultMode: 420
+              items:
+              - key: sha256
+                path: sha256
+              optional: true
+              secretName: gateway-admin-api-key
           - configMap:
               defaultMode: 420
               name: gateway-release-identity
@@ -406,9 +430,6 @@ workloadOverrides:
           maxUnavailable: 25%
         type: RollingUpdate
       template:
-        metadata:
-          annotations:
-            checksum/config: 5c5bea7e93b58af866bfc83794a409267612bd298a53587c944826c4ceb8636d
         spec:
           containers:
           - name: prometheus
@@ -466,36 +487,16 @@ workloadOverrides:
           schedulerName: default-scheduler
           serviceAccount: metrics-collector
           terminationGracePeriodSeconds: 30
-          volumes:
-          - configMap:
-              defaultMode: 420
-              name: metrics-collector
-            name: config
-          - name: remote-write
-            secret:
-              defaultMode: 420
-              items:
-              - key: tls.crt
-                path: tls.crt
-              - key: tls.key
-                path: tls.key
-              secretName: metrics-remote-write-mtls
-          - emptyDir:
-              sizeLimit: 4Gi
-            name: data
   Deployment/sglang-router:
     spec:
       progressDeadlineSeconds: 600
       revisionHistoryLimit: 10
-      selector:
-        matchLabels:
-          confidential.ai/router-slot: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
       template:
         metadata:
           annotations:
+            # A new c8s workload per release: during the roll the old and the
+            # new router run side by side, each with its own allowlist entry.
             confidential.ai/cw: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
-          labels:
-            confidential.ai/router-slot: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
         spec:
           containers:
           - name: sglang-router
@@ -575,7 +576,6 @@ workloadOverrides:
             terminationMessagePath: /dev/termination-log
             terminationMessagePolicy: File
           dnsPolicy: ClusterFirst
-          hostname: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
           restartPolicy: Always
           schedulerName: default-scheduler
           serviceAccount: sglang-router
@@ -585,8 +585,6 @@ workloadOverrides:
               defaultMode: 420
               name: router-model-routes
             name: model-routes
-    metadata:
-      name: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
   StatefulSet/inference-worker-0:
     spec:
       persistentVolumeClaimRetentionPolicy:
@@ -817,104 +815,3 @@ workloadOverrides:
           schedulerName: default-scheduler
           serviceAccount: confidential-inference
       updateStrategy: {}
-additionalWorkloads:
-- apiVersion: apps/v1
-  kind: Deployment
-  metadata:
-    name: log-collector
-    labels:
-      app.kubernetes.io/component: log-collector
-      app.kubernetes.io/managed-by: Helm
-      app.kubernetes.io/part-of: confidential-inference
-      app.kubernetes.io/version: 0.1.0
-      confidential.ai/environment: production
-  spec:
-    progressDeadlineSeconds: 600
-    replicas: 1
-    revisionHistoryLimit: 10
-    selector:
-      matchLabels:
-        app.kubernetes.io/component: log-collector
-        app.kubernetes.io/part-of: confidential-inference
-    strategy:
-      rollingUpdate:
-        maxSurge: 25%
-        maxUnavailable: 25%
-      type: RollingUpdate
-    template:
-      metadata:
-        annotations:
-          confidential.ai/c8s-renew-interval: 30s
-          confidential.ai/cw: log-collector-ua59410a16b
-        labels:
-          app.kubernetes.io/component: log-collector
-          app.kubernetes.io/part-of: confidential-inference
-          confidential.ai/environment: production
-      spec:
-        automountServiceAccountToken: true
-        containers:
-        - env:
-          - name: KUBE_API_URL
-            value: https://kubernetes.default.svc:443
-          - name: LOG_NAMESPACE
-            value: confidential-inference
-          - name: LOG_APPLICATION
-            value: confidential-inference
-          - name: DEPLOYMENT_ID
-            value: production-20260926
-          - name: LOKI_URL
-            value: https://admin.api.confidential.ai:9443/deployments/production-20260926/loki/api/v1/push
-          - name: HOSTNAME
-            value: log-collector-ua59410a16b
-          image: '{{ .Values.images.logCollector }}'
-          imagePullPolicy: IfNotPresent
-          name: alloy
-          resources:
-            limits:
-              cpu: 500m
-              memory: 512Mi
-            requests:
-              cpu: 100m
-              memory: 256Mi
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-              - ALL
-            readOnlyRootFilesystem: true
-            runAsGroup: 65532
-            runAsNonRoot: true
-            runAsUser: 65532
-          terminationMessagePath: /dev/termination-log
-          terminationMessagePolicy: File
-          volumeMounts:
-          - mountPath: /tmp
-            name: data
-          - mountPath: /mnt/c8s-data/admin-client
-            name: admin-client
-            readOnly: true
-        dnsPolicy: ClusterFirst
-        enableServiceLinks: false
-        hostAliases:
-        - hostnames:
-          - admin.api.confidential.ai
-          ip: 20.163.209.126
-        hostname: log-collector
-        restartPolicy: Always
-        schedulerName: default-scheduler
-        securityContext:
-          fsGroup: 65532
-          seccompProfile:
-            type: RuntimeDefault
-        serviceAccount: log-collector
-        serviceAccountName: log-collector
-        terminationGracePeriodSeconds: 30
-        volumes:
-        - emptyDir:
-            medium: Memory
-            sizeLimit: 64Mi
-          name: data
-        - name: admin-client
-          secret:
-            defaultMode: 288
-            secretName: metrics-remote-write-mtls

@@ -12,6 +12,7 @@ LABEL org.opencontainers.image.base.digest="sha256:5133c159d34c7acf37a1b6d91682a
 LABEL ai.confidential.build.source-date-epoch="${SOURCE_DATE_EPOCH}"
 
 COPY --chmod=0444 config.alloy /etc/alloy/config.alloy
+COPY --chmod=0444 auth/mtls.alloy auth/basic.alloy auth/oauth2.alloy /etc/alloy/auth/
 USER 65532:65532
 ENTRYPOINT ["/bin/alloy"]
 CMD ["run", "/etc/alloy/config.alloy", "--storage.path=/tmp/alloy", "--server.http.listen-addr=127.0.0.1:12345", "--server.http.enable-pprof=false", "--disable-reporting"]
