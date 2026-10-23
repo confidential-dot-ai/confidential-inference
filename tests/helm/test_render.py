@@ -153,7 +153,41 @@ def main() -> None:
     rendered = {(d['kind'], d['metadata']['name']) for d in production}
     assert {('ServiceAccount', 'log-collector'), ('Role', 'confidential-inference-log-reader'),
             ('RoleBinding', 'confidential-inference-log-reader'),
-            ('NetworkPolicy', 'log-collector-egress')} <= rendered
+            ('NetworkPolicy', 'log-collector-egress'), ('Deployment', 'log-collector'),
+            ('ConfigMap', 'log-collector-telemetry')} <= rendered
+    # Telemetry endpoints and credentials are files, not allowlisted env.
+    collector = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'log-collector')
+    alloy = collector['spec']['template']['spec']['containers'][0]
+    assert {item['name'] for item in alloy['env']} == {'KUBE_API_URL', 'LOG_NAMESPACE', 'LOG_APPLICATION', 'TELEMETRY_AUTH'}
+    for kind, extra in (('basic', ['username=collector']),
+                        ('oauth2', ['clientId=collector', 'tokenUrl=https://login.example.invalid/token'])):
+        # Each receiver has its own credentials: here metrics use `kind`, logs stay mtls.
+        auth = [arg for setting in [f'type={kind}', *extra] for arg in ('--set', f'telemetry.metricsAuth.{setting}')]
+        if kind == 'oauth2':
+            auth += ['--set', 'telemetry.metricsUrl=https://metrics.example.invalid/api/v1/write?api-version=2023-04-24']
+        documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+            '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+            '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+            '--set', 'attestationReceipts.releaseId=v0.14.18', *auth)) if item]
+        config = yaml.safe_load(next(d for d in documents if d['kind'] == 'ConfigMap'
+                                     and d['metadata']['name'] == 'metrics-collector')['data']['prometheus.yml'])
+        remote = config['remote_write'][0]
+        assert ('basic_auth' in remote) == (kind == 'basic')
+        # Azure Managed Prometheus names its API version in the query.
+        if kind == 'oauth2':
+            assert remote['url'].endswith('?api-version=2023-04-24')
+        assert ('oauth2' in remote) == (kind == 'oauth2')
+        assert 'cert_file' not in remote['tls_config']
+        assert next(d for d in documents if d['kind'] == 'Deployment' and d['metadata']['name'] == 'log-collector'
+                    )['spec']['template'] == collector['spec']['template']
+        logs = [arg for setting in [f'type={kind}', *extra] for arg in ('--set', f'telemetry.logsAuth.{setting}')]
+        documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
+            '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+            '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
+            '--set', 'attestationReceipts.releaseId=v0.14.18', *logs)) if item]
+        alloy = next(d for d in documents if d['kind'] == 'Deployment' and d['metadata']['name'] == 'log-collector'
+                     )['spec']['template']['spec']['containers'][0]
+        assert {'name': 'TELEMETRY_AUTH', 'value': kind} in alloy['env']
     # One gateway workload and state volume per deployment: a release change
     # replaces the pod (Recreate) and reopens the same key database.
     gateway = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'gateway')

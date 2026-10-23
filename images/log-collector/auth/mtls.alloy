@@ -1,0 +1,23 @@
+// Client certificate (Secret keys tls.crt and tls.key).
+declare "writer" {
+  local.file "url" {
+    filename = "/mnt/c8s-data/telemetry/logs-url"
+  }
+
+  loki.write "out" {
+    endpoint {
+      url = string.trim_space(local.file.url.content)
+      batch_size = "128KiB"
+      batch_wait = "1s"
+      tls_config {
+        cert_file = "/mnt/c8s-data/telemetry-auth/tls.crt"
+        key_file = "/mnt/c8s-data/telemetry-auth/tls.key"
+        min_version = "TLS12"
+      }
+    }
+  }
+
+  export "receiver" {
+    value = loki.write.out.receiver
+  }
+}

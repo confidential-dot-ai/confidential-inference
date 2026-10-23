@@ -24,10 +24,9 @@ spec:
     spec:
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.scheduling.gatewayNodeName | quote }}
-      {{- if .Values.metricsCollector.remoteWrite.enabled }}
+      {{- if and .Values.telemetry.enabled .Values.telemetry.hostAliases }}
       hostAliases:
-        - ip: {{ .Values.metricsCollector.remoteWrite.address | quote }}
-          hostnames: [{{ .Values.metricsCollector.remoteWrite.serverName | quote }}]
+        {{- toYaml .Values.telemetry.hostAliases | nindent 8 }}
       {{- end }}
       enableServiceLinks: false
       # A fixed hostname keeps HOSTNAME exact in the c8s allowlist.
@@ -81,9 +80,9 @@ spec:
               mountPath: /mnt/c8s-data/prometheus-client-ca
               readOnly: true
             {{- end }}
-            {{- if .Values.metricsCollector.remoteWrite.enabled }}
-            - name: remote-write
-              mountPath: /mnt/c8s-data/prometheus-remote-write
+            {{- if .Values.telemetry.enabled }}
+            - name: telemetry-auth
+              mountPath: /mnt/c8s-data/telemetry-auth
               readOnly: true
             {{- end }}
             - name: data
@@ -108,13 +107,10 @@ spec:
             items:
               - {key: ca.crt, path: ca.crt}
         {{- end }}
-        {{- if .Values.metricsCollector.remoteWrite.enabled }}
-        - name: remote-write
+        {{- if .Values.telemetry.enabled }}
+        - name: telemetry-auth
           secret:
-            secretName: {{ .Values.metricsCollector.remoteWrite.secretName }}
-            items:
-              - {key: tls.crt, path: tls.crt}
-              - {key: tls.key, path: tls.key}
+            secretName: {{ .Values.telemetry.metricsAuth.secretName }}
         {{- end }}
         - name: data
           emptyDir:
