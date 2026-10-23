@@ -247,7 +247,7 @@ def check_telemetry_collector() -> None:
               if job["job_name"] == "kube-state-metrics"]
     assert ksm["static_configs"][0]["targets"] == ["192.0.2.5:30809"]
     assert ksm["metric_relabel_configs"][0]["action"] == "keep"
-    assert "namespace" in ksm["metric_relabel_configs"][1]["regex"]
+    assert "owner_kind" in ksm["metric_relabel_configs"][-1]["regex"] and "uid" not in ksm["metric_relabel_configs"][-1]["regex"]
     egress = next(item for item in with_ksm if item["kind"] == "NetworkPolicy"
                   and item["metadata"]["name"] == "telemetry-collector-paths")["spec"]["egress"]
     assert {"ports": [{"protocol": "TCP", "port": 30809}]} in egress

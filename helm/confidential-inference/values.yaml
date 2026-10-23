@@ -299,8 +299,10 @@ telemetry:
   # not settled yet (C8s: probably a node address and port, like CDS).
   kubeStateMetrics:
     target: ""
-    # Pod health series only.
-    metrics: kube_pod_status_phase|kube_pod_status_ready|kube_pod_container_status_.*|kube_pod_container_info|kube_(deployment|statefulset)_status_replicas.*|kube_(deployment|statefulset)_spec_replicas
+    # The families the stock Kubernetes dashboard (grafana.com 13332) and the
+    # kubernetes-mixin alerts read. C8s exports no Secrets or ConfigMaps and
+    # no object labels or annotations.
+    metrics: kube_(node|pod|deployment|statefulset|daemonset|job|persistentvolumeclaim|namespace)_.*
   scrapeInterval: 15s
   otlpGrpcPort: 4317
   otlpHttpPort: 4318
@@ -324,7 +326,10 @@ telemetry:
     worker: [model_name, engine_type, tp_rank, pp_rank, dp_rank, moe_ep_rank, priority, backend, cache_source,
              category, forward_mode, is_streaming, layer, modality, mode, phase, pool, reason, source, stage]
     gpu: [worker, gpu]
-    kubeStateMetrics: [namespace, pod, container, reason, phase, condition, deployment, statefulset]
+    # Object names, owners, states and resource units; no uids or addresses.
+    kubeStateMetrics: [namespace, pod, container, node, reason, phase, condition, status, resource, unit, qos_class,
+                       deployment, statefulset, daemonset, job_name, persistentvolumeclaim, storageclass, volume,
+                       owner_kind, owner_name, owner_is_controller, created_by_kind, created_by_name, revision, image]
     # otelcol_* metrics (collector 0.163).
     collector: [receiver, processor, exporter, transport, data_type, otel_signal, service_version]
   # SGLang span attributes that may reach spanmetrics. Request ids, finish
