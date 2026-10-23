@@ -36,10 +36,6 @@ class AffectedReleaseImagesTests(unittest.TestCase):
                                 'images/sglang-router/source.lock',
                                 'images/sglang-router/canonicalize_wheel.py']), ['sglang-router'])
 
-    def test_log_pipeline_selects_only_log_collector(self) -> None:
-        self.assertEqual(names(["images/log-collector/config.alloy"]), ["log-collector"])
-        self.assertEqual(names(["images/log-collector/Dockerfile"]), ["log-collector"])
-
     def test_shared_rust_input_selects_both_rust_images(self) -> None:
         self.assertEqual(
             names(["Cargo.lock"]),
@@ -53,7 +49,6 @@ class AffectedReleaseImagesTests(unittest.TestCase):
                     "README.md",
                     "images/gateway/README.md",
                     "images/gateway/build.sh",
-                    "images/metrics-collector/source.lock",
                     "images/sglang/README.md",
                     "services/gateway/tests/fake_upstream.rs",
                     "helm/confidential-inference/values.yaml",
@@ -85,8 +80,8 @@ class AffectedReleaseImagesTests(unittest.TestCase):
                 ).strip()
 
             git("init", "-q")
-            (Path(tmp) / "images/log-collector").mkdir(parents=True)
-            (Path(tmp) / "images/log-collector/config.alloy").write_text("a\n")
+            (Path(tmp) / "images/kube-state-metrics").mkdir(parents=True)
+            (Path(tmp) / "images/kube-state-metrics/Dockerfile").write_text("a\n")
             git("add", ".")
             git("commit", "-q", "-m", "inputs", "--date=@1700000000")
             inputs = git("rev-parse", "HEAD")
@@ -95,7 +90,7 @@ class AffectedReleaseImagesTests(unittest.TestCase):
             git("commit", "-q", "-m", "unrelated")
             head = git("rev-parse", "HEAD")
             self.assertEqual(
-                input_revision(IMAGES["log-collector"], head, cwd=tmp),
+                input_revision(IMAGES["kube-state-metrics"], head, cwd=tmp),
                 (inputs, git("show", "-s", "--format=%ct", inputs)),
             )
 

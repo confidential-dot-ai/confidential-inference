@@ -25,14 +25,7 @@
       "name": "inference-worker-1",
       "controller": "StatefulSet/inference-worker-1"
     },
-    {
-      "name": "log-collector",
-      "controller": "Deployment/log-collector"
-    },
-    {
-      "name": "metrics-collector",
-      "controller": "Deployment/metrics-collector"
-    },
+
     {
       "name": "sglang-router",
       "controller": "Deployment/sglang-router"
