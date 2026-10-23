@@ -33,6 +33,7 @@ VALUES = {
     "inference.mode": "simulator",
     "telemetry.enabled": "true",
     "telemetry.traces.enabled": "true",
+    "telemetry.kubeStateMetrics.target": "192.0.2.5:30809",
     "telemetry.deployment": "test-deployment",
     "telemetry.relay.serverName": "relay.example.com",
     "telemetry.relay.address": "203.0.113.7",
