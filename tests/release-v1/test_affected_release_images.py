@@ -72,28 +72,38 @@ class AffectedReleaseImagesTests(unittest.TestCase):
         self.assertIsNone(BASE_REF.fullmatch("main"))
         self.assertIsNone(BASE_REF.fullmatch("staging-v12"))
 
-    def test_input_revision_is_the_last_commit_that_changed_an_input(self) -> None:
+    def test_input_revision_depends_only_on_the_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             def git(*args: str) -> str:
                 return subprocess.check_output(
                     ["git", "-C", tmp, "-c", "user.name=t", "-c", "user.email=t@t", *args], text=True
                 ).strip()
 
-            git("init", "-q")
-            (Path(tmp) / "images/kube-state-metrics").mkdir(parents=True)
-            (Path(tmp) / "images/kube-state-metrics/Dockerfile").write_text("a\n")
-            git("add", ".")
-            git("commit", "-q", "-m", "inputs", "--date=@1700000000")
-            inputs = git("rev-parse", "HEAD")
-            (Path(tmp) / "README.md").write_text("b\n")
-            git("add", ".")
-            git("commit", "-q", "-m", "unrelated")
-            head = git("rev-parse", "HEAD")
-            self.assertEqual(
-                input_revision(IMAGES["kube-state-metrics"], head, cwd=tmp),
-                (inputs, git("show", "-s", "--format=%ct", inputs)),
-            )
+            def commit(path: str, text: str, message: str = "change") -> str:
+                (Path(tmp) / path).parent.mkdir(parents=True, exist_ok=True)
+                (Path(tmp) / path).write_text(text)
+                git("add", ".")
+                git("commit", "-q", "-m", message)
+                return git("rev-parse", "HEAD")
 
+            image = IMAGES["kube-state-metrics"]
+            git("init", "-q", "-b", "main")
+            inputs = commit("images/kube-state-metrics/Dockerfile", "a\n")
+            unrelated = commit("README.md", "b\n")
+            # The same input on another branch, by another commit.
+            git("checkout", "-q", "--orphan", "other")
+            git("rm", "-q", "-r", "--cached", ".")
+            (Path(tmp) / "README.md").unlink()
+            other = commit("images/kube-state-metrics/Dockerfile", "a\n", "same input, other commit")
+            changed = commit("images/kube-state-metrics/Dockerfile", "c\n")
+
+            revision, epoch = input_revision(image, inputs, cwd=tmp)
+            self.assertRegex(revision, "^[0-9a-f]{40}$")
+            self.assertEqual(epoch, "315532800")
+            self.assertNotEqual(other, inputs)
+            self.assertEqual(input_revision(image, unrelated, cwd=tmp), (revision, epoch))
+            self.assertEqual(input_revision(image, other, cwd=tmp), (revision, epoch))
+            self.assertNotEqual(input_revision(image, changed, cwd=tmp)[0], revision)
 
 if __name__ == "__main__":
     unittest.main()
