@@ -45,6 +45,8 @@ SECRET = "do-not-leak-7f3a"
 METRICS = (
     "# TYPE gateway_requests counter\n"
     'gateway_requests{model="m",key_id="k1",status="200",prompt="%s"} 3\n' % SECRET
+    + "# TYPE kube_pod_owner gauge\n"
+    'kube_pod_owner{namespace="n",pod="p",uid="%s",owner_kind="ReplicaSet",owner_name="r",owner_is_controller="true"} 1\n' % SECRET
 )
 
 
@@ -167,7 +169,9 @@ class CollectorTests(unittest.TestCase):
             for name, text in outputs.items():
                 self.assertFalse(SECRET in text, f"{name} carries the secret")
             for name, expected in (("metrics.json", "gateway_requests"), ("metrics.json", '"key_id"'),
+                                   ("metrics.json", '"owner_kind"'),
                                    ("metrics.json", "otelcol_receiver_accepted_metric_points"),
+                                   ("metrics.json", '"otel.signal"'),
                                    ("metrics.json", "traces.span.metrics.duration"),
                                    ("spans.json", "gen_ai.usage.prompt_tokens"), ("logs.json", "Bearer [REDACTED]")):
                 self.assertTrue(expected in outputs[name], f"{expected} missing from {name}")
