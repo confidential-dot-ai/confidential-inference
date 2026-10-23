@@ -76,6 +76,7 @@ IMAGES = (
             "images/sglang/gpu_metrics.py",
             "images/sglang/patch_flashinfer_cuda_ipc.py",
             "images/sglang/wait_for_model.py",
+            "images/sglang/fetch_model.py",
             "images/sglang/patches/**",
             "images/sglang/simulator-upstream/**",
         ),
@@ -118,6 +119,23 @@ def affected_images(paths: list[str]) -> list[Image]:
     ]
 
 
+def input_revision(image: Image, head: str, cwd: str | None = None) -> tuple[str, str]:
+    """The newest commit up to head that changed one of the image's inputs, and its commit time.
+
+    A build that stamps this commit and time (instead of head's) gives the
+    same digest for the same inputs, so a build of a later commit does not
+    roll pods whose image did not change.
+    """
+    output = subprocess.check_output(
+        ["git", "log", "-1", "--format=%H %ct", head, "--", *(f":(glob){path}" for path in image.paths)],
+        text=True,
+        cwd=cwd,
+    ).split()
+    if len(output) != 2:
+        raise ValueError(f"no commit up to {head} touches the inputs of {image.image}")
+    return output[0], output[1]
+
+
 def changed_paths(base_ref: str, head: str) -> list[str]:
     if BASE_REF.fullmatch(base_ref) is None:
         raise ValueError("base ref must be a full commit or a historical or current release tag")
@@ -144,7 +162,10 @@ def main() -> int:
     args = parser.parse_args()
 
     selected = affected_images(changed_paths(args.base_ref, args.head))
-    matrix = [image.matrix_entry() for image in selected]
+    matrix = [
+        {**image.matrix_entry(), **dict(zip(("revision", "epoch"), input_revision(image, args.head)))}
+        for image in selected
+    ]
     standard = [entry for entry in matrix if entry["image"] != "sglang"]
     print("matrix=" + json.dumps({"include": matrix}, separators=(",", ":")))
     print("standard_matrix=" + json.dumps({"include": standard}, separators=(",", ":")))

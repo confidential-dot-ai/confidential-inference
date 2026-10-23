@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wait for a verified c8s model mount, then supervise the server process."""
+"""Wait for a verified model mount (c8s dm-verity volume or plain cache), then supervise the server process."""
 
 from __future__ import annotations
 
@@ -259,7 +259,9 @@ def verify_once(args: argparse.Namespace) -> None:
     # Kubernetes can hide the host filesystem type and report rw flags for a
     # read-only c8s bind mount. Require the c8s dm-verity source and a failed
     # write probe. These are the actual integrity and write-protection checks.
-    if "c8s-verity-" not in source:
+    # A plain cache (public weights on a host-readable disk) has no dm-verity
+    # source: its integrity is the full byte check below, on every start.
+    if not args.plain_cache and "c8s-verity-" not in source:
         raise MountUnavailable(
             "the c8s dm-verity mapping is not attached yet "
             f"(filesystem={_filesystem}, source={source})"
@@ -420,6 +422,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-repository", required=True)
     parser.add_argument("--revision-metadata", required=True)
     parser.add_argument("--expected-file", action="append", type=parse_expected_file, default=[])
+    parser.add_argument("--plain-cache", action="store_true",
+                        help="the path is a read-only plain cache that fetch-model filled, not a c8s dm-verity volume")
     parser.add_argument("--gpu-metrics-port", type=int)
     parser.add_argument("--gpu-metrics-worker")
     parser.add_argument("--mountinfo", type=Path, default=Path("/proc/self/mountinfo"), help=argparse.SUPPRESS)

@@ -12,7 +12,7 @@ anyhow = "1.0.102"
 async-trait = "0.1.89"
 async-stream = "0.3.6"
 axum = { version = "0.8.9", features = ["http1", "json"] }
-axum-server = { version = "0.7.2", features = ["tls-rustls"] }
+axum-server = "0.7.2"
 base64 = "0.22.1"
 bytes = "1.11.1"
 clap = { version = "4.5.60", features = ["derive", "env"] }
@@ -24,11 +24,13 @@ hmac = "0.12.1"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["server-auto", "tokio"] }
 ipnet = "2.11.0"
-ml-kem = "0.3.2"
 notify = "8.2.0"
+opentelemetry-appender-tracing = "0.33.1"
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "logs"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["logs"] }
+prometheus = { version = "0.14.0", default-features = false, features = ["process"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "stream", "rustls"] }
 ring = "0.17.14"
-rusqlite = { version = "0.38.0", features = ["bundled"] }
 rustls = "0.23.37"
 rustls-pemfile = "2.2.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -48,6 +50,7 @@ uuid = { version = "1.19.0", features = ["v4"] }
 x509-parser = "0.18.1"
 
 [dev-dependencies]
+axum-server = { version = "0.7.2", features = ["tls-rustls"] }
 rcgen = "0.14.7"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "net", "sync"] }
 

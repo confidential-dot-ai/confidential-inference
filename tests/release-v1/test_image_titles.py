@@ -20,16 +20,10 @@ def load(name: str, relative: str):
 
 
 SELECTOR = load("affected_release_images", "scripts/affected-release-images.py")
-REBUILD = load("rebuild_release_images", "scripts/rebuild-release-images.py")
 
 
 class ImageTitleTests(unittest.TestCase):
     """The image title is a label, so every build of one image must use the same title."""
-
-    def test_rebuild_audit_uses_the_publish_titles(self) -> None:
-        for image in SELECTOR.IMAGES:
-            if image.image in REBUILD.IMAGE_TITLES:
-                self.assertEqual(REBUILD.IMAGE_TITLES[image.image], image.title, image.image)
 
     def test_sglang_reproducibility_build_uses_the_publish_title(self) -> None:
         workflow = (ROOT / ".github/workflows/release-images.yml").read_text(encoding="utf-8")

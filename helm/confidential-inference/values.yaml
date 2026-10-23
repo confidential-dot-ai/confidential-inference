@@ -61,9 +61,9 @@ attestationReceipts:
   policyMode: operator
   expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  expectedStaticAllowlistSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   # Schema 3 policy metadata (services/gateway/ATTESTATION.md, "CDS
-  # verification"). url is the in-cluster CDS origin the gateway verifies;
+  # verification"). url is the CDS origin the gateway verifies (c8s >=
+  # C8s #1048: https://<launch server address>:30808, the node's CDS exit);
   # empty leaves the policy settings to the deployment procedure. The
   # deployment supplies the two policy documents with --set-file; the chart
   # pins them in the release identity file. Set both or neither.
@@ -119,11 +119,24 @@ gateway:
     apiKeyPepper:
       name: GATEWAY_API_KEY_PEPPER
       sourcePath: /confidential-inference/gateway/api-key-pepper
+    # The admin client configuration (JSON: endpoint, token, optional
+    # tls_ca_pem, connect_address, models). The gateway pulls its API keys
+    # from the admin and sends usage events there. services/gateway/src/admin_client.rs.
+    adminConfig:
+      name: product-usage
+      sourcePath: /confidential-inference/gateway/product-usage
+  # The admin: the gateway pulls its keys from the url's origin and sends
+  # usage events to the url. The address is the gateway's one exit (C8s
+  # #1047, public in the served allowlist), TCP 443. Both are allowlist input.
+  admin:
+    url: https://admin.example.invalid/api/usage/ingest
+    address: 192.0.2.10
   usage:
+    # Send one usage event per request to the admin.
     enabled: false
-    destinationPort: 9443
-    # Private configuration and sender credentials come from CDS memory.
-    destinationCidrs: []
+    # The requested models usage is recorded for, each with its backend
+    # model: {"<requested>": {"served_model": ..., "model_revision": ...}}.
+    models: {}
   protection:
     maximumHeaders: 64
     maximumHeaderBytes: 16384
@@ -148,35 +161,10 @@ gateway:
     adminSigner:
       secretName: gateway-admin-mtls
       certificateKey: client.crt
-  state:
-    # The gateway keeps its API-key state on a c8s mutable encrypted volume.
-    # Build the volume with `c8s volume create --mutable --name <volumeName>`,
-    # seeded from an empty directory owned by 65532:65532 with mode 2770, so
-    # the non-root gateway can write at the volume root. The host cannot read
-    # the volume, but it can roll it back; the admin VM holds the real records.
-    enabled: false
-    absencePolicy: fail-closed
-    # The volume mounts after the pod starts. The gateway waits this long.
-    startupTimeoutSeconds: 300
-    volumeName: gwstate
-    c8sVolumeSource: /confidential-inference/volumes/gwstate
-    volumeDirectory: /mnt/c8s-data
-    databasePath: /mnt/c8s-data/gwstate/gateway.sqlite3
-  keyRegistry:
-    # How the gateway answers an API key check.
-    #
-    # "local" keeps today's behaviour: the gateway answers from its own
-    # `api_keys` table alone, and the gateway mints every key.
-    # "dual" checks the `api_keys` table first, then the snapshot the
-    # admin VM pushed. Use it for the production migration.
-    # "registry" answers from the pushed snapshot alone and disables the
-    # local mint. A gateway in this mode that holds no snapshot yet
-    # answers 503 `key_registry_not_ready`.
-    #
-    # The admin VM pushes every snapshot over the existing signed admin
-    # channel, so no mode needs a URL, a token or a poll interval. The
-    # default keeps today's deployment unchanged.
-    mode: local
+    # The SHA-256 hex of each accepted admin API key, one per line, at most
+    # two, under the Secret key `sha256`.
+    adminApiKey:
+      secretName: gateway-admin-api-key
 
 inference:
   enabled: true
@@ -224,6 +212,27 @@ inference:
         .model-lock-local-manifest.json: "0000000000000000000000000000000000000000000000000000000000000000"
       # expectedFileList: a list of {path, sha256} that replaces expectedFiles
       # (see the confidential-inference.expectedFiles helper).
+    # Plain model cache instead of the c8s model volume: the worker's
+    # fetch-model init container downloads the pinned revision from Hugging
+    # Face into the node's plain models disk (hostPath, public weights the
+    # host can read), and wait-for-model --plain-cache checks every file
+    # against the byte manifest on every start. Needs a node image that
+    # formats and mounts that disk read-write (C8s#1006). Allowlist rule G7
+    # refuses a secrets grant on an entry with a host mount: the worker drops
+    # the c8sVolumeSource read, and its workload policy entry must list no
+    # secretReads (tests/helm/test_render.py checks this).
+    cache:
+      enabled: false
+      hostPath: /var/lib/models/model
+      # The byte manifest file (`fetch-model manifest` output). Its SHA-256 is
+      # the mountVerification entry for revisionMetadata.
+      manifest: ""
+      endpoint: https://huggingface.co
+      # Hugging Face and its LFS/Xet CDN have no fixed addresses, and a
+      # NetworkPolicy cannot name hosts: the worker may reach these CIDRs on
+      # 443. The manifest pins every byte it downloads.
+      egressCidrs:
+        - 0.0.0.0/0
   port: 30000
   metricsPort: 29000
   # Name of the reasoning parser to pass as --reasoning-parser on the model
