@@ -111,7 +111,7 @@ def build_release(tag: str, evidence: dict, download_dir: Path | None, generate,
         return MAN.build(
             tag,
             ROOT / "helm/confidential-inference",
-            ROOT / "contracts/c8s-admission-source-lock.json",
+            ROOT / "release/inputs/c8s-source-lock.json",
             "d" * 40,
             evidence_path,
             download_dir or Path(temporary) / "downloads",
@@ -1045,7 +1045,7 @@ class ManifestTests(unittest.TestCase):
                                  and profile.directory / "inputs/image-config.json" != PROFILES.IMAGE_CONFIG)
 
     def test_the_source_lock_pins_the_spec_commit(self):
-        lock = json.loads((ROOT / "contracts/c8s-admission-source-lock.json").read_text())
+        lock = json.loads((ROOT / "release/inputs/c8s-source-lock.json").read_text())
         for profile in PROFILES.load():
             with self.subTest(profile=profile.name):
                 spec = MAN.read_spec(profile)
@@ -1067,12 +1067,21 @@ class ManifestTests(unittest.TestCase):
                 NODE.check_measurements(json.loads(data))
 
     def test_the_schema_refuses_deployment_values(self):
-        schema = json.loads((ROOT / "contracts/release-manifest.schema.json").read_text())
+        schema = json.loads((ROOT / "api/release-manifest.schema.json").read_text())
         properties = set(schema["properties"])
         for forbidden in ("meshCa", "operatorPublicKeySha256", "operatorKeySetSha256", "target"):
             self.assertNotIn(forbidden, properties)
         self.assertFalse(schema["additionalProperties"])
         jsonschema.Draft202012Validator.check_schema(schema)
+
+    def test_a_signed_manifest_with_the_old_lock_path_still_validates(self):
+        # The published v0.15.15 manifest, which names the lock at contracts/.
+        signed = json.loads((FIXTURES / "v0.15.15-release-manifest.json").read_text())
+        self.assertEqual(signed["sourceLock"]["path"], "contracts/c8s-admission-source-lock.json")
+        MAN.release_signature.validate_release_schema(signed)
+        moved = copy.deepcopy(signed)
+        moved["sourceLock"]["path"] = MAN.SOURCE_LOCK.relative_to(ROOT).as_posix()
+        MAN.release_signature.validate_release_schema(moved)
 
 
 class ChartArchiveTests(unittest.TestCase):

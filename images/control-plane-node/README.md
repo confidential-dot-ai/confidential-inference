@@ -259,7 +259,7 @@ whether the generated units are correct:
   Extracts every unit `control-plane-state-disk.sh` writes and the
   profile's two baked units, assembles them with vendored, hash-checked c8s
   base units (`fixtures/c8s-base/`, checked against the commit
-  `contracts/c8s-admission-source-lock.json` pins) into one tree mirroring
+  `release/inputs/c8s-source-lock.json` pins) into one tree mirroring
   the real boot-time layout, and runs `systemd-analyze verify` over it,
   plus checks with no systemd equivalent: every `${VAR}`/`$VAR` an
   `ExecStart`/`ExecStartPre` references has a matching `Environment=` in

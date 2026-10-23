@@ -26,8 +26,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA = ROOT / "contracts/workload-attestation.schema.json"
-RELEASE_SCHEMA = ROOT / "contracts/release-bundle.schema.json"
+SCHEMA = ROOT / "api/workload-attestation.schema.json"
+RELEASE_SCHEMA = ROOT / "api/release-bundle.schema.json"
 class VerificationError(ValueError):
     """The response does not satisfy the expected policy."""
 
