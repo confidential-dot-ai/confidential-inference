@@ -157,7 +157,6 @@ spec:
             - --expected-file={{ $file }}
             {{- end }}
             - --gpu-metrics-port={{ $.Values.inference.metricsPort }}
-            - --gpu-metrics-worker=sglang-{{ $index }}
             - --
             {{- end }}
             {{- if $simulatorMode }}
@@ -197,7 +196,6 @@ spec:
             - --expected-file={{ $file }}
             {{- end }}
             - --gpu-metrics-port={{ $.Values.inference.metricsPort }}
-            - --gpu-metrics-worker=sglang-{{ $index }}
             - --
             - python3
             - -m

@@ -97,20 +97,20 @@ recordingRules:
     source: sglang:full_token_usage
     promql: max by (environment) (sglang:full_token_usage)
   - record: confidential:gpu_use_percent:avg
-    source: confidential_inference_gpu_utilization_ratio
-    promql: avg by (environment) (confidential_inference_gpu_utilization_ratio) * 100
+    source: DCGM_FI_DEV_GPU_UTIL
+    promql: avg by (environment) (DCGM_FI_DEV_GPU_UTIL)
   - record: confidential:gpu_memory_bytes:sum
-    source: confidential_inference_gpu_memory_used_bytes
-    promql: sum by (environment) (confidential_inference_gpu_memory_used_bytes)
+    source: DCGM_FI_DEV_FB_USED
+    promql: sum by (environment) (DCGM_FI_DEV_FB_USED) * 1048576
   - record: confidential:gpu_temperature_celsius:max
-    source: confidential_inference_gpu_temperature_celsius
-    promql: max by (environment) (confidential_inference_gpu_temperature_celsius)
+    source: DCGM_FI_DEV_GPU_TEMP
+    promql: max by (environment) (DCGM_FI_DEV_GPU_TEMP)
   - record: confidential:gpu_ecc_corrected_errors:sum
-    source: confidential_inference_gpu_ecc_corrected_errors_total
-    promql: sum by (environment) (confidential_inference_gpu_ecc_corrected_errors_total)
+    source: DCGM_FI_DEV_ECC_SBE_VOL_TOTAL
+    promql: sum by (environment) (DCGM_FI_DEV_ECC_SBE_VOL_TOTAL)
   - record: confidential:gpu_ecc_uncorrected_errors:sum
-    source: confidential_inference_gpu_ecc_uncorrected_errors_total
-    promql: sum by (environment) (confidential_inference_gpu_ecc_uncorrected_errors_total)
+    source: DCGM_FI_DEV_ECC_DBE_VOL_TOTAL
+    promql: sum by (environment) (DCGM_FI_DEV_ECC_DBE_VOL_TOTAL)
   - record: confidential:requests_per_second
     source: gateway_requests
     promql: sum by (environment) (rate(gateway_requests[5m]))
