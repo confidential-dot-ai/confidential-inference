@@ -100,7 +100,7 @@ CLAIMS_SOCKET_DESTINATION = "/run/c8s/workload-claims"
 def c8s_at_least(release: str | None, version: tuple[int, int, int]) -> bool:
     if release is None:
         return False
-    match = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-beta\.[1-9][0-9]*)?", release)
+    match = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-beta\.[1-9][0-9]*|-0\.[0-9]{14}-[0-9a-f]{12})?", release)
     if match is None:
         raise GenerationError(f"unsupported c8s release: {release}")
     return tuple(int(part) for part in match.groups()) >= version
