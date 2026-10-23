@@ -1,4 +1,8 @@
 //! Authentication for admin requests that pass through c8s tls-lb.
+//!
+//! An admin request carries either an admin API key
+//! (`Authorization: Bearer <key>`) or the v1 request signature. The v1
+//! signature stays until the admin cutover (issue #186).
 
 use std::{
     collections::BTreeMap,
@@ -10,7 +14,7 @@ use axum::{
     Json,
     body::{Body, to_bytes},
     extract::{Request, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header::AUTHORIZATION},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -18,6 +22,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature::{ECDSA_P256_SHA256_ASN1, UnparsedPublicKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
 
 const MAX_CLOCK_SKEW_SECONDS: u64 = 60;
@@ -26,11 +31,15 @@ const MAX_NONCES: usize = 4_096;
 
 /// The largest admin signer certificate file that the gateway reads.
 pub const MAX_CERTIFICATE_BYTES: usize = 256 * 1_024;
+/// The largest admin API key hash file that the gateway reads.
+pub const MAX_API_KEY_HASHES_BYTES: usize = 1_024;
+const MAX_API_KEYS: usize = 2;
 
 #[derive(Clone)]
 pub struct AdminRequestVerifier {
     public_key: Arc<Vec<u8>>,
     nonces: Arc<Mutex<BTreeMap<String, u64>>>,
+    api_key_hashes: Arc<Vec<[u8; 32]>>,
 }
 
 impl AdminRequestVerifier {
@@ -56,7 +65,59 @@ impl AdminRequestVerifier {
         Ok(Self {
             public_key: Arc::new(public_key),
             nonces: Arc::new(Mutex::new(BTreeMap::new())),
+            api_key_hashes: Arc::new(Vec::new()),
         })
+    }
+
+    /// Accept the admin API keys whose SHA-256 the file lists.
+    ///
+    /// The file holds one lowercase hex SHA-256 per line, at most two, so a
+    /// rotation can hold the old and the new key at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file is empty or a line is not one SHA-256.
+    pub fn with_api_key_hashes(mut self, bytes: &[u8]) -> Result<Self, String> {
+        let text =
+            std::str::from_utf8(bytes).map_err(|_| "the admin API key hashes are not UTF-8")?;
+        let mut hashes = Vec::new();
+        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            let valid = line.len() == 64
+                && line
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+            let mut hash = [0_u8; 32];
+            if !valid || hex::decode_to_slice(line, &mut hash).is_err() {
+                return Err("an admin API key hash is not a lowercase hex SHA-256".to_owned());
+            }
+            hashes.push(hash);
+        }
+        if hashes.is_empty() || hashes.len() > MAX_API_KEYS {
+            return Err(format!(
+                "the admin API key file must list 1 to {MAX_API_KEYS} hashes"
+            ));
+        }
+        self.api_key_hashes = Arc::new(hashes);
+        Ok(self)
+    }
+
+    fn verify_api_key(&self, authorization: &str) -> Result<(), &'static str> {
+        let key = authorization
+            .strip_prefix("Bearer ")
+            .ok_or("invalid_authorization")?;
+        let presented: [u8; 32] = Sha256::digest(key.as_bytes()).into();
+        // Check every hash so the time does not show which one matched.
+        let matched = self
+            .api_key_hashes
+            .iter()
+            .fold(subtle::Choice::from(0), |found, hash| {
+                found | hash.ct_eq(&presented)
+            });
+        if bool::from(matched) {
+            Ok(())
+        } else {
+            Err("invalid_api_key")
+        }
     }
 
     /// Return the P-256 public key bytes from the admin signer certificate.
@@ -142,7 +203,14 @@ pub async fn require_signed_admin_request(
         .uri
         .path_and_query()
         .map_or_else(|| parts.uri.path(), |value| value.as_str());
-    if let Err(code) = verifier.verify(parts.method.as_str(), path, &parts.headers, &body, now) {
+    // A request that names an Authorization header is judged by it alone.
+    let result = if parts.headers.contains_key(AUTHORIZATION) {
+        one_header(&parts.headers, AUTHORIZATION.as_str())
+            .and_then(|value| verifier.verify_api_key(value))
+    } else {
+        verifier.verify(parts.method.as_str(), path, &parts.headers, &body, now)
+    };
+    if let Err(code) = result {
         return rejection(code);
     }
     next.run(Request::from_parts(parts, Body::from(body))).await
@@ -319,5 +387,51 @@ mod tests {
             Err("stale_signature")
         );
         Ok(())
+    }
+
+    fn key_only_verifier(hashes: &str) -> Result<AdminRequestVerifier, String> {
+        AdminRequestVerifier {
+            public_key: Arc::new(Vec::new()),
+            nonces: Arc::new(Mutex::new(BTreeMap::new())),
+            api_key_hashes: Arc::new(Vec::new()),
+        }
+        .with_api_key_hashes(hashes.as_bytes())
+    }
+
+    #[test]
+    fn an_admin_api_key_is_accepted_only_when_its_hash_is_listed() -> Result<(), Box<dyn Error>> {
+        let old = hex::encode(Sha256::digest(b"cia_old"));
+        let new = hex::encode(Sha256::digest(b"cia_new"));
+        let verifier = key_only_verifier(&format!("{old}\n{new}\n"))?;
+        verifier.verify_api_key("Bearer cia_old")?;
+        verifier.verify_api_key("Bearer cia_new")?;
+        assert_eq!(
+            verifier.verify_api_key("Bearer cia_other"),
+            Err("invalid_api_key")
+        );
+        assert_eq!(
+            verifier.verify_api_key("cia_new"),
+            Err("invalid_authorization")
+        );
+
+        let without_keys = AdminRequestVerifier {
+            public_key: Arc::new(Vec::new()),
+            nonces: Arc::new(Mutex::new(BTreeMap::new())),
+            api_key_hashes: Arc::new(Vec::new()),
+        };
+        assert_eq!(
+            without_keys.verify_api_key("Bearer cia_new"),
+            Err("invalid_api_key")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_api_key_file_lists_one_or_two_lowercase_hashes() {
+        let hash = hex::encode(Sha256::digest(b"cia_key"));
+        assert!(key_only_verifier("").is_err());
+        assert!(key_only_verifier(&hash.to_uppercase()).is_err());
+        assert!(key_only_verifier(&hash[..63]).is_err());
+        assert!(key_only_verifier(&format!("{hash}\n{hash}\n{hash}")).is_err());
     }
 }

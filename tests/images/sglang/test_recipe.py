@@ -67,11 +67,13 @@ class SGLangImageRecipeTests(unittest.TestCase):
             "patches/cc-optimizations-v0518.patch",
             "patch_flashinfer_cuda_ipc.py",
             "wait_for_model.py",
+            "fetch_model.py",
             "gpu_metrics.py",
             "patches/sglang-simulator-parser-flags-noop.patch",
         ):
             self.assertIn(f"source={source}", DOCKERFILE)
         self.assertIn("install -D -m 0555 /run-src/wait-for-model", DOCKERFILE)
+        self.assertIn("install -D -m 0555 /run-src/fetch-model", DOCKERFILE)
         self.assertIn("install -D -m 0555 /run-src/gpu-metrics", DOCKERFILE)
         self.assertIn("git apply --check --directory=python", DOCKERFILE)
         self.assertIn("git apply --directory=python", DOCKERFILE)
@@ -188,6 +190,7 @@ class SGLangImageRecipeTests(unittest.TestCase):
             "build.sh",
             "source.lock",
             "wait_for_model.py",
+            "fetch_model.py",
             "gpu_metrics.py",
             "patch_flashinfer_cuda_ipc.py",
         }

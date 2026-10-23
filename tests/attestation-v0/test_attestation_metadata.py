@@ -15,7 +15,7 @@ VERIFY = runpy.run_path(str(ROOT / 'scripts/verify-public-attestation.py'))
 
 class MetadataTests(unittest.TestCase):
     def setUp(self):
-        self.response = json.loads((ROOT / 'tests/contracts/fixtures/workload-attestation.v3.valid.json').read_text())
+        self.response = json.loads((ROOT / 'tests/api/fixtures/workload-attestation.v3.valid.json').read_text())
         self.policy = self.response['c8s']['activeAllowlist']['document']
         self.raw = json.dumps(self.policy, separators=(',', ':')).encode() + b'\n'
         self.response['c8s']['activeAllowlist']['sha256'] = 'sha256:' + hashlib.sha256(self.raw).hexdigest()

@@ -226,7 +226,7 @@ async fn router_file_change_moves_new_requests_and_tracks_the_old_request()
     let new: Value = serde_json::from_slice(&axum::body::to_bytes(new.into_body(), 4096).await?)?;
     assert_eq!(new["choices"][0]["message"]["content"], "new");
     assert_eq!(old_requests.load(Ordering::SeqCst), 1);
-    let labels = format!("env=\"test\",router=\"{old_host}\"");
+    let labels = format!("router=\"{old_host}\",env=\"test\"");
     assert!(
         metrics
             .render_prometheus()

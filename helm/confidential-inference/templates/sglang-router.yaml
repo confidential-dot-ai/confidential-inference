@@ -1,6 +1,5 @@
 {{- define "confidential-inference.source.sglang-router" -}}
 {{- if .Values.router.enabled }}
-{{- $slot := printf "router-%s" (.Values.attestationReceipts.releaseId | replace "-transition" "" | replace "." "-") }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -18,17 +17,19 @@ spec:
       targetPort: openai
 ---
 {{- if .Values.runtimeConfig.enabled }}
+# The gateway's router address. The name does not change between releases,
+# so an upgrade rolls the router behind it without a gap.
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ $slot }}
+  name: {{ include "confidential-inference.routerService" . }}
   labels:
     {{- include "confidential-inference.labels" . | nindent 4 }}
     app.kubernetes.io/component: sglang-router
 spec:
   clusterIP: None
   selector:
-    confidential.ai/router-slot: {{ $slot }}
+    {{- include "confidential-inference.selector" (dict "root" . "component" "sglang-router") | nindent 4 }}
   ports:
     - name: openai
       port: {{ .Values.router.port }}
@@ -60,9 +61,6 @@ spec:
     metadata:
       labels:
         {{- include "confidential-inference.selector" (dict "root" . "component" "sglang-router") | nindent 8 }}
-        {{- if .Values.runtimeConfig.enabled }}
-        confidential.ai/router-slot: {{ $slot }}
-        {{- end }}
         confidential.ai/environment: {{ .Values.environment | quote }}
       annotations:
         confidential.ai/cw: sglang-router
