@@ -28,7 +28,7 @@ notify = "8.2.0"
 opentelemetry-appender-tracing = "0.33.1"
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "logs"] }
 opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["logs"] }
-prometheus = { version = "0.14.0", default-features = false }
+prometheus = { version = "0.14.0", default-features = false, features = ["process"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "stream", "rustls"] }
 ring = "0.17.14"
 rustls = "0.23.37"
