@@ -302,13 +302,23 @@ if __name__ == "__main__":
 
 class BetaCompatibilityTests(unittest.TestCase):
     def test_beta_requires_explicit_profile_and_opt_in_before_network(self):
-        for extra in ([], ['--allow-beta'], ['--profile', 'production']):
+        for extra in ([], ['--allow-beta'], ['--profile', 'staging'], ['--allow-beta', '--profile', 'production']):
             with mock.patch('sys.argv', ['bump-c8s', '--tag', 'v0.37.0-beta.1', '--c8s-repo', '/unused', *extra]), mock.patch.object(BUMP.c8s_release, 'verify_c8s_tag') as verify:
                 self.assertEqual(BUMP.main(), 1)
                 verify.assert_not_called()
 
-    def test_explicit_production_beta_still_requires_signature_verification(self):
-        with mock.patch('sys.argv', ['bump-c8s', '--tag', 'v0.37.0-beta.1', '--c8s-repo', '/unused', '--allow-beta', '--profile', 'production']), mock.patch.object(BUMP.c8s_release, 'verify_c8s_tag', side_effect=BUMP.c8s_release.ReleaseError('invalid signature')) as verify:
+    def test_a_dev_build_moves_only_staging_and_uses_dev_image_tags(self):
+        dev = 'v0.72.1-0.20261023005616-90bd65abd955'
+        self.assertEqual(BUMP.image_tag(dev), 'dev-90bd65abd955')
+        self.assertEqual(BUMP.image_tag('v0.72.0'), 'v0.72.0')
+        for extra in ([], ['--profile', 'production'], ['--profile', 'staging', '--profile', 'production']):
+            with mock.patch('sys.argv', ['bump-c8s', '--tag', dev, '--c8s-repo', '/unused', *extra]), \
+                    mock.patch.object(BUMP, 'git') as git:
+                self.assertEqual(BUMP.main(), 1)
+                git.assert_not_called()
+
+    def test_staging_beta_still_requires_signature_verification(self):
+        with mock.patch('sys.argv', ['bump-c8s', '--tag', 'v0.37.0-beta.1', '--c8s-repo', '/unused', '--allow-beta', '--profile', 'staging']), mock.patch.object(BUMP.c8s_release, 'verify_c8s_tag', side_effect=BUMP.c8s_release.ReleaseError('invalid signature')) as verify:
             self.assertEqual(BUMP.main(), 1)
             verify.assert_called_once_with('v0.37.0-beta.1', allow_beta=True)
 

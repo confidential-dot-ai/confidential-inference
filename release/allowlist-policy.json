@@ -26,7 +26,7 @@
     },
     {
       "name": "router-{release}",
-      "controller": "Deployment/router-{release}"
+      "controller": "Deployment/sglang-router"
     },
     {
       "name": "inference-worker-0-u200b5c252a",
