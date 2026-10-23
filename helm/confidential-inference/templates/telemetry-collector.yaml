@@ -69,6 +69,13 @@ receivers:
         {{- end }}
         {{- end }}
         {{- end }}
+        # The collector's own otelcol_* metrics (service.telemetry below).
+        - job_name: otelcol
+          static_configs:
+            - targets: [{{ printf "127.0.0.1:%v" $t.metricsPort | quote }}]
+              labels: {component: telemetry-collector}
+          metric_relabel_configs:
+            - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.collector)) | quote }}}
         {{- with $t.kubeStateMetrics }}
         {{- if .target }}
         # C8s's platform kube-state-metrics: C8s gives member pods a fixed,
@@ -98,7 +105,7 @@ processors:
   transform/metrics:
     error_mode: ignore
     metric_statements:
-      - {{ printf "keep_keys(datapoint.attributes, %s)" (toJson (concat $t.commonLabels $t.labels.gateway $t.labels.router $t.labels.worker $t.labels.gpu $t.labels.kubeStateMetrics | uniq | sortAlpha)) | quote }}
+      - {{ printf "keep_keys(datapoint.attributes, %s)" (toJson (concat $t.commonLabels $t.labels.gateway $t.labels.router $t.labels.worker $t.labels.gpu $t.labels.kubeStateMetrics $t.labels.collector | uniq | sortAlpha)) | quote }}
   resource/identity:
     attributes:
       - {key: deployment.environment, value: {{ .Values.environment | quote }}, action: upsert}
@@ -131,7 +138,9 @@ exporters:
     auth: {authenticator: oauth2client}
     external_labels:
       environment: {{ .Values.environment | quote }}
-      deployment: {{ $t.deployment | quote }}
+      # `cluster`, not `deployment`: kube-state-metrics series carry their own
+      # `deployment` label, and the Azure and mixin dashboards select `cluster`.
+      cluster: {{ $t.deployment | quote }}
     target_info: {enabled: false}
     resource_to_telemetry_conversion: {enabled: false}
   otlphttp/loki:
@@ -141,7 +150,10 @@ service:
   extensions: [health_check, oauth2client, basicauth/loki]
   telemetry:
     logs: {level: info}
-    metrics: {level: none}
+    metrics:
+      level: normal
+      readers:
+        - pull: {exporter: {prometheus: {host: 127.0.0.1, port: {{ $t.metricsPort }}}}}
   pipelines:
     metrics:
       receivers: [prometheus]

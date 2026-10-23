@@ -271,7 +271,8 @@ router:
 telemetry:
   enabled: false
   attestedWorkload: telemetry-collector
-  # The deployment label of every series and log stream.
+  # The cluster label of every series (external label `cluster`) and the
+  # service.namespace of every log stream.
   deployment: ""
   relay:
     serverName: ""
@@ -304,6 +305,8 @@ telemetry:
   otlpGrpcPort: 4317
   otlpHttpPort: 4318
   healthPort: 13133
+  # The collector's own otelcol_* metrics, on loopback, scraped by itself.
+  metricsPort: 8888
   resources:
     cpu: 100m
     memory: 256Mi
@@ -322,6 +325,8 @@ telemetry:
              category, forward_mode, is_streaming, layer, modality, mode, phase, pool, reason, source, stage]
     gpu: [worker, gpu]
     kubeStateMetrics: [namespace, pod, container, reason, phase, condition, deployment, statefulset]
+    # otelcol_* metrics (collector 0.163).
+    collector: [receiver, processor, exporter, transport, data_type, otel_signal, service_version]
   # SGLang span attributes that may reach spanmetrics. Request ids, finish
   # reason details and every span event attribute are dropped.
   spanAttributes:

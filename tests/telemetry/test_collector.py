@@ -65,8 +65,10 @@ def local_pipeline(config: dict, target: str) -> dict:
     for job in config["receivers"]["prometheus"]["config"]["scrape_configs"]:
         job.pop("dns_sd_configs", None)
         labels = (job.get("static_configs") or [{}])[0].get("labels", {})
-        job["static_configs"] = [{"targets": [target], "labels": labels}]
+        own = job["job_name"] == "otelcol"
+        job["static_configs"] = [{"targets": ["127.0.0.1:18888" if own else target], "labels": labels}]
         job["scrape_interval"] = "1s"
+    config["service"]["telemetry"]["metrics"]["readers"][0]["pull"]["exporter"]["prometheus"]["port"] = 18888
     config["receivers"]["otlp"]["protocols"] = {"http": {"endpoint": "127.0.0.1:14318"}}
     config["extensions"]["health_check"]["endpoint"] = "127.0.0.1:14133"
     for name in ("oauth2client", "basicauth/loki"):
@@ -165,6 +167,7 @@ class CollectorTests(unittest.TestCase):
             for name, text in outputs.items():
                 self.assertFalse(SECRET in text, f"{name} carries the secret")
             for name, expected in (("metrics.json", "gateway_requests"), ("metrics.json", '"key_id"'),
+                                   ("metrics.json", "otelcol_receiver_accepted_metric_points"),
                                    ("metrics.json", "traces.span.metrics.duration"),
                                    ("spans.json", "gen_ai.usage.prompt_tokens"), ("logs.json", "Bearer [REDACTED]")):
                 self.assertTrue(expected in outputs[name], f"{expected} missing from {name}")

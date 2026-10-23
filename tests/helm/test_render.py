@@ -212,12 +212,20 @@ def check_telemetry_collector() -> None:
     assert config["exporters"]["otlphttp/loki"]["logs_endpoint"] == relay + "otlp/v1/logs"
     assert config["extensions"]["oauth2client"]["token_url"].startswith(relay + "entra/")
     jobs = config["receivers"]["prometheus"]["config"]["scrape_configs"]
-    assert [job["job_name"] for job in jobs] == ["gateway", "sglang-router", "inference-worker-0", "inference-worker-1"]
+    assert [job["job_name"] for job in jobs] == ["gateway", "sglang-router", "inference-worker-0", "inference-worker-1",
+                                                 "otelcol"]
+    # The collector scrapes its own otelcol_* metrics on loopback; every
+    # series carries `cluster` (kube-state-metrics has its own `deployment`).
+    assert jobs[-1]["static_configs"][0]["targets"] == ["127.0.0.1:8888"]
+    assert config["service"]["telemetry"]["metrics"]["readers"][0]["pull"]["exporter"]["prometheus"] == {
+        "host": "127.0.0.1", "port": 8888}
+    labels = config["exporters"]["prometheusremotewrite"]["external_labels"]
+    assert labels["cluster"] == "test-deployment" and "deployment" not in labels
     for job in jobs:
         (keep,) = job["metric_relabel_configs"]
         assert keep["action"] == "labelkeep"
         assert "__name__" in keep["regex"] and "prompt" not in keep["regex"]
-    targets = [target for job in jobs for static in job.get("static_configs", []) for target in static["targets"]]
+    targets = [target for job in jobs[:-1] for static in job.get("static_configs", []) for target in static["targets"]]
     targets += [name for job in jobs for sd in job.get("dns_sd_configs", []) for name in sd["names"]]
     services = {item["metadata"]["name"]: item for item in documents if item["kind"] == "Service"}
     # The mesh connects pods: every target is a pod address of a headless Service.
