@@ -321,7 +321,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["enabled", "attestedWorkload", "deployment", "relay", "metrics", "logs", "secretName", "traces",
-                   "kubeStateMetrics", "scrapeInterval", "otlpGrpcPort", "otlpHttpPort", "healthPort", "resources", "commonLabels", "labels", "spanAttributes"],
+                   "kubeStateMetrics", "scrapeInterval", "otlpGrpcPort", "otlpHttpPort", "healthPort", "metricsPort", "resources", "commonLabels", "labels", "spanAttributes"],
       "properties": {
         "enabled": {"type": "boolean"},
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
@@ -366,16 +366,18 @@
         "otlpGrpcPort": {"type": "integer", "minimum": 1, "maximum": 65535},
         "otlpHttpPort": {"type": "integer", "minimum": 1, "maximum": 65535},
         "healthPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "metricsPort": {"type": "integer", "minimum": 1, "maximum": 65535},
         "resources": {"$ref": "#/definitions/resources"},
         "commonLabels": {"$ref": "#/definitions/labelNames"},
         "labels": {
-          "type": "object", "additionalProperties": false, "required": ["gateway", "router", "worker", "gpu", "kubeStateMetrics"],
+          "type": "object", "additionalProperties": false, "required": ["gateway", "router", "worker", "gpu", "kubeStateMetrics", "collector"],
           "properties": {
             "gateway": {"$ref": "#/definitions/labelNames"},
             "router": {"$ref": "#/definitions/labelNames"},
             "worker": {"$ref": "#/definitions/labelNames"},
             "gpu": {"$ref": "#/definitions/labelNames"},
-            "kubeStateMetrics": {"$ref": "#/definitions/labelNames"}
+            "kubeStateMetrics": {"$ref": "#/definitions/labelNames"},
+            "collector": {"$ref": "#/definitions/labelNames"}
           }
         },
         "spanAttributes": {
