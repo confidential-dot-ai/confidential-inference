@@ -28,6 +28,11 @@
     },
 
     {
+      "name": "telemetry-collector",
+      "controller": "Deployment/telemetry-collector",
+      "egress": {"port": 443}
+    },
+    {
       "name": "sglang-router",
       "controller": "Deployment/sglang-router"
     },

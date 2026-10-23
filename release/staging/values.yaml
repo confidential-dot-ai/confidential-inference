@@ -37,10 +37,14 @@ gateway:
 attestationReceipts:
   evidenceBaseUrl: https://staging.api.confidential.ai
   evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
-  # The gateway verifies the in-cluster CDS for its schema 3 policy metadata.
-  # The deployment supplies the two policy documents; see the chart values.
+  # The gateway verifies CDS for its schema 3 policy metadata. On c8s >= C8s
+  # #1048 a member pod reaches CDS only at the node's bound endpoint: the
+  # server address of the signed launch configuration (staging-20260926
+  # CONTROL_IP) and the CDS NodePort. C8s admits that exit for every member
+  # pod. The CDS armTLS certificate names no host; the gateway pins it by
+  # attestation. The deployment supplies the two policy documents.
   cds:
-    url: https://c8s-cds.c8s-system.svc:8443
+    url: https://10.43.58.194:30808
 
 # kube-state-metrics needs the Kubernetes API, which a c8s >= v0.64 mesh member
 # pod cannot reach.
@@ -76,11 +80,8 @@ inference:
 
 # Telemetry to the admin-next relay (admin/vm/caddy in the internal
 # repository). Its address is the telemetry collector's one allowlist exit.
-# Enable it with the c8s bump that has declared egress (C8s #1047): set
-# enabled, add the telemetry-collector entry with "egress": {"port": 443} to
-# allowlist-policy.json, and regenerate the fixture with scripts/bump-c8s.py.
 telemetry:
-  enabled: false
+  enabled: true
   deployment: staging-20260926
   relay:
     serverName: ci-admin-next-loki.centralus.cloudapp.azure.com
@@ -89,9 +90,18 @@ telemetry:
     tenantId: 693babab-0ab8-4ffb-8b5c-eb8aef3b10d1
     clientId: c486ee14-1dca-4c1d-af4f-be163302ff44
     dataCollectionRule: dcr-50a134d921ce434a86bcd8f01ab93b6e
+  # C8s's platform kube-state-metrics (needs the c8s with its allow policy).
+  kubeStateMetrics:
+    target: 10.53.0.11:8080
+
+# c8s v0.66.0+ runs the router in its own namespace (c8s #814; chart value
+# from confidential-inference #203).
+c8s:
+  frontDoorPodLabelName: router
+  frontDoorNamespace: c8s-router
 
 images:
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:97f6f5ac2e35cd635787ec95aaad842c321eb8c0f6df5a63de34c574ddae2d6e
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:1d69e51480b4de6ed9de0b8c184d9d42b58a0665e4f1f50230b80568816abad6
 
 # The simulator uses the staging workload definitions.
 workloadOverridesEnabled: false

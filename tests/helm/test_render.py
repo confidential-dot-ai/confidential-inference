@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import runpy
 import subprocess
 import tempfile
 from pathlib import Path
@@ -121,6 +122,72 @@ def check_plain_http_behind_the_mesh() -> None:
             for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
                 assert not {"tcpSocket", "grpc"} & set(container.get(probe, {})), (document["metadata"]["name"], probe)
 
+def g7_violations(documents: list[dict], secret_reads: dict[str, list[str]]) -> list[str]:
+    """Controllers that mount a hostPath volume and read c8s secrets.
+
+    c8s allowlist rule G7 refuses a secrets grant on an entry with a host
+    mount. An entry reads secrets through the c8s-volumes or c8s-secrets
+    annotation, or through secretReads in its workload policy.
+    """
+    found = []
+    for item in documents:
+        if item["kind"] not in {"Deployment", "StatefulSet", "DaemonSet"}:
+            continue
+        controller = f"{item['kind']}/{item['metadata']['name']}"
+        template = item["spec"]["template"]
+        pod = template["spec"]
+        host = {volume["name"] for volume in pod.get("volumes", []) if "hostPath" in volume}
+        mounted = any(mount["name"] in host for field in ("initContainers", "containers")
+                      for container in pod.get(field, []) for mount in container.get("volumeMounts", []))
+        annotations = template.get("metadata", {}).get("annotations", {})
+        reads = (secret_reads.get(controller) or "confidential.ai/c8s-volumes" in annotations
+                 or "confidential.ai/c8s-secrets" in annotations)
+        if mounted and reads:
+            found.append(controller)
+    return found
+
+
+def check_model_cache() -> None:
+    """The plain model cache: fetch-model fills a hostPath, the gate reads it read-only."""
+    manifest = '{"files":[]}\n'
+    pin = hashlib.sha256(manifest.encode()).hexdigest()
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml") as values:
+        yaml.safe_dump({"inference": {"simulator": {"validateModelMount": True}, "model": {
+            "mountVerification": {"expectedFiles": {".model-lock-local-manifest.json": pin}},
+            "cache": {"enabled": True, "manifest": manifest}}}}, values)
+        values.flush()
+        documents = render("--values", values.name)
+        maps = {item["metadata"]["name"]: item for item in documents if item["kind"] == "ConfigMap"}
+        assert maps["model-manifest"]["data"]["manifest.json"] == manifest
+        worker = next(item for item in documents if item["kind"] == "StatefulSet"
+                      and item["metadata"]["name"] == "inference-worker-0")
+        pod = worker["spec"]["template"]["spec"]
+        assert "confidential.ai/c8s-volumes" not in worker["spec"]["template"]["metadata"]["annotations"]
+        fetch, = pod["initContainers"]
+        assert fetch["command"] == ["/usr/local/bin/fetch-model"]
+        assert "--path=/mnt/c8s-data/models/cache" in fetch["args"]
+        assert f"--manifest-sha256={pin}" in fetch["args"]
+        assert {"name": "model-cache", "mountPath": "/mnt/c8s-data/models/cache"} in fetch["volumeMounts"]
+        sglang = next(item for item in pod["containers"] if item["name"] == "sglang")
+        assert "--plain-cache" in sglang["args"] and "--path=/mnt/c8s-data/models/cache" in sglang["args"]
+        assert f"--expected-file=.model-lock-local-manifest.json={pin}" in sglang["args"]
+        assert {"name": "model-cache", "mountPath": "/mnt/c8s-data/models/cache", "readOnly": True} in sglang["volumeMounts"]
+        volume = next(item for item in pod["volumes"] if item["name"] == "model-cache")
+        assert volume["hostPath"] == {"path": "/var/lib/models/model", "type": "DirectoryOrCreate"}
+        egress = next(item for item in documents if item["kind"] == "NetworkPolicy"
+                      and item["metadata"]["name"] == "inference-worker-model-download")
+        assert egress["spec"]["egress"][0]["ports"] == [{"protocol": "TCP", "port": 443}]
+        # G7: the cache worker mounts a host path, so it drops the model volume
+        # read, and its workload policy must list no secretReads.
+        assert g7_violations(documents, {}) == []
+        assert g7_violations(documents, {"StatefulSet/inference-worker-0": ["/confidential-inference/volumes/dsv4"]}) == [
+            "StatefulSet/inference-worker-0"]
+        helm("template", "example", str(CHART), *NEUTRAL_MODE, "--values", values.name,
+             "--set", "inference.model.cache.manifest=other", success=False)
+    default = render()
+    assert not any(item["metadata"]["name"] in {"model-manifest", "inference-worker-model-download"} for item in default)
+
+
 def check_front_door_namespace() -> None:
     # From c8s v0.66.0 the router runs in its own namespace, c8s-router.
     documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
@@ -134,26 +201,28 @@ def check_front_door_namespace() -> None:
                for rule in policies['gateway-to-router']['spec']['egress'] for peer in rule.get('to', []))
 
 
-def check_cds_nodeport_and_probe_budget() -> None:
-    # c8s >= v0.66: credential clients dial the node's CDS NodePort, and the
-    # per-pod mesh gives every probe 5 s (C8s #1027).
-    documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
-        '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
-        '-f', str(ROOT/'release/staging/values.yaml'),
-        '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
-        '--set', 'attestationReceipts.releaseId=v0.14.18-staging')) if item]
-    policies = {d['metadata']['name']: d for d in documents if d['kind'] == 'NetworkPolicy'}
-    for name in ('workloads-to-c8s-cds', 'gateway-update-agent'):
-        assert any('to' not in rule and {'protocol': 'TCP', 'port': 30808} in rule['ports']
-                   for rule in policies[name]['spec']['egress']), name
-    for document in documents:
-        if document['kind'] not in {'Deployment', 'StatefulSet'}:
-            continue
-        pod = document['spec']['template']['spec']
-        for container in pod.get('initContainers', []) + pod['containers']:
-            for probe in ('startupProbe', 'readinessProbe', 'livenessProbe'):
-                if probe in container:
-                    assert container[probe].get('timeoutSeconds', 1) <= 5, (document['metadata']['name'], container['name'], probe)
+def check_c8s_admission() -> None:
+    """Every profile renders pods the c8s webhook admits (scripts/check-c8s-admission.py)."""
+    admission = runpy.run_path(str(ROOT / "scripts/check-c8s-admission.py"))
+    release = ("--namespace", "confidential-inference", "-f", "release/values.yaml",
+               "-f", "tests/release-v1/fixtures/release-values.yaml",
+               "--set", "attestationReceipts.releaseId=v0.14.18-staging")
+    for profile in ((), release, (*release, "-f", "release/staging/values.yaml"),
+                    ("--values", "tests/api/values-sglang.yaml")):
+        found = admission["refusals"](render(*profile))
+        assert found == [], (profile, found)
+    # The refusals of 2026-10-22 staging: a tcpSocket probe, the credential
+    # directory in an app container, a probe over the 5 s budget, no CDS egress.
+    pod = {"kind": "Pod", "metadata": {"name": "p", "annotations": {"confidential.ai/cw": "p"}, "labels": {"a": "b"}},
+           "spec": {"containers": [{"name": "app", "readinessProbe": {"tcpSocket": {"port": 1}},
+                                    "livenessProbe": {"httpGet": {"port": 8080, "path": "/health"}, "timeoutSeconds": 10},
+                                    "volumeMounts": [{"name": "certs", "mountPath": "/etc/c8s/certs"}]}]}}
+    deny = {"kind": "NetworkPolicy", "metadata": {"name": "deny"},
+            "spec": {"podSelector": {}, "policyTypes": ["Egress"], "egress": [{"ports": [{"port": 443}]}]}}
+    found = admission["refusals"]([pod, deny])
+    assert len(found) == 4, found
+    for expected, line in zip(("/etc/c8s/certs", "tcpSocket", "timeoutSeconds 10", "TCP 30808"), found):
+        assert expected in line, (expected, line)
 
 
 TELEMETRY = (
@@ -231,6 +300,20 @@ def check_telemetry_collector() -> None:
     assert "keep_keys(log.attributes, [])" in processors["transform/logs"]["log_statements"]
     assert config["service"]["pipelines"]["traces"]["exporters"] == ["spanmetrics"]
 
+    # C8s's platform kube-state-metrics: off without a target, then one job
+    # with a name filter and a port-only egress rule, no hostAliases exit.
+    assert "kube-state-metrics" not in [job["job_name"] for job in jobs]
+    with_ksm = render(*TELEMETRY, "--set", "telemetry.kubeStateMetrics.target=192.0.2.5:30809")
+    (ksm,) = [job for job in collector_config(with_ksm)["receivers"]["prometheus"]["config"]["scrape_configs"]
+              if job["job_name"] == "kube-state-metrics"]
+    assert ksm["static_configs"][0]["targets"] == ["192.0.2.5:30809"]
+    assert ksm["metric_relabel_configs"][0]["action"] == "keep"
+    assert "namespace" in ksm["metric_relabel_configs"][1]["regex"]
+    egress = next(item for item in with_ksm if item["kind"] == "NetworkPolicy"
+                  and item["metadata"]["name"] == "telemetry-collector-paths")["spec"]["egress"]
+    assert {"ports": [{"protocol": "TCP", "port": 30809}]} in egress
+    assert not next(item for item in with_ksm if item["kind"] == "Deployment"
+                    and item["metadata"]["name"] == "telemetry-collector")["spec"]["template"]["spec"]["hostAliases"][1:]
     gateway = Gateway(documents)
     assert gateway.env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] == "http://telemetry-collector.default.svc.cluster.local:4318/v1/logs"
     assert "RUST_LOG" not in gateway.env
@@ -651,8 +734,9 @@ def main() -> None:
 
     check_plain_http_behind_the_mesh()
     check_override_replaces_strategy()
+    check_model_cache()
     check_front_door_namespace()
-    check_cds_nodeport_and_probe_budget()
+    check_c8s_admission()
     check_telemetry_collector()
     print("Helm neutral-default and safety tests passed.")
 

@@ -1,12 +1,12 @@
 {
-  "sourceCommit": "cc185c876b5e3dfdeeea78d2c310a987325b859f",
+  "sourceCommit": "1d7a966ac65c3dbca36b93e2edba037155610167",
   "coreImages": [
-    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-    "ghcr.io/confidential-dot-ai/cds@sha256:8547bdd95705905362c3a1ec47a7ee6aa9f16ed4ef8b44ef6a08b6378cc33add",
-    "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:125df81e1747e194c801afc0f51c0fb39961b1e7245b06bded20879ec7527f89",
-    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:7bec9cb2d27f948edab08a17732a1c7652dbf59beb776ab49f59f8cd65b5769c",
-    "ghcr.io/confidential-dot-ai/volumed@sha256:af3092cd40348f01be46cf1b7b8c7293984ac06a3cee1206c41f5c859b78c68e",
-    "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+    "ghcr.io/confidential-dot-ai/cds@sha256:804de8729760b987d2ca82e921bfaaf233c02dcd94ee16845b42f99bb9746406",
+    "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:887bb65ed0db4588c1b8d927b65551fcd9901d91d0408872618e8a9b7d4b29bf",
+    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:0ae4d741ad04b990f4b8d0156fee6d7377292d35f0abeb30d245d8f269a45207",
+    "ghcr.io/confidential-dot-ai/volumed@sha256:7dc211740ec7e268c3273c97d385d9d3f8acd761f87a47fc3efe93a261affdb6",
+    "nginxinc/nginx-unprivileged@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6"
   ],
   "hardwarePlatform": "tdx",
   "kubeVersion": "v1.36.4",
@@ -14,13 +14,13 @@
   "allowlist": {
     "schema": "c8s.allowlist/v1",
     "workloads": {
-      "armtls-mesh-125df81e1747-5fa86673": {
-        "label": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:125df81e1747e194c801afc0f51c0fb39961b1e7245b06bded20879ec7527f89",
+      "armtls-mesh-887bb65ed0db-3a7f98b2": {
+        "label": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:887bb65ed0db4588c1b8d927b65551fcd9901d91d0408872618e8a9b7d4b29bf",
         "initContainers": [],
         "containers": [
           {
-            "digest": "sha256:125df81e1747e194c801afc0f51c0fb39961b1e7245b06bded20879ec7527f89",
-            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:125df81e1747e194c801afc0f51c0fb39961b1e7245b06bded20879ec7527f89",
+            "digest": "sha256:887bb65ed0db4588c1b8d927b65551fcd9901d91d0408872618e8a9b7d4b29bf",
+            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:887bb65ed0db4588c1b8d927b65551fcd9901d91d0408872618e8a9b7d4b29bf",
             "command": {
               "policy": "exact",
               "argv": [
@@ -31,54 +31,16 @@
             "args": {
               "policy": "exact",
               "argv": [
-                "--platform",
-                "tdx",
-                "--attestation-api-url",
-                "unix:///run/nri-image-policy/attestation-api.sock",
-                "--outbound-port",
-                "15001",
-                "--inbound-port",
-                "15006",
-                "--health-port",
-                "15021",
-                "--drain-timeout",
-                "30s",
-                "--iptables-metrics-file",
-                "/tmp/armtls-iptables-metrics.json",
-                "--log-level",
-                "info",
-                "--measured-policies-file=/run/nri-image-policy/measured-policies",
-                "--image-policy-file=/run/c8s-node/peers.json",
-                "--max-conns",
-                "10000",
-                "--cert-mode",
-                "cds",
-                "--cds-url",
-                "https://c8s-cds.c8s-system.svc:8443",
-                "--cert-dns-san",
-                "armtls-mesh.c8s-system.svc",
-                "--ca-poll-interval",
-                "5m",
-                "--cds-image-policy-file=/run/c8s-node/cds.json"
+                "--cert-path=/etc/c8s/certs/tls.crt",
+                "--key-path=/etc/c8s/certs/tls.key",
+                "--ca-path=/etc/c8s/certs/ca.crt"
               ]
             },
             "mounts": {
               "policy": "exact",
               "rules": [
                 {
-                  "destination": "/run/c8s-node",
-                  "kind": "host",
-                  "source": "/run/c8s-node",
-                  "readOnly": true
-                },
-                {
-                  "destination": "/run/nri-image-policy",
-                  "kind": "host",
-                  "source": "/run/nri-image-policy",
-                  "readOnly": true
-                },
-                {
-                  "destination": "/tmp",
+                  "destination": "/etc/c8s/certs",
                   "kind": "emptyDir"
                 }
               ]
@@ -86,6 +48,9 @@
             "env": {
               "policy": "match",
               "variables": {
+                "C8S_MESH_PROBES": {
+                  "present": true
+                },
                 "HOSTNAME": {
                   "present": true
                 },
@@ -113,9 +78,6 @@
                 "KUBERNETES_SERVICE_PORT_HTTPS": {
                   "exact": "443"
                 },
-                "NODE_IP": {
-                  "present": true
-                },
                 "PATH": {
                   "exact": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
                 }
@@ -123,8 +85,8 @@
             }
           },
           {
-            "digest": "sha256:125df81e1747e194c801afc0f51c0fb39961b1e7245b06bded20879ec7527f89",
-            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:125df81e1747e194c801afc0f51c0fb39961b1e7245b06bded20879ec7527f89",
+            "digest": "sha256:887bb65ed0db4588c1b8d927b65551fcd9901d91d0408872618e8a9b7d4b29bf",
+            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:887bb65ed0db4588c1b8d927b65551fcd9901d91d0408872618e8a9b7d4b29bf",
             "command": {
               "policy": "exact",
               "argv": [
@@ -135,19 +97,17 @@
             "args": {
               "policy": "exact",
               "argv": [
-                "iptables-cleanup",
-                "--keep-guard",
-                "--on-shutdown",
-                "--settle-delay=5s"
+                "--cert-path=/etc/c8s/certs/tls.crt",
+                "--key-path=/etc/c8s/certs/tls.key",
+                "--ca-path=/etc/c8s/certs/ca.crt"
               ]
             },
             "mounts": {
               "policy": "exact",
               "rules": [
                 {
-                  "destination": "/run/xtables.lock",
-                  "kind": "host",
-                  "source": "/run/xtables.lock"
+                  "destination": "/etc/c8s/certs",
+                  "kind": "emptyDir"
                 }
               ]
             },
@@ -188,8 +148,8 @@
             }
           },
           {
-            "digest": "sha256:125df81e1747e194c801afc0f51c0fb39961b1e7245b06bded20879ec7527f89",
-            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:125df81e1747e194c801afc0f51c0fb39961b1e7245b06bded20879ec7527f89",
+            "digest": "sha256:887bb65ed0db4588c1b8d927b65551fcd9901d91d0408872618e8a9b7d4b29bf",
+            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:887bb65ed0db4588c1b8d927b65551fcd9901d91d0408872618e8a9b7d4b29bf",
             "command": {
               "policy": "exact",
               "argv": [
@@ -200,42 +160,16 @@
             "args": {
               "policy": "exact",
               "argv": [
-                "iptables-sync",
-                "--outbound-port",
-                "15001",
-                "--uid",
-                "1337",
-                "--exclude-uids",
-                "0",
-                "--exclude-source-namespaces",
-                "kube-system",
-                "--resync-period",
-                "30s",
-                "--watchdog-period",
-                "2s",
-                "--ipset-maxelem",
-                "262144",
-                "--cw-inbound-passthrough=udp:53,tcp:53",
-                "--ready-file",
-                "/tmp/armtls-iptables-ready",
-                "--ready-addr",
-                "127.0.0.1:15022",
-                "--iptables-metrics-file",
-                "/tmp/armtls-iptables-metrics.json",
-                "--log-level",
-                "info"
+                "--cert-path=/etc/c8s/certs/tls.crt",
+                "--key-path=/etc/c8s/certs/tls.key",
+                "--ca-path=/etc/c8s/certs/ca.crt"
               ]
             },
             "mounts": {
               "policy": "exact",
               "rules": [
                 {
-                  "destination": "/run/xtables.lock",
-                  "kind": "host",
-                  "source": "/run/xtables.lock"
-                },
-                {
-                  "destination": "/tmp",
+                  "destination": "/etc/c8s/certs",
                   "kind": "emptyDir"
                 }
               ]
@@ -269,9 +203,6 @@
                 },
                 "KUBERNETES_SERVICE_PORT_HTTPS": {
                   "exact": "443"
-                },
-                "NODE_IP": {
-                  "present": true
                 },
                 "PATH": {
                   "exact": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -327,171 +258,13 @@
           }
         ]
       },
-      "c8s-operator-f4b7e3950b9a-7b5ef902": {
-        "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+      "c8s-operator-856f5849048f-07dbf46f": {
+        "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
         "initContainers": [],
         "containers": [
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "command": {
-              "policy": "exact",
-              "argv": [
-                "/c8s",
-                "get-cert"
-              ]
-            },
-            "args": {
-              "policy": "any"
-            },
-            "mounts": {
-              "policy": "exact",
-              "rules": [
-                {
-                  "destination": "/etc/c8s/certs",
-                  "kind": "emptyDir"
-                },
-                {
-                  "destination": "/mnt/c8s-data/c8s-reload-watch",
-                  "kind": "data"
-                },
-                {
-                  "destination": "/run/c8s/discovery",
-                  "kind": "emptyDir"
-                }
-              ]
-            },
-            "env": {
-              "policy": "match",
-              "variables": {
-                "C8S_POD_NAME": {
-                  "present": true
-                },
-                "C8S_POD_UID": {
-                  "present": true
-                },
-                "C8S_WORKLOAD_ID": {
-                  "present": true
-                },
-                "HOSTNAME": {
-                  "present": true
-                },
-                "HOST_IP": {
-                  "present": true
-                },
-                "KUBERNETES_PORT": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP_ADDR": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP_PORT": {
-                  "exact": "443"
-                },
-                "KUBERNETES_PORT_443_TCP_PROTO": {
-                  "exact": "tcp"
-                },
-                "KUBERNETES_SERVICE_HOST": {
-                  "present": true
-                },
-                "KUBERNETES_SERVICE_PORT": {
-                  "exact": "443"
-                },
-                "KUBERNETES_SERVICE_PORT_HTTPS": {
-                  "exact": "443"
-                },
-                "PATH": {
-                  "exact": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-                },
-                "SSL_CERT_FILE": {
-                  "exact": "/etc/ssl/certs/ca-certificates.crt"
-                }
-              }
-            }
-          },
-          {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "command": {
-              "policy": "exact",
-              "argv": [
-                "/c8s",
-                "get-cert"
-              ]
-            },
-            "args": {
-              "policy": "any"
-            },
-            "mounts": {
-              "policy": "exact",
-              "rules": [
-                {
-                  "destination": "/etc/c8s/certs",
-                  "kind": "emptyDir"
-                },
-                {
-                  "destination": "/mnt/c8s-data/c8s-reload-watch",
-                  "kind": "data"
-                }
-              ]
-            },
-            "env": {
-              "policy": "match",
-              "variables": {
-                "C8S_POD_NAME": {
-                  "present": true
-                },
-                "C8S_POD_UID": {
-                  "present": true
-                },
-                "C8S_WORKLOAD_ID": {
-                  "present": true
-                },
-                "HOSTNAME": {
-                  "present": true
-                },
-                "HOST_IP": {
-                  "present": true
-                },
-                "KUBERNETES_PORT": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP_ADDR": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP_PORT": {
-                  "exact": "443"
-                },
-                "KUBERNETES_PORT_443_TCP_PROTO": {
-                  "exact": "tcp"
-                },
-                "KUBERNETES_SERVICE_HOST": {
-                  "present": true
-                },
-                "KUBERNETES_SERVICE_PORT": {
-                  "exact": "443"
-                },
-                "KUBERNETES_SERVICE_PORT_HTTPS": {
-                  "exact": "443"
-                },
-                "PATH": {
-                  "exact": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-                },
-                "SSL_CERT_FILE": {
-                  "exact": "/etc/ssl/certs/ca-certificates.crt"
-                }
-              }
-            }
-          },
-          {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -567,8 +340,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -640,8 +413,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -721,8 +494,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -798,8 +571,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -875,8 +648,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -948,8 +721,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1013,8 +786,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1074,8 +847,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1089,10 +862,9 @@
                 "--domains-file=/run/c8s-node/router/hostnames",
                 "--acme-email-file=/run/c8s-node/router/acme-email",
                 "--acme-directory-url-file=/run/c8s-node/router/acme-directory-url",
-                "--standby-cert-dir=/tls",
+                "--standby-cert-dir=/etc/c8s/certs",
                 "--challenge-port=8402",
                 "--http-port=8080",
-                "--cert-dir=/etc/c8s-acme-tls",
                 "--ready-port=8403"
               ]
             },
@@ -1100,7 +872,15 @@
               "policy": "exact",
               "rules": [
                 {
+                  "destination": "/etc/c8s-acme-key",
+                  "kind": "emptyDir"
+                },
+                {
                   "destination": "/etc/c8s-acme-tls",
+                  "kind": "emptyDir"
+                },
+                {
+                  "destination": "/etc/c8s/certs",
                   "kind": "emptyDir"
                 },
                 {
@@ -1108,10 +888,6 @@
                   "kind": "host",
                   "source": "/run/c8s-node",
                   "readOnly": true
-                },
-                {
-                  "destination": "/tls",
-                  "kind": "emptyDir"
                 }
               ]
             },
@@ -1155,8 +931,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1169,22 +945,14 @@
                 "allowlist-proxy",
                 "--host=127.0.0.1",
                 "--port=8801",
-                "--cds-url=https://c8s-cds.c8s-system.svc:8443",
-                "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
-                "--image-policy-file=/run/c8s-node/cds.json"
+                "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock"
               ]
             },
             "mounts": {
               "policy": "exact",
               "rules": [
                 {
-                  "destination": "/run/c8s-node",
-                  "kind": "host",
-                  "source": "/run/c8s-node",
-                  "readOnly": true
-                },
-                {
-                  "destination": "/run/nri-image-policy",
+                  "destination": "/run/c8s/workload-claims",
                   "kind": "host",
                   "source": "/run/nri-image-policy",
                   "readOnly": true
@@ -1231,8 +999,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1249,13 +1017,12 @@
                 "--generation=",
                 "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
                 "--front-door-mode-file=/run/c8s-node/router/front-door-mode",
-                "--serving-cert-file=/tls/cert.pem",
+                "--serving-cert-file=/etc/c8s/certs/tls.crt",
                 "--acme-serving-cert-file=/etc/c8s-acme-tls/cert.pem",
                 "--measured-policies-file=/run/nri-image-policy/measured-policies",
-                "--mesh-identity-cert-file=/tls/cert.pem",
-                "--mesh-identity-key-file=/tls/key.pem",
-                "--mesh-identity-ca-file=/tls/ca.pem",
-                "--cds-url=https://c8s-cds.c8s-system.svc:8443",
+                "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+                "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+                "--mesh-identity-ca-file=/etc/c8s/certs/ca.crt",
                 "--image-policy-file=/run/c8s-node/cds.json",
                 "--operator-keys-file=/run/c8s-node/operator-pubkey",
                 "--routes-poll-interval=30s",
@@ -1274,6 +1041,10 @@
                   "kind": "emptyDir"
                 },
                 {
+                  "destination": "/etc/c8s/certs",
+                  "kind": "emptyDir"
+                },
+                {
                   "destination": "/run/c8s-node",
                   "kind": "host",
                   "source": "/run/c8s-node",
@@ -1284,10 +1055,6 @@
                   "kind": "host",
                   "source": "/run/nri-image-policy",
                   "readOnly": true
-                },
-                {
-                  "destination": "/tls",
-                  "kind": "emptyDir"
                 }
               ]
             },
@@ -1331,8 +1098,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1343,15 +1110,13 @@
               "policy": "exact",
               "argv": [
                 "get-cert",
-                "--cds-url=https://c8s-cds.c8s-system.svc:8443",
-                "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
+                "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
                 "--san-file=/run/c8s-node/tls-san",
-                "--out=/tls/cert.pem",
-                "--key-out=/tls/key.pem",
-                "--ca-out=/tls/ca.pem",
+                "--cert-path=/etc/c8s/certs/tls.crt",
+                "--key-path=/etc/c8s/certs/tls.key",
+                "--ca-path=/etc/c8s/certs/ca.crt",
                 "--initial-retry-timeout=2m",
                 "--renew-interval=1h",
-                "--reload-nginx=true",
                 "--continue-on-initial-error",
                 "--discovery-out=/discovery/discovery.json",
                 "--discovery-cds-cert-url=/.well-known/cds-cert.pem",
@@ -1359,9 +1124,7 @@
                 "--discovery-public-tls-hostnames-file=/run/c8s-node/router/hostnames",
                 "--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
                 "--ca-watch-interval=1m",
-                "--image-policy-file=/run/c8s-node/cds.json",
-                "--workload-claims",
-                "--expected-workload=c8s-router-d94246885d5c"
+                "--expected-workload=c8s-router-f24e43500118"
               ]
             },
             "mounts": {
@@ -1369,6 +1132,10 @@
               "rules": [
                 {
                   "destination": "/discovery",
+                  "kind": "emptyDir"
+                },
+                {
+                  "destination": "/etc/c8s/certs",
                   "kind": "emptyDir"
                 },
                 {
@@ -1382,16 +1149,6 @@
                   "kind": "host",
                   "source": "/run/nri-image-policy",
                   "readOnly": true
-                },
-                {
-                  "destination": "/run/nri-image-policy",
-                  "kind": "host",
-                  "source": "/run/nri-image-policy",
-                  "readOnly": true
-                },
-                {
-                  "destination": "/tls",
-                  "kind": "emptyDir"
                 }
               ]
             },
@@ -1435,8 +1192,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1449,32 +1206,20 @@
                 "operator",
                 "--leader-election-namespace=c8s-system",
                 "--status-mirror-enabled=true",
-                "--get-cert-image=ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-                "--cds-url=https://c8s-cds.c8s-system.svc:8443",
+                "--get-cert-image=ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+                "--mesh-image=ghcr.io/confidential-dot-ai/armtls-mesh@sha256:887bb65ed0db4588c1b8d927b65551fcd9901d91d0408872618e8a9b7d4b29bf",
                 "--webhook-config-name=c8s-pod-injector",
                 "--webhook-service-name=c8s-operator",
                 "--webhook-service-namespace=c8s-system",
                 "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
-                "--image-policy-file=/run/c8s-node/cds.json",
-                "--mesh-outbound-port=15001",
-                "--mesh-exclude-source-namespaces=kube-system",
                 "--cert-fs-group=65532",
                 "--get-cert-renew-interval=2h",
-                "--get-cert-run-as-user=65532",
-                "--get-cert-run-as-group=65532",
-                "--get-cert-run-as-non-root=true",
                 "--workload-claims-host-dir=/run/nri-image-policy"
               ]
             },
             "mounts": {
               "policy": "exact",
               "rules": [
-                {
-                  "destination": "/run/c8s-node",
-                  "kind": "host",
-                  "source": "/run/c8s-node",
-                  "readOnly": true
-                },
                 {
                   "destination": "/tmp",
                   "kind": "emptyDir"
@@ -1524,8 +1269,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1537,15 +1282,15 @@
               "argv": [
                 "probe-file",
                 "--wait",
-                "--timeout=3m",
-                "/tls/cert.pem"
+                "--timeout=3m0s",
+                "/etc/c8s/certs/tls.crt"
               ]
             },
             "mounts": {
               "policy": "exact",
               "rules": [
                 {
-                  "destination": "/tls",
+                  "destination": "/etc/c8s/certs",
                   "kind": "emptyDir"
                 }
               ]
@@ -1591,11 +1336,11 @@
           }
         ]
       },
-      "c8s-router-d94246885d5c": {
+      "c8s-router-f24e43500118": {
         "initContainers": [
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1609,10 +1354,9 @@
                 "--domains-file=/run/c8s-node/router/hostnames",
                 "--acme-email-file=/run/c8s-node/router/acme-email",
                 "--acme-directory-url-file=/run/c8s-node/router/acme-directory-url",
-                "--standby-cert-dir=/tls",
+                "--standby-cert-dir=/etc/c8s/certs",
                 "--challenge-port=8402",
                 "--http-port=8080",
-                "--cert-dir=/etc/c8s-acme-tls",
                 "--ready-port=8403"
               ]
             },
@@ -1620,99 +1364,15 @@
               "policy": "exact",
               "rules": [
                 {
+                  "destination": "/etc/c8s-acme-key",
+                  "kind": "emptyDir"
+                },
+                {
                   "destination": "/etc/c8s-acme-tls",
                   "kind": "emptyDir"
                 },
                 {
-                  "destination": "/run/c8s-node",
-                  "kind": "host",
-                  "source": "/run/c8s-node",
-                  "readOnly": true
-                },
-                {
-                  "destination": "/tls",
-                  "kind": "emptyDir"
-                }
-              ]
-            },
-            "env": {
-              "policy": "match",
-              "variables": {
-                "HOSTNAME": {
-                  "present": true
-                },
-                "KUBERNETES_PORT": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP_ADDR": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP_PORT": {
-                  "exact": "443"
-                },
-                "KUBERNETES_PORT_443_TCP_PROTO": {
-                  "exact": "tcp"
-                },
-                "KUBERNETES_SERVICE_HOST": {
-                  "present": true
-                },
-                "KUBERNETES_SERVICE_PORT": {
-                  "exact": "443"
-                },
-                "KUBERNETES_SERVICE_PORT_HTTPS": {
-                  "exact": "443"
-                },
-                "PATH": {
-                  "exact": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-                },
-                "SSL_CERT_FILE": {
-                  "exact": "/etc/ssl/certs/ca-certificates.crt"
-                }
-              }
-            }
-          },
-          {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "command": {
-              "policy": "exact",
-              "argv": [
-                "/c8s"
-              ]
-            },
-            "args": {
-              "policy": "exact",
-              "argv": [
-                "get-cert",
-                "--cds-url=https://c8s-cds.c8s-system.svc:8443",
-                "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
-                "--san-file=/run/c8s-node/tls-san",
-                "--out=/tls/cert.pem",
-                "--key-out=/tls/key.pem",
-                "--ca-out=/tls/ca.pem",
-                "--initial-retry-timeout=2m",
-                "--renew-interval=1h",
-                "--reload-nginx=true",
-                "--continue-on-initial-error",
-                "--discovery-out=/discovery/discovery.json",
-                "--discovery-cds-cert-url=/.well-known/cds-cert.pem",
-                "--discovery-public-tls-mode-file=/run/c8s-node/router/front-door-mode",
-                "--discovery-public-tls-hostnames-file=/run/c8s-node/router/hostnames",
-                "--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
-                "--ca-watch-interval=1m",
-                "--image-policy-file=/run/c8s-node/cds.json",
-                "--workload-claims",
-                "--expected-workload=c8s-router-d94246885d5c"
-              ]
-            },
-            "mounts": {
-              "policy": "exact",
-              "rules": [
-                {
-                  "destination": "/discovery",
+                  "destination": "/etc/c8s/certs",
                   "kind": "emptyDir"
                 },
                 {
@@ -1720,88 +1380,6 @@
                   "kind": "host",
                   "source": "/run/c8s-node",
                   "readOnly": true
-                },
-                {
-                  "destination": "/run/c8s/workload-claims",
-                  "kind": "host",
-                  "source": "/run/nri-image-policy",
-                  "readOnly": true
-                },
-                {
-                  "destination": "/run/nri-image-policy",
-                  "kind": "host",
-                  "source": "/run/nri-image-policy",
-                  "readOnly": true
-                },
-                {
-                  "destination": "/tls",
-                  "kind": "emptyDir"
-                }
-              ]
-            },
-            "env": {
-              "policy": "match",
-              "variables": {
-                "HOSTNAME": {
-                  "present": true
-                },
-                "KUBERNETES_PORT": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP_ADDR": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP_PORT": {
-                  "exact": "443"
-                },
-                "KUBERNETES_PORT_443_TCP_PROTO": {
-                  "exact": "tcp"
-                },
-                "KUBERNETES_SERVICE_HOST": {
-                  "present": true
-                },
-                "KUBERNETES_SERVICE_PORT": {
-                  "exact": "443"
-                },
-                "KUBERNETES_SERVICE_PORT_HTTPS": {
-                  "exact": "443"
-                },
-                "PATH": {
-                  "exact": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-                },
-                "SSL_CERT_FILE": {
-                  "exact": "/etc/ssl/certs/ca-certificates.crt"
-                }
-              }
-            }
-          },
-          {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "command": {
-              "policy": "exact",
-              "argv": [
-                "/c8s"
-              ]
-            },
-            "args": {
-              "policy": "exact",
-              "argv": [
-                "probe-file",
-                "--wait",
-                "--timeout=3m",
-                "/tls/cert.pem"
-              ]
-            },
-            "mounts": {
-              "policy": "exact",
-              "rules": [
-                {
-                  "destination": "/tls",
-                  "kind": "emptyDir"
                 }
               ]
             },
@@ -1847,23 +1425,17 @@
         ],
         "containers": [
           {
-            "digest": "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
-            "image": "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
+            "digest": "sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6",
+            "image": "nginxinc/nginx-unprivileged@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6",
             "command": {
               "policy": "exact",
               "argv": [
-                "/docker-entrypoint.sh",
-                "nginx"
+                "/bin/sh",
+                "/usr/lib/c8s/router-nginx/reload.sh"
               ]
             },
             "args": {
-              "policy": "exact",
-              "argv": [
-                "-c",
-                "/usr/lib/c8s/router-nginx/nginx.conf",
-                "-g",
-                "daemon off;"
-              ]
+              "policy": "deny"
             },
             "mounts": {
               "policy": "exact",
@@ -1873,7 +1445,15 @@
                   "kind": "emptyDir"
                 },
                 {
+                  "destination": "/etc/c8s-acme-key",
+                  "kind": "emptyDir"
+                },
+                {
                   "destination": "/etc/c8s-acme-tls",
+                  "kind": "emptyDir"
+                },
+                {
+                  "destination": "/etc/c8s/certs",
                   "kind": "emptyDir"
                 },
                 {
@@ -1881,10 +1461,6 @@
                   "kind": "host",
                   "source": "/run/c8s-node",
                   "readOnly": true
-                },
-                {
-                  "destination": "/tls",
-                  "kind": "emptyDir"
                 },
                 {
                   "destination": "/tmp",
@@ -1940,7 +1516,7 @@
                   "exact": "443"
                 },
                 "NGINX_VERSION": {
-                  "exact": "1.30.5"
+                  "exact": "1.30.6"
                 },
                 "PATH": {
                   "exact": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -1952,84 +1528,8 @@
             }
           },
           {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "command": {
-              "policy": "exact",
-              "argv": [
-                "/c8s"
-              ]
-            },
-            "args": {
-              "policy": "exact",
-              "argv": [
-                "allowlist-proxy",
-                "--host=127.0.0.1",
-                "--port=8801",
-                "--cds-url=https://c8s-cds.c8s-system.svc:8443",
-                "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
-                "--image-policy-file=/run/c8s-node/cds.json"
-              ]
-            },
-            "mounts": {
-              "policy": "exact",
-              "rules": [
-                {
-                  "destination": "/run/c8s-node",
-                  "kind": "host",
-                  "source": "/run/c8s-node",
-                  "readOnly": true
-                },
-                {
-                  "destination": "/run/nri-image-policy",
-                  "kind": "host",
-                  "source": "/run/nri-image-policy",
-                  "readOnly": true
-                }
-              ]
-            },
-            "env": {
-              "policy": "match",
-              "variables": {
-                "HOSTNAME": {
-                  "present": true
-                },
-                "KUBERNETES_PORT": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP_ADDR": {
-                  "present": true
-                },
-                "KUBERNETES_PORT_443_TCP_PORT": {
-                  "exact": "443"
-                },
-                "KUBERNETES_PORT_443_TCP_PROTO": {
-                  "exact": "tcp"
-                },
-                "KUBERNETES_SERVICE_HOST": {
-                  "present": true
-                },
-                "KUBERNETES_SERVICE_PORT": {
-                  "exact": "443"
-                },
-                "KUBERNETES_SERVICE_PORT_HTTPS": {
-                  "exact": "443"
-                },
-                "PATH": {
-                  "exact": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-                },
-                "SSL_CERT_FILE": {
-                  "exact": "/etc/ssl/certs/ca-certificates.crt"
-                }
-              }
-            }
-          },
-          {
-            "digest": "sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+            "digest": "sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
             "command": {
               "policy": "exact",
               "argv": [
@@ -2046,13 +1546,12 @@
                 "--generation=",
                 "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
                 "--front-door-mode-file=/run/c8s-node/router/front-door-mode",
-                "--serving-cert-file=/tls/cert.pem",
+                "--serving-cert-file=/etc/c8s/certs/tls.crt",
                 "--acme-serving-cert-file=/etc/c8s-acme-tls/cert.pem",
                 "--measured-policies-file=/run/nri-image-policy/measured-policies",
-                "--mesh-identity-cert-file=/tls/cert.pem",
-                "--mesh-identity-key-file=/tls/key.pem",
-                "--mesh-identity-ca-file=/tls/ca.pem",
-                "--cds-url=https://c8s-cds.c8s-system.svc:8443",
+                "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+                "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+                "--mesh-identity-ca-file=/etc/c8s/certs/ca.crt",
                 "--image-policy-file=/run/c8s-node/cds.json",
                 "--operator-keys-file=/run/c8s-node/operator-pubkey",
                 "--routes-poll-interval=30s",
@@ -2071,6 +1570,10 @@
                   "kind": "emptyDir"
                 },
                 {
+                  "destination": "/etc/c8s/certs",
+                  "kind": "emptyDir"
+                },
+                {
                   "destination": "/run/c8s-node",
                   "kind": "host",
                   "source": "/run/c8s-node",
@@ -2081,10 +1584,6 @@
                   "kind": "host",
                   "source": "/run/nri-image-policy",
                   "readOnly": true
-                },
-                {
-                  "destination": "/tls",
-                  "kind": "emptyDir"
                 }
               ]
             },
@@ -2129,13 +1628,13 @@
           }
         ]
       },
-      "cds-8547bdd95705-016b71f3": {
-        "label": "ghcr.io/confidential-dot-ai/cds@sha256:8547bdd95705905362c3a1ec47a7ee6aa9f16ed4ef8b44ef6a08b6378cc33add",
+      "cds-804de8729760-8541716d": {
+        "label": "ghcr.io/confidential-dot-ai/cds@sha256:804de8729760b987d2ca82e921bfaaf233c02dcd94ee16845b42f99bb9746406",
         "initContainers": [],
         "containers": [
           {
-            "digest": "sha256:8547bdd95705905362c3a1ec47a7ee6aa9f16ed4ef8b44ef6a08b6378cc33add",
-            "image": "ghcr.io/confidential-dot-ai/cds@sha256:8547bdd95705905362c3a1ec47a7ee6aa9f16ed4ef8b44ef6a08b6378cc33add",
+            "digest": "sha256:804de8729760b987d2ca82e921bfaaf233c02dcd94ee16845b42f99bb9746406",
+            "image": "ghcr.io/confidential-dot-ai/cds@sha256:804de8729760b987d2ca82e921bfaaf233c02dcd94ee16845b42f99bb9746406",
             "command": {
               "policy": "exact",
               "argv": [
@@ -2242,28 +1741,22 @@
           }
         ]
       },
-      "nginx-unprivileged-3af0c10d960c-ce5a9610": {
-        "label": "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
+      "nginx-unprivileged-5d8bb9437d74-892c3553": {
+        "label": "nginxinc/nginx-unprivileged@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6",
         "initContainers": [],
         "containers": [
           {
-            "digest": "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
-            "image": "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
+            "digest": "sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6",
+            "image": "nginxinc/nginx-unprivileged@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6",
             "command": {
               "policy": "exact",
               "argv": [
-                "/docker-entrypoint.sh",
-                "nginx"
+                "/bin/sh",
+                "/usr/lib/c8s/router-nginx/reload.sh"
               ]
             },
             "args": {
-              "policy": "exact",
-              "argv": [
-                "-c",
-                "/usr/lib/c8s/router-nginx/nginx.conf",
-                "-g",
-                "daemon off;"
-              ]
+              "policy": "deny"
             },
             "mounts": {
               "policy": "exact",
@@ -2273,7 +1766,15 @@
                   "kind": "emptyDir"
                 },
                 {
+                  "destination": "/etc/c8s-acme-key",
+                  "kind": "emptyDir"
+                },
+                {
                   "destination": "/etc/c8s-acme-tls",
+                  "kind": "emptyDir"
+                },
+                {
+                  "destination": "/etc/c8s/certs",
                   "kind": "emptyDir"
                 },
                 {
@@ -2281,10 +1782,6 @@
                   "kind": "host",
                   "source": "/run/c8s-node",
                   "readOnly": true
-                },
-                {
-                  "destination": "/tls",
-                  "kind": "emptyDir"
                 },
                 {
                   "destination": "/tmp",
@@ -2340,7 +1837,7 @@
                   "exact": "443"
                 },
                 "NGINX_VERSION": {
-                  "exact": "1.30.5"
+                  "exact": "1.30.6"
                 },
                 "PATH": {
                   "exact": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -2366,7 +1863,7 @@
         "helm.sh/chart": "router-0.5.0"
       },
       "name": "c8s-router",
-      "namespace": "c8s-system"
+      "namespace": "c8s-router"
     },
     "spec": {
       "replicas": 1,
@@ -2382,7 +1879,7 @@
       "template": {
         "metadata": {
           "annotations": {
-            "checksum/nginx-config": "b5b454e7049455101e7a21704a3ee946c5692c45f944ac03140d13f31526156a"
+            "checksum/nginx-config": "196fcad2ccddfdd554adbd08f67de1f467a80251771f10d9c6825f9a2e85530c"
           },
           "labels": {
             "app.kubernetes.io/instance": "c8s",
@@ -2392,17 +1889,11 @@
         "spec": {
           "containers": [
             {
-              "args": [
-                "nginx",
-                "-c",
-                "/usr/lib/c8s/router-nginx/nginx.conf",
-                "-g",
-                "daemon off;"
-              ],
               "command": [
-                "/docker-entrypoint.sh"
+                "/bin/sh",
+                "/usr/lib/c8s/router-nginx/reload.sh"
               ],
-              "image": "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
+              "image": "nginxinc/nginx-unprivileged@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6",
               "imagePullPolicy": "Never",
               "livenessProbe": {
                 "httpGet": {
@@ -2445,19 +1936,24 @@
                   ]
                 },
                 "readOnlyRootFilesystem": true,
-                "runAsGroup": 101,
+                "runAsGroup": 1339,
                 "runAsNonRoot": true,
-                "runAsUser": 101
+                "runAsUser": 1339
               },
               "volumeMounts": [
                 {
-                  "mountPath": "/tls",
-                  "name": "tls-certs",
+                  "mountPath": "/etc/c8s/certs",
+                  "name": "c8s-certs",
                   "readOnly": true
                 },
                 {
                   "mountPath": "/etc/c8s-acme-tls",
                   "name": "acme-tls",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/etc/c8s-acme-key",
+                  "name": "acme-key",
                   "readOnly": true
                 },
                 {
@@ -2498,13 +1994,12 @@
                 "--generation=",
                 "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
                 "--front-door-mode-file=/run/c8s-node/router/front-door-mode",
-                "--serving-cert-file=/tls/cert.pem",
+                "--serving-cert-file=/etc/c8s/certs/tls.crt",
                 "--acme-serving-cert-file=/etc/c8s-acme-tls/cert.pem",
                 "--measured-policies-file=/run/nri-image-policy/measured-policies",
-                "--mesh-identity-cert-file=/tls/cert.pem",
-                "--mesh-identity-key-file=/tls/key.pem",
-                "--mesh-identity-ca-file=/tls/ca.pem",
-                "--cds-url=https://c8s-cds.c8s-system.svc:8443",
+                "--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+                "--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+                "--mesh-identity-ca-file=/etc/c8s/certs/ca.crt",
                 "--image-policy-file=/run/c8s-node/cds.json",
                 "--operator-keys-file=/run/c8s-node/operator-pubkey",
                 "--routes-poll-interval=30s",
@@ -2517,7 +2012,7 @@
               "command": [
                 "/c8s"
               ],
-              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
               "imagePullPolicy": "Never",
               "name": "cds-attest",
               "securityContext": {
@@ -2528,12 +2023,14 @@
                   ]
                 },
                 "readOnlyRootFilesystem": true,
-                "runAsNonRoot": true
+                "runAsGroup": 1341,
+                "runAsNonRoot": true,
+                "runAsUser": 1341
               },
               "volumeMounts": [
                 {
-                  "mountPath": "/tls",
-                  "name": "tls-certs",
+                  "mountPath": "/etc/c8s/certs",
+                  "name": "c8s-certs",
                   "readOnly": true
                 },
                 {
@@ -2558,14 +2055,12 @@
                 "allowlist-proxy",
                 "--host=127.0.0.1",
                 "--port=8801",
-                "--cds-url=https://c8s-cds.c8s-system.svc:8443",
-                "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
-                "--image-policy-file=/run/c8s-node/cds.json"
+                "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock"
               ],
               "command": [
                 "/c8s"
               ],
-              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
               "imagePullPolicy": "Never",
               "name": "allowlist-proxy",
               "securityContext": {
@@ -2576,17 +2071,14 @@
                   ]
                 },
                 "readOnlyRootFilesystem": true,
-                "runAsNonRoot": true
+                "runAsGroup": 1338,
+                "runAsNonRoot": true,
+                "runAsUser": 1338
               },
               "volumeMounts": [
                 {
-                  "mountPath": "/run/nri-image-policy",
-                  "name": "attestation-api-socket",
-                  "readOnly": true
-                },
-                {
-                  "mountPath": "/run/c8s-node",
-                  "name": "node-config",
+                  "mountPath": "/run/c8s/workload-claims",
+                  "name": "workload-claims",
                   "readOnly": true
                 }
               ]
@@ -2596,16 +2088,73 @@
           "initContainers": [
             {
               "args": [
+                "--cert-path=/etc/c8s/certs/tls.crt",
+                "--key-path=/etc/c8s/certs/tls.key",
+                "--ca-path=/etc/c8s/certs/ca.crt"
+              ],
+              "command": [
+                "/app/c8s",
+                "armtls-mesh"
+              ],
+              "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:887bb65ed0db4588c1b8d927b65551fcd9901d91d0408872618e8a9b7d4b29bf",
+              "imagePullPolicy": "Never",
+              "name": "c8s-mesh",
+              "readinessProbe": {
+                "failureThreshold": 3,
+                "httpGet": {
+                  "path": "/readyz",
+                  "port": 15021,
+                  "scheme": "HTTP"
+                },
+                "periodSeconds": 5,
+                "successThreshold": 1,
+                "timeoutSeconds": 1
+              },
+              "restartPolicy": "Always",
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true,
+                "runAsGroup": 1337,
+                "runAsNonRoot": true,
+                "runAsUser": 1337,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "startupProbe": {
+                "failureThreshold": 60,
+                "httpGet": {
+                  "path": "/startupz",
+                  "port": 15021,
+                  "scheme": "HTTP"
+                },
+                "periodSeconds": 1,
+                "successThreshold": 1,
+                "timeoutSeconds": 1
+              },
+              "volumeMounts": [
+                {
+                  "mountPath": "/etc/c8s/certs",
+                  "name": "c8s-certs",
+                  "readOnly": true
+                }
+              ]
+            },
+            {
+              "args": [
                 "get-cert",
-                "--cds-url=https://c8s-cds.c8s-system.svc:8443",
-                "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
+                "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
                 "--san-file=/run/c8s-node/tls-san",
-                "--out=/tls/cert.pem",
-                "--key-out=/tls/key.pem",
-                "--ca-out=/tls/ca.pem",
+                "--cert-path=/etc/c8s/certs/tls.crt",
+                "--key-path=/etc/c8s/certs/tls.key",
+                "--ca-path=/etc/c8s/certs/ca.crt",
                 "--initial-retry-timeout=2m",
                 "--renew-interval=1h",
-                "--reload-nginx=true",
                 "--continue-on-initial-error",
                 "--discovery-out=/discovery/discovery.json",
                 "--discovery-cds-cert-url=/.well-known/cds-cert.pem",
@@ -2613,14 +2162,12 @@
                 "--discovery-public-tls-hostnames-file=/run/c8s-node/router/hostnames",
                 "--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
                 "--ca-watch-interval=1m",
-                "--image-policy-file=/run/c8s-node/cds.json",
-                "--workload-claims",
-                "--expected-workload=c8s-router-d94246885d5c"
+                "--expected-workload=c8s-router-f24e43500118"
               ],
               "command": [
                 "/c8s"
               ],
-              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
               "imagePullPolicy": "Never",
               "name": "c8s-cert",
               "restartPolicy": "Always",
@@ -2632,26 +2179,21 @@
                   ]
                 },
                 "readOnlyRootFilesystem": true,
-                "runAsGroup": 101,
+                "runAsGroup": 1338,
                 "runAsNonRoot": true,
-                "runAsUser": 101,
+                "runAsUser": 1338,
                 "seccompProfile": {
                   "type": "RuntimeDefault"
                 }
               },
               "volumeMounts": [
                 {
-                  "mountPath": "/tls",
-                  "name": "tls-certs"
+                  "mountPath": "/etc/c8s/certs",
+                  "name": "c8s-certs"
                 },
                 {
                   "mountPath": "/discovery",
                   "name": "discovery"
-                },
-                {
-                  "mountPath": "/run/nri-image-policy",
-                  "name": "attestation-api-socket",
-                  "readOnly": true
                 },
                 {
                   "mountPath": "/run/c8s-node",
@@ -2670,10 +2212,10 @@
                 "/c8s",
                 "probe-file",
                 "--wait",
-                "--timeout=3m",
-                "/tls/cert.pem"
+                "--timeout=3m0s",
+                "/etc/c8s/certs/tls.crt"
               ],
-              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
               "imagePullPolicy": "Never",
               "name": "c8s-cert-wait",
               "securityContext": {
@@ -2684,17 +2226,17 @@
                   ]
                 },
                 "readOnlyRootFilesystem": true,
-                "runAsGroup": 101,
+                "runAsGroup": 1338,
                 "runAsNonRoot": true,
-                "runAsUser": 101,
+                "runAsUser": 1338,
                 "seccompProfile": {
                   "type": "RuntimeDefault"
                 }
               },
               "volumeMounts": [
                 {
-                  "mountPath": "/tls",
-                  "name": "tls-certs"
+                  "mountPath": "/etc/c8s/certs",
+                  "name": "c8s-certs"
                 }
               ]
             },
@@ -2704,16 +2246,15 @@
                 "--domains-file=/run/c8s-node/router/hostnames",
                 "--acme-email-file=/run/c8s-node/router/acme-email",
                 "--acme-directory-url-file=/run/c8s-node/router/acme-directory-url",
-                "--standby-cert-dir=/tls",
+                "--standby-cert-dir=/etc/c8s/certs",
                 "--challenge-port=8402",
                 "--http-port=8080",
-                "--cert-dir=/etc/c8s-acme-tls",
                 "--ready-port=8403"
               ],
               "command": [
                 "/c8s"
               ],
-              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:f4b7e3950b9a4ba8b78e4c953b34c338fe0028b300afe3e56f7749eee9544b34",
+              "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:856f5849048ffb3165583816e4b3c92c5dc4cc0a9dcab2362bd80b0f2aa271b2",
               "imagePullPolicy": "Never",
               "name": "acme",
               "ports": [
@@ -2731,9 +2272,9 @@
                   ]
                 },
                 "readOnlyRootFilesystem": true,
-                "runAsGroup": 101,
+                "runAsGroup": 1340,
                 "runAsNonRoot": true,
-                "runAsUser": 101,
+                "runAsUser": 1340,
                 "seccompProfile": {
                   "type": "RuntimeDefault"
                 }
@@ -2752,8 +2293,12 @@
                   "name": "acme-tls"
                 },
                 {
-                  "mountPath": "/tls",
-                  "name": "tls-certs",
+                  "mountPath": "/etc/c8s-acme-key",
+                  "name": "acme-key"
+                },
+                {
+                  "mountPath": "/etc/c8s/certs",
+                  "name": "c8s-certs",
                   "readOnly": true
                 },
                 {
@@ -2768,7 +2313,7 @@
             "node-role.kubernetes.io/control-plane": "true"
           },
           "securityContext": {
-            "fsGroup": 101,
+            "fsGroup": 65532,
             "runAsNonRoot": true,
             "seccompProfile": {
               "type": "RuntimeDefault"
@@ -2777,7 +2322,6 @@
               65532
             ]
           },
-          "shareProcessNamespace": true,
           "volumes": [
             {
               "hostPath": {
@@ -2791,7 +2335,7 @@
                 "medium": "Memory",
                 "sizeLimit": "1Mi"
               },
-              "name": "tls-certs"
+              "name": "c8s-certs"
             },
             {
               "emptyDir": {
@@ -2799,6 +2343,13 @@
                 "sizeLimit": "1Mi"
               },
               "name": "acme-tls"
+            },
+            {
+              "emptyDir": {
+                "medium": "Memory",
+                "sizeLimit": "1Mi"
+              },
+              "name": "acme-key"
             },
             {
               "emptyDir": {

@@ -252,6 +252,13 @@ spec:
         - ipBlock: {cidr: {{ printf "%s/32" .Values.telemetry.relay.address | quote }} }
       ports:
         - {protocol: TCP, port: {{ .Values.telemetry.relay.port }}}
+    {{- with .Values.telemetry.kubeStateMetrics.target }}
+    # C8s's platform kube-state-metrics. C8s, not this policy, limits it to
+    # the one address; a node address is a host identity to Cilium, not a
+    # CIDR peer, so the rule names only the port (like the CDS NodePort).
+    - ports:
+        - {protocol: TCP, port: {{ last (splitList ":" .) }}}
+    {{- end }}
 ---
 {{- if .Values.telemetry.traces.enabled }}
 apiVersion: networking.k8s.io/v1
@@ -286,3 +293,25 @@ spec:
     - ports:
         - {protocol: TCP, port: 443}
         - {protocol: TCP, port: {{ .Values.kubeStateMetrics.kubeApiPort }}}
+{{- if and .Values.inference.enabled .Values.inference.model.cache.enabled }}
+---
+# fetch-model downloads the pinned model revision from Hugging Face and its
+# LFS/Xet CDN, which have no fixed addresses. The byte manifest pins every
+# downloaded byte.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inference-worker-model-download
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: inference-worker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.inference.model.cache.egressCidrs }}
+        - ipBlock: {cidr: {{ . | quote }} }
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 443}
+{{- end }}
