@@ -24,7 +24,9 @@ The script never learns a value from a running container. A value that no
 pinned source can give (for example a node IP) is an error.
 
 `c8s allowlist derive` from the pinned c8s release builds each entry, so c8s
-itself decides which containers it injects and drops. The c8s core entries mirror the bootstrap seed: from c8s v0.47.0 as
+itself decides which containers it injects and drops. From the c8s release
+with the fixed seed layer (C8s #1031, SEED_LAYER_SINCE) the allowlist has only
+the application entries. Before it, the c8s core entries mirror the bootstrap seed: from c8s v0.47.0 as
 the chart renders it, one pinned entry per component shape and the router pod;
 before it, one floor entry per core image pinned to its complete image
 ENTRYPOINT beside the seed. The
@@ -96,6 +98,10 @@ PER_POD_MESH_SINCE = (0, 64, 0)
 # it is: a floor entry or a native router entry beside it would leave args,
 # mounts or env `any`, which `c8s allowlist lint --strict` refuses.
 SEED_PINS_COMPONENTS_SINCE = (0, 47, 0)
+# The first c8s release whose CDS keeps the node image's seed as a fixed
+# layer that an allowlist upload cannot drop (C8s #1031). From it the release
+# allowlist names only the application entries; it mirrors no seed entry.
+SEED_LAYER_SINCE = (0, 73, 0)
 CLAIMS_SOCKET_SOURCE = "/var/run/nri-image-policy"
 CLAIMS_SOCKET_DESTINATION = "/run/c8s/workload-claims"
 
@@ -489,7 +495,10 @@ def floor_entry(image: str, entrypoint: list[str] | None = None) -> tuple[str, d
 
 
 def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
-    if not c8s_at_least(c8s["release"], (0, 44, 0)):
+    """The seed entries the release allowlist must mirror: none before c8s
+    v0.44.0 (floor entries instead) and none from SEED_LAYER_SINCE (CDS keeps
+    the seed beside the uploaded document)."""
+    if not c8s_at_least(c8s["release"], (0, 44, 0)) or c8s_at_least(c8s["release"], SEED_LAYER_SINCE):
         return {}
     path = ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json")
     record = read_json(path)
