@@ -38,12 +38,15 @@ The signed release publishes the node image measurements (in
 
 ```sh
 curl -fsSL --remote-name-all https://github.com/confidential-dot-ai/confidential-inference/releases/download/v0.15.15/{release-bundle.json,allowlist.json}
-curl -fsS https://api.confidential.ai/attestation | python3 -c 'import json, sys; print(json.load(sys.stdin)["c8s"]["operatorKeys"][0], end="")' > operator-key.pem
+curl -fsSL -o operator-key.pem https://raw.githubusercontent.com/confidential-dot-ai/confidential-inference/main/docs/operator-key.pem
+openssl pkey -pubin -in operator-key.pem -outform DER | sha256sum
 ```
 
-The second command saves the operator's public key from the endpoint. The
-operator signs the routing table with this key. This key comes from the
-endpoint itself, not from the signed release.
+The second command saves the production operator's public key
+([docs/operator-key.pem](operator-key.pem)). The operator signs the routing
+table with this key. The last command must print
+`4309bd32ed573f3c8b1d5fa01bd335d7efa466b40033be992c857c4b0dbdc128`. This key
+is published in this repository, not in the signed release.
 
 ## 3. Verify the endpoint
 
@@ -154,8 +157,8 @@ check prevents node admission and powers off the node. Review the gate,
 systemd dependency, and source lock at the release's C8s commit.
 
 This contract verifies the enforcement code through the node measurements.
-It does not require clients to verify raw GPU reports, and version 3 does not
-return those reports. TEErminator does not claim to be a separate NVIDIA
+It does not require clients to verify raw GPU reports, and the endpoint does
+not return those reports. TEErminator does not claim to be a separate NVIDIA
 verifier. The serving workers must remain inside that measured enforcement
 boundary.
 

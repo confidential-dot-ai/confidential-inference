@@ -7,12 +7,12 @@ use axum::{
     routing::post,
 };
 use confidential_gateway::{
-    ApiKeyVerifier, AttestationError, AttestationProvider, AuditEvent, AuditSink, GatewayConfig,
+    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig,
     metrics::GatewayMetrics,
     protection::{ProtectionConfig, ProtectionState},
     router,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 use tower::ServiceExt as _;
 
 struct Keys;
@@ -31,16 +31,6 @@ struct Audit;
 
 impl AuditSink for Audit {
     fn record(&self, _: AuditEvent) {}
-}
-
-struct SlowAttestation;
-
-#[async_trait::async_trait]
-impl AttestationProvider for SlowAttestation {
-    async fn response(&self, nonce: &[u8; 32]) -> Result<Value, AttestationError> {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        Ok(json!({"nonce": nonce}))
-    }
 }
 
 async fn start_upstream() -> String {
@@ -63,7 +53,7 @@ async fn start_upstream() -> String {
 }
 
 fn request(path: String, key: Option<&str>) -> Request<Body> {
-    let method = if path.starts_with("/v1/") && !path.starts_with("/v1/attestation") {
+    let method = if path.starts_with("/v1/") && path != "/v1/models" {
         "POST"
     } else {
         "GET"
@@ -79,12 +69,11 @@ fn request(path: String, key: Option<&str>) -> Request<Body> {
 }
 
 #[tokio::test]
-async fn invalid_key_and_attestation_floods_do_not_consume_inference_slots() {
+async fn invalid_key_floods_do_not_consume_inference_slots() {
     let protection = ProtectionConfig {
         inference_concurrency: 2,
         inference_queue: 1,
         per_key_concurrency: 1,
-        attestation_concurrency: 1,
         requests_per_address_per_second: 10_000,
         global_request_concurrency: 512,
         per_address_concurrency: 512,
@@ -102,7 +91,6 @@ async fn invalid_key_and_attestation_floods_do_not_consume_inference_slots() {
         Arc::new(Keys),
         Arc::new(Audit),
         Arc::new(GatewayMetrics::new("test")),
-        Arc::new(SlowAttestation),
         reqwest::Client::new(),
     );
 
@@ -117,21 +105,6 @@ async fn invalid_key_and_attestation_floods_do_not_consume_inference_slots() {
                 .status()
         }));
     }
-    for value in 0..32_u8 {
-        let service = app.clone();
-        let nonce = base64::Engine::encode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            [value; 32],
-        );
-        flood.push(tokio::spawn(async move {
-            service
-                .oneshot(request(format!("/attestation?nonce={nonce}"), None))
-                .await
-                .unwrap_or_else(|_| unreachable!())
-                .status()
-        }));
-    }
-
     let valid = app
         .oneshot(request("/v1/chat/completions".to_owned(), Some("valid-a")))
         .await
@@ -140,15 +113,10 @@ async fn invalid_key_and_attestation_floods_do_not_consume_inference_slots() {
     assert!(to_bytes(valid.into_body(), 1_024).await.is_ok());
 
     let statuses = futures_util::future::join_all(flood).await;
-    assert!(statuses.iter().take(256).all(|status| {
+    assert!(statuses.iter().all(|status| {
         status
             .as_ref()
             .is_ok_and(|value| *value == StatusCode::UNAUTHORIZED)
-    }));
-    assert!(statuses.iter().skip(256).any(|status| {
-        status
-            .as_ref()
-            .is_ok_and(|value| *value == StatusCode::TOO_MANY_REQUESTS)
     }));
 }
 
@@ -167,25 +135,7 @@ async fn key_and_queue_capacity_fail_with_a_bounded_retry() {
     assert!(state.inference_permits("key-b").await.is_err());
 }
 
-struct HeldMetadata {
-    entered: tokio::sync::Notify,
-    release: tokio::sync::Notify,
-}
-
-#[async_trait::async_trait]
-impl AttestationProvider for HeldMetadata {
-    fn requires_nonce(&self) -> bool {
-        false
-    }
-
-    async fn response(&self, _: &[u8; 32]) -> Result<Value, AttestationError> {
-        self.entered.notify_one();
-        self.release.notified().await;
-        Ok(json!({"schemaVersion": 3}))
-    }
-}
-
-async fn metadata_app(config: ProtectionConfig, provider: Arc<HeldMetadata>) -> Router {
+async fn app(config: ProtectionConfig) -> Router {
     router(
         GatewayConfig {
             catalog_model_ids: vec!["deepseek".to_owned()],
@@ -198,88 +148,25 @@ async fn metadata_app(config: ProtectionConfig, provider: Arc<HeldMetadata>) -> 
         Arc::new(Keys),
         Arc::new(Audit),
         Arc::new(GatewayMetrics::new("test")),
-        provider,
         reqwest::Client::new(),
     )
 }
 
 #[tokio::test]
-async fn public_metadata_overload_keeps_inference_available_and_releases_the_slot() {
-    let provider = Arc::new(HeldMetadata {
-        entered: tokio::sync::Notify::new(),
-        release: tokio::sync::Notify::new(),
-    });
-    let app = metadata_app(
-        ProtectionConfig {
-            attestation_concurrency: 1,
-            requests_per_address_per_second: 10_000,
-            ..ProtectionConfig::default()
-        },
-        provider.clone(),
-    )
+async fn public_requests_without_a_key_use_the_address_rate_limit() {
+    let app = app(ProtectionConfig {
+        requests_per_address_per_second: 1,
+        ..ProtectionConfig::default()
+    })
     .await;
-    let service = app.clone();
-    let active = tokio::spawn(async move {
-        service
-            .oneshot(request("/attestation".to_owned(), None))
-            .await
-    });
-    tokio::time::timeout(Duration::from_secs(2), provider.entered.notified())
-        .await
-        .unwrap_or_else(|_| panic!("metadata request did not enter its provider"));
-    let rejected = app
-        .clone()
-        .oneshot(request("/v1/attestation".to_owned(), None))
-        .await
-        .unwrap_or_else(|_| unreachable!());
-    assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(rejected.headers()[header::RETRY_AFTER], "1");
-    let valid = app
-        .clone()
-        .oneshot(request("/v1/chat/completions".to_owned(), Some("valid-a")))
-        .await
-        .unwrap_or_else(|_| unreachable!());
-    assert_eq!(valid.status(), StatusCode::OK);
-    provider.release.notify_one();
-    assert_eq!(
-        active
-            .await
-            .unwrap_or_else(|_| unreachable!())
-            .unwrap_or_else(|_| unreachable!())
-            .status(),
-        StatusCode::OK
-    );
-    provider.release.notify_one();
-    let next = app
-        .oneshot(request("/attestation".to_owned(), None))
-        .await
-        .unwrap_or_else(|_| unreachable!());
-    assert_eq!(next.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn public_metadata_without_key_or_nonce_uses_the_address_rate_limit() {
-    let provider = Arc::new(HeldMetadata {
-        entered: tokio::sync::Notify::new(),
-        release: tokio::sync::Notify::new(),
-    });
-    let app = metadata_app(
-        ProtectionConfig {
-            requests_per_address_per_second: 1,
-            ..ProtectionConfig::default()
-        },
-        provider.clone(),
-    )
-    .await;
-    provider.release.notify_one();
     let first = app
         .clone()
-        .oneshot(request("/attestation".to_owned(), None))
+        .oneshot(request("/v1/models".to_owned(), None))
         .await
         .unwrap_or_else(|_| unreachable!());
     assert_eq!(first.status(), StatusCode::OK);
     let second = app
-        .oneshot(request("/attestation".to_owned(), None))
+        .oneshot(request("/v1/models".to_owned(), None))
         .await
         .unwrap_or_else(|_| unreachable!());
     assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);

@@ -37,9 +37,6 @@ pub trait MetricsSource: Send + Sync + 'static {
 /// metrics for unauthenticated requests instead of inventing a key label.
 pub struct GatewayMetrics {
     registry: Registry,
-    attestation_responses: IntCounterVec,
-    attestation_duration: Histogram,
-    attestation_events: IntCounterVec,
     requests: IntCounterVec,
     rejections: IntCounterVec,
     upstream_reachable: IntGauge,
@@ -134,24 +131,6 @@ impl GatewayMetrics {
             ))
             .unwrap_or_else(|error| unreachable!("invalid process collector: {error}"));
         Self {
-            attestation_responses: counter(
-                r,
-                "gateway_attestation_responses_total",
-                "Metadata responses",
-                &["status"],
-            ),
-            attestation_duration: histogram(
-                r,
-                "gateway_attestation_duration",
-                "Metadata response time in seconds",
-                HISTOGRAM_BUCKETS,
-            ),
-            attestation_events: counter(
-                r,
-                "gateway_attestation_events_total",
-                "Metadata cache and refresh outcomes",
-                &["event"],
-            ),
             requests: counter(
                 r,
                 "gateway_requests",
@@ -322,19 +301,6 @@ impl GatewayMetrics {
             ),
             registry,
         }
-    }
-
-    /// Record metadata responses without client or policy labels.
-    pub fn record_attestation_response(&self, status: u16, seconds: f64) {
-        self.attestation_responses
-            .with_label_values(&[status.to_string()])
-            .inc();
-        observe(&self.attestation_duration, seconds);
-    }
-
-    /// Record a fixed metadata cache or refresh outcome.
-    pub fn record_attestation_event(&self, event: &'static str) {
-        self.attestation_events.with_label_values(&[event]).inc();
     }
 
     /// Every authenticated inference request is counted once, after a status

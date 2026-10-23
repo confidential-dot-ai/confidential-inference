@@ -188,59 +188,6 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(container.get("command", []) + container.get("args", []), role["argv"])
 
 
-class WorkloadAttestationFixtureTests(unittest.TestCase):
-    """Both c8s protocol shapes must validate against the one shared schema."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.schema = load(ROOT / "api/workload-attestation.schema.json")
-        jsonschema.Draft202012Validator.check_schema(cls.schema)
-
-    def test_production_fixture_is_valid(self):
-        # Old protocol (c8s 079aeb48, still running conf-inference-prod
-        # today): session_pubkey receipts, a digests-bearing allowlist
-        # document, and a release-matched operator key set.
-        fixture = load(FIXTURES / "workload-attestation.valid.json")
-        validate(fixture, self.schema)
-        self.assertNotIn("attestationProtocol", fixture["c8s"])
-        self.assertIn("digests", fixture["c8s"]["activeAllowlist"]["document"])
-
-    def test_v0_20_4_fixture_is_valid(self):
-        # New protocol (c8s 466ce79 / 2ef376a8): xwing receipts, a folded
-        # allowlist document with no digests key, and the honest
-        # requires-attested-cds-read operator status.
-        fixture = load(FIXTURES / "workload-attestation.v0-20-4.valid.json")
-        validate(fixture, self.schema)
-        self.assertEqual(fixture["c8s"]["attestationProtocol"], "c8s/attest-pq/v1+xwing")
-        self.assertNotIn("digests", fixture["c8s"]["activeAllowlist"]["document"])
-        self.assertEqual(
-            fixture["c8s"]["operatorTrust"]["activeKeySetStatus"],
-            "requires-attested-cds-read",
-        )
-        self.assertEqual(fixture["gpuEvidence"]["status"], "not-exposed-by-c8s")
-
-    def test_v3_metadata_fixture_is_valid(self):
-        fixture = load(FIXTURES / "workload-attestation.v3.valid.json")
-        validate(fixture, self.schema)
-        self.assertEqual(set(fixture), {"schemaVersion", "release", "c8s"})
-        self.assertEqual(set(fixture["c8s"]), {"activeAllowlist", "discovery", "operatorKeys"})
-
-    def test_v3_rejects_removed_fields_and_missing_sources(self):
-        fixture = load(FIXTURES / "workload-attestation.v3.valid.json")
-        for field in ("nonce", "receipts", "scope", "operationalStatus", "gpuEvidence", "tls"):
-            with self.subTest(field=field):
-                changed = copy.deepcopy(fixture)
-                changed[field] = []
-                with self.assertRaises(jsonschema.ValidationError):
-                    validate(changed, self.schema)
-        for field in ("activeAllowlist", "discovery", "operatorKeys"):
-            with self.subTest(missing=field):
-                changed = copy.deepcopy(fixture)
-                del changed["c8s"][field]
-                with self.assertRaises(jsonschema.ValidationError):
-                    validate(changed, self.schema)
-
-
 class GatewayInferenceContractTests(unittest.TestCase):
     """Checks api/gateway-inference.openapi.json against the gateway source."""
 
@@ -250,8 +197,6 @@ class GatewayInferenceContractTests(unittest.TestCase):
         "/v1/models",
         "/v1/chat/completions",
         "/v1/completions",
-        "/attestation",
-        "/v1/attestation",
         "/v1/discovery",
         "/.well-known/cds-cert.pem",
         "/.well-known/mesh-ca.pem",

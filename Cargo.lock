@@ -411,7 +411,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-stream",
- "async-trait",
  "axum",
  "axum-server",
  "base64",
@@ -433,7 +432,6 @@ dependencies = [
  "reqwest",
  "ring",
  "rustls",
- "rustls-pemfile",
  "serde",
  "serde_json",
  "sha2",

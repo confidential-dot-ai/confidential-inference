@@ -1,8 +1,8 @@
 # Confidential Inference
 
 This repository contains the public confidential-inference product. It is the
-source for the OCI workloads, Kubernetes chart, c8s policy tools, release
-inputs, and attestation verifier. Current releases pin a c8s TDX node image.
+source for the OCI workloads, Kubernetes chart, c8s policy tools, and release
+inputs. Current releases pin a c8s TDX node image.
 
 Before you contribute or create a release, read the
 [developer workflow](docs/runbooks/developer-workflow.md).
@@ -13,14 +13,13 @@ receipts in a separate private repository.
 
 ## Components
 
-- `services/gateway`: API-key checks, request limits, routing, and attestation.
+- `services/gateway`: API-key checks, request limits, and routing.
 - `images/sglang`: the pinned SGLang worker build. The same image
   runs a real model in production and a GPU-free simulator in staging.
 - `images/sglang-router`: the separate router image and build inputs.
 - `services/maintenance-gateway`: the fallback API.
 - `helm/confidential-inference`: the generic Kubernetes application chart.
-- `scripts/verify-public-attestation.py`: policy metadata checks and historical receipt verification.
-- `api`: public API, attestation, and release schemas.
+- `api`: public API and release schemas.
 
 ## Build and publish
 
@@ -42,8 +41,7 @@ Install a stable Rust toolchain and build the gateway:
 cargo build -p confidential-gateway
 ```
 
-A standalone production-style gateway needs verified CDS access, release
-configuration, an admin certificate, and the admin that serves its API keys. A local
+A standalone production-style gateway needs an admin certificate and the admin that serves its API keys. A local
 binary alone does not supply these dependencies.
 
 For a local forwarding check, use the gateway integration test. It creates
@@ -58,11 +56,6 @@ This test does not establish hardware attestation or production readiness.
 
 ## Review and verify the endpoint
 
-`GET /attestation` returns version 3 release and policy metadata. It needs no
-API key or nonce. It contains the active permitted-workload policy, release
-location and bundle hash, native C8s discovery, and operator public keys.
-It does not collect a worker census or prove an inference connection.
-
 Read [the client verification procedure](docs/verification.md). Review the
 signed release and exact active allowlist bytes, then configure TEErminator to
 reject an unexpected image, policy, workload, or TLS certificate before it
@@ -76,8 +69,7 @@ acceptance decisions. Do not use historical static-mode instructions for a
 new release.
 
 See [the threat model](docs/threat-model.md) for enforcement, update authority,
-and verification limits. Schema version 2 and the old receipt verifier remain
-available for historical evidence only.
+and verification limits.
 
 ## Review build evidence
 
@@ -91,19 +83,15 @@ signed release. See [release publication](release/README.md).
 The release bundle is an independently verified release artifact. The active
 allowlist is the exact policy that the client reviews and pins. In an operator
 managed deployment, that policy can differ from the signed initial policy.
-The metadata verifier checks them separately only with the explicit
-`--release-allowlist` option. It never signs or approves later changes for you.
 
-The public operator keys describe CDS update authority. The gateway reads them
-through an attested, certificate-pinned CDS connection. They do not prove who
-holds the corresponding private keys. The release-signing policy is a separate
-Sigstore policy under `releases/trust/`; it is not the C8s operator key.
+The C8s operator key holds CDS update authority. The release-signing policy is
+a separate Sigstore policy under `releases/trust/`; it is not the C8s operator
+key.
 
-Use [services/gateway/ATTESTATION.md](services/gateway/ATTESTATION.md) for the
-version 3 fields and gateway checks, and [release/README.md](release/README.md)
-for source and publication evidence. The files under `releases/production/`
-and `c8s/` preserve historical inputs; they are not the active production trust
-files. Read the [notice beside the old PEM files](releases/production/trust/README.md).
+Use [release/README.md](release/README.md) for source and publication
+evidence. The files under `releases/production/` and `c8s/` preserve
+historical inputs; they are not the active production trust files. Read the
+[notice beside the old PEM files](releases/production/trust/README.md).
 
 ## Configuration ownership
 

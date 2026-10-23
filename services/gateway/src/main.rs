@@ -22,7 +22,6 @@ use confidential_gateway::{
     api_keys::{KeyStore, admin_router},
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
-    release_settings::{ReleaseMetadataProvider, ReleaseSettings},
     router_with_usage,
     settings::GatewaySettings,
 };
@@ -63,8 +62,6 @@ struct Args {
     usage_enabled: bool,
     #[arg(long, env = "GATEWAY_ROUTER_NAMESPACE")]
     router_namespace: Option<String>,
-    #[arg(long, env = "GATEWAY_RELEASE_SELECTION_FILE")]
-    release_selection_file: Option<PathBuf>,
     // The chart's settings ConfigMap, read once at start. Its values replace
     // the matching arguments below.
     #[arg(long, env = "GATEWAY_RUNTIME_CONFIG_FILE")]
@@ -87,71 +84,8 @@ struct Args {
     allow_direct_inference_url: bool,
     #[arg(long, env = "GATEWAY_MODEL", default_value = "")]
     model: String,
-    #[arg(long, env = "GATEWAY_C8S_EVIDENCE_BASE_URL", default_value = "")]
-    c8s_evidence_base_url: String,
-    #[arg(long, env = "GATEWAY_C8S_EVIDENCE_CONNECT_HOST")]
-    c8s_evidence_connect_host: Option<String>,
-    #[arg(long, env = "GATEWAY_RELEASE_ID", default_value = "")]
-    release_id: String,
-    #[arg(long, env = "GATEWAY_C8S_CDS_URL")]
-    cds_url: String,
-    #[arg(long, env = "GATEWAY_C8S_IMAGE_POLICY")]
-    cds_image_policy: Option<PathBuf>,
-    #[arg(long, env = "GATEWAY_C8S_IMAGE_POLICY_SHA256", default_value = "")]
-    cds_image_policy_sha256: String,
-    #[arg(long, env = "GATEWAY_C8S_SERVED_IMAGE_POLICY")]
-    cds_served_image_policy: Option<PathBuf>,
-    #[arg(
-        long,
-        env = "GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256",
-        default_value = ""
-    )]
-    cds_served_image_policy_sha256: String,
-    #[arg(
-        long,
-        env = "GATEWAY_C8S_VERIFIER",
-        default_value = "/usr/local/bin/c8s"
-    )]
-    c8s_verifier: PathBuf,
-    #[arg(long, env = "GATEWAY_ATTESTATION_CACHE_SECONDS", default_value_t = 10)]
-    attestation_cache_seconds: u64,
-    #[arg(long, env = "GATEWAY_RELEASE_URL")]
-    release_url: Option<String>,
     #[arg(long, env = "GATEWAY_INSTANCE_ID")]
     gateway_instance_id: Option<String>,
-    // The release manifest hash and the operator key hashes come from a
-    // mounted file, not the environment. A release-generated allowlist pins
-    // every environment variable exactly, and the manifest holds the
-    // allowlist's hash, so a pinned manifest hash would depend on itself.
-    // The committed allowlists under c8s/allowlists/ leave env unpinned.
-    #[arg(long, env = "GATEWAY_RELEASE_IDENTITY_FILE")]
-    release_identity_file: Option<PathBuf>,
-    #[arg(long, env = "GATEWAY_RELEASE_BUNDLE_SHA256", default_value = "")]
-    release_bundle_sha256: String,
-    #[arg(
-        long,
-        env = "GATEWAY_EXPECTED_OPERATOR_PUBLIC_KEY_SHA256",
-        default_value = ""
-    )]
-    expected_operator_public_key_sha256: String,
-    #[arg(
-        long,
-        env = "GATEWAY_EXPECTED_OPERATOR_KEY_SET_SHA256",
-        default_value = ""
-    )]
-    expected_operator_key_set_sha256: String,
-    #[arg(
-        long,
-        env = "GATEWAY_ATTESTATION_TIMEOUT_SECONDS",
-        default_value_t = 30
-    )]
-    attestation_timeout_seconds: u64,
-    #[arg(
-        long,
-        env = "GATEWAY_ATTESTATION_MAXIMUM_EVIDENCE_BYTES",
-        default_value_t = 1_048_576
-    )]
-    attestation_maximum_evidence_bytes: usize,
     #[arg(long, env = "DEPLOYMENT_ENVIRONMENT")]
     environment: String,
     #[arg(
@@ -214,8 +148,6 @@ struct Args {
     queue_timeout_seconds: u64,
     #[arg(long, env = "GATEWAY_PER_KEY_CONCURRENCY", default_value_t = 4)]
     per_key_concurrency: usize,
-    #[arg(long, env = "GATEWAY_ATTESTATION_CONCURRENCY", default_value_t = 4)]
-    attestation_concurrency: usize,
     #[arg(
         long,
         env = "GATEWAY_REQUESTS_PER_ADDRESS_PER_SECOND",
@@ -249,21 +181,6 @@ async fn main() -> Result<()> {
             .init();
     }
     let mut args = Args::parse();
-    load_release_identity(&mut args)?;
-    let releases = args
-        .release_selection_file
-        .as_ref()
-        .map(|path| -> Result<ReleaseSettings> {
-            Ok(serde_json::from_slice(&read_bounded(path, 1024 * 1024)?)?)
-        })
-        .transpose()
-        .context("load release selection")?;
-    if let Some(releases) = &releases {
-        args.release_id.clone_from(&releases.selected().id);
-        args.release_url = Some(releases.selected().url.clone());
-        args.release_bundle_sha256
-            .clone_from(&releases.selected().bundle_sha256);
-    }
     // The HTTP/2 stream limit keeps the startup argument; the settings file
     // does not change it.
     let limits = HttpLimits::from_args(&args)?;
@@ -313,14 +230,6 @@ async fn main() -> Result<()> {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("build the internal inference client")?;
-    let attestation = metadata_provider(&args, metrics.clone())?;
-    let attestation: Arc<dyn confidential_gateway::AttestationProvider> = match releases {
-        Some(releases) => Arc::new(ReleaseMetadataProvider {
-            policy: attestation,
-            releases,
-        }),
-        None => attestation,
-    };
     let protection = protection_config(&args);
     let usage = args.usage_enabled.then(|| {
         // Each process is one producer instance; the pod hostname is fixed.
@@ -346,7 +255,6 @@ async fn main() -> Result<()> {
         keys.clone(),
         Arc::new(TracingAuditSink),
         metrics.clone(),
-        attestation,
         http,
         usage.clone(),
     );
@@ -526,7 +434,6 @@ fn protection_config(args: &Args) -> ProtectionConfig {
         inference_queue: args.inference_queue,
         queue_timeout: Duration::from_secs(args.queue_timeout_seconds),
         per_key_concurrency: args.per_key_concurrency,
-        attestation_concurrency: args.attestation_concurrency,
         requests_per_address_per_second: args.requests_per_address_per_second,
         trusted_proxy_cidrs: args.trusted_proxy_cidrs.clone(),
     }
@@ -558,123 +465,6 @@ fn with_instance_header(app: axum::Router, identity: Option<&str>) -> Result<axu
             }
         },
     )))
-}
-
-fn validate_metadata_identity(args: &Args) -> Result<()> {
-    for (name, digest) in [
-        (
-            "GATEWAY_C8S_IMAGE_POLICY_SHA256",
-            &args.cds_image_policy_sha256,
-        ),
-        (
-            "GATEWAY_C8S_SERVED_IMAGE_POLICY_SHA256",
-            &args.cds_served_image_policy_sha256,
-        ),
-        ("release bundle digest", &args.release_bundle_sha256),
-    ] {
-        if digest.len() != 71
-            || !digest.starts_with("sha256:")
-            || !digest[7..]
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            bail!("{name} must be a lowercase SHA-256 digest");
-        }
-    }
-    if args.release_id.is_empty()
-        || args.release_id.len() > 128
-        || !args
-            .release_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-        || !args.release_id.as_bytes()[0].is_ascii_alphanumeric()
-    {
-        bail!("release identifier is invalid");
-    }
-    Ok(())
-}
-
-fn metadata_provider(
-    args: &Args,
-    metrics: Arc<GatewayMetrics>,
-) -> Result<Arc<dyn confidential_gateway::AttestationProvider>> {
-    use confidential_gateway::attestation::{
-        evidence_connection, mesh_ca_certificates, parse_evidence_base_url,
-    };
-    use confidential_gateway::attestation_metadata::{CdsMetadataSource, MetadataProvider};
-    validate_metadata_identity(args)?;
-    let timeout = Duration::from_secs(args.attestation_timeout_seconds);
-    let base = parse_evidence_base_url(&args.c8s_evidence_base_url).map_err(anyhow::Error::msg)?;
-    let cds_url = url::Url::parse(&args.cds_url)?;
-    if cds_url.scheme() != "https"
-        || cds_url.host_str().is_none()
-        || !cds_url.username().is_empty()
-        || cds_url.password().is_some()
-        || cds_url.query().is_some()
-        || cds_url.fragment().is_some()
-        || cds_url.path() != "/"
-    {
-        bail!("CDS URL must be an HTTPS origin without credentials");
-    }
-    let mut client = reqwest::Client::builder()
-        .timeout(timeout)
-        .connect_timeout(timeout.min(Duration::from_secs(10)))
-        .redirect(reqwest::redirect::Policy::none());
-    if let Some(host) = &args.c8s_evidence_connect_host {
-        client = evidence_connection(client, &base, host).map_err(anyhow::Error::msg)?;
-    }
-    for cert in mesh_ca_certificates().map_err(anyhow::Error::msg)? {
-        client = client.add_root_certificate(cert);
-    }
-    let release_url = url::Url::parse(args.release_url.as_deref().unwrap_or(&format!(
-        "https://github.com/confidential-dot-ai/confidential-inference/releases/tag/{}",
-        args.release_id
-    )))?;
-    if release_url.scheme() != "https"
-        || release_url.host_str() != Some("github.com")
-        || !release_url.username().is_empty()
-        || release_url.password().is_some()
-        || release_url.query().is_some()
-        || release_url.fragment().is_some()
-        || release_url.port().is_some()
-        || !release_url
-            .path()
-            .starts_with("/confidential-dot-ai/confidential-inference/")
-    {
-        bail!("release URL must point to the public GitHub release");
-    }
-    let source = CdsMetadataSource {
-        cds_url,
-        discovery_url: base.join("v1/discovery")?,
-        allowlist_url: base.join("allowlist")?,
-        release_id: args.release_id.clone(),
-        release_url,
-        bundle_sha256: args.release_bundle_sha256.clone(),
-        verifier: args.c8s_verifier.clone(),
-        image_policy: args
-            .cds_image_policy
-            .clone()
-            .context("GATEWAY_C8S_IMAGE_POLICY is required")?,
-        image_policy_sha256: args.cds_image_policy_sha256.clone(),
-        served_image_policy: args
-            .cds_served_image_policy
-            .clone()
-            .context("GATEWAY_C8S_SERVED_IMAGE_POLICY is required")?,
-        served_image_policy_sha256: args.cds_served_image_policy_sha256.clone(),
-        timeout,
-        maximum_bytes: args.attestation_maximum_evidence_bytes,
-        discovery_client: client.build()?,
-    };
-    Ok(Arc::new(
-        MetadataProvider::new(
-            Arc::new(source),
-            Duration::from_secs(args.attestation_cache_seconds),
-            timeout,
-            args.attestation_maximum_evidence_bytes,
-            metrics,
-        )
-        .map_err(anyhow::Error::msg)?,
-    ))
 }
 
 fn validate_router_namespace(namespace: Option<&str>, inference_url: &str) -> Result<()> {
@@ -747,7 +537,6 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.inference_queue > 4_096
         || !(1..=30).contains(&args.queue_timeout_seconds)
         || !(1..=128).contains(&args.per_key_concurrency)
-        || !(1..=64).contains(&args.attestation_concurrency)
         || !(1..=10_000).contains(&args.requests_per_address_per_second)
     {
         bail!("the public protection limits are outside the safe range");
@@ -755,16 +544,9 @@ fn validate_args(args: &Args) -> Result<()> {
     if !(1..=600).contains(&args.secret_wait_seconds) {
         bail!("GATEWAY_SECRET_WAIT_SECONDS is outside the safe range");
     }
-    if args.attestation_timeout_seconds == 0
-        || args.attestation_timeout_seconds > 120
-        || !(1_024..=8 * 1_024 * 1_024).contains(&args.attestation_maximum_evidence_bytes)
-    {
-        bail!("the attestation client limits are outside the safe range");
-    }
     if args.model.is_empty() || args.model.len() > 256 {
         bail!("GATEWAY_MODEL must identify one configured model");
     }
-    metadata_provider(args, Arc::new(GatewayMetrics::new("validation")))?;
     Ok(())
 }
 
@@ -772,13 +554,6 @@ fn validate_args(args: &Args) -> Result<()> {
 /// then bounds the numeric values.
 fn apply_settings(args: &mut Args, settings: &GatewaySettings) -> Result<()> {
     settings.validate().map_err(anyhow::Error::msg)?;
-    if let Some(evidence) = &settings.evidence {
-        args.c8s_evidence_base_url.clone_from(&evidence.base_url);
-        args.c8s_evidence_connect_host
-            .clone_from(&evidence.connect_host);
-    } else if args.c8s_evidence_base_url.is_empty() {
-        bail!("the settings need evidence without a startup evidence URL");
-    }
     if let Some(service) = &settings.router_service {
         let (Some(namespace), true) = (&args.router_namespace, args.allow_direct_inference_url)
         else {
@@ -801,7 +576,6 @@ fn apply_settings(args: &mut Args, settings: &GatewaySettings) -> Result<()> {
         .first()
         .cloned()
         .unwrap_or_default();
-    args.attestation_cache_seconds = settings.attestation_cache_seconds;
     args.maximum_body_bytes = settings.maximum_body_bytes;
     args.upstream_timeout_seconds = settings.upstream_timeout_seconds;
     args.body_timeout_seconds = settings.body_timeout_seconds;
@@ -812,67 +586,7 @@ fn apply_settings(args: &mut Args, settings: &GatewaySettings) -> Result<()> {
     args.inference_queue = settings.inference_queue;
     args.queue_timeout_seconds = settings.queue_timeout_seconds;
     args.per_key_concurrency = settings.per_key_concurrency;
-    args.attestation_concurrency = settings.attestation_concurrency;
     args.requests_per_address_per_second = settings.requests_per_address_per_second;
-    Ok(())
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(clippy::struct_field_names)] // The names match the JSON file fields.
-struct ReleaseIdentity {
-    #[serde(default)]
-    release_bundle_sha256: String,
-    #[serde(default)]
-    expected_operator_public_key_sha256: String,
-    #[serde(default)]
-    expected_operator_key_set_sha256: String,
-    // The CDS policy pins may come from this file instead of the environment
-    // (ATTESTATION.md, "CDS verification"). Both fields or neither.
-    #[serde(default)]
-    cds_image_policy_sha256: String,
-    #[serde(default)]
-    cds_served_image_policy_sha256: String,
-}
-
-/// Read the release identity file, when one is configured, into `args`.
-fn load_release_identity(args: &mut Args) -> Result<()> {
-    let Some(path) = args.release_identity_file.clone() else {
-        return Ok(());
-    };
-    if !args.release_bundle_sha256.is_empty()
-        || !args.expected_operator_public_key_sha256.is_empty()
-        || !args.expected_operator_key_set_sha256.is_empty()
-    {
-        bail!(
-            "set the release identity in GATEWAY_RELEASE_IDENTITY_FILE or in the environment, not both"
-        );
-    }
-    let identity: ReleaseIdentity = serde_json::from_slice(&read_bounded(&path, 4_096)?)
-        .context("parse the release identity file")?;
-    args.release_bundle_sha256 = identity.release_bundle_sha256;
-    args.expected_operator_public_key_sha256 = identity.expected_operator_public_key_sha256;
-    args.expected_operator_key_set_sha256 = identity.expected_operator_key_set_sha256;
-    // Unlike the fields above, the policy pins keep their environment route:
-    // the production values still pin the policy files there.
-    match (
-        identity.cds_image_policy_sha256.is_empty(),
-        identity.cds_served_image_policy_sha256.is_empty(),
-    ) {
-        (true, true) => {}
-        (false, false) => {
-            if !args.cds_image_policy_sha256.is_empty()
-                || !args.cds_served_image_policy_sha256.is_empty()
-            {
-                bail!(
-                    "set the CDS policy pins in GATEWAY_RELEASE_IDENTITY_FILE or in the environment, not both"
-                );
-            }
-            args.cds_image_policy_sha256 = identity.cds_image_policy_sha256;
-            args.cds_served_image_policy_sha256 = identity.cds_served_image_policy_sha256;
-        }
-        _ => bail!("the release identity file must set both CDS policy pins or neither"),
-    }
     Ok(())
 }
 
@@ -946,28 +660,6 @@ fn wait_for_bounded_file(path: &Path, limit: usize, timeout: Duration) -> Result
 mod tests {
     use super::*;
 
-    #[test]
-    fn metadata_configuration_requires_policy_pins() {
-        let mut value = args();
-        assert!(validate_args(&value).is_ok());
-        value.cds_image_policy_sha256 = "untrusted".into();
-        assert!(validate_args(&value).is_err());
-    }
-
-    #[test]
-    fn the_cds_url_must_be_an_https_origin() {
-        let mut value = args();
-        for invalid in [
-            "http://cds.c8s-system.svc.cluster.local:8443",
-            "https://cds.c8s-system.svc.cluster.local:8443/path",
-            "https://user@cds.c8s-system.svc.cluster.local:8443",
-            "",
-        ] {
-            value.cds_url = invalid.to_owned();
-            assert!(validate_args(&value).is_err(), "accepted {invalid:?}");
-        }
-    }
-
     fn settings(router_service: Option<&str>) -> GatewaySettings {
         let mut value = serde_json::json!({
             "schemaVersion":1,"evidence":{"baseUrl":"https://candidate.example.test"},
@@ -986,22 +678,16 @@ mod tests {
     #[test]
     fn settings_replace_the_matching_arguments() -> Result<()> {
         let mut value = args();
-        value.c8s_evidence_base_url.clear();
         value.inference_url = "http://sglang-router:30000".into();
         value.allow_direct_inference_url = true;
         value.router_namespace = Some("confidential-inference".into());
         apply_settings(&mut value, &settings(Some("router-headless")))?;
-        assert_eq!(
-            value.c8s_evidence_base_url,
-            "https://candidate.example.test"
-        );
         assert_eq!(
             value.inference_url,
             "http://router-headless.confidential-inference.svc.cluster.local:30000"
         );
         assert_eq!(value.model, "test");
         assert_eq!(value.inference_concurrency, 1);
-        assert_eq!(value.attestation_cache_seconds, 3);
         validate_args(&value)?;
         // The settings cannot raise a limit past the argument bounds.
         let mut limits = settings(None);
@@ -1013,13 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_need_evidence_and_a_fixed_router_namespace() {
-        let mut value = args();
-        let mut without_evidence = settings(None);
-        without_evidence.evidence = None;
-        assert!(apply_settings(&mut value.clone(), &without_evidence).is_ok());
-        value.c8s_evidence_base_url.clear();
-        assert!(apply_settings(&mut value, &without_evidence).is_err());
+    fn settings_need_a_fixed_router_namespace() {
         let mut value = args();
         assert!(apply_settings(&mut value, &settings(Some("router-headless"))).is_err());
         value.allow_direct_inference_url = true;
@@ -1033,13 +713,12 @@ mod tests {
     #[tokio::test]
     async fn instance_header_identifies_the_slot_without_changing_the_body() -> Result<()> {
         use tower::ServiceExt as _;
-        let app =
-            axum::Router::new().route("/attestation", axum::routing::get(|| async { "metadata" }));
+        let app = axum::Router::new().route("/health", axum::routing::get(|| async { "metadata" }));
         let app = with_instance_header(app, Some("gateway-new"))?;
         let response = app
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/attestation")
+                    .uri("/health")
                     .header("x-confidential-gateway", "caller-controlled")
                     .body(axum::body::Body::empty())?,
             )
@@ -1062,31 +741,13 @@ mod tests {
             usage_models: "{}".into(),
             usage_enabled: false,
             router_namespace: None,
-            release_selection_file: None,
             runtime_config_file: None,
             listen: "0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()),
             metrics_listen: "0.0.0.0:9090".parse().unwrap_or_else(|_| unreachable!()),
             inference_url: INFERENCE_UPSTREAM_URL.to_owned(),
             allow_direct_inference_url: false,
             model: "deepseek-ai/DeepSeek-V4-Flash-0731".to_owned(),
-            cds_url: "https://cds.c8s-system.svc.cluster.local:8443".to_owned(),
-            cds_image_policy: Some(PathBuf::from("/mnt/c8s-data/image-policy/policy.json")),
-            cds_image_policy_sha256: format!("sha256:{}", "0".repeat(64)),
-            cds_served_image_policy: Some(PathBuf::from("/mnt/c8s-data/image-policy/policy.json")),
-            cds_served_image_policy_sha256: format!("sha256:{}", "0".repeat(64)),
-            c8s_verifier: PathBuf::from("/usr/local/bin/c8s"),
-            attestation_cache_seconds: 10,
-            release_url: None,
             gateway_instance_id: None,
-            c8s_evidence_base_url: "https://api.example.test".to_owned(),
-            c8s_evidence_connect_host: None,
-            release_id: "test-release".to_owned(),
-            release_identity_file: None,
-            release_bundle_sha256: format!("sha256:{}", "1".repeat(64)),
-            expected_operator_public_key_sha256: format!("sha256:{}", "2".repeat(64)),
-            expected_operator_key_set_sha256: format!("sha256:{}", "3".repeat(64)),
-            attestation_timeout_seconds: 30,
-            attestation_maximum_evidence_bytes: 1_048_576,
             environment: "production".to_owned(),
             api_key_pepper_file: PathBuf::from("/run/c8s/secrets/GATEWAY_API_KEY_PEPPER"),
             secret_wait_seconds: 300,
@@ -1106,7 +767,6 @@ mod tests {
             inference_queue: 64,
             queue_timeout_seconds: 2,
             per_key_concurrency: 4,
-            attestation_concurrency: 4,
             requests_per_address_per_second: 30,
             shutdown_grace_seconds: 900,
             endpoint_drain_seconds: 35,
@@ -1163,12 +823,9 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_secret_wait_and_attestation_configuration_fail() {
+    fn unsafe_secret_wait_fails() {
         let mut value = args();
         value.secret_wait_seconds = 0;
-        assert!(validate_args(&value).is_err());
-        value.secret_wait_seconds = 300;
-        value.attestation_timeout_seconds = 0;
         assert!(validate_args(&value).is_err());
     }
 
@@ -1210,7 +867,7 @@ mod tests {
     #[cfg(unix)]
     fn kubelet_symlinked_file_is_accepted() {
         let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let path = kubelet_mount(directory.path(), "release-identity.json", b"identity");
+        let path = kubelet_mount(directory.path(), "pepper", b"identity");
         let value = read_bounded(&path, 4_096).unwrap_or_else(|_| unreachable!());
         assert_eq!(value, b"identity");
     }
@@ -1290,132 +947,6 @@ mod tests {
         let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
         let path = directory.path().join("pepper");
         assert!(wait_for_bounded_file(&path, 4_096, Duration::from_millis(100)).is_err());
-    }
-
-    fn write_identity(directory: &std::path::Path, body: &str) -> PathBuf {
-        let path = directory.join("release-identity.json");
-        fs::write(&path, body).unwrap_or_else(|_| unreachable!());
-        path
-    }
-
-    /// `args()` without the inputs that the release identity file supplies.
-    fn args_without_identity() -> Args {
-        let mut value = args();
-        value.release_bundle_sha256 = String::new();
-        value.expected_operator_public_key_sha256 = String::new();
-        value.expected_operator_key_set_sha256 = String::new();
-        value.cds_image_policy_sha256 = String::new();
-        value.cds_served_image_policy_sha256 = String::new();
-        value
-    }
-
-    fn pins_identity() -> String {
-        format!(
-            r#"{{"releaseBundleSha256":"sha256:{}","cdsImagePolicySha256":"sha256:{}","cdsServedImagePolicySha256":"sha256:{}"}}"#,
-            "a".repeat(64),
-            "d".repeat(64),
-            "e".repeat(64)
-        )
-    }
-
-    #[test]
-    fn release_identity_file_fills_the_attestation_inputs() {
-        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let mut value = args_without_identity();
-        value.cds_image_policy_sha256 = format!("sha256:{}", "0".repeat(64));
-        value.release_identity_file = Some(write_identity(
-            directory.path(),
-            &format!(
-                r#"{{"releaseBundleSha256":"sha256:{}","expectedOperatorPublicKeySha256":"sha256:{}","expectedOperatorKeySetSha256":"sha256:{}"}}"#,
-                "a".repeat(64),
-                "b".repeat(64),
-                "c".repeat(64)
-            ),
-        ));
-        assert!(load_release_identity(&mut value).is_ok());
-        assert_eq!(
-            format!("sha256:{}", "a".repeat(64)),
-            value.release_bundle_sha256
-        );
-        assert_eq!(
-            format!("sha256:{}", "b".repeat(64)),
-            value.expected_operator_public_key_sha256
-        );
-        assert_eq!(
-            format!("sha256:{}", "c".repeat(64)),
-            value.expected_operator_key_set_sha256
-        );
-        // A file without policy pins leaves the environment's pins alone.
-        assert_eq!(
-            format!("sha256:{}", "0".repeat(64)),
-            value.cds_image_policy_sha256
-        );
-    }
-
-    #[test]
-    fn release_identity_file_fills_the_cds_policy_pins() {
-        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let mut value = args_without_identity();
-        value.release_identity_file = Some(write_identity(directory.path(), &pins_identity()));
-        assert!(load_release_identity(&mut value).is_ok());
-        assert_eq!(
-            format!("sha256:{}", "d".repeat(64)),
-            value.cds_image_policy_sha256
-        );
-        assert_eq!(
-            format!("sha256:{}", "e".repeat(64)),
-            value.cds_served_image_policy_sha256
-        );
-        assert!(validate_metadata_identity(&value).is_ok());
-    }
-
-    #[test]
-    fn release_identity_file_and_environment_policy_pins_are_exclusive() {
-        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let mut value = args_without_identity();
-        value.cds_image_policy_sha256 = format!("sha256:{}", "0".repeat(64));
-        value.cds_served_image_policy_sha256 = value.cds_image_policy_sha256.clone();
-        value.release_identity_file = Some(write_identity(directory.path(), &pins_identity()));
-        assert!(load_release_identity(&mut value).is_err());
-    }
-
-    #[test]
-    fn release_identity_file_requires_both_policy_pins() {
-        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let mut value = args_without_identity();
-        value.release_identity_file = Some(write_identity(
-            directory.path(),
-            &format!(
-                r#"{{"releaseBundleSha256":"sha256:{}","cdsImagePolicySha256":"sha256:{}"}}"#,
-                "a".repeat(64),
-                "d".repeat(64)
-            ),
-        ));
-        assert!(load_release_identity(&mut value).is_err());
-    }
-
-    #[test]
-    fn release_identity_file_and_environment_are_exclusive() {
-        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let path = directory.path().join("release-identity.json");
-        fs::write(&path, r#"{"releaseBundleSha256":"x"}"#).unwrap_or_else(|_| unreachable!());
-        let mut value = args();
-        value.release_identity_file = Some(path);
-        assert!(load_release_identity(&mut value).is_err());
-    }
-
-    #[test]
-    fn release_identity_file_rejects_unknown_fields() {
-        let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let path = directory.path().join("release-identity.json");
-        fs::write(&path, r#"{"releaseBundleSha256":"x","extra":1}"#)
-            .unwrap_or_else(|_| unreachable!());
-        let mut value = args();
-        value.release_bundle_sha256 = String::new();
-        value.expected_operator_public_key_sha256 = String::new();
-        value.expected_operator_key_set_sha256 = String::new();
-        value.release_identity_file = Some(path);
-        assert!(load_release_identity(&mut value).is_err());
     }
 }
 
