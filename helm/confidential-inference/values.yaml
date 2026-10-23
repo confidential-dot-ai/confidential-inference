@@ -148,6 +148,10 @@ gateway:
     adminSigner:
       secretName: gateway-admin-mtls
       certificateKey: client.crt
+    # The SHA-256 hex of each accepted admin API key, one per line, at most
+    # two, under the Secret key `sha256`.
+    adminApiKey:
+      secretName: gateway-admin-api-key
   state:
     # The gateway keeps its API-key state on a c8s mutable encrypted volume.
     # Build the volume with `c8s volume create --mutable --name <volumeName>`,
@@ -224,6 +228,27 @@ inference:
         .model-lock-local-manifest.json: "0000000000000000000000000000000000000000000000000000000000000000"
       # expectedFileList: a list of {path, sha256} that replaces expectedFiles
       # (see the confidential-inference.expectedFiles helper).
+    # Plain model cache instead of the c8s model volume: the worker's
+    # fetch-model init container downloads the pinned revision from Hugging
+    # Face into the node's plain models disk (hostPath, public weights the
+    # host can read), and wait-for-model --plain-cache checks every file
+    # against the byte manifest on every start. Needs a node image that
+    # formats and mounts that disk read-write (C8s#1006). Allowlist rule G7
+    # refuses a secrets grant on an entry with a host mount: the worker drops
+    # the c8sVolumeSource read, and its workload policy entry must list no
+    # secretReads (tests/helm/test_render.py checks this).
+    cache:
+      enabled: false
+      hostPath: /var/lib/models/model
+      # The byte manifest file (`fetch-model manifest` output). Its SHA-256 is
+      # the mountVerification entry for revisionMetadata.
+      manifest: ""
+      endpoint: https://huggingface.co
+      # Hugging Face and its LFS/Xet CDN have no fixed addresses, and a
+      # NetworkPolicy cannot name hosts: the worker may reach these CIDRs on
+      # 443. The manifest pins every byte it downloads.
+      egressCidrs:
+        - 0.0.0.0/0
   port: 30000
   metricsPort: 29000
   # Name of the reasoning parser to pass as --reasoning-parser on the model

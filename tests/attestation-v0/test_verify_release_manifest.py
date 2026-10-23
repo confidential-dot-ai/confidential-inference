@@ -26,7 +26,7 @@ from cryptography.x509.oid import NameOID
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/verify-public-attestation.py"
-FIXTURE = ROOT / "tests/contracts/fixtures/workload-attestation.valid.json"
+FIXTURE = ROOT / "tests/api/fixtures/workload-attestation.valid.json"
 NONCE = base64.urlsafe_b64encode(b"n" * 32).rstrip(b"=").decode()
 C8S_COMMIT = "c9d49a67d36b16b7adc306489b6f591611c34968"
 MRTD, RTMR1, RTMR2 = "a" * 96, "b" * 96, "c" * 96
@@ -160,7 +160,7 @@ class ReleaseManifestVerifierTests(unittest.TestCase):
             },
             "mrtd": MRTD, "rtmr1": RTMR1, "rtmr2": RTMR2,
             "sourceLock": {
-                "path": "contracts/c8s-admission-source-lock.json",
+                "path": "release/inputs/c8s-source-lock.json",
                 "sha256": digest(self.source_lock_path.read_bytes()),
             },
             "model": {
@@ -319,7 +319,7 @@ class ReleaseManifestVerifierTests(unittest.TestCase):
         policy['workloads']['reviewed-replacement'] = {'containers': []}
         raw = json.dumps(policy, separators=(',', ':')).encode() + b'\n'
         path = self.write('reviewed-live-policy.json', raw)
-        response = json.loads((ROOT / 'tests/contracts/fixtures/workload-attestation.v3.valid.json').read_text())
+        response = json.loads((ROOT / 'tests/api/fixtures/workload-attestation.v3.valid.json').read_text())
         response['release'] = {
             'id': 'v0.14.0',
             'url': 'https://github.com/confidential-dot-ai/confidential-inference/releases/tag/v0.14.0',

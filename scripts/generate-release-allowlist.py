@@ -530,10 +530,10 @@ def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[s
     the canonical allowlist's entries byte for byte and the manifest contract
     can require equality.
 
-    The seed pins each component shape's command at the image entrypoint or at
-    the container's own command, which extends it (`/c8s get-cert`), so a seed
-    container of a core image must pin a command that starts with the
-    entrypoint. A core image the seed does not bind runs on the node, never as
+    The seed pins each component shape's command exactly: at the image
+    entrypoint, at a command that extends it (`/c8s get-cert`), or at a
+    command of its own (c8s v0.66.0+ runs the router's nginx image as
+    `/bin/sh /usr/lib/c8s/router-nginx/reload.sh`). A core image the seed does not bind runs on the node, never as
     a pod (nri-image-policy, volumed), and gets no entry: a floor entry for it
     would admit a component with open mounts and env, which strict lint
     refuses.
@@ -543,9 +543,7 @@ def seeded_core_entries(images: list[str], configs: dict[str, Any], seed: dict[s
             image = container.get("image", "")
             if image not in images:
                 continue
-            entrypoint = component_entrypoint(image, configs.get(image, {}))
-            argv = container.get("command", {}).get("argv") or []
-            if container.get("command", {}).get("policy") != "exact" or argv[:len(entrypoint)] != entrypoint:
+            if container.get("command", {}).get("policy") != "exact" or not container["command"].get("argv"):
                 raise GenerationError(f"seed entry {name} does not preserve its component command pin")
     return copy.deepcopy(seed)
 

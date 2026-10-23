@@ -247,6 +247,8 @@ spec:
               value: {{ printf "/run/c8s/secrets/%s" .Values.gateway.c8sSecrets.apiKeyPepper.name | quote }}
             - name: GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE
               value: /mnt/c8s-data/admin-auth/..data/client.crt
+            - name: GATEWAY_ADMIN_API_KEY_HASHES_FILE
+              value: /mnt/c8s-data/admin-api-key/..data/sha256
             - name: DEPLOYMENT_ENVIRONMENT
               value: {{ .Values.environment | quote }}
             {{- if .Values.telemetry.enabled }}
@@ -288,6 +290,9 @@ spec:
             - name: admin-auth
               mountPath: /mnt/c8s-data/admin-auth
               readOnly: true
+            - name: admin-api-key
+              mountPath: /mnt/c8s-data/admin-api-key
+              readOnly: true
             - name: release-identity
               mountPath: /mnt/c8s-data/release-identity
               readOnly: true
@@ -310,6 +315,15 @@ spec:
             items:
               - key: {{ .Values.gateway.secrets.adminSigner.certificateKey }}
                 path: client.crt
+        # Optional until the admin cutover (#186): without it the gateway
+        # accepts only the v1 admin signature.
+        - name: admin-api-key
+          secret:
+            secretName: {{ .Values.gateway.secrets.adminApiKey.secretName }}
+            optional: true
+            items:
+              - key: sha256
+                path: sha256
         - name: release-identity
           configMap:
             name: gateway-release-identity
