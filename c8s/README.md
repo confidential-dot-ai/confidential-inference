@@ -12,6 +12,3 @@ For a live endpoint, use [client verification](../docs/verification.md).
 Production retains operator-managed policy. The policy returned by CDS can
 change without a new node image and can differ from the signed initial policy.
 Clients review and pin the exact active bytes.
-
-The [historical generation procedure](historical-policy-generation.md) is
-retained for audits of the older inputs only.

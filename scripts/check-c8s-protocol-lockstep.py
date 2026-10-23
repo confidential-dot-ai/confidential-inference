@@ -3,12 +3,12 @@
 fixtures' receipt field set, match the pinned c8s commit's real protocol.
 
 `version` is identical text (`c8s/attest-pq/v1`) on both c8s protocols (see
-`contracts/README.md`), so nothing on the wire tells a stale gateway it is
+`api/README.md`), so nothing on the wire tells a stale gateway it is
 speaking to the wrong one; it must know the protocol in advance. This script
 is the deploy-time guard: it reads the c8s route table and receipt field set
 this repo already captured, read-only, into
-`contracts/c8s-attestation-protocols/<commit>.json` for each protocol c8s has
-ever spoken, and compares them against `contracts/c8s-admission-source-lock.json`
+`release/inputs/c8s-attestation-protocols/<commit>.json` for each protocol c8s has
+ever spoken, and compares them against `release/inputs/c8s-source-lock.json`
 (which pins one protocol per environment) and the gateway's own Rust test
 fixtures (which is the only place the gateway commits to a wire shape).
 
@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_LOCK = ROOT / "contracts/c8s-admission-source-lock.json"
-PROTOCOLS_DIR = ROOT / "contracts/c8s-attestation-protocols"
+SOURCE_LOCK = ROOT / "release/inputs/c8s-source-lock.json"
+PROTOCOLS_DIR = ROOT / "release/inputs/c8s-attestation-protocols"
 GATEWAY_TESTS = ROOT / "services/gateway/tests"
 
 OLD_PROTOCOL = "c8s/attest-pq/v1"
@@ -80,7 +80,7 @@ def load_manifests() -> dict[str, dict[str, Any]]:
     optional `sharedWithCommits` list: a c8s commit that serves the identical
     route table and bundle field set as an already-captured commit does not
     need its own byte-for-byte capture, only a recorded claim of identity
-    (`contracts/c8s-attestation-protocols/README` documents this).
+    (`release/inputs/c8s-attestation-protocols/README` documents this).
     """
     if not PROTOCOLS_DIR.is_dir():
         raise LockstepError(f"{PROTOCOLS_DIR} does not exist")

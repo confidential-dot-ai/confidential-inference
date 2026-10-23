@@ -14,68 +14,10 @@ app.kubernetes.io/part-of: {{ include "confidential-inference.name" .root }}
 app.kubernetes.io/component: {{ .component }}
 {{- end }}
 
-{{- define "confidential-inference.cdsAttestSidecar" -}}
-- name: cds-attest
-  image: {{ .root.Values.images.c8sOperator }}
-  imagePullPolicy: IfNotPresent
-  command: ["/c8s"]
-  args:
-    - cds-attest
-    - --host={{ .host }}
-    - --port={{ .port }}
-    - --platform={{ .root.Values.attestationReceipts.platform }}
-    - --front-door-mode=webpki
-    {{- if and .gpuEvidence (ne .root.Values.attestationReceipts.gpuEvidenceFlagEnabled false) }}
-    - --nvidia-gpu-evidence
-    {{- end }}
-    - --expected-workload={{ .workload }}
-    {{- if .root.Values.attestationReceipts.attestationApiUrl }}
-    - --attestation-api-url={{ .root.Values.attestationReceipts.attestationApiUrl }}
-    {{- else }}
-    - --attestation-api-url=http://$(HOST_IP):{{ .root.Values.attestationReceipts.attestationApiPort }}
-    {{- end }}
-    - --serving-cert-file=/etc/c8s/certs/tls.crt
-    - --mesh-identity-cert-file=/etc/c8s/certs/tls.crt
-    - --mesh-identity-key-file=/etc/c8s/certs/tls.key
-    - --mesh-identity-ca-file=/etc/c8s/certs/tls.crt
-    {{- if .root.Values.attestationReceipts.cdsRoutes }}
-    {{- include "confidential-inference.cdsRouteArgs" .root | nindent 4 }}
-    {{- end }}
-  {{- if not .root.Values.attestationReceipts.attestationApiUrl }}
-  env:
-    - name: HOST_IP
-      valueFrom:
-        fieldRef:
-          fieldPath: status.hostIP
-  {{- end }}
-  {{- if ne .host "127.0.0.1" }}
-  ports:
-    - name: cds-attest
-      containerPort: {{ .port }}
-      protocol: TCP
-  {{- end }}
-  readinessProbe:
-    httpGet:
-      path: /readyz
-      port: {{ .port }}
-    periodSeconds: 10
-    timeoutSeconds: 3
-    failureThreshold: 3
-  livenessProbe:
-    httpGet:
-      path: /healthz
-      port: {{ .port }}
-    periodSeconds: 30
-    timeoutSeconds: 3
-    failureThreshold: 3
-  securityContext:
-    allowPrivilegeEscalation: false
-    capabilities:
-      drop: ["ALL"]
-    readOnlyRootFilesystem: true
-    runAsNonRoot: true
-  resources:
-    {{- toYaml .root.Values.attestationReceipts.resources | nindent 4 }}
+{{- /* The headless router Service. The gateway accepts `sglang-router` or a
+       `router-` name here. */}}
+{{- define "confidential-inference.routerService" -}}
+router-headless
 {{- end }}
 
 {{/*
@@ -167,16 +109,3 @@ Recreate override drops the chart's rollingUpdate. */ -}}
 {{ end -}}
 {{ end -}}
 {{- end -}}
-
-{{/*
-The cds-attest flags of c8s v0.56.0 and later (c8s #851): the CDS to poll the
-route manifest from, pinned by the TDX measurements of the node image. The
-operator keys come from that pinned CDS.
-*/}}
-{{- define "confidential-inference.cdsRouteArgs" -}}
-{{- $receipts := .Values.attestationReceipts -}}
-{{- $pin := $receipts.cdsPin -}}
-- --cds-url={{ required "attestationReceipts.cds.url is required with cdsRoutes" $receipts.cds.url }}
-- --cds-measurements={{ required "attestationReceipts.cdsPin.mrtd is required with cdsRoutes" $pin.mrtd }}
-- --cds-rtmrs=1={{ required "attestationReceipts.cdsPin.rtmr1 is required with cdsRoutes" $pin.rtmr1 }},2={{ required "attestationReceipts.cdsPin.rtmr2 is required with cdsRoutes" $pin.rtmr2 }}
-{{- end }}

@@ -1,11 +1,11 @@
 {
-  "docker.io/prom/prometheus@sha256:8672a850efe2f9874702406c8318704edb363587f8c2ca88586b4c8fdb5cea24": {
+  "docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849": {
     "cmd": [
-      "--config.file=/etc/prometheus/prometheus.yml",
-      "--storage.tsdb.path=/prometheus"
+      "--config",
+      "/etc/otelcol-contrib/config.yaml"
     ],
     "entrypoint": [
-      "/bin/prometheus"
+      "/otelcol-contrib"
     ],
     "env": [
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -21,7 +21,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:bf6d6310c670868641fc88f82a5d4b265f66958189b2a5d557a986eb9da3e6ea": {
+  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:e556b3a51c2bdeb0ae81f87f4270115dc3f8434b431a68714d77ea74a4c807d8": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",
@@ -41,7 +41,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:97f6f5ac2e35cd635787ec95aaad842c321eb8c0f6df5a63de34c574ddae2d6e": {
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:eee98e5b6a035fc792138bb642d239d5f7d2204efb3a14e9bd27f5627841c18b": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
@@ -62,7 +62,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/cds@sha256:b8ccdd308787807d76f8934f88f1663fcd52001e6c09d87649a2abf96bc99784": {
+  "ghcr.io/confidential-dot-ai/cds@sha256:cfaaa4e5413bf6af09f91d7a487c1b66833231180b430c3bc0cbdd9cf5871210": {
     "cmd": [],
     "entrypoint": [
       "/c8s",
@@ -86,7 +86,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:e38c226cb806ab5ce548fa76bfd64b52831eac25b318edee8ca7b9c9b266b67f": {
+  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:cb41656803dfde8fe69bc3b506c855c2c177d96e778a3d46f98cb28cf1dddf5f": {
     "cmd": [
       "--config",
       "/etc/nri/conf.d/image-policy.yaml"
@@ -99,7 +99,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/volumed@sha256:8e8f4a8bb691a8e200b1a54e23da405459223e276ce25049e09833bc8d2dde1f": {
+  "ghcr.io/confidential-dot-ai/volumed@sha256:673229eb0e99f820bdc5b7fed4eaa02b9a2eaa211dcb364a5b62fc7569c83219": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",
@@ -109,7 +109,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/volumed@sha256:cee45dede420e5634802f98c1633317379cce17b80bb557a2a7fbb71d79a735c": {
+  "ghcr.io/confidential-dot-ai/volumed@sha256:8e8f4a8bb691a8e200b1a54e23da405459223e276ce25049e09833bc8d2dde1f": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",

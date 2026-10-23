@@ -1,0 +1,26 @@
+environment: production
+
+inference:
+  enabled: true
+  mode: model
+  replicas: 2
+  gpusPerReplica: 4
+  gpuArchitectures: [BLACKWELL]
+  autoscaling:
+    enabled: false
+    maxReplicas: 2
+  model:
+    name: deepseek-ai/DeepSeek-V4-Flash-0731
+    revision: 9e165c30e2704aec5d9d593cce3eebd58bbef1cb
+    c8sVolumeSource: /confidential-inference/volumes/dsv4
+    volumeNames: [dsv4, dsv4-1]
+    volumeDirectory: /mnt/c8s-data/models
+    mountVerification:
+      timeoutSeconds: 900
+      pollSeconds: 1
+      revisionMetadata: .model-lock-local-manifest.json
+      expectedFiles:
+        .model-lock-local-manifest.json: cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c
+        config.json: 6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023
+        model.safetensors.index.json: 98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b
+        tokenizer_config.json: 6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547

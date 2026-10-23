@@ -25,16 +25,8 @@
       "controller": "Deployment/kube-state-metrics"
     },
     {
-      "name": "log-collector-ua59410a16b",
-      "controller": "Deployment/log-collector"
-    },
-    {
-      "name": "metrics-collector",
-      "controller": "Deployment/metrics-collector"
-    },
-    {
       "name": "router-{release}",
-      "controller": "Deployment/router-{release}"
+      "controller": "Deployment/sglang-router"
     },
     {
       "name": "inference-worker-0-u200b5c252a",

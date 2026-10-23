@@ -26,7 +26,6 @@ gateway:
       - 10.42.0.0/16
 
 attestationReceipts:
-  attestationApiUrl: unix:///run/c8s/workload-claims/attestation-api.sock
   evidenceBaseUrl: https://staging.api.confidential.ai
   evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
   # The gateway verifies CDS for its schema 3 policy metadata. On c8s >= C8s
@@ -37,6 +36,11 @@ attestationReceipts:
   # attestation. The deployment supplies the two policy documents.
   cds:
     url: https://10.43.58.194:30808
+
+# kube-state-metrics needs the Kubernetes API, which a c8s >= v0.64 mesh member
+# pod cannot reach.
+kubeStateMetrics:
+  enabled: false
 
 inference:
   mode: simulator
@@ -65,12 +69,27 @@ inference:
     maxRunningRequests: 48
     chatTemplate: chatml
 
-metricsCollector:
-  remoteWrite:
-    enabled: false
+# Telemetry to the admin-next relay (admin/vm/caddy in the internal
+# repository). Its address is the telemetry collector's one allowlist exit.
+telemetry:
+  enabled: true
+  deployment: staging-20260926
+  relay:
+    serverName: ci-admin-next-loki.centralus.cloudapp.azure.com
+    address: 172.173.67.102
+  metrics:
+    tenantId: 693babab-0ab8-4ffb-8b5c-eb8aef3b10d1
+    clientId: c486ee14-1dca-4c1d-af4f-be163302ff44
+    dataCollectionRule: dcr-50a134d921ce434a86bcd8f01ab93b6e
+
+# c8s v0.66.0+ runs the router in its own namespace (c8s #814; chart value
+# from confidential-inference #203).
+c8s:
+  frontDoorPodLabelName: router
+  frontDoorNamespace: c8s-router
 
 images:
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:97f6f5ac2e35cd635787ec95aaad842c321eb8c0f6df5a63de34c574ddae2d6e
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:eee98e5b6a035fc792138bb642d239d5f7d2204efb3a14e9bd27f5627841c18b
 
 # The simulator uses the staging workload definitions.
 workloadOverridesEnabled: false

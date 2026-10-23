@@ -26,6 +26,7 @@ LABEL org.opencontainers.image.base.digest="sha256:bde16a8447b19e89056b9eea06c72
 RUN --mount=type=bind,source=patches/cc-optimizations-v0518.patch,target=/run-src/cc-optimizations.patch,readonly \
     --mount=type=bind,source=patch_flashinfer_cuda_ipc.py,target=/run-src/patch-flashinfer-cuda-ipc.py,readonly \
     --mount=type=bind,source=wait_for_model.py,target=/run-src/wait-for-model,readonly \
+    --mount=type=bind,source=fetch_model.py,target=/run-src/fetch-model,readonly \
     --mount=type=bind,source=gpu_metrics.py,target=/run-src/gpu-metrics,readonly \
     --mount=type=bind,source=simulator-upstream,target=/run-src/sglang-simulator,readonly \
     --mount=type=bind,source=patches/sglang-simulator-replay-only.patch,target=/run-src/sglang-simulator-replay-only.patch,readonly \
@@ -47,5 +48,6 @@ RUN --mount=type=bind,source=patches/cc-optimizations-v0518.patch,target=/run-sr
     && git apply --check /run-src/sglang-simulator-parser-flags-noop.patch \
     && git apply /run-src/sglang-simulator-parser-flags-noop.patch \
     && install -D -m 0555 /run-src/wait-for-model /usr/local/bin/wait-for-model \
+    && install -D -m 0555 /run-src/fetch-model /usr/local/bin/fetch-model \
     && install -D -m 0555 /run-src/gpu-metrics /usr/local/bin/gpu-metrics \
     && rm /tmp/cc-optimizations.patch /tmp/patch-flashinfer-cuda-ipc.py
