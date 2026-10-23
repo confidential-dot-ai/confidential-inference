@@ -473,8 +473,6 @@ workloadOverrides:
             env:
             - name: HOME
               value: /tmp
-            - name: WORKER_DRAIN_DEADLINE_SECONDS
-              value: '570'
             - name: HOSTNAME
               value: inference-worker-0-u200b5c252a
             image: '{{ .Values.images.sglangWorker }}'
@@ -560,8 +558,6 @@ workloadOverrides:
             env:
             - name: HOME
               value: /tmp
-            - name: WORKER_DRAIN_DEADLINE_SECONDS
-              value: '570'
             - name: HOSTNAME
               value: inference-worker-1-u5f71fa321d
             image: '{{ .Values.images.sglangWorker }}'

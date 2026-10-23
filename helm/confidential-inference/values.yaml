@@ -232,12 +232,9 @@ inference:
   # target environment's release bundle carries the matching source.lock
   # argv and allowlist.
   reasoningParser: ""
-  # Kubernetes waits longer than the wrapper's drain deadline before it
-  # kills the pod. wait-for-model drains in-flight requests for
-  # (terminationGracePeriodSeconds - drainDeadlineMarginSeconds), then
-  # stops the worker either way.
+  # On SIGTERM SGLang answers /health with 503 and finishes its in-flight
+  # requests; Kubernetes kills the pod after this many seconds.
   terminationGracePeriodSeconds: 600
-  drainDeadlineMarginSeconds: 30
   resources:
     cpu: "2"
     memory: 8Gi

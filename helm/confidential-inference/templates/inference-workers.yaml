@@ -161,15 +161,6 @@ spec:
           env:
             - name: HOME
               value: /tmp
-            {{- if not $simulatorMode }}
-            - name: WORKER_DRAIN_DEADLINE_SECONDS
-              # wait-for-model reads this to drain in-flight requests on
-              # SIGTERM. It stays well inside terminationGracePeriodSeconds
-              # so the wrapper still has time to stop the child after
-              # draining. The wrapper's own argv never changes; the c8s
-              # allowlist policy allows any container env value.
-              value: {{ sub (int $.Values.inference.terminationGracePeriodSeconds) (int $.Values.inference.drainDeadlineMarginSeconds) | quote }}
-            {{- end }}
             {{- if $simulatorMode }}
             - name: CUDA_VISIBLE_DEVICES
               value: ""

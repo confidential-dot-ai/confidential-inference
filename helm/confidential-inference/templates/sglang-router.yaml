@@ -108,6 +108,18 @@ spec:
             - --eviction-interval-secs=60
             - --max-tree-size=67108864
             - --health-check-endpoint=/health
+            # A worker that gets SIGTERM answers /health with 503 and drains
+            # (upstream SGLang). The router stops picking it within one 2 s
+            # health check. A request that fails on it in that window opens
+            # its circuit after 2 failures, and the router's retries (5 by
+            # default) go to another worker. A dead pod IP fails in 2 s, not
+            # the default 10 s connect timeout.
+            - --health-check-interval-secs=2
+            - --health-check-timeout-secs=2
+            - --health-failure-threshold=1
+            - --cb-failure-threshold=2
+            - --cb-timeout-duration-secs=10
+            - --connect-timeout-secs=2
             {{- if .Values.inference.enabled }}
             # Production workers can need more than 30 minutes to load and tune the model.
             - --worker-startup-timeout-secs=3600
