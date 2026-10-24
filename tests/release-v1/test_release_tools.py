@@ -82,6 +82,24 @@ def published_release_images() -> dict[str, str]:
     return dict(image.split("@", 1) for image in RELEASE_IMAGES.values())
 
 
+def staging_seed(tag: str, commit: str, platform: str) -> dict:
+    """The staging pin's C8s seed asset, as the staging fixture mirrors it (its
+    entries that no policy names), so the tests need no network."""
+    profile = next(profile for profile in PROFILES.load() if profile.name == "staging")
+    c8s = PROFILES.read_spec(profile)["c8s"]
+    if (tag, commit, platform) != (c8s["release"], c8s["sourceCommit"], "tdx"):
+        raise GEN.c8s_release.ReleaseError(f"no test seed for c8s {tag} {platform}")
+    names = {item["name"] for item in json.loads(profile.policy.read_text())["workloads"]}
+    workloads = json.loads(STAGING_ALLOWLIST.read_text())["workloads"]
+    return {"schema": "c8s.allowlist/v1", "workloads": {name: entry for name, entry in workloads.items() if name not in names}}
+
+
+def setUpModule():
+    patch = mock.patch.object(GEN.c8s_release, "allowlist_seed", side_effect=staging_seed)
+    patch.start()
+    unittest.addModuleCleanup(patch.stop)
+
+
 def write_release(directory: Path, manifest: dict) -> None:
     """Put a release manifest and an empty Sigstore bundle where the build downloads them."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -100,7 +118,9 @@ def build_release(tag: str, evidence: dict, download_dir: Path | None, generate,
         stack.enter_context(mock.patch.object(MAN, "verify_image_source_boundary"))
         stack.enter_context(mock.patch.object(MAN, "changed_paths", return_value=[]))
         stack.enter_context(mock.patch.object(MAN.release_signature, "verify_release_signature"))
-        stack.enter_context(mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"))
+        # A real cosign stays: generating with a c8s CLI verifies the C8s seed asset.
+        which = MAN.shutil.which
+        stack.enter_context(mock.patch.object(MAN.shutil, "which", side_effect=lambda name: which(name) or "/usr/bin/cosign"))
         stack.enter_context(mock.patch.dict(MAN.ALLOWLIST_GENERATOR, {
             "generate": generate, "image_config": REPOSITORY_CONFIGS.__getitem__,
         }))
