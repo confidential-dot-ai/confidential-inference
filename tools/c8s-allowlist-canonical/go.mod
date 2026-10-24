@@ -2,7 +2,7 @@ module github.com/confidential-dot-ai/confidential-inference/tools/c8s-allowlist
 
 go 1.27.3
 
-require github.com/confidential-dot-ai/c8s v0.74.0-beta.1
+require github.com/confidential-dot-ai/c8s v0.74.0-beta.2
 
 require (
 	github.com/confidential-dot-ai/attestation-go v0.8.1 // indirect
