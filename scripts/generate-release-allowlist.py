@@ -25,8 +25,10 @@ pinned source can give (for example a node IP) is an error.
 
 `c8s allowlist derive` from the pinned c8s release builds each entry, so c8s
 itself decides which containers it injects and drops. The c8s core entries
-mirror the bootstrap seed in release/inputs/c8s-seeds/ byte for byte as the
-chart renders it: one pinned entry per component shape and the router pod. The
+mirror the node image's bootstrap seed byte for byte: one pinned entry per
+component shape and the router pod. The seed is the signed release asset
+allowlist-seed-<platform>.json of the pinned c8s release (C8s #975), or for a
+dev build the record in release/inputs/c8s-seeds/. The
 pinned Go tool in tools/c8s-allowlist-canonical writes the canonical bytes,
 and `c8s allowlist lint --strict` must pass.
 
@@ -51,6 +53,7 @@ from typing import Any
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import c8s_release
 import release_profiles
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -459,14 +462,28 @@ def derive(
 
 
 def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
-    """The seed entries the release allowlist must mirror."""
+    """The seed entries the release allowlist must mirror.
+
+    A c8s release publishes the seed its node images bake as a signed release
+    asset (C8s #975), one per platform. A dev build, or a release from before
+    the asset (production's v0.59.1), has a record in release/inputs/c8s-seeds/.
+    """
     path = ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json")
-    record = read_json(path)
-    if record.get("sourceCommit") != c8s["sourceCommit"] or record.get("coreImages") != c8s["coreImages"]:
-        raise GenerationError("the C8s node seed inputs differ from the profile pins")
-    seed = record.get("allowlist", {})
+    if path.exists():
+        record = read_json(path)
+        if record.get("sourceCommit") != c8s["sourceCommit"] or record.get("coreImages") != c8s["coreImages"]:
+            raise GenerationError("the C8s node seed inputs differ from the profile pins")
+        seed = record.get("allowlist", {})
+    else:
+        platform = re.fullmatch(r"rke2-(tdx|snp)(?:-cdi)?-.+", c8s["nodeImage"]["tag"])
+        if platform is None:
+            raise GenerationError(f"node image tag {c8s['nodeImage']['tag']} names no platform")
+        try:
+            seed = c8s_release.allowlist_seed(c8s["release"], c8s["sourceCommit"], platform.group(1))
+        except c8s_release.ReleaseError as error:
+            raise GenerationError(str(error)) from error
     if seed.get("schema") != "c8s.allowlist/v1" or not isinstance(seed.get("workloads"), dict):
-        raise GenerationError("the C8s node seed record has no valid allowlist")
+        raise GenerationError("the C8s node seed has no valid allowlist")
     return seed["workloads"]
 
 

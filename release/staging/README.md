@@ -77,10 +77,11 @@ mount rules, the gateway pepper secret grant, and encrypted-volume inputs.
 Refresh the image configuration record with the dependency bump. Preserve
 strict policy lint and verify that arbitrary component command overrides fail.
 
-The allowlist mirrors the node image's seed recorded in
-`release/inputs/c8s-seeds/<source-commit>.json`. `scripts/pin-local-c8s.py`
-records it from the build directory's `allowlist-seed.json`. Delete a record
-when no profile pins its commit.
+The allowlist mirrors the node image's seed: for a c8s release its signed
+asset `allowlist-seed-tdx.json` (C8s #975), for a dev build the record in
+`release/inputs/c8s-seeds/<source-commit>.json` that `scripts/pin-local-c8s.py`
+writes from the build directory's `allowlist-seed.json`. `bump-c8s.py` deletes
+a record when no profile pins its commit any more.
 
 ## In-cluster validation client
 

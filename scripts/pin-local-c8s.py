@@ -6,8 +6,9 @@ Usage:
     scripts/pin-local-c8s.py <local-c8s dir> --c8s-repo <c8s checkout>
         [--confos-repo <confidential-os-builder checkout>]
 
-The directory holds the build's node manifest.json, its c8s CLI and the node
-image's allowlist-seed.json (internal deploy/tools/staging-dev-c8s writes it).
+The directory holds the build's node manifest.json, its c8s CLI and, for a
+dev build, the node image's allowlist-seed.json (internal
+deploy/tools/staging-dev-c8s writes it).
 The CLI's version names the build: a C8s release tag or the Go pseudo-version of an unsigned dev build.
 When release/staging already pins that version and that manifest.json, the
 script changes nothing. Otherwise it moves the staging profile with
@@ -61,8 +62,9 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as directory:
         diff = Path(directory) / "protocol.diff"
         command = [sys.executable, str(BUMP), "--tag", version, "--profile", "staging",
-                   "--c8s-repo", str(args.c8s_repo), "--seed", str(args.directory / "allowlist-seed.json"),
-                   "--protocol-review", "--protocol-diff-out", str(diff)]
+                   "--c8s-repo", str(args.c8s_repo), "--protocol-review", "--protocol-diff-out", str(diff)]
+        if commit:
+            command += ["--seed", str(args.directory / "allowlist-seed.json")]
         if "-beta." in version:
             command.append("--allow-beta")
         if args.confos_repo is not None:

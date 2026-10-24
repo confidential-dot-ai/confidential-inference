@@ -82,6 +82,24 @@ def published_release_images() -> dict[str, str]:
     return dict(image.split("@", 1) for image in RELEASE_IMAGES.values())
 
 
+def staging_seed(tag: str, commit: str, platform: str) -> dict:
+    """The staging pin's C8s seed asset, as the staging fixture mirrors it (its
+    entries that no policy names), so the tests need no network."""
+    profile = next(profile for profile in PROFILES.load() if profile.name == "staging")
+    c8s = PROFILES.read_spec(profile)["c8s"]
+    if (tag, commit, platform) != (c8s["release"], c8s["sourceCommit"], "tdx"):
+        raise GEN.c8s_release.ReleaseError(f"no test seed for c8s {tag} {platform}")
+    names = {item["name"] for item in json.loads(profile.policy.read_text())["workloads"]}
+    workloads = json.loads(STAGING_ALLOWLIST.read_text())["workloads"]
+    return {"schema": "c8s.allowlist/v1", "workloads": {name: entry for name, entry in workloads.items() if name not in names}}
+
+
+def setUpModule():
+    patch = mock.patch.object(GEN.c8s_release, "allowlist_seed", side_effect=staging_seed)
+    patch.start()
+    unittest.addModuleCleanup(patch.stop)
+
+
 def write_release(directory: Path, manifest: dict) -> None:
     """Put a release manifest and an empty Sigstore bundle where the build downloads them."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -100,7 +118,9 @@ def build_release(tag: str, evidence: dict, download_dir: Path | None, generate,
         stack.enter_context(mock.patch.object(MAN, "verify_image_source_boundary"))
         stack.enter_context(mock.patch.object(MAN, "changed_paths", return_value=[]))
         stack.enter_context(mock.patch.object(MAN.release_signature, "verify_release_signature"))
-        stack.enter_context(mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"))
+        # A real cosign stays: generating with a c8s CLI verifies the C8s seed asset.
+        which = MAN.shutil.which
+        stack.enter_context(mock.patch.object(MAN.shutil, "which", side_effect=lambda name: which(name) or "/usr/bin/cosign"))
         stack.enter_context(mock.patch.dict(MAN.ALLOWLIST_GENERATOR, {
             "generate": generate, "image_config": REPOSITORY_CONFIGS.__getitem__,
         }))
@@ -497,12 +517,30 @@ class ProcessTests(unittest.TestCase):
         spec = {"release": "v0.59.1", "sourceCommit": "a" * 40, "coreImages": [CORE]}
         record = {"sourceCommit": spec["sourceCommit"], "coreImages": [CORE],
                   "allowlist": {"schema": "c8s.allowlist/v1", "workloads": {}}}
-        with mock.patch.object(GEN, "read_json", return_value=record):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(GEN, "ROOT", Path(directory)):
+            path = Path(directory) / "release/inputs/c8s-seeds" / (spec["sourceCommit"] + ".json")
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(record))
             self.assertEqual(GEN.core_seed(spec), {})
-        for field, value in (("sourceCommit", "b" * 40), ("coreImages", [])):
-            with mock.patch.object(GEN, "read_json", return_value={**record, field: value}):
+            for field, value in (("sourceCommit", "b" * 40), ("coreImages", [])):
+                path.write_text(json.dumps({**record, field: value}))
                 with self.assertRaisesRegex(GEN.GenerationError, "differ from the profile"):
                     GEN.core_seed(spec)
+
+    def test_without_a_record_the_core_seed_is_the_release_asset_of_the_node_image_platform(self):
+        seed = {"schema": "c8s.allowlist/v1", "workloads": {"c8s-router-" + "0" * 12: {}}}
+        spec = {"release": "v0.74.0", "sourceCommit": "a" * 40, "coreImages": [CORE],
+                "nodeImage": {"tag": "rke2-tdx-cdi-v0.74.0"}}
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(GEN, "ROOT", Path(directory)), \
+                mock.patch.object(GEN.c8s_release, "allowlist_seed", return_value=seed) as asset:
+            self.assertEqual(GEN.core_seed(spec), seed["workloads"])
+            asset.assert_called_once_with("v0.74.0", "a" * 40, "tdx")
+            asset.side_effect = GEN.c8s_release.ReleaseError("does not verify")
+            with self.assertRaisesRegex(GEN.GenerationError, "does not verify"):
+                GEN.core_seed(spec)
+            with self.assertRaisesRegex(GEN.GenerationError, "names no platform"):
+                GEN.core_seed({**spec, "nodeImage": {"tag": "custom"}})
+
 
     def test_process_contract_accepts_canonical_order_but_refuses_duplicates_and_changes(self):
         main = {"name": "main", "image": IMAGE, "command": ["/entry"], "args": ["--x"]}
