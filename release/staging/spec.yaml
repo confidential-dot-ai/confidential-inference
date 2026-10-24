@@ -18,23 +18,20 @@ model:
   byteManifestSha256: d39aa41f901cb2cb07087157bcdc9c8ec32b6bf1e82c5018df35eff8cad6522e
 
 c8s:
-  release: v0.73.3-0.20261023212950-c439b9d3553f
-  # A dev build's pseudo-version counts from the last tag (v0.72.0); the
-  # version gates use the release it previews.
-  baseRelease: v0.73.0
-  sourceCommit: c439b9d3553f86c060850618bd92ead1fa85178a
+  release: v0.74.0-beta.1
+  sourceCommit: 313e35a25182de965811d2427786ed506061fa8d
   nodeImage:
     reference: ghcr.io/confidential-dot-ai/node-guest-base
-    tag: rke2-tdx-cdi-dev-c439b9d3553f
-    digest: sha256:266126584c1839004af7e684645b0e4bf6b504e638a4abcd763771c0fc72f3e2
+    tag: rke2-tdx-cdi-v0.74.0-beta.1
+    digest: sha256:68c967f1dd9e6d85406047f7ef81ff262d284e2a0cad030d17917753671991c2
   coreImages:
-  - ghcr.io/confidential-dot-ai/c8s-operator@sha256:1760338083e522ed95023d305dbd91954d138cc4b39353347a2832d93d0a3402
-  - ghcr.io/confidential-dot-ai/cds@sha256:6fb8519368616f5be48184f9c9ca1b0537b0f4680ccd8823b9b2e04638600858
-  - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:235ab8308780095e2b0394a906e93c568211827849223d7830d6b23ab2f229c4
-  - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:e82a3c6277431b5b80f27a883af11ab5253aed8b54971d6dea6e10a997b26ad3
-  - ghcr.io/confidential-dot-ai/volumed@sha256:16c0eb29bd9d222abf368fc7f2724f4f9f0ffcb8a7857e579df5d82c5c8ad6a9
+  - ghcr.io/confidential-dot-ai/c8s-operator@sha256:63ccbf1043e8fc33e725581817a1e1d655f675ea7b6bf1aad7085e3c917f58da
+  - ghcr.io/confidential-dot-ai/cds@sha256:471cd085f268d4510d511cebecde93fe9fab2468cfa02d5bafef488507477370
+  - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:214f3d2e96262bb50910bc02030c2525af0dd4ec1e9425eab7d18582e2938753
+  - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:593cbada9dce5bf0405657116c37f733e8c4fc13737665c1ed8eb27454cdd4a0
+  - ghcr.io/confidential-dot-ai/volumed@sha256:8c7db3ad521af32ddb82455a02c3c1829d1cc9e51b2596413df1039d51406eb5
   - nginxinc/nginx-unprivileged@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6
   nodeManifestArtifact:
-    tag: rke2-tdx-dev-c439b9d3553f
-    digest: sha256:9205c1396200b6d5dfd8c7291aff1fcd08d7def12ecaf4b380de32614555c30a
-    manifestJson: sha256:edb29ecb9756f766c23b34a5921766788a292e9c869e9fa26199b800166d5dcf
+    tag: rke2-tdx-v0.74.0-beta.1
+    digest: sha256:33fa1fecd74f3478708608e78cb1e9aff8bec3112cac20a5bc32c060e8c53896
+    manifestJson: sha256:6f3c7571b92a37a794ca999b821cb4fabf10e33da241baccaf7efee2541f7103
