@@ -1,0 +1,293 @@
+{{- /*
+The flags of one argv as a JSON object: `--flag value` and `--flag=value`
+map the flag to its value, a flag followed by another flag (or by nothing)
+maps to "". The PD template checks the flags it also derives elsewhere.
+*/}}
+{{- define "confidential-inference.pdFlags" -}}
+{{- $flags := dict -}}
+{{- $args := . -}}
+{{- range $i, $arg := $args -}}
+{{- if hasPrefix "--" $arg -}}
+{{- if contains "=" $arg -}}
+{{- $parts := splitn "=" 2 $arg -}}
+{{- $_ := set $flags $parts._0 $parts._1 -}}
+{{- else if and (lt (add1 $i) (len $args)) (not (hasPrefix "--" (index $args (add1 $i)))) -}}
+{{- $_ := set $flags $arg (index $args (add1 $i)) -}}
+{{- else -}}
+{{- $_ := set $flags $arg "" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $flags -}}
+{{- end }}
+
+{{- /* The address the router gives for one PD worker. */}}
+{{- define "confidential-inference.pdWorkerUrl" -}}
+http://inference-pd-0.inference-pd:{{ .port }}
+{{- end }}
+
+{{- define "confidential-inference.source.inference-pd" -}}
+{{- $pd := .Values.inference.pd }}
+{{- if and .Values.inference.enabled $pd.enabled }}
+{{- $image := required "inference.pd requires images.sglangPd" .Values.images.sglangPd }}
+{{- if ne .Values.inference.mode "model" }}
+{{- fail "inference.pd requires inference.mode=model" }}
+{{- end }}
+{{- if .Values.inference.model.cache.enabled }}
+{{- fail "inference.pd reads the c8s model volume; set inference.model.cache.enabled=false" }}
+{{- end }}
+{{- if .Values.telemetry.enabled }}
+{{- fail "inference.pd renders no worker scrape targets yet; set telemetry.enabled=false" }}
+{{- end }}
+{{- if eq (len .Values.inference.gpuArchitectures) 0 }}
+{{- fail "inference.gpuArchitectures is required when inference.pd.enabled is true" }}
+{{- end }}
+{{- $volumeName := index .Values.inference.model.volumeNames 0 }}
+{{- $modelPath := printf "%s/%s" .Values.inference.model.volumeDirectory $volumeName }}
+{{- $readyFile := "/run/dsv41/engram.ready" }}
+{{- $gpus := 0 }}
+{{- $decodeSlots := 0 }}
+{{- $roles := dict }}
+{{- $seen := dict }}
+{{- range $w := $pd.workers }}
+{{- $gpus = add $gpus $w.gpus }}
+{{- $_ := set $roles $w.role true }}
+{{- $where := printf "inference.pd.workers %s" $w.name }}
+{{- range $key := list (printf "name %s" $w.name) (printf "port %v" $w.port) (printf "port %v" ($w.bootstrapPort | default "none")) }}
+{{- if and (hasKey $seen $key) (ne $key "port none") }}
+{{- fail (printf "%s: duplicate %s" $where $key) }}
+{{- end }}
+{{- $_ := set $seen $key true }}
+{{- end }}
+{{- $flags := include "confidential-inference.pdFlags" $w.args | fromJson }}
+{{- range $flag, $expected := dict "--model-path" $modelPath "--host" "0.0.0.0" "--port" (toString $w.port) "--served-model-name" $.Values.inference.model.name "--disaggregation-mode" $w.role }}
+{{- if ne (get $flags $flag) $expected }}
+{{- fail (printf "%s: args must set %s %s" $where $flag $expected) }}
+{{- end }}
+{{- end }}
+{{- if eq $w.role "prefill" }}
+{{- if ne (get $flags "--disaggregation-bootstrap-port") (toString $w.bootstrapPort) }}
+{{- fail (printf "%s: args must set --disaggregation-bootstrap-port %v" $where $w.bootstrapPort) }}
+{{- end }}
+{{- end }}
+{{- if and (eq $w.role "decode") (get $flags "--max-running-requests") }}
+{{- $decodeSlots = add $decodeSlots (atoi (get $flags "--max-running-requests")) }}
+{{- end }}
+{{- if hasKey $w.env "CUDA_VISIBLE_DEVICES" }}
+{{- fail (printf "%s: the device plugin assigns GPUs; remove CUDA_VISIBLE_DEVICES" $where) }}
+{{- end }}
+{{- end }}
+{{- if not (and (hasKey $roles "prefill") (hasKey $roles "decode")) }}
+{{- fail "inference.pd.workers needs at least one prefill and one decode worker" }}
+{{- end }}
+{{- /* Every decode slot needs a gateway admission, or the slots stay idle and
+       the gateway answers the excess with 503. */}}
+{{- if lt (int .Values.gateway.protection.inferenceConcurrency) $decodeSlots }}
+{{- fail (printf "gateway.protection.inferenceConcurrency %v is below the %d requests the decode workers run (--max-running-requests)" .Values.gateway.protection.inferenceConcurrency $decodeSlots) }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-pd
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: inference-worker
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "confidential-inference.selector" (dict "root" . "component" "inference-worker") | nindent 4 }}
+    app.kubernetes.io/instance: inference-pd
+  ports:
+    {{- range $index, $w := $pd.workers }}
+    - name: http-{{ $index }}
+      port: {{ $w.port }}
+      targetPort: {{ $w.port }}
+    {{- if $w.bootstrapPort }}
+    - name: boot-{{ $index }}
+      port: {{ $w.bootstrapPort }}
+      targetPort: {{ $w.bootstrapPort }}
+    {{- end }}
+    {{- end }}
+---
+# One pod: the Engram holder and every prefill and decode worker share its
+# model mount (and so its page cache), /dev/shm and IPC namespace. Prefill
+# writes KV into decode GPU memory through CUDA IPC handles (Mooncake
+# intra-node NVLink), as the launcher's single host does.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: inference-pd
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: inference-worker
+    app.kubernetes.io/instance: inference-pd
+spec:
+  serviceName: inference-pd
+  replicas: 1
+  updateStrategy:
+    type: OnDelete
+    rollingUpdate: null
+  selector:
+    matchLabels:
+      {{- include "confidential-inference.selector" (dict "root" . "component" "inference-worker") | nindent 6 }}
+      app.kubernetes.io/instance: inference-pd
+  template:
+    metadata:
+      labels:
+        {{- include "confidential-inference.selector" (dict "root" . "component" "inference-worker") | nindent 8 }}
+        app.kubernetes.io/instance: inference-pd
+        confidential.ai/environment: {{ .Values.environment | quote }}
+      annotations:
+        confidential.ai/cw: {{ $pd.attestedWorkload }}
+        confidential.ai/c8s-volumes: {{ printf "%s=%s" $volumeName .Values.inference.model.c8sVolumeSource | quote }}
+        confidential.ai/c8s-volume-dir: {{ .Values.inference.model.volumeDirectory | quote }}
+        confidential.ai/gpu-architectures: {{ join "," .Values.inference.gpuArchitectures | quote }}
+        confidential.ai/attested-gpu-count: {{ gt (int .Values.inference.attestedGpuCount) 0 | ternary (int .Values.inference.attestedGpuCount) $gpus | quote }}
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: {{ include "confidential-inference.inferenceNodeName" (dict "root" . "index" 0) | quote }}
+      enableServiceLinks: false
+      serviceAccountName: confidential-inference
+      terminationGracePeriodSeconds: {{ .Values.inference.terminationGracePeriodSeconds }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        # Checks every model file against the release, then locks the Engram
+        # shards. mlock needs the node's RLIMIT_MEMLOCK to cover them: this
+        # container has no capability.
+        - name: engram-holder
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/wait-for-model"]
+          args:
+            - --path={{ $modelPath }}
+            - --timeout-seconds={{ .Values.inference.model.mountVerification.timeoutSeconds }}
+            - --poll-seconds={{ .Values.inference.model.mountVerification.pollSeconds }}
+            - --expected-repository={{ .Values.inference.model.name }}
+            - --expected-revision={{ .Values.inference.model.revision }}
+            - --revision-metadata={{ .Values.inference.model.mountVerification.revisionMetadata }}
+            {{- range $file := include "confidential-inference.expectedFiles" . | fromJsonArray }}
+            - --expected-file={{ $file }}
+            {{- end }}
+            - --
+            - {{ $pd.python }}
+            - {{ $pd.engramHolder.script }}
+            - --model
+            - {{ $modelPath }}
+            - --ready-file
+            - {{ $readyFile }}
+          env:
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: {{ $pd.engramHolder.resources.cpu | quote }}
+              memory: {{ $pd.engramHolder.resources.memory }}
+          volumeMounts:
+            - name: run
+              mountPath: /run/dsv41
+        {{- range $index, $w := $pd.workers }}
+        {{- $previous := list }}
+        {{- range $before := slice $pd.workers 0 $index }}
+        {{- $previous = append $previous (toString $before.port) }}
+        {{- end }}
+        # {{ $w.role }}: starts once the holder is ready and every earlier
+        # worker answers /health, one at a time as the launcher starts them.
+        - name: {{ $w.name }}
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - {{ printf "until [ -s %s ]; do sleep 5; done; for port in %s; do until curl -sf -o /dev/null http://127.0.0.1:$port/health; do sleep 5; done; done; exec \"$@\"" $readyFile (join " " $previous) | toJson }}
+            - sh
+          args:
+            - {{ $pd.python }}
+            - -m
+            - sglang.launch_server
+            {{- range $w.args }}
+            - {{ toJson . }}
+            {{- end }}
+          env:
+            - name: HOME
+              value: {{ printf "%s/home" $pd.cacheDirectory | quote }}
+            {{- range $name, $value := $w.env }}
+            - name: {{ $name }}
+              value: {{ toJson $value }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http-{{ $index }}
+              containerPort: {{ $w.port }}
+            {{- if $w.bootstrapPort }}
+            - name: boot-{{ $index }}
+              containerPort: {{ $w.bootstrapPort }}
+            {{- end }}
+          resources:
+            requests:
+              cpu: {{ $w.resources.cpu | quote }}
+              memory: {{ $w.resources.memory }}
+              nvidia.com/gpu: {{ $w.gpus }}
+            limits:
+              nvidia.com/gpu: {{ $w.gpus }}
+          # Model load, JIT compilation and graph capture take most of an
+          # hour, after the earlier workers: two hours before a restart.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: {{ $w.port }}
+            periodSeconds: 15
+            failureThreshold: 480
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ $w.port }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /v1/models
+              port: {{ $w.port }}
+            periodSeconds: 30
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+            - name: kernel-cache
+              mountPath: {{ $pd.cacheDirectory }}
+            - name: run
+              mountPath: /run/dsv41
+              readOnly: true
+        {{- end }}
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ $pd.shmSizeLimit }}
+        - name: kernel-cache
+          emptyDir:
+            sizeLimit: {{ $pd.cacheSizeLimit }}
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+{{- end }}
+
+{{- end -}}
+{{- include "confidential-inference.applyWorkloadOverrides" (dict "root" . "body" (include "confidential-inference.source.inference-pd" .)) }}

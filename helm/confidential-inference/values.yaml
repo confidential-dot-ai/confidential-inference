@@ -20,6 +20,8 @@ images:
   gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:13334810afe09f9ec722eed6fc19c4a64e87b406e926ce383a54dd2ede01fea1
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
+  # sglangPd: the prefill/decode worker image (inference.pd). It has no
+  # default: a PD render without it fails.
   telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849  # 0.163.2
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
@@ -251,6 +253,48 @@ inference:
     maxTotalTokens: 8192
     maxRunningRequests: 48
     chatTemplate: chatml
+  # Prefill/decode disaggregation (templates/inference-pd.yaml). Off keeps
+  # the aggregated inference-worker-N StatefulSets above. On replaces them
+  # with one StatefulSet, inference-pd, whose single pod holds the Engram
+  # page-cache holder and one container per prefill or decode worker, and
+  # switches the router to PD mode. Its workers share the pod's model mount,
+  # page cache, /dev/shm and IPC namespace, as on one host. The README of
+  # this chart ("Prefill/decode layout") lists what it requires of the node.
+  pd:
+    enabled: false
+    # The pod's c8s workload (confidential.ai/cw).
+    attestedWorkload: inference-pd-0
+    # The interpreter of images.sglangPd that runs every PD container.
+    python: /opt/dsv41/bin/python
+    # The workers, in start order. A worker starts after the previous one
+    # answers /health, as the launcher starts them. args is the worker's
+    # exact argv after `python -m sglang.launch_server`; the chart checks
+    # its --model-path, --host, --port, --served-model-name and (prefill)
+    # --disaggregation-bootstrap-port against the fields below.
+    #   - name: prefill-0          # container name
+    #     role: prefill            # prefill or decode
+    #     gpus: 2
+    #     port: 8041
+    #     bootstrapPort: 8999      # prefill only
+    #     args: [--model-path, /mnt/c8s-data/models/dsv41, ...]
+    #     env: {SGLANG_PP_LAYER_PARTITION: "8,13"}
+    #     resources: {cpu: "16", memory: 96Gi}
+    workers: []
+    # Verifies the model mount (wait-for-model), then keeps the checkpoint's
+    # Engram shards locked in the page cache that every worker reads. The
+    # workers start after its ready file exists.
+    engramHolder:
+      script: /opt/sglang/recipes/deepseek-v41/launcher/hold_engram_cache.py
+      resources:
+        cpu: "2"
+        memory: 200Gi
+    # One writable JIT kernel cache for the pod's workers (an emptyDir: it
+    # never outlives the pod and is never shared with the host).
+    cacheDirectory: /var/cache/dsv41
+    cacheSizeLimit: 128Gi
+    shmSizeLimit: 64Gi
+    # Router arguments after --pd-disaggregation and the worker URLs.
+    routerArgs: []
 
 router:
   # This is the exact c8s policy entry for this workload.

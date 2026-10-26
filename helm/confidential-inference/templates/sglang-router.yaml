@@ -1,5 +1,6 @@
 {{- define "confidential-inference.source.sglang-router" -}}
 {{- if .Values.router.enabled }}
+{{- $pd := and .Values.inference.enabled .Values.inference.pd.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -92,6 +93,31 @@ spec:
               drop: ["ALL"]
           command: ["python3", "-m", "sglang_router.launch_router"]
           args:
+            {{- if $pd }}
+            # Prefill/decode mode (inference.pd): each prefill URL and its
+            # KV bootstrap port, each decode URL, then inference.pd.routerArgs.
+            - --pd-disaggregation
+            {{- range $w := .Values.inference.pd.workers }}
+            {{- if eq $w.role "prefill" }}
+            - --prefill
+            - {{ include "confidential-inference.pdWorkerUrl" $w }}
+            - {{ $w.bootstrapPort | quote }}
+            {{- end }}
+            {{- end }}
+            {{- range $w := .Values.inference.pd.workers }}
+            {{- if eq $w.role "decode" }}
+            - --decode
+            - {{ include "confidential-inference.pdWorkerUrl" $w }}
+            {{- end }}
+            {{- end }}
+            {{- range .Values.inference.pd.routerArgs }}
+            - {{ toJson . }}
+            {{- end }}
+            - --host=0.0.0.0
+            - --port={{ .Values.router.port }}
+            - --prometheus-host=0.0.0.0
+            - --prometheus-port={{ .Values.router.metricsPort }}
+            {{- else }}
             # c8s >= v0.64: a mesh member pod cannot reach the Kubernetes API,
             # so the router gets its workers by name instead of by discovery.
             - --worker-urls
@@ -125,6 +151,7 @@ spec:
             - --port={{ .Values.router.port }}
             - --prometheus-host=0.0.0.0
             - --prometheus-port={{ .Values.router.metricsPort }}
+            {{- end }}
           env:
             - name: CI_ROUTER_MODEL_ROUTES_FILE
               value: /mnt/c8s-data/model-routes/routes.json
