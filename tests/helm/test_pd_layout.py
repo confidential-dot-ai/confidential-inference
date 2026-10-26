@@ -213,6 +213,7 @@ def check_render(values: dict) -> None:
         if "bootstrap_port" not in worker:
             expected += ["--decode", f"http://{POD_HOST}:{worker['url'].rsplit(':', 1)[1]}"]
     expected += router_args(PLAN["router"]["command"])
+    expected += ["--health-check-timeout-secs=5", "--health-failure-threshold=3"]
     expected += ["--host=0.0.0.0", "--port=30000", "--prometheus-host=0.0.0.0", "--prometheus-port=29000"]
     assert router["args"] == expected, router["args"]
     for flag in ("--reject-video", "--max-concurrent-requests", "--max-images-per-request", "--max-inflight-images"):
