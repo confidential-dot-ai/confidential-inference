@@ -48,10 +48,9 @@ names, or resource sizes. Keep those values in the operator repository.
 (`RollingUpdate`, one extra pod each). The router Deployment (`sglang-router`)
 and the gateway's router Service (`router-headless`) keep their names across
 releases, so the old router serves until the new one is Ready. A settings
-change changes the gateway's pod template, so it rolls the gateway. The router
-reads its routes file once at start; a `checksum/config` pod annotation rolls
-it when the routes change. A release that changes neither the gateway image
-nor its settings does not roll the gateway.
+or routes change changes the gateway's or the router's pod template, so it
+rolls that pod. A release that changes neither the gateway image nor its
+settings does not roll the gateway.
 
 The inference workers use `updateStrategy: OnDelete`. Helm updates their
 StatefulSets, but a worker keeps its old pod until you delete it. Each worker
