@@ -70,3 +70,75 @@ for worker in inference-worker-0 inference-worker-1; do
   # Send one chat completion through the router before the next worker.
 done
 ```
+
+## Prefill/decode layout
+
+`inference.pd.enabled: true` replaces the aggregated `inference-worker-N`
+StatefulSets with one StatefulSet, `inference-pd`, and puts the router in PD
+mode. It is off by default. With it off, the chart renders exactly what it
+rendered before the setting existed.
+
+The `inference-pd` pod holds one container per prefill or decode worker and
+an `engram-holder` container. They share one pod because the workers
+depend on each other the way processes on one host do:
+
+- Prefill writes KV cache straight into decode GPU memory through CUDA IPC
+  handles (Mooncake intra-node NVLink). Containers of one pod share an IPC
+  namespace; separate pods do not.
+- The holder locks the checkpoint's Engram shards in the page cache, and
+  every worker reads those pages. The pod's c8s model volume is one mount,
+  so the cache is shared. Separate pods would each open their own volume.
+- `/dev/shm` is one Memory emptyDir for the pod.
+
+Each worker's `args` are the launcher's exact argv. The chart checks that the
+argv sets `--model-path` to the c8s volume path, `--host 0.0.0.0` (the router
+is another pod), `--port`, `--served-model-name` (`inference.model.name`),
+`--disaggregation-mode`, and a prefill worker's
+`--disaggregation-bootstrap-port`. A worker must not set
+`CUDA_VISIBLE_DEVICES`: the device plugin assigns each container its GPUs,
+numbered from 0. `tests/helm/test_pd_layout.py` compares the render with a
+launcher plan and lists every difference.
+
+The workers start one at a time, as the launcher starts them. Each one waits
+for the holder's ready file and for every earlier worker's `/health`. The
+holder first runs `wait-for-model`, so no worker starts before the model
+files match the release.
+
+Every container runs as uid 1001, with no capability and no privilege
+escalation. The pod sets no host namespace. The c8s webhook refuses
+`shareProcessNamespace`, so the chart does not set it. The layout needs these
+things from the node, which the chart cannot grant:
+
+- `RLIMIT_MEMLOCK` large enough for the holder's mlock of the Engram shards
+  (about 189 GiB for DeepSeek-V4.1), inherited from the container runtime.
+- Free order-9 pages for each confidential-compute `cuInit`. The launcher
+  compacts host memory before each worker starts (`/proc/sys/vm`, root
+  only). In Kubernetes the node image must provide proactive compaction.
+- CUDA IPC between containers that each see only their own GPUs. This is
+  not yet verified on a GPU node.
+
+Telemetry scraping and the plain model cache (`inference.model.cache`) are
+not yet supported with this layout; the render fails if either is enabled.
+
+### Gateway admission and routing
+
+The gateway admits at most `gateway.protection.inferenceConcurrency`
+inference requests, holds up to `gateway.protection.inferenceQueue` more for
+`queueTimeoutSeconds`, and answers the rest with 503 at once. The chart
+default of 48 with no queue leaves most decode slots idle, so a PD deployment
+must set `inferenceConcurrency` to at least the total `--max-running-requests`
+of its decode workers. The render fails below that total. The example values
+in `tests/helm/fixtures/dsv41-pd-values.yaml` set 128 with a queue of 64.
+`perKeyConcurrency` (128 by default) still bounds one API key.
+
+The router's `manual` policy (in `routerArgs`) keeps each `X-SMG-Routing-Key`
+on one worker, so a conversation's next turn reuses the prefix cache of the
+prefill worker that served its last turn. Without the header the router picks
+a worker at random for each request. The gateway sends the header on every
+request it can identify a conversation for (`services/gateway/src/routing_key.rs`):
+an HMAC of the API key's record ID and either the caller's own
+`X-SMG-Routing-Key` or a chat completion's opening messages. A legacy
+completion without a caller key gets none. The secret is drawn at gateway
+start, so a restart assigns every conversation a worker again, and more than
+one gateway replica (`gateway.replicas`, 1 by default) would split a
+conversation across the replicas' keys.

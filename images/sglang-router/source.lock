@@ -2,16 +2,26 @@
   "schemaVersion": 1,
   "source": {
     "repository": "https://github.com/sgl-project/sglang",
-    "commit": "71de97b264b04dcd514cf904003028aefe9775c8",
-    "version": "v0.5.18"
+    "commit": "a7fd2e1158c389c33077bae67fb797efa8dd09bd",
+    "commitDate": "2026-10-19T02:08:20Z"
   },
   "routerVersion": "0.3.2",
-  "patch": {
-    "path": "patches/worker-withdrawal.patch",
-    "sha256": "19eb3d6aad263455fb782c83dab676ee879c6191eef39e51104353e006f05b1a"
-  },
+  "patches": [
+    {
+      "path": "patches/worker-withdrawal.patch",
+      "sha256": "19eb3d6aad263455fb782c83dab676ee879c6191eef39e51104353e006f05b1a"
+    },
+    {
+      "path": "patches/admission-caps.patch",
+      "sha256": "eb542bb49728c7f926253da0a21ac521567382cf00cfc47c93e0022f337ad021"
+    },
+    {
+      "path": "patches/pd-router.patch",
+      "sha256": "ffe36900914b9fd0a7c881ce990b762069fdcb0c2ec97aad5a6037843dc37ba6"
+    }
+  ],
   "deploymentImage": {
     "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang-router"
   },
-  "cargoLockSha256": "9427cd2dc151fed8c9da43cf620f26e165077cd8660244b1b83ea02f50ad282e"
+  "cargoLockSha256": "54a80e8bd038e82e42a11c955a1c3954d161db4f9a5c22820b035667e2ba10d1"
 }
