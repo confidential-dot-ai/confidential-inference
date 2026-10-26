@@ -224,7 +224,9 @@ def check_render(values: dict) -> None:
     internal = by_name(documents, "NetworkPolicy", "inference-pd-internal")["spec"]
     assert internal["podSelector"]["matchLabels"]["app.kubernetes.io/instance"] == "inference-pd"
     # The gateway admits a request for every decode slot and queues a burst.
-    settings = json.loads(by_name(documents, "ConfigMap", "gateway-runtime")["data"]["settings.json"])
+    gateway = by_name(documents, "Deployment", "gateway")["spec"]["template"]["spec"]["containers"][0]
+    env = {item["name"]: item.get("value") for item in gateway["env"]}
+    settings = json.loads(env["GATEWAY_RUNTIME_CONFIG"])
     assert (settings["inferenceConcurrency"], settings["inferenceQueue"]) == (decode_slots(PLAN), GATEWAY_QUEUE)
     # The c8s webhook admits the pod (scripts/check-c8s-admission.py).
     assert admission["refusals"](documents) == []
