@@ -9,7 +9,7 @@
   "patches": [
     {
       "path": "patches/worker-withdrawal.patch",
-      "sha256": "19eb3d6aad263455fb782c83dab676ee879c6191eef39e51104353e006f05b1a"
+      "sha256": "c19733adbf8ec8c25bb58a517bfa35cb5f93d7c1a4b5a8b439e50104a9d6b3fa"
     },
     {
       "path": "patches/admission-caps.patch",
@@ -23,5 +23,5 @@
   "deploymentImage": {
     "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang-router"
   },
-  "cargoLockSha256": "54a80e8bd038e82e42a11c955a1c3954d161db4f9a5c22820b035667e2ba10d1"
+  "cargoLockSha256": "2a8bf58b2be1babdb06145ece924ae0c62919ecc3ee9a9a3ee3a9c6a12d6a5b6"
 }

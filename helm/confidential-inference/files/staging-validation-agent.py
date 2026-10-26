@@ -32,7 +32,7 @@ def validate_action(action, allowed_hosts, router_hosts=(), *, worker_hosts=(), 
                "/metrics": (9090, "GET"), "/runtime-config": (9090, "GET"),
                "/release-config": (9090, "GET")}
     router = {"/health": (30000, "GET"), "/readiness": (30000, "GET"),
-              "/model-routes": (30000, "GET"), "/model-routes/status": (30000, "GET")}
+              "/model-routes": (30000, "GET")}
     paths = gateway if parsed.hostname in allowed_hosts else router if parsed.hostname in router_hosts else {}
     if (parsed.scheme != "http" or parsed.username or parsed.password or parsed.fragment
             or parsed.path not in paths or (parsed.query and parsed.path != "/attestation")

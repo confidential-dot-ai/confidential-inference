@@ -356,31 +356,31 @@ def main() -> None:
                                                          'app.kubernetes.io/component': 'sglang-router'}
     assert router['spec']['strategy']['rollingUpdate'] == {'maxUnavailable': 0, 'maxSurge': 1}
     assert router['spec']['template']['metadata']['annotations']['confidential.ai/cw'] == 'router-v0-14-18'
-    # One model definition produces both views: the gateway settings in its
-    # pinned environment and the router routes file.
+    # One model definition produces both views, each in its pod's pinned
+    # environment: the gateway settings and the router routes.
     routes_json = 'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}'
     runtime_documents = render("--set", "attestationReceipts.releaseId=v0.14.18-transition",
         "--set-json", routes_json)
     runtime_gateway = Gateway(runtime_documents)
-    maps = {item['metadata']['name']: item for item in runtime_documents if item['kind'] == 'ConfigMap'}
     settings = runtime_gateway.settings
-    routes = json.loads(maps['router-model-routes']['data']['routes.json'])
+    runtime_router = next(item for item in runtime_documents if item['kind'] == 'Deployment'
+                          and item['metadata']['name'] == 'sglang-router')
+    router_container = next(item for item in runtime_router['spec']['template']['spec']['containers']
+                            if item['name'] == 'sglang-router')
+    assert [item['name'] for item in router_container['env']] == ['CI_ROUTER_MODEL_ROUTES']
+    routes = json.loads(router_container['env'][0]['value'])
+    assert routes == {'schemaVersion': 1, 'routes': {'public-a': ['backend-a'], 'public-b': ['backend-b']}}
     assert settings['catalogModelIds'] == settings['inferenceModelIds'] == sorted(routes['routes'])
-    assert 'revision' not in settings and routes['revision'] == 1
     assert settings['routerService'] == 'router-headless'
     router_slot = next(item for item in runtime_documents if item['kind'] == 'Service' and item['metadata']['name'] == settings['routerService'])
     assert router_slot['spec']['clusterIP'] == 'None'
-    assert routes['routes']['public-a'] == ['backend-a']
-    assert set(maps) == {'router-model-routes'}
+    assert not any(item['kind'] == 'ConfigMap' for item in runtime_documents)
+    assert 'volumeMounts' not in router_container
     for removed in ('GATEWAY_MODEL', 'GATEWAY_INFERENCE_CONCURRENCY',
                     'GATEWAY_MAXIMUM_BODY_BYTES', 'GATEWAY_UPSTREAM_TIMEOUT_SECONDS'):
         assert removed not in runtime_gateway.env
     assert not any('subPath' in mount for mount in runtime_gateway.container['volumeMounts'])
-    checksum = lambda deployment: deployment['spec']['template']['metadata']['annotations']['checksum/config']
     final_documents = render("--set", "attestationReceipts.releaseId=v0.14.18", "--set-json", routes_json)
-    runtime_router = next(item for item in runtime_documents if item['kind'] == 'Deployment'
-                          and item['metadata']['name'] == 'sglang-router')
-    assert checksum(runtime_router) == hashlib.sha256(json.dumps(routes['routes'], separators=(',', ':')).encode()).hexdigest()
     private_router = next(item for item in runtime_documents if item['kind'] == 'Service'
                           and item['metadata']['name'] == 'router-headless')
     assert private_router['spec']['clusterIP'] == 'None'
@@ -389,12 +389,6 @@ def main() -> None:
     final_private_router = next(item for item in final_documents if item['kind'] == 'Service'
                                 and item['metadata']['name'] == 'router-headless')
     assert private_router == final_private_router
-    router_container = next(item for item in runtime_router['spec']['template']['spec']['containers']
-                            if item['name'] == 'sglang-router')
-    assert router_container['env'] == [{'name':'CI_ROUTER_MODEL_ROUTES_FILE',
-                                     'value':'/mnt/c8s-data/model-routes/routes.json'}]
-    assert router_container['volumeMounts'][0]['readOnly'] is True
-    assert 'subPath' not in router_container['volumeMounts'][0]
     helm("lint", str(CHART), *NEUTRAL_MODE)
     documents = render("--namespace", "inference")
     workloads = [
@@ -632,17 +626,17 @@ def main() -> None:
     staging_documents = render("--values", "release/values.yaml", "--values",
                                "release/staging/values.yaml", "--values",
                                "tests/release-v1/fixtures/release-values.yaml")
-    maps = {item["metadata"]["name"]: item for item in staging_documents
-            if item["kind"] == "ConfigMap"}
     model = "hf-internal-testing/tiny-random-LlamaForCausalLM"
     settings = Gateway(staging_documents).settings
-    routes = json.loads(maps["router-model-routes"]["data"]["routes.json"])
+    staging_router = next(item for item in staging_documents if item["kind"] == "Deployment"
+                          and item["metadata"]["name"] == "sglang-router")
+    routes = json.loads(staging_router["spec"]["template"]["spec"]["containers"][0]["env"][0]["value"])
     assert settings["catalogModelIds"] == [model]
     assert settings["inferenceModelIds"] == [model]
     router_slot = next(item for item in staging_documents if item["kind"] == "Service" and item["metadata"]["name"] == settings["routerService"])
     assert router_slot["spec"]["clusterIP"] == "None"
     assert routes["routes"] == {model: [model]}
-    assert set(maps) == {"router-model-routes"}
+    assert not any(item["kind"] == "ConfigMap" for item in staging_documents)
     assert not any(container["name"] == "cds-attest" for document in staging_documents
                    if document["kind"] in {"Deployment", "StatefulSet"}
                    for container in document["spec"]["template"]["spec"]["containers"])

@@ -63,8 +63,6 @@ spec:
         confidential.ai/environment: {{ .Values.environment | quote }}
       annotations:
         confidential.ai/cw: sglang-router
-        # The router reads its model routes once at start.
-        checksum/config: {{ include "confidential-inference.modelRoutes" . | sha256sum }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.router.metricsPort | quote }}
     spec:
@@ -158,12 +156,9 @@ spec:
             - --prometheus-port={{ .Values.router.metricsPort }}
             {{- end }}
           env:
-            - name: CI_ROUTER_MODEL_ROUTES_FILE
-              value: /mnt/c8s-data/model-routes/routes.json
-          volumeMounts:
-            - name: model-routes
-              mountPath: /mnt/c8s-data/model-routes
-              readOnly: true
+            # Environment, so the exact allowlist pins the routes.
+            - name: CI_ROUTER_MODEL_ROUTES
+              value: {{ include "confidential-inference.routerRoutes" . | quote }}
           ports:
             - name: openai
               containerPort: {{ .Values.router.port }}
@@ -186,10 +181,6 @@ spec:
               port: openai
             periodSeconds: 30
             timeoutSeconds: 5
-      volumes:
-        - name: model-routes
-          configMap:
-            name: {{ .Values.runtimeConfig.routerConfigMap }}
 {{- end }}
 
 {{- end -}}
