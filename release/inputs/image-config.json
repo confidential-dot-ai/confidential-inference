@@ -11,16 +11,6 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:235ab8308780095e2b0394a906e93c568211827849223d7830d6b23ab2f229c4": {
-    "cmd": [],
-    "entrypoint": [
-      "/app/c8s",
-      "armtls-mesh"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    ]
-  },
   "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:3fce8c123911f7242cab3f323edc11a4e73b764e8475e6e8128d3bd0248423e1": {
     "cmd": [],
     "entrypoint": [
@@ -31,7 +21,17 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:1760338083e522ed95023d305dbd91954d138cc4b39353347a2832d93d0a3402": {
+  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:603bb235588240b18fa45318b93abf081af0227471faa73749f8ca6f8c664f5f": {
+    "cmd": [],
+    "entrypoint": [
+      "/app/c8s",
+      "armtls-mesh"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:05bb6a32b7ad6009c63f77f46c7379ae70dacfc493f21783a16035429adc8993": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
@@ -51,7 +51,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/cds@sha256:6fb8519368616f5be48184f9c9ca1b0537b0f4680ccd8823b9b2e04638600858": {
+  "ghcr.io/confidential-dot-ai/cds@sha256:48f6faac418dd4c14f2710dcb057451d2b8c3d993c48172b79a8acb22e1f5897": {
     "cmd": [],
     "entrypoint": [
       "/c8s",
@@ -86,7 +86,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:e82a3c6277431b5b80f27a883af11ab5253aed8b54971d6dea6e10a997b26ad3": {
+  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:af5d194d3806dd03ebc7a39e29509f218310fa7efaf96ecd7db1a41359f08bf9": {
     "cmd": [
       "--config",
       "/etc/nri/conf.d/image-policy.yaml"
@@ -99,7 +99,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/volumed@sha256:16c0eb29bd9d222abf368fc7f2724f4f9f0ffcb8a7857e579df5d82c5c8ad6a9": {
+  "ghcr.io/confidential-dot-ai/volumed@sha256:0438ef1caf4324702d3a7789a51ca85e403a72de83e53f88719fc9a8af7a255f": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",
