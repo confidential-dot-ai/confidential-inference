@@ -111,6 +111,10 @@ spec:
             {{- range .Values.inference.pd.routerArgs }}
             - {{ toJson . }}
             {{- end }}
+            # The aggregated router's health tolerance: 3 consecutive
+            # failures, 5 s each (see the regular branch below).
+            - --health-check-timeout-secs=5
+            - --health-failure-threshold=3
             - --host=0.0.0.0
             - --port={{ .Values.router.port }}
             - --prometheus-host=0.0.0.0
