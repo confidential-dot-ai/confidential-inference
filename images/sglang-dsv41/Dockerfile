@@ -34,7 +34,8 @@ RUN printf 'deb https://snapshot.ubuntu.com/ubuntu/20261020T000000Z %s main univ
         ibverbs-providers libibverbs1 libnuma1 libcurl4t64 libnl-3-200 libnl-route-3-200 \
         libavcodec60 libavdevice60 libavfilter9 libavformat60 libavutil58 libswresample4 libswscale7 \
     && rm -rf /tmp/snapshot.list /var/lib/apt/lists/* /var/cache/apt/*.bin /var/cache/apt/archives/*.deb \
-        /var/log/apt /var/log/dpkg.log /var/log/alternatives.log /var/cache/ldconfig/aux-cache
+        /var/log/apt /var/log/dpkg.log /var/log/alternatives.log /var/cache/ldconfig/aux-cache \
+        /var/cache/fontconfig
 
 COPY --from=uv /uv /usr/local/bin/uv
 # No bytecode at build or run time: a .pyc records its source's mtime, and the
@@ -84,11 +85,17 @@ COPY --from=source /src/recipes/deepseek-v41/launcher/hold_engram_cache.py /opt/
 COPY --from=source /src/SOURCE_RECORD.json /opt/sglang/SOURCE_RECORD.json
 # Editable, as the tested image installed it: workers run with
 # PYTHONPATH=/opt/sglang/python. No .git reaches the build, so the version is
-# fixed rather than derived from tags.
+# fixed rather than derived from tags. uv_cache.json holds the build-time
+# ctime of pyproject.toml (uv's reinstall check, never used in the image), so
+# it leaves the dist-info and its RECORD line. The import check runs with -B:
+# -I ignores PYTHONDONTWRITEBYTECODE.
 RUN --mount=type=bind,source=images/sglang/wait_for_model.py,target=/run-src/wait-for-model,readonly \
     SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 SGLANG_BUILD_RUST_EXTS=none \
         uv pip install --no-deps --no-build-isolation -e /opt/sglang/python \
+    && dist=/opt/dsv41/lib/python3.12/site-packages/sglang-0.0.0.dev0.dist-info \
+    && rm "$dist/uv_cache.json" \
+    && sed -i '/^sglang-0\.0\.0\.dev0\.dist-info\/uv_cache\.json,/d' "$dist/RECORD" \
     && install -D -m 0555 /run-src/wait-for-model /usr/local/bin/wait-for-model \
-    && python -I -c 'import importlib.util as u; assert u.find_spec("sglang") and u.find_spec("mooncake")'
+    && python -I -B -c 'import importlib.util as u; assert u.find_spec("sglang") and u.find_spec("mooncake")'
 ENV HOME=/tmp
 USER 1001:1001
