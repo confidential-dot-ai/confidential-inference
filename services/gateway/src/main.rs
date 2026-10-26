@@ -62,10 +62,10 @@ struct Args {
     usage_enabled: bool,
     #[arg(long, env = "GATEWAY_ROUTER_NAMESPACE")]
     router_namespace: Option<String>,
-    // The chart's settings ConfigMap, read once at start. Its values replace
-    // the matching arguments below.
-    #[arg(long, env = "GATEWAY_RUNTIME_CONFIG_FILE")]
-    runtime_config_file: Option<PathBuf>,
+    // The chart's settings JSON. It is environment, so the exact allowlist
+    // pins it. Its values replace the matching arguments below.
+    #[arg(long, env = "GATEWAY_RUNTIME_CONFIG")]
+    runtime_config: Option<String>,
     #[arg(long, env = "GATEWAY_LISTEN", default_value = "0.0.0.0:9443")]
     listen: SocketAddr,
     #[arg(long, env = "GATEWAY_METRICS_LISTEN", default_value = "0.0.0.0:9090")]
@@ -181,14 +181,14 @@ async fn main() -> Result<()> {
             .init();
     }
     let mut args = Args::parse();
-    // The HTTP/2 stream limit keeps the startup argument; the settings file
-    // does not change it.
+    // The HTTP/2 stream limit keeps the startup argument; the settings do not
+    // change it.
     let limits = HttpLimits::from_args(&args)?;
     let mut catalog_model_ids = vec![args.model.clone()];
     let mut inference_model_ids = vec![args.model.clone()];
-    if let Some(path) = args.runtime_config_file.clone() {
-        let settings: GatewaySettings = serde_json::from_slice(&read_bounded(&path, 256 * 1024)?)
-            .context("parse the gateway settings")?;
+    if let Some(json) = args.runtime_config.clone() {
+        let settings: GatewaySettings =
+            serde_json::from_str(&json).context("parse the gateway settings")?;
         apply_settings(&mut args, &settings).context("load gateway settings")?;
         catalog_model_ids = settings.catalog_model_ids;
         inference_model_ids = settings.inference_model_ids;
@@ -662,7 +662,7 @@ mod tests {
 
     fn settings(router_service: Option<&str>) -> GatewaySettings {
         let mut value = serde_json::json!({
-            "schemaVersion":1,"evidence":{"baseUrl":"https://candidate.example.test"},
+            "schemaVersion":1,
             "catalogModelIds":["test"],"inferenceModelIds":["test"],"maximumBodyBytes":1024,
             "upstreamTimeoutSeconds":30,"bodyTimeoutSeconds":10,"streamIdleTimeoutSeconds":20,
             "attestationCacheSeconds":3,"globalRequestConcurrency":256,"perAddressConcurrency":16,
@@ -741,7 +741,7 @@ mod tests {
             usage_models: "{}".into(),
             usage_enabled: false,
             router_namespace: None,
-            runtime_config_file: None,
+            runtime_config: None,
             listen: "0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()),
             metrics_listen: "0.0.0.0:9090".parse().unwrap_or_else(|_| unreachable!()),
             inference_url: INFERENCE_UPSTREAM_URL.to_owned(),

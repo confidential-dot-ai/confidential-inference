@@ -3,34 +3,6 @@
 {{- fail "gateway.terminationGracePeriodSeconds must exceed gateway.shutdownGraceSeconds plus gateway.endpointDrainSeconds" }}
 {{- end }}
 apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: gateway-release-identity
-  labels:
-    {{- include "confidential-inference.labels" . | nindent 4 }}
-    app.kubernetes.io/component: gateway
-data:
-  {{- $identity := dict }}
-  {{- if eq .Values.attestationReceipts.policyMode "operator" }}
-  {{- $_ := set $identity "expectedOperatorPublicKeySha256" .Values.attestationReceipts.expectedOperatorPublicKeySha256 }}
-  {{- $_ := set $identity "expectedOperatorKeySetSha256" .Values.attestationReceipts.expectedOperatorKeySetSha256 }}
-  {{- end }}
-  {{- $cds := .Values.attestationReceipts.cds }}
-  {{- if and (or $cds.imagePolicy $cds.servedImagePolicy) (not (and $cds.imagePolicy $cds.servedImagePolicy $cds.url)) }}
-  {{- fail "attestationReceipts.cds needs url, imagePolicy and servedImagePolicy together" }}
-  {{- end }}
-  {{- if $cds.imagePolicy }}
-  {{- /* The deployment supplies the two c8s image policies; their pins travel
-         in this file, not the environment (services/gateway/ATTESTATION.md,
-         "CDS verification"). */}}
-  {{- $_ := set $identity "cdsImagePolicySha256" (printf "sha256:%s" (sha256sum $cds.imagePolicy)) }}
-  {{- $_ := set $identity "cdsServedImagePolicySha256" (printf "sha256:%s" (sha256sum $cds.servedImagePolicy)) }}
-  cds-image-policy.json: {{ toJson $cds.imagePolicy }}
-  served-image-policy.json: {{ toJson $cds.servedImagePolicy }}
-  {{- end }}
-  release-identity.json: {{ toJson $identity | quote }}
----
-apiVersion: v1
 kind: Service
 metadata:
   name: gateway
@@ -72,9 +44,6 @@ spec:
         confidential.ai/environment: {{ .Values.environment | quote }}
       annotations:
         confidential.ai/cw: gateway
-        # The gateway reads its settings once at start. It does not read the
-        # release selection (#245), so a new release alone does not roll it.
-        checksum/config: {{ include "confidential-inference.gatewaySettings" . | sha256sum }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.gateway.containerPorts.metrics | quote }}
         # c8s releases the pepper and the admin client configuration only
@@ -146,27 +115,9 @@ spec:
             {{- end }}
             - name: GATEWAY_ROUTER_NAMESPACE
               value: {{ .Release.Namespace | quote }}
-            - name: GATEWAY_RUNTIME_CONFIG_FILE
-              value: /mnt/c8s-data/runtime/settings.json
-            # The pod spec does not depend on runtimeConfig.releaseBundle: the
-            # allowlist is rendered without it and bin/deploy sets it.
-            - name: GATEWAY_RELEASE_SELECTION_FILE
-              value: /mnt/c8s-data/release-selection/releases.json
-            # The release manifest hash and the operator key hashes are in a
-            # mounted file, so the exact allowlist does not pin them.
-            # The bounded reader accepts kubelet's symlink only inside the mount.
-            - name: GATEWAY_RELEASE_IDENTITY_FILE
-              value: /mnt/c8s-data/release-identity/..data/release-identity.json
-            {{- with .Values.attestationReceipts.cds.url }}
-            # The CDS origin and the policy file paths are release constants;
-            # the pins are in the release identity file.
-            - name: GATEWAY_C8S_CDS_URL
-              value: {{ . | quote }}
-            - name: GATEWAY_C8S_IMAGE_POLICY
-              value: /mnt/c8s-data/release-identity/..data/cds-image-policy.json
-            - name: GATEWAY_C8S_SERVED_IMAGE_POLICY
-              value: /mnt/c8s-data/release-identity/..data/served-image-policy.json
-            {{- end }}
+            # The settings are environment, so the exact allowlist pins them.
+            - name: GATEWAY_RUNTIME_CONFIG
+              value: {{ include "confidential-inference.gatewaySettings" . | quote }}
             - name: GATEWAY_ADMIN_CONFIG_FILE
               value: {{ printf "/run/c8s/secrets/%s" .Values.gateway.c8sSecrets.adminConfig.name | quote }}
             # What the gateway sends and where: pinned in the allowlist with
@@ -227,15 +178,6 @@ spec:
             - name: admin-api-key
               mountPath: /mnt/c8s-data/admin-api-key
               readOnly: true
-            - name: release-identity
-              mountPath: /mnt/c8s-data/release-identity
-              readOnly: true
-            - name: runtime-config
-              mountPath: /mnt/c8s-data/runtime
-              readOnly: true
-            - name: release-selection
-              mountPath: /mnt/c8s-data/release-selection
-              readOnly: true
             - name: run
               mountPath: /run/confidential-gateway
             - name: tmp
@@ -256,15 +198,6 @@ spec:
             items:
               - key: sha256
                 path: sha256
-        - name: release-identity
-          configMap:
-            name: gateway-release-identity
-        - name: runtime-config
-          configMap:
-            name: {{ .Values.runtimeConfig.gatewayConfigMap }}
-        - name: release-selection
-          configMap:
-            name: {{ .Values.runtimeConfig.releaseConfigMap }}
         - name: run
           emptyDir: {}
         - name: tmp
