@@ -44,13 +44,22 @@ that check:
 - The source stage removes `.git`. setuptools-scm gets a fixed version
   (`0.0.0.dev0`, the version of the tested image), not one derived from tags.
 
-Nothing here has been built yet. These need a quiet build host before the
-image can be registered:
+Two builds from clean builders differed in these files, which the recipe
+now removes or fixes:
+
+- `/var/cache/fontconfig/*.cache-9`, written by the fontconfig trigger in the
+  apt layer: removed with the apt lists.
+- `sglang-0.0.0.dev0.dist-info/uv_cache.json`, which holds the build-time
+  ctime of `pyproject.toml` (uv's reinstall check), and `RECORD`, which hashes
+  it: the install deletes the file and its `RECORD` line.
+- `__pycache__/__editable___sglang_0_0_0_dev0_finder.cpython-312.pyc`, written
+  by the final import check (`python -I` ignores `PYTHONDONTWRITEBYTECODE`):
+  the check runs with `-B`.
+
+These need a quiet build host before the image can be registered:
 
 1. Build twice from clean builders with the release workflow's flags and
-   compare digests. The likely sources of a difference are the apt layer
-   (`/var/cache/debconf`, `/etc/ld.so.cache`) and the editable install's
-   `sglang.egg-info`.
+   compare digests.
 2. Compare `pip list` and `dpkg -l` of the new image with the tested image.
    The versions of `vcs-versioning` and of the Ubuntu packages were not
    recorded by the tested build.
