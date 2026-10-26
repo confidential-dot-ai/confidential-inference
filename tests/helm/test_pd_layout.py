@@ -281,11 +281,106 @@ def check_off_by_default() -> None:
     assert router["args"][0] == "--worker-urls" and "--pd-disaggregation" not in router["args"]
 
 
+# The staging layer for one 8-GPU B200 node (release/staging/b200/values.yaml):
+# the plan's layout with the per-worker limits of the B200 1p1d tuning run
+# (1 PP2 prefill + 1 TP2 decode on 4 B200, 180 GB HBM). Every other flag and
+# variable is the plan's.
+B200_LAYER = ROOT / "release/staging/b200/values.yaml"
+B200_FLAGS = {
+    "prefill": {
+        "--context-length": "131072",
+        "--max-running-requests": "16",
+        "--max-total-tokens": "1572864",
+        "--cuda-graph-config": '{"prefill": {"backend": "breakable", "bs": [256, 512, 1024, 2048, 4096, 8192, 12288],'
+                               ' "max_seq_len": 65536}, "decode": {"backend": "disabled"}}',
+    },
+    "decode": {
+        "--context-length": "131072",
+        "--max-total-tokens": "4194304",
+        "--cuda-graph-config": '{"prefill": {"backend": "disabled"}, "decode": {"backend": "breakable",'
+                               ' "bs": [1, 2, 4, 8, 10, 12, 14, 16, 32, 64]}}',
+    },
+}
+# The host cache is 4 times the device KV pool, not a fixed size.
+B200_REPLACED = {"prefill": {"--hicache-size": ("--hicache-ratio", "4.0")}}
+B200_ADDED = {"decode": ["--disaggregation-decode-polling-interval", "2"]}
+B200_MODEL = {
+    "name": "deepseek-ai/DeepSeek-V4.1-Flash",
+    "revision": "5254448103b6254fc646dacbca1cbbf20e9216c1",
+    "manifestSha256": "a0d3a3c29654399bcddf018c3a00de4528238399182d400427287d790798f41b",
+    "c8sVolumeSource": "/confidential-inference/model-updates/b200-dsv41",
+}
+
+
+def b200_args(args: list[str], role: str) -> list[str]:
+    args = [B200_MODEL["name"] if index and args[index - 1] == "--served-model-name" else arg
+            for index, arg in enumerate(args)]
+    for flag, value in B200_FLAGS[role].items():
+        args[args.index(flag) + 1] = value
+    for flag, (new_flag, value) in B200_REPLACED.get(role, {}).items():
+        index = args.index(flag)
+        args[index:index + 2] = [new_flag, value]
+    return args + B200_ADDED.get(role, [])
+
+
+def derive_b200_layer(plan: dict) -> dict:
+    values = derive_values(plan)
+    for worker in values["inference"]["pd"]["workers"]:
+        worker["args"] = b200_args(worker["args"], worker["role"])
+    model = B200_MODEL
+    return {
+        "inference": {
+            **values["inference"],
+            "model": {
+                "name": model["name"],
+                "revision": model["revision"],
+                "c8sVolumeSource": model["c8sVolumeSource"],
+                "volumeNames": ["dsv41"],
+                "mountVerification": {"expectedFileList": [
+                    {"path": ".model-lock-local-manifest.json", "sha256": model["manifestSha256"]}]},
+            },
+        },
+        "gateway": {
+            **values["gateway"],
+            "usage": {"models": {model["name"]: {"served_model": model["name"], "model_revision": model["revision"]}}},
+        },
+        "telemetry": {"enabled": False},
+    }
+
+
+def check_b200_layer() -> None:
+    """The B200 layer is the plan with the B200 limits, and renders on top of staging."""
+    layer = yaml.safe_load(B200_LAYER.read_text())
+    assert layer == derive_b200_layer(PLAN), "regenerate release/staging/b200/values.yaml (derive_b200_layer)"
+    image = "ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41@sha256:" + "0" * 64
+    result = subprocess.run(["helm", "template", "example", str(CHART), "--namespace", "confidential-inference",
+                             "--values", "release/values.yaml", "--values", "release/staging/values.yaml",
+                             "--values", str(B200_LAYER), "--values", "tests/release-v1/fixtures/release-values.yaml",
+                             "--set", "attestationReceipts.releaseId=v0.14.18-staging",
+                             "--set", f"images.sglangPd={image}"],
+                            cwd=ROOT, text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+    documents = [item for item in yaml.safe_load_all(result.stdout) if item]
+    template = by_name(documents, "StatefulSet", "inference-pd")["spec"]["template"]
+    assert template["metadata"]["annotations"]["confidential.ai/attested-gpu-count"] == "8"
+    containers = template["spec"]["containers"]
+    holder = containers[0]
+    assert f"--expected-repository={B200_MODEL['name']}" in holder["args"]
+    assert f"--expected-file=.model-lock-local-manifest.json={B200_MODEL['manifestSha256']}" in holder["args"]
+    for worker, container in zip(PLAN["workers"], containers[1:]):
+        role = flag_values(worker["command"])["--disaggregation-mode"]
+        assert container["args"] == [PYTHON, "-m", "sglang.launch_server", *b200_args(worker_args(worker["command"]), role)]
+    assert not any(item["kind"] == "StatefulSet" and item["metadata"]["name"].startswith("inference-worker-")
+                   for item in documents)
+    assert admission["refusals"](documents) == []
+
+
 def main() -> None:
     values = check_values_file_is_the_plan()
     check_render(values)
     check_refusals(values)
     check_off_by_default()
+    check_b200_layer()
     print("PD layout checks passed")
 
 

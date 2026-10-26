@@ -15,6 +15,13 @@ the encrypted model mount. This check exercises model download, encryption,
 placement, opening, and byte-manifest validation without loading the model
 weights into the simulator.
 
+`b200/values.yaml` is an optional third values file for staging on one
+8-GPU B200 node: DeepSeek-V4.1 in the chart's prefill/decode layout
+(helm/confidential-inference/README.md, "Prefill/decode layout") with the
+B200 worker limits. It is not a profile of its own. The deployment adds
+`images.sglangPd` (the sglang-dsv41 image by digest). `tests/helm/test_pd_layout.py`
+generates and checks it.
+
 Render the staging chart with both values files and the
 `release-values.yaml` asset of the release, in this order:
 
