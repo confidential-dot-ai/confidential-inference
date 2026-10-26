@@ -3,7 +3,7 @@
   "info": {
     "title": "Confidential Inference Public Gateway API",
     "version": "1.0.0",
-    "description": "This contract defines the real public API of the Rust gateway in services/gateway. The gateway sits behind the c8s tls-lb, which terminates public TLS inside the TEE and forwards HTTP to the gateway process. `/v1/chat/completions` and `/v1/completions` are OpenAI-compatible: request and response bodies follow the OpenAI chat-completions and legacy-completions shapes. The gateway itself validates only the `model` field on inference requests (services/gateway/src/lib.rs, `proxy_inference`); it forwards the rest of the body to the upstream sglang-router unchanged. Bearer tokens authenticate with `Authorization: Bearer <api-key>` (services/gateway/src/lib.rs, `authenticate`). Every response carries an `X-Request-ID` header (services/gateway/src/lib.rs, `request_id`); a caller may supply this header on the request, and the gateway echoes a valid value back or generates one."
+    "description": "This contract defines the real public API of the Rust gateway in services/gateway. The gateway sits behind the c8s tls-lb, which terminates public TLS inside the TEE and forwards HTTP to the gateway process. `/v1/chat/completions` and `/v1/completions` are OpenAI-compatible: request and response bodies follow the OpenAI chat-completions and legacy-completions shapes. The gateway itself validates only the `model` field on inference requests (services/gateway/src/lib.rs, `proxy_inference`); it forwards the rest of the body to the upstream sglang-router unchanged. Bearer tokens authenticate with `Authorization: Bearer <api-key>` (services/gateway/src/lib.rs, `authenticate`). Every response carries an `X-Request-ID` header (services/gateway/src/lib.rs, `request_id`); a caller may supply this header on the request, and the gateway echoes a valid value back or generates one. The gateway sends the router an `X-SMG-Routing-Key` header that keeps one conversation on one inference worker (services/gateway/src/routing_key.rs); a caller may supply its own conversation key in the same header."
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [
@@ -17,7 +17,8 @@
     "tlsRequirement": "c8s tls-lb terminates public TLS inside the TEE and sends plain HTTP to the gateway process over the cluster network (services/gateway/src/main.rs, GATEWAY_LISTEN 0.0.0.0:9443).",
     "inferenceUpstream": "The gateway proxies /v1/chat/completions and /v1/completions to the c8s workload-proxy loopback at http://127.0.0.1:30001, which forwards to the sglang-router workload (services/gateway/src/main.rs, INFERENCE_UPSTREAM_URL).",
     "authenticationHeader": "Authorization: Bearer <api-key>",
-    "requestIdHeader": "X-Request-ID"
+    "requestIdHeader": "X-Request-ID",
+    "routingKeyHeader": "X-SMG-Routing-Key"
   },
   "x-protection-limits": {
     "source": "services/gateway/src/protection.rs (ProtectionConfig::default) and services/gateway/src/main.rs (Args)",
@@ -136,6 +137,7 @@
         "summary": "Create an OpenAI-compatible chat completion",
         "description": "This route accepts an OpenAI chat-completions request and proxies it to the sglang-router upstream (services/gateway/src/lib.rs, `chat_completions` calls `proxy_inference`). The gateway itself checks only that the body is valid JSON and that `model` names one authorized model. It does not validate `messages`; the upstream sglang service performs OpenAI request validation. Set `stream: true` for a `text/event-stream` response.",
         "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/RoutingKey"}],
         "requestBody": {
           "required": true,
           "content": {
@@ -199,6 +201,7 @@
         "summary": "Create an OpenAI-compatible legacy completion",
         "description": "This is the legacy (non-chat) OpenAI-compatible completions route. It shares the same gateway-side validation, proxy path, and error behavior as `/v1/chat/completions` (services/gateway/src/lib.rs, `completions` calls `proxy_inference`).",
         "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/RoutingKey"}],
         "requestBody": {
           "required": true,
           "content": {
@@ -348,6 +351,15 @@
     }
   },
   "components": {
+    "parameters": {
+      "RoutingKey": {
+        "name": "X-SMG-Routing-Key",
+        "in": "header",
+        "required": false,
+        "description": "An optional conversation key: send one value for every turn of one conversation. The gateway never forwards this value. It sends the router an HMAC, under a secret drawn at gateway start, of the API key's record ID and this value, so each conversation stays on one inference worker and reuses its prefix cache. A value outside 1 to 128 visible ASCII bytes is ignored. Without a valid value, a chat completion's key is the HMAC of the model and the messages up to and including the first user message, which later turns repeat; a legacy completion gets no key and the router picks a worker at random (services/gateway/src/routing_key.rs).",
+        "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]+$"}
+      }
+    },
     "securitySchemes": {
       "bearerAuth": {
         "type": "http",

@@ -1,7 +1,7 @@
 use std::{
     net::SocketAddr,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -10,7 +10,7 @@ use std::{
 use axum::{
     Json, Router,
     body::{Body, Bytes},
-    http::{Request, StatusCode, header},
+    http::{HeaderMap, Request, StatusCode, header},
     routing::post,
 };
 use confidential_gateway::{
@@ -24,7 +24,11 @@ struct Keys;
 
 impl ApiKeyVerifier for Keys {
     fn verify_bearer(&self, value: &str) -> Option<String> {
-        (value == "accepted").then(|| "key_record_1".to_owned())
+        match value {
+            "accepted" => Some("key_record_1".to_owned()),
+            "accepted-2" => Some("key_record_2".to_owned()),
+            _ => None,
+        }
     }
 }
 
@@ -359,4 +363,123 @@ async fn gateway_preserves_public_model_for_both_completion_routes_and_streams()
         }
     }
     server.abort();
+}
+
+/// An upstream that records the `X-SMG-Routing-Key` of every request.
+async fn spawn_routing_capture() -> (
+    SocketAddr,
+    Arc<Mutex<Vec<Option<String>>>>,
+    oneshot::Sender<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    let address = listener.local_addr().unwrap_or_else(|_| unreachable!());
+    let keys = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&keys);
+    let handler = move |headers: HeaderMap| {
+        let observed = Arc::clone(&observed);
+        async move {
+            let key = headers
+                .get("x-smg-routing-key")
+                .map(|value| value.to_str().unwrap_or_default().to_owned());
+            observed.lock().unwrap_or_else(|_| unreachable!()).push(key);
+            Json(json!({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}))
+        }
+    };
+    let (stop_tx, stop_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            Router::new()
+                .route("/v1/chat/completions", post(handler.clone()))
+                .route("/v1/completions", post(handler)),
+        )
+        .with_graceful_shutdown(async {
+            let _ = stop_rx.await;
+        })
+        .await;
+    });
+    (address, keys, stop_tx)
+}
+
+/// Send one inference request; the upstream answers 200.
+async fn post_inference(
+    app: &Router,
+    route: &str,
+    bearer: &str,
+    client_key: Option<&str>,
+    body: &Value,
+) {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(route)
+        .header("authorization", format!("Bearer {bearer}"))
+        .header("content-type", "application/json");
+    if let Some(value) = client_key {
+        request = request.header("x-smg-routing-key", value);
+    }
+    let response = app
+        .clone()
+        .oneshot(
+            request
+                .body(Body::from(body.to_string()))
+                .unwrap_or_else(|_| unreachable!()),
+        )
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    assert_eq!(response.status(), 200);
+}
+
+#[tokio::test]
+async fn gateway_keeps_a_conversation_on_one_routing_key() {
+    let (address, keys, stop) = spawn_routing_capture().await;
+    let app = app(address);
+    let (chat, legacy) = ("/v1/chat/completions", "/v1/completions");
+    let opening = json!({"model": "deepseek", "messages": [
+        {"role": "system", "content": "be brief"},
+        {"role": "user", "content": "hi"}
+    ]});
+    let next_turn = json!({"model": "deepseek", "messages": [
+        {"role": "system", "content": "be brief"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "again"}
+    ]});
+    let other = json!({"model": "deepseek", "messages": [{"role": "user", "content": "other"}]});
+    let prompt = json!({"model": "deepseek", "prompt": "hi"});
+    let requests = [
+        // 0, 1: two turns of one conversation.
+        (chat, "accepted", None, &opening),
+        (chat, "accepted", None, &next_turn),
+        // 2: the same conversation under another API key. 3: another one.
+        (chat, "accepted-2", None, &opening),
+        (chat, "accepted", None, &other),
+        // 4, 5: a client key wins over the messages.
+        (chat, "accepted", Some("session-7"), &opening),
+        (chat, "accepted", Some("session-7"), &other),
+        // 6: legacy completions without a client key. 7: with one.
+        (legacy, "accepted", None, &prompt),
+        (legacy, "accepted", Some("session-7"), &prompt),
+    ];
+    for (route, bearer, client_key, body) in requests {
+        post_inference(&app, route, bearer, client_key, body).await;
+    }
+    let keys = keys.lock().unwrap_or_else(|_| unreachable!()).clone();
+    assert_eq!(keys.len(), 8);
+    for key in [&keys[0], &keys[2], &keys[3], &keys[4]] {
+        let key = key.as_deref().unwrap_or_else(|| unreachable!());
+        assert_eq!(key.len(), 32);
+        assert!(key.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+    assert_eq!(keys[0], keys[1]);
+    assert_ne!(keys[0], keys[2]);
+    assert_ne!(keys[0], keys[3]);
+    assert_ne!(keys[0], keys[4]);
+    assert_eq!(keys[4], keys[5]);
+    assert_eq!(keys[6], None);
+    assert_eq!(keys[7], keys[4]);
+    // The caller's own value never reaches the router.
+    assert!(keys.iter().flatten().all(|key| !key.contains("session")));
+    let _ = stop.send(());
 }

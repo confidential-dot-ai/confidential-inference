@@ -10,7 +10,10 @@ Public TLS terminates inside the measured confidential environment. C8s's
 `attest-lb` proof binds the exact public TLS certificate to accepted node
 measurements and the mesh identity. The gateway authenticates API keys and
 forwards inference to the router and workers. It does not forward the API key
-to the inference engine.
+to the inference engine. It sends the router an opaque per-conversation
+routing key, an HMAC under a secret drawn at gateway start, so the router can
+tell which requests belong to one conversation but cannot recover the API key,
+the caller's own key value, or prompt text from it.
 
 Trust the CPU and GPU hardware security mechanisms, their vendor attestation
 chains, the accepted measured node image, and the software and policies that
