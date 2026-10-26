@@ -1,0 +1,2060 @@
+diff --git a/sgl-model-gateway/Cargo.toml b/sgl-model-gateway/Cargo.toml
+index dfdc1e3..6973fd2 100644
+--- a/sgl-model-gateway/Cargo.toml
++++ b/sgl-model-gateway/Cargo.toml
+@@ -47,6 +47,7 @@ serde_json = { version = "1.0", default-features = false, features = [
+ ] }
+ bytes = "1.8.0"
+ http-body = "1.0"
++http-body-util = "0.1"
+ rand = "0.9.2"
+ reqwest = { version = "0.12.8", features = ["stream", "blocking", "json", "rustls-tls"], default-features = false }
+ futures-util = "0.3"
+diff --git a/sgl-model-gateway/bindings/python/src/lib.rs b/sgl-model-gateway/bindings/python/src/lib.rs
+index f18bdf4..7d44bc0 100644
+--- a/sgl-model-gateway/bindings/python/src/lib.rs
++++ b/sgl-model-gateway/bindings/python/src/lib.rs
+@@ -412,6 +412,11 @@ struct Router {
+     queue_size: usize,
+     queue_timeout_secs: u64,
+     rate_limit_tokens_per_second: Option<i32>,
++    reject_video: bool,
++    max_inflight_images: i64,
++    max_inflight_megapixels: i64,
++    max_images_per_request: i64,
++    unmeasured_image_megapixels: i64,
+     connection_mode: core::ConnectionMode,
+     model_path: Option<String>,
+     tokenizer_path: Option<String>,
+@@ -600,6 +605,11 @@ impl Router {
+             .max_concurrent_requests(self.max_concurrent_requests)
+             .queue_size(self.queue_size)
+             .queue_timeout_secs(self.queue_timeout_secs)
++            .reject_video(self.reject_video)
++            .max_inflight_images(self.max_inflight_images)
++            .max_inflight_megapixels(self.max_inflight_megapixels)
++            .max_images_per_request(self.max_images_per_request)
++            .unmeasured_image_megapixels(self.unmeasured_image_megapixels)
+             .cors_allowed_origins(self.cors_allowed_origins.clone())
+             .retry_config(config::RetryConfig {
+                 max_retries: self.retry_max_retries,
+@@ -733,6 +743,11 @@ impl Router {
+         queue_size = 100,
+         queue_timeout_secs = 60,
+         rate_limit_tokens_per_second = None,
++        reject_video = false,
++        max_inflight_images = 0,
++        max_inflight_megapixels = 0,
++        max_images_per_request = 0,
++        unmeasured_image_megapixels = 0,
+         model_path = None,
+         tokenizer_path = None,
+         chat_template = None,
+@@ -825,6 +840,11 @@ impl Router {
+         queue_size: usize,
+         queue_timeout_secs: u64,
+         rate_limit_tokens_per_second: Option<i32>,
++        reject_video: bool,
++        max_inflight_images: i64,
++        max_inflight_megapixels: i64,
++        max_images_per_request: i64,
++        unmeasured_image_megapixels: i64,
+         model_path: Option<String>,
+         tokenizer_path: Option<String>,
+         chat_template: Option<String>,
+@@ -930,6 +950,11 @@ impl Router {
+             queue_size,
+             queue_timeout_secs,
+             rate_limit_tokens_per_second,
++            reject_video,
++            max_inflight_images,
++            max_inflight_megapixels,
++            max_images_per_request,
++            unmeasured_image_megapixels,
+             connection_mode,
+             model_path,
+             tokenizer_path,
+diff --git a/sgl-model-gateway/bindings/python/src/sglang_router/router.py b/sgl-model-gateway/bindings/python/src/sglang_router/router.py
+index fa051b5..e70f359 100644
+--- a/sgl-model-gateway/bindings/python/src/sglang_router/router.py
++++ b/sgl-model-gateway/bindings/python/src/sglang_router/router.py
+@@ -210,7 +210,12 @@ class Router:
+         max_concurrent_requests: Maximum number of concurrent requests allowed for rate limiting. Default: 256
+         queue_size: Queue size for pending requests when max concurrent limit reached (0 = no queue, return 429 immediately). Default: 100
+         queue_timeout_secs: Maximum time (in seconds) a request can wait in queue before timing out. Default: 60
+-        rate_limit_tokens_per_second: Token bucket refill rate (tokens per second). If not set, defaults to max_concurrent_requests. Default: None
++        rate_limit_tokens_per_second: Token bucket refill rate (tokens per second). If not set, max_concurrent_requests is a pure concurrency limit. Default: None
++        reject_video: Refuse chat requests carrying video parts with 400. Default: False
++        max_inflight_images: Ceiling on images in flight on this gateway, 429 above it (0 = disabled). Default: 0
++        max_inflight_megapixels: Ceiling on image area in flight in megapixels, 429 above it (0 = disabled). Default: 0
++        max_images_per_request: Images accepted in one request, 400 above it (0 = disabled). Default: 0
++        unmeasured_image_megapixels: Area charged to an image whose size cannot be read, in megapixels (0 = built-in default). Default: 0
+         cors_allowed_origins: List of allowed origins for CORS. Empty list allows all origins. Default: []
+         health_failure_threshold: Number of consecutive health check failures before marking worker unhealthy. Default: 3
+         health_success_threshold: Number of consecutive health check successes before marking worker healthy. Default: 2
+diff --git a/sgl-model-gateway/bindings/python/src/sglang_router/router_args.py b/sgl-model-gateway/bindings/python/src/sglang_router/router_args.py
+index a2ea4f2..931f491 100644
+--- a/sgl-model-gateway/bindings/python/src/sglang_router/router_args.py
++++ b/sgl-model-gateway/bindings/python/src/sglang_router/router_args.py
+@@ -96,8 +96,19 @@ class RouterArgs:
+     queue_size: int = 100
+     # Maximum time (in seconds) a request can wait in queue before timing out
+     queue_timeout_secs: int = 60
+-    # Token bucket refill rate (tokens per second). If not set, defaults to max_concurrent_requests
++    # Token bucket refill rate (tokens per second). If not set, max_concurrent_requests
++    # is a pure concurrency limit.
+     rate_limit_tokens_per_second: Optional[int] = None
++    # Refuse chat requests carrying video parts with 400.
++    reject_video: bool = False
++    # Ceiling on images in flight on this gateway; 429 above it. 0 disables.
++    max_inflight_images: int = 0
++    # Ceiling on image area in flight, in megapixels; 429 above it. 0 disables.
++    max_inflight_megapixels: int = 0
++    # Images accepted in one request; 400 above it. 0 disables.
++    max_images_per_request: int = 0
++    # Area charged to an image whose size cannot be read, in megapixels. 0 = built-in default.
++    unmeasured_image_megapixels: int = 0
+     # CORS allowed origins
+     cors_allowed_origins: List[str] = dataclasses.field(default_factory=list)
+     # Retry configuration
+@@ -571,7 +582,44 @@ class RouterArgs:
+             f"--{prefix}rate-limit-tokens-per-second",
+             type=int,
+             default=RouterArgs.rate_limit_tokens_per_second,
+-            help="Token bucket refill rate (tokens per second). If not set, defaults to max_concurrent_requests",
++            help="Token bucket refill rate (tokens per second). If not set, "
++            "--max-concurrent-requests is a pure concurrency limit.",
++        )
++        rate_limit_group.add_argument(
++            f"--{prefix}reject-video",
++            action="store_true",
++            help="Refuse chat requests carrying video parts with 400.",
++        )
++        rate_limit_group.add_argument(
++            f"--{prefix}max-inflight-images",
++            type=int,
++            metavar="N",
++            default=RouterArgs.max_inflight_images,
++            help="Reject with 429 any chat request whose image parts would push the "
++            "number of images in flight on this gateway above N. 0 disables.",
++        )
++        rate_limit_group.add_argument(
++            f"--{prefix}max-inflight-megapixels",
++            type=int,
++            metavar="MP",
++            default=RouterArgs.max_inflight_megapixels,
++            help="Reject with 429 any chat request whose images would push the image "
++            "area in flight above MP megapixels. 0 disables.",
++        )
++        rate_limit_group.add_argument(
++            f"--{prefix}max-images-per-request",
++            type=int,
++            metavar="N",
++            default=RouterArgs.max_images_per_request,
++            help="Reject with 400 any chat request carrying more than N images. 0 disables.",
++        )
++        rate_limit_group.add_argument(
++            f"--{prefix}unmeasured-image-megapixels",
++            type=int,
++            metavar="MP",
++            default=RouterArgs.unmeasured_image_megapixels,
++            help="Area charged to an image whose dimensions cannot be read (remote "
++            "URLs), in megapixels. 0 uses the built-in default.",
+         )
+ 
+         # Retry configuration
+diff --git a/sgl-model-gateway/src/app_context.rs b/sgl-model-gateway/src/app_context.rs
+index 12f9f7d..027b251 100644
+--- a/sgl-model-gateway/src/app_context.rs
++++ b/sgl-model-gateway/src/app_context.rs
+@@ -372,18 +372,20 @@ impl AppContextBuilder {
+     }
+ 
+     /// Create rate limiter based on config
++    ///
++    /// `max_concurrent_requests` is a concurrency ceiling, so it needs
++    /// `refill_rate = 0` (the TokenBucket's semaphore mode). A nonzero refill
++    /// makes it an n-per-second throughput limit that never bounds concurrency.
++    /// An explicit `rate_limit_tokens_per_second` opts into that instead.
+     fn maybe_rate_limiter(mut self, config: &RouterConfig) -> Self {
+         self.rate_limiter = match config.max_concurrent_requests {
+             n if n <= 0 => None,
+             n => {
+-                let rate_limit_tokens = config
++                let refill_rate = config
+                     .rate_limit_tokens_per_second
+                     .filter(|&t| t > 0)
+-                    .unwrap_or(n);
+-                Some(Arc::new(TokenBucket::new(
+-                    n as usize,
+-                    rate_limit_tokens as usize,
+-                )))
++                    .unwrap_or(0);
++                Some(Arc::new(TokenBucket::new(n as usize, refill_rate as usize)))
+             }
+         };
+         self
+@@ -532,3 +534,29 @@ impl Default for AppContextBuilder {
+         Self::new()
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// `--max-concurrent-requests` alone caps concurrency: a permit comes back
++    /// only when a request completes, never from the passage of time.
++    #[tokio::test]
++    async fn max_concurrent_requests_alone_never_refills() {
++        let config = RouterConfig {
++            max_concurrent_requests: 2,
++            ..RouterConfig::default()
++        };
++        let bucket = AppContextBuilder::new()
++            .maybe_rate_limiter(&config)
++            .rate_limiter
++            .expect("a positive max_concurrent_requests builds a limiter");
++        assert!(bucket.try_acquire(2.0).await.is_ok());
++        // Long enough for a refill of max_concurrent_requests per second to land.
++        tokio::time::sleep(Duration::from_millis(1100)).await;
++        assert!(bucket.try_acquire(1.0).await.is_err());
++
++        bucket.return_tokens_sync(1.0);
++        assert!(bucket.try_acquire(1.0).await.is_ok());
++    }
++}
+diff --git a/sgl-model-gateway/src/config/builder.rs b/sgl-model-gateway/src/config/builder.rs
+index 5d4891c..fb915e8 100644
+--- a/sgl-model-gateway/src/config/builder.rs
++++ b/sgl-model-gateway/src/config/builder.rs
+@@ -229,6 +229,31 @@ impl RouterConfigBuilder {
+         self
+     }
+ 
++    pub fn reject_video(mut self, reject: bool) -> Self {
++        self.config.reject_video = reject;
++        self
++    }
++
++    pub fn max_inflight_images(mut self, max: i64) -> Self {
++        self.config.max_inflight_images = max;
++        self
++    }
++
++    pub fn max_inflight_megapixels(mut self, max: i64) -> Self {
++        self.config.max_inflight_megapixels = max;
++        self
++    }
++
++    pub fn max_images_per_request(mut self, max: i64) -> Self {
++        self.config.max_images_per_request = max;
++        self
++    }
++
++    pub fn unmeasured_image_megapixels(mut self, megapixels: i64) -> Self {
++        self.config.unmeasured_image_megapixels = megapixels;
++        self
++    }
++
+     pub fn rate_limit_tokens_per_second(mut self, tokens: i32) -> Self {
+         self.config.rate_limit_tokens_per_second = Some(tokens);
+         self
+diff --git a/sgl-model-gateway/src/config/types.rs b/sgl-model-gateway/src/config/types.rs
+index b198026..0009d14 100644
+--- a/sgl-model-gateway/src/config/types.rs
++++ b/sgl-model-gateway/src/config/types.rs
+@@ -27,6 +27,34 @@ pub struct RouterConfig {
+     pub worker_startup_check_interval_secs: u64,
+     pub dp_aware: bool,
+     pub api_key: Option<String>,
++    /// Refuse chat requests carrying video parts. Set when the deployment has
++    /// declared that it does not accept video traffic.
++    #[serde(default)]
++    pub reject_video: bool,
++    /// Ceiling on the number of images in flight on this gateway. A chat
++    /// request whose image parts would push the total above it is refused with
++    /// 429; slots are held until its response body is done. 0 disables.
++    #[serde(default)]
++    pub max_inflight_images: i64,
++    /// Image area admitted concurrently, in megapixels. 0 disables.
++    ///
++    /// Count alone does not bound preprocessing: 200 thumbnails and 200
++    /// full-resolution photographs are the same count. Calibrate per
++    /// deployment; the value depends on where images are preprocessed.
++    #[serde(default)]
++    pub max_inflight_megapixels: i64,
++    /// Images accepted in a single request (400 above it). 0 disables.
++    ///
++    /// The in-flight ceilings bound concurrency; this bounds the request
++    /// itself, so the boundary does not move with load.
++    #[serde(default)]
++    pub max_images_per_request: i64,
++    /// Area charged to an image whose dimensions cannot be read, in megapixels.
++    ///
++    /// Remote URLs above all: the router does not fetch them, so their size is
++    /// unknowable at admission. 0 falls back to `UNMEASURED_IMAGE_PIXELS`.
++    #[serde(default)]
++    pub unmeasured_image_megapixels: i64,
+     pub discovery: Option<DiscoveryConfig>,
+     pub metrics: Option<MetricsConfig>,
+     pub trace_config: Option<TraceConfig>,
+@@ -45,7 +73,10 @@ pub struct RouterConfig {
+     pub max_concurrent_requests: i32,
+     pub queue_size: usize,
+     pub queue_timeout_secs: u64,
+-    /// If not set, defaults to max_concurrent_requests
++    /// Token bucket refill rate. If not set, the bucket runs in pure
++    /// concurrency mode (permits return only on request completion), which is
++    /// what `max_concurrent_requests` and `POST /admission` describe. Setting
++    /// this opts into throughput rate limiting instead.
+     pub rate_limit_tokens_per_second: Option<i32>,
+     pub cors_allowed_origins: Vec<String>,
+     pub retry: RetryConfig,
+@@ -515,6 +546,11 @@ impl Default for RouterConfig {
+             worker_startup_check_interval_secs: 30,
+             dp_aware: false,
+             api_key: None,
++            reject_video: false,
++            max_inflight_images: 0,
++            max_inflight_megapixels: 0,
++            max_images_per_request: 0,
++            unmeasured_image_megapixels: 0,
+             discovery: None,
+             metrics: None,
+             trace_config: None,
+@@ -567,6 +603,15 @@ impl RouterConfig {
+         }
+     }
+ 
++    /// Pixels charged to an image whose dimensions cannot be read.
++    pub fn unmeasured_image_pixels(&self) -> u64 {
++        if self.unmeasured_image_megapixels <= 0 {
++            crate::media_policy::UNMEASURED_IMAGE_PIXELS
++        } else {
++            (self.unmeasured_image_megapixels as u64).saturating_mul(1_000_000)
++        }
++    }
++
+     /// Validate the configuration
+     pub fn validate(&self) -> ConfigResult<()> {
+         crate::config::validation::ConfigValidator::validate(self)
+diff --git a/sgl-model-gateway/src/core/token_bucket.rs b/sgl-model-gateway/src/core/token_bucket.rs
+index d0e2918..d2ec348 100644
+--- a/sgl-model-gateway/src/core/token_bucket.rs
++++ b/sgl-model-gateway/src/core/token_bucket.rs
+@@ -20,13 +20,20 @@ use tracing::{debug, trace};
+ pub struct TokenBucket {
+     inner: Arc<Mutex<TokenBucketInner>>,
+     notify: Arc<Notify>,
+-    capacity: f64,
+     refill_rate: f64, // tokens per second
+ }
+ 
+ struct TokenBucketInner {
+     tokens: f64,
+     last_refill: Instant,
++    /// Live ceiling. Lives inside the mutex (rather than on TokenBucket) so the
++    /// admission limit can be retuned at runtime via `set_capacity` without a
++    /// restart -- see `POST /admission`.
++    capacity: f64,
++    /// Permits owed back to a capacity reduction, held by requests still in
++    /// flight. While positive, returned permits retire debt instead of becoming
++    /// available.
++    debt: f64,
+ }
+ 
+ impl TokenBucket {
+@@ -45,13 +52,61 @@ impl TokenBucket {
+             inner: Arc::new(Mutex::new(TokenBucketInner {
+                 tokens: capacity,
+                 last_refill: Instant::now(),
++                capacity,
++                debt: 0.0,
+             })),
+             notify: Arc::new(Notify::new()),
+-            capacity,
+             refill_rate,
+         }
+     }
+ 
++    /// Current ceiling.
++    pub fn capacity(&self) -> f64 {
++        self.inner.lock().capacity
++    }
++
++    /// Retune the ceiling at runtime.
++    ///
++    /// Raising it credits the difference immediately and wakes waiters, so a
++    /// raise takes effect on queued requests without waiting for a refill tick.
++    ///
++    /// Lowering it never aborts in-flight requests: the reduction comes out of
++    /// available permits first, and the remainder becomes debt, so concurrency
++    /// drains to the new ceiling as those requests complete.
++    pub fn set_capacity(&self, new_capacity: f64) {
++        let new_capacity = new_capacity.max(0.0);
++        let raised = {
++            let mut inner = self.inner.lock();
++            let delta = new_capacity - inner.capacity;
++            inner.capacity = new_capacity;
++            if delta > 0.0 {
++                // Cancel outstanding debt before crediting anything back.
++                let paid = inner.debt.min(delta);
++                inner.debt -= paid;
++                inner.tokens += delta - paid;
++                true
++            } else {
++                let reduction = -delta;
++                let from_available = inner.tokens.min(reduction);
++                inner.tokens -= from_available;
++                inner.debt += reduction - from_available;
++                false
++            }
++        };
++        if raised {
++            self.notify.notify_waiters();
++        }
++        debug!("Token bucket: capacity set to {}", new_capacity);
++    }
++
++    /// Requests currently holding a permit, for metrics. Includes debt: those
++    /// permits are still held even though the ceiling no longer accounts for
++    /// them. Not refill-adjusted; meaningful for the `refill_rate=0` case.
++    pub fn in_flight(&self) -> f64 {
++        let inner = self.inner.lock();
++        (inner.capacity - inner.tokens).max(0.0) + inner.debt
++    }
++
+     /// Try to acquire tokens immediately.
+     ///
+     /// Returns `Ok(())` if tokens were acquired, `Err(())` if insufficient tokens.
+@@ -67,7 +122,7 @@ impl TokenBucket {
+         let elapsed = now.duration_since(inner.last_refill).as_secs_f64();
+         let refill_amount = elapsed * self.refill_rate;
+ 
+-        inner.tokens = (inner.tokens + refill_amount).min(self.capacity);
++        inner.tokens = (inner.tokens + refill_amount).min(inner.capacity);
+         inner.last_refill = now;
+ 
+         trace!(
+@@ -88,59 +143,45 @@ impl TokenBucket {
+         }
+     }
+ 
+-    /// Acquire tokens, waiting if necessary.
++    /// Acquire tokens, waiting until they are available.
+     ///
+-    /// When `refill_rate=0`, waits indefinitely for tokens to be returned via `return_tokens()`.
+-    /// Use `acquire_timeout()` to set an appropriate timeout.
++    /// Waits indefinitely and imposes no deadline of its own: a request larger
++    /// than the ceiling, or one made against a bucket nothing is returning to,
++    /// never completes. Bound it with `acquire_timeout()`.
+     pub async fn acquire(&self, tokens: f64) -> Result<(), tokio::time::error::Elapsed> {
+-        if self.try_acquire(tokens).await.is_ok() {
+-            return Ok(());
+-        }
++        debug!("Token bucket: waiting for {} tokens", tokens);
+ 
+-        // When refill_rate=0 (pure concurrency limiting), tokens only come back
+-        // via return_tokens(), so we wait on notify signal only.
+-        if self.refill_rate == 0.0 {
+-            debug!(
+-                "Token bucket: waiting indefinitely for {} tokens (refill_rate=0)",
+-                tokens
+-            );
++        loop {
++            // Register before re-checking: notify_waiters() only wakes waiters
++            // already queued, so a return in between is lost.
++            let notified = self.notify.notified();
++            tokio::pin!(notified);
++            notified.as_mut().enable();
+ 
+-            loop {
+-                // Wait for notify signal from return_tokens()
+-                self.notify.notified().await;
+-
+-                if self.try_acquire(tokens).await.is_ok() {
+-                    return Ok(());
+-                }
++            if self.try_acquire(tokens).await.is_ok() {
++                return Ok(());
+             }
+-        }
+-
+-        let wait_time = {
+-            let inner = self.inner.lock();
+-            let tokens_needed = tokens - inner.tokens;
+-            let wait_secs = (tokens_needed / self.refill_rate).max(0.0);
+-            Duration::from_secs_f64(wait_secs)
+-        };
+-
+-        debug!(
+-            "Token bucket: waiting {:?} for {} tokens",
+-            wait_time, tokens
+-        );
+ 
+-        tokio::time::timeout(wait_time, async {
+-            loop {
+-                if self.try_acquire(tokens).await.is_ok() {
+-                    return;
+-                }
+-                tokio::select! {
+-                    _ = self.notify.notified() => {},
+-                    _ = tokio::time::sleep(Duration::from_millis(10)) => {},
+-                }
++            if self.refill_rate == 0.0 {
++                // Pure concurrency limiting: nothing accrues on its own, so a
++                // return is the only thing that can help.
++                notified.await;
++                continue;
+             }
+-        })
+-        .await?;
+ 
+-        Ok(())
++            // Recomputed every pass. A single estimate taken on entry goes
++            // stale as soon as another waiter takes the tokens it counted on.
++            let until_refilled = {
++                let inner = self.inner.lock();
++                let deficit = tokens - inner.tokens;
++                Duration::from_secs_f64((deficit / self.refill_rate).max(0.0))
++            };
++
++            tokio::select! {
++                _ = notified => {},
++                _ = tokio::time::sleep(until_refilled) => {},
++            }
++        }
+     }
+ 
+     /// Acquire tokens with custom timeout.
+@@ -159,10 +200,14 @@ impl TokenBucket {
+     pub fn return_tokens_sync(&self, tokens: f64) {
+         {
+             let mut inner = self.inner.lock();
+-            inner.tokens = (inner.tokens + tokens).min(self.capacity);
++            // Retire debt from a lowered ceiling first: those permits are being
++            // reclaimed, not handed to the next request.
++            let paid = inner.debt.min(tokens);
++            inner.debt -= paid;
++            inner.tokens = (inner.tokens + (tokens - paid)).min(inner.capacity);
+             debug!(
+-                "Token bucket: returned {} tokens, {} available",
+-                tokens, inner.tokens
++                "Token bucket: returned {} tokens ({} retired debt), {} available",
++                tokens, paid, inner.tokens
+             );
+         } // Release lock before notify
+         self.notify.notify_waiters();
+@@ -181,13 +226,122 @@ impl TokenBucket {
+         let elapsed = now.duration_since(inner.last_refill).as_secs_f64();
+         let refill_amount = elapsed * self.refill_rate;
+ 
+-        inner.tokens = (inner.tokens + refill_amount).min(self.capacity);
++        inner.tokens = (inner.tokens + refill_amount).min(inner.capacity);
+         inner.last_refill = now;
+ 
+         inner.tokens
+     }
+ }
+ 
++#[cfg(test)]
++mod concurrency_tests {
++    use super::*;
++    use std::sync::Arc;
++
++    /// A burst of returns must wake every waiter, not just the one that wins
++    /// the first signal. The losers re-check and re-wait, and a return landing
++    /// in that gap used to be dropped.
++    #[tokio::test]
++    async fn a_burst_of_returns_is_not_lost_by_requeueing_waiters() {
++        let bucket = Arc::new(TokenBucket::new(4, 0));
++        for _ in 0..4 {
++            assert!(bucket.try_acquire(1.0).await.is_ok());
++        }
++
++        let waiters: Vec<_> = (0..4)
++            .map(|_| {
++                let bucket = bucket.clone();
++                tokio::spawn(
++                    async move { bucket.acquire_timeout(1.0, Duration::from_secs(2)).await },
++                )
++            })
++            .collect();
++
++        // Let every waiter reach the wait before any token comes back.
++        tokio::time::sleep(Duration::from_millis(50)).await;
++        for _ in 0..4 {
++            bucket.return_tokens_sync(1.0);
++        }
++
++        for waiter in waiters {
++            assert!(
++                waiter.await.expect("waiter task ran").is_ok(),
++                "a waiter missed its wakeup and timed out with a token available"
++            );
++        }
++    }
++
++    /// A waiter must get the caller's whole budget. The deadline used to be
++    /// estimated once on entry, so a waiter that lost the race for a refill
++    /// gave up at its own estimate with time left on the clock.
++    #[tokio::test]
++    async fn a_contended_waiter_uses_the_callers_full_budget() {
++        // One token per second, so the second waiter cannot be served until
++        // roughly 2s, well inside the 3s each of them is given.
++        let bucket = Arc::new(TokenBucket::new(2, 1));
++        assert!(bucket.try_acquire(2.0).await.is_ok());
++
++        let waiters: Vec<_> = (0..2)
++            .map(|_| {
++                let bucket = bucket.clone();
++                tokio::spawn(
++                    async move { bucket.acquire_timeout(1.0, Duration::from_secs(3)).await },
++                )
++            })
++            .collect();
++
++        for waiter in waiters {
++            assert!(
++                waiter.await.expect("waiter task ran").is_ok(),
++                "a waiter gave up on its own estimate instead of the 3s budget"
++            );
++        }
++    }
++
++    /// Lowering the ceiling below the in-flight count must not hand the
++    /// reduction back to new requests when a permit is returned.
++    #[tokio::test]
++    async fn returns_retire_debt_before_they_refill() {
++        let bucket = TokenBucket::new(4, 0);
++        for _ in 0..4 {
++            assert!(bucket.try_acquire(1.0).await.is_ok());
++        }
++
++        // Nothing is available to give up, so the whole cut becomes debt.
++        bucket.set_capacity(2.0);
++        assert_eq!(bucket.in_flight(), 4.0);
++
++        // The first two returns pay it down and admit nobody.
++        bucket.return_tokens_sync(1.0);
++        bucket.return_tokens_sync(1.0);
++        assert_eq!(bucket.available_tokens().await, 0.0);
++        assert_eq!(bucket.in_flight(), 2.0);
++
++        // Only now does a return free a slot, and the ceiling holds at 2.
++        bucket.return_tokens_sync(1.0);
++        assert_eq!(bucket.available_tokens().await, 1.0);
++        assert!(bucket.try_acquire(1.0).await.is_ok());
++        assert!(bucket.try_acquire(1.0).await.is_err());
++    }
++
++    /// Raising the ceiling again must not mint permits that are still held.
++    #[tokio::test]
++    async fn raising_the_ceiling_clears_debt_before_adding_tokens() {
++        let bucket = TokenBucket::new(4, 0);
++        for _ in 0..4 {
++            assert!(bucket.try_acquire(1.0).await.is_ok());
++        }
++        bucket.set_capacity(2.0);
++
++        // Undoing the cut restores the ceiling, not two free slots: all four
++        // permits are still out.
++        bucket.set_capacity(4.0);
++        assert_eq!(bucket.capacity(), 4.0);
++        assert_eq!(bucket.in_flight(), 4.0);
++        assert_eq!(bucket.available_tokens().await, 0.0);
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/sgl-model-gateway/src/lib.rs b/sgl-model-gateway/src/lib.rs
+index 9f92b12..c37c765 100644
+--- a/sgl-model-gateway/src/lib.rs
++++ b/sgl-model-gateway/src/lib.rs
+@@ -2,6 +2,7 @@ pub mod app_context;
+ pub use smg_auth as auth;
+ pub mod config;
+ pub mod core;
++pub mod media_policy;
+ pub mod middleware;
+ pub mod observability;
+ pub mod policies;
+diff --git a/sgl-model-gateway/src/main.rs b/sgl-model-gateway/src/main.rs
+index 743d0f9..070e528 100644
+--- a/sgl-model-gateway/src/main.rs
++++ b/sgl-model-gateway/src/main.rs
+@@ -349,10 +349,58 @@ struct CliArgs {
+     #[arg(long, default_value_t = 60, help_heading = "Rate Limiting")]
+     queue_timeout_secs: u64,
+ 
+-    /// Token bucket refill rate (tokens per second)
++    /// Token bucket refill rate (tokens per second). Unset keeps
++    /// --max-concurrent-requests a pure concurrency limit.
+     #[arg(long, help_heading = "Rate Limiting")]
+     rate_limit_tokens_per_second: Option<i32>,
+ 
++    /// Refuse chat requests carrying video parts with 400. Set this when the
++    /// deployment has declared it does not accept video traffic.
++    #[arg(long, env = "SMG_REJECT_VIDEO", help_heading = "Rate Limiting")]
++    reject_video: bool,
++
++    /// Reject with 429 any chat request whose image parts would push the
++    /// number of images in flight on this gateway above N (0 = disabled)
++    #[arg(
++        long,
++        value_name = "N",
++        env = "SMG_MAX_INFLIGHT_IMAGES",
++        default_value_t = 0,
++        help_heading = "Rate Limiting"
++    )]
++    max_inflight_images: i64,
++
++    /// Image area admitted concurrently, in megapixels (0 = disabled)
++    #[arg(
++        long,
++        value_name = "MP",
++        env = "SMG_MAX_INFLIGHT_MEGAPIXELS",
++        default_value_t = 0,
++        help_heading = "Rate Limiting"
++    )]
++    max_inflight_megapixels: i64,
++
++    /// Images accepted in a single request, 400 above it (0 = disabled)
++    #[arg(
++        long,
++        value_name = "N",
++        env = "SMG_MAX_IMAGES_PER_REQUEST",
++        default_value_t = 0,
++        help_heading = "Rate Limiting"
++    )]
++    max_images_per_request: i64,
++
++    /// Area charged to an image whose dimensions cannot be read, in megapixels
++    /// (0 = the built-in default)
++    #[arg(
++        long,
++        value_name = "MP",
++        env = "SMG_UNMEASURED_IMAGE_MEGAPIXELS",
++        default_value_t = 0,
++        help_heading = "Rate Limiting"
++    )]
++    unmeasured_image_megapixels: i64,
++
+     // ==================== Retry Configuration ====================
+     /// Maximum number of retry attempts
+     #[arg(long, default_value_t = 5, help_heading = "Retry Configuration")]
+@@ -1017,6 +1065,11 @@ impl CliArgs {
+             .max_concurrent_requests(self.max_concurrent_requests)
+             .queue_size(self.queue_size)
+             .queue_timeout_secs(self.queue_timeout_secs)
++            .reject_video(self.reject_video)
++            .max_inflight_images(self.max_inflight_images)
++            .max_inflight_megapixels(self.max_inflight_megapixels)
++            .max_images_per_request(self.max_images_per_request)
++            .unmeasured_image_megapixels(self.unmeasured_image_megapixels)
+             .cors_allowed_origins(self.cors_allowed_origins.clone())
+             .retry_config(RetryConfig {
+                 max_retries: self.retry_max_retries,
+diff --git a/sgl-model-gateway/src/media_policy.rs b/sgl-model-gateway/src/media_policy.rs
+new file mode 100644
+index 0000000..2bb2ba8
+--- /dev/null
++++ b/sgl-model-gateway/src/media_policy.rs
+@@ -0,0 +1,385 @@
++//! Declared media limits, enforced at the router.
++//!
++//! A supplier may decline a modality, which exempts it from inspection. The
++//! declaration is only worth anything if the endpoint actually refuses it:
++//! otherwise a video request is forwarded to a worker that will attempt to
++//! decode it, and the traffic we said we do not take is served anyway.
++//!
++//! Chat completions only: `openai-protocol` 1.0.0 deserializes every
++//! non-text `/v1/responses` part into a unit `Unknown`, so the router can
++//! neither see nor forward images or video on that endpoint.
++
++use base64::{engine::general_purpose::STANDARD, Engine as _};
++use openai_protocol::{
++    chat::{ChatMessage, MessageContent},
++    common::ContentPart,
++};
++
++/// Content parts of a chat message; empty when the content is a bare string.
++fn message_parts(message: &ChatMessage) -> &[ContentPart] {
++    let content = match message {
++        ChatMessage::System { content, .. }
++        | ChatMessage::User { content, .. }
++        | ChatMessage::Tool { content, .. }
++        | ChatMessage::Developer { content, .. } => Some(content),
++        ChatMessage::Assistant { content, .. } => content.as_ref(),
++        // Text-only by construction; no parts to inspect.
++        ChatMessage::Function { .. } => None,
++    };
++    match content {
++        Some(MessageContent::Parts(parts)) => parts,
++        _ => &[],
++    }
++}
++
++/// Index of the first message carrying a video part, if any.
++///
++/// Reported as `messages[i]` so a caller can find the offending part rather
++/// than bisecting a long conversation.
++pub fn first_video_message(messages: &[ChatMessage]) -> Option<usize> {
++    messages.iter().position(|message| {
++        message_parts(message)
++            .iter()
++            .any(|part| matches!(part, ContentPart::VideoUrl { .. }))
++    })
++}
++
++/// Number of image parts across all messages.
++///
++/// A count rather than a position: the image ceiling is spent per image, so a
++/// request carrying three images takes three slots. Every turn counts,
++/// assistant ones included: the worker handles an image wherever it sits in
++/// the conversation.
++pub fn count_image_parts(messages: &[ChatMessage]) -> usize {
++    messages
++        .iter()
++        .flat_map(message_parts)
++        .filter(|part| matches!(part, ContentPart::ImageUrl { .. }))
++        .count()
++}
++
++// ---------------------------------------------------------------------------
++// Image area, for the megapixel admission ceiling.
++//
++// Counting images is not enough to protect base-GPU memory: 200 thumbnails and
++// 200 full-resolution photographs are the same count and ~14x apart in
++// preprocessing cost. Measured on the B300 deployment this policy came from
++// (not DeepSeek-V4.1), ~1000 MP in flight was clean and
++// ~1250 MP exhausted the base GPU, so the ceiling is expressed in pixels.
++//
++// Dimensions come from the file header, not a decode: every format below states
++// width and height in its first bytes, so a base64 payload is measured by
++// decoding a short prefix rather than the image.
++// ---------------------------------------------------------------------------
++
++/// Decoded bytes inspected when looking for image dimensions.
++///
++/// Bounded on purpose: a crafted payload must not make admission expensive.
++/// A JPEG whose SOF sits behind a large EXIF block gets one larger retry.
++const HEADER_PROBE_BYTES: usize = 512;
++const JPEG_PROBE_BYTES: usize = 96 * 1024;
++
++/// Area charged to an image whose dimensions cannot be read.
++///
++/// Remote URLs are the case that matters: the router does not fetch them, so
++/// their size is unknowable at admission. The default is the spec's own
++/// `max_total_pixels` ceiling -- the largest area an image is allowed to
++/// contribute -- because the failure this guards against is a wedged node,
++/// and a refused request is recoverable where an exhausted base GPU is not.
++///
++/// Tunable (`--unmeasured-image-megapixels`) rather than fixed: if real traffic
++/// turns out to be URL-heavy, charging every URL the maximum would shed
++/// legitimate requests, and that is a one-flag correction rather than a build.
++/// Watch `smg_image_rejected_total` split by reason before lowering it.
++pub const UNMEASURED_IMAGE_PIXELS: u64 = 12_845_056;
++
++/// The base64 payload of a `data:` URL, if this is one.
++fn data_url_payload(url: &str) -> Option<&str> {
++    const MARKER: &str = ";base64,";
++    let rest = url.strip_prefix("data:")?;
++    let at = rest.find(MARKER)?;
++    Some(&rest[at + MARKER.len()..])
++}
++
++/// Decode at most `max_bytes` of a base64 payload.
++///
++/// Takes whole quads so the decoder never sees a partial group; a payload that
++/// is not clean base64 yields `None` and is charged the default.
++fn decode_prefix(payload: &str, max_bytes: usize) -> Option<Vec<u8>> {
++    let quads = max_bytes.div_ceil(3) * 4;
++    let take = quads.min(payload.len()) / 4 * 4;
++    STANDARD.decode(payload.as_bytes().get(..take)?).ok()
++}
++
++fn png_dimensions(b: &[u8]) -> Option<(u64, u64)> {
++    if b.len() < 24 || &b[..8] != b"\x89PNG\r\n\x1a\n" || &b[12..16] != b"IHDR" {
++        return None;
++    }
++    let w = u32::from_be_bytes(b[16..20].try_into().ok()?);
++    let h = u32::from_be_bytes(b[20..24].try_into().ok()?);
++    Some((u64::from(w), u64::from(h)))
++}
++
++fn gif_dimensions(b: &[u8]) -> Option<(u64, u64)> {
++    if b.len() < 10 || (&b[..6] != b"GIF87a" && &b[..6] != b"GIF89a") {
++        return None;
++    }
++    let w = u16::from_le_bytes(b[6..8].try_into().ok()?);
++    let h = u16::from_le_bytes(b[8..10].try_into().ok()?);
++    Some((u64::from(w), u64::from(h)))
++}
++
++/// WebP in its three container flavours: extended, lossless, lossy.
++fn webp_dimensions(b: &[u8]) -> Option<(u64, u64)> {
++    if b.len() < 30 || &b[..4] != b"RIFF" || &b[8..12] != b"WEBP" {
++        return None;
++    }
++    match &b[12..16] {
++        // VP8X: 24-bit canvas width-1 / height-1, little endian.
++        b"VP8X" => {
++            let w = u32::from(b[24]) | u32::from(b[25]) << 8 | u32::from(b[26]) << 16;
++            let h = u32::from(b[27]) | u32::from(b[28]) << 8 | u32::from(b[29]) << 16;
++            Some((u64::from(w) + 1, u64::from(h) + 1))
++        }
++        // VP8L: 14 bits each, packed behind a 0x2f signature byte.
++        b"VP8L" => {
++            if b[20] != 0x2f {
++                return None;
++            }
++            let bits = u32::from_le_bytes(b[21..25].try_into().ok()?);
++            Some((
++                u64::from(bits & 0x3FFF) + 1,
++                u64::from(bits >> 14 & 0x3FFF) + 1,
++            ))
++        }
++        // VP8 : key-frame header after the 0x9d 0x01 0x2a sync code.
++        b"VP8 " => {
++            if b[23..26] != [0x9d, 0x01, 0x2a] {
++                return None;
++            }
++            let w = u16::from_le_bytes(b[26..28].try_into().ok()?) & 0x3FFF;
++            let h = u16::from_le_bytes(b[28..30].try_into().ok()?) & 0x3FFF;
++            Some((u64::from(w), u64::from(h)))
++        }
++        _ => None,
++    }
++}
++
++/// Walk JPEG segments to the start-of-frame, which states the dimensions.
++///
++/// The marker is not at a fixed offset: APP segments (EXIF above all) sit in
++/// front of it and can be tens of kilobytes long, so the header has to be
++/// walked rather than indexed.
++fn jpeg_dimensions(b: &[u8]) -> Option<(u64, u64)> {
++    if b.len() < 4 || b[0] != 0xFF || b[1] != 0xD8 {
++        return None;
++    }
++    let mut i = 2usize;
++    while i + 9 < b.len() {
++        if b[i] != 0xFF || b[i + 1] == 0xFF {
++            i += 1; // fill byte or desync
++            continue;
++        }
++        let marker = b[i + 1];
++        // Standalone markers carry no length field.
++        if marker == 0x01 || (0xD0..=0xD9).contains(&marker) {
++            i += 2;
++            continue;
++        }
++        // SOF0-3, 5-7, 9-11, 13-15. C4/C8/CC are tables, not frames.
++        if matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF) {
++            let h = u16::from_be_bytes(b[i + 5..i + 7].try_into().ok()?);
++            let w = u16::from_be_bytes(b[i + 7..i + 9].try_into().ok()?);
++            return Some((u64::from(w), u64::from(h)));
++        }
++        let length = usize::from(u16::from_be_bytes(b[i + 2..i + 4].try_into().ok()?));
++        if length < 2 {
++            return None;
++        }
++        i += 2 + length;
++    }
++    None
++}
++
++fn sniff_dimensions(b: &[u8]) -> Option<(u64, u64)> {
++    png_dimensions(b)
++        .or_else(|| gif_dimensions(b))
++        .or_else(|| webp_dimensions(b))
++        .or_else(|| jpeg_dimensions(b))
++}
++
++/// Pixel area of one image reference.
++///
++/// Anything unreadable -- a remote URL, an unknown container, a truncated or
++/// corrupt payload -- is charged `UNMEASURED_IMAGE_PIXELS`. Erring high is the
++/// safe direction: an under-charged image is one that can still exhaust the GPU.
++pub fn image_url_pixels(url: &str, unmeasured: u64) -> u64 {
++    let Some(payload) = data_url_payload(url) else {
++        return unmeasured;
++    };
++    if let Some(head) = decode_prefix(payload, HEADER_PROBE_BYTES) {
++        if let Some((w, h)) = sniff_dimensions(&head) {
++            return w.saturating_mul(h);
++        }
++        // A JPEG hiding its SOF behind EXIF: one bounded second look.
++        if head.len() >= 2 && head[0] == 0xFF && head[1] == 0xD8 {
++            if let Some(more) = decode_prefix(payload, JPEG_PROBE_BYTES) {
++                if let Some((w, h)) = jpeg_dimensions(&more) {
++                    return w.saturating_mul(h);
++                }
++            }
++        }
++    }
++    unmeasured
++}
++
++/// Total image area across all messages, in pixels.
++pub fn sum_image_pixels(messages: &[ChatMessage], unmeasured: u64) -> u64 {
++    messages
++        .iter()
++        .flat_map(message_parts)
++        .filter_map(|part| match part {
++            ContentPart::ImageUrl { image_url } => {
++                Some(image_url_pixels(&image_url.url, unmeasured))
++            }
++            _ => None,
++        })
++        .fold(0u64, u64::saturating_add)
++}
++
++#[cfg(test)]
++mod tests {
++    use openai_protocol::common::{ImageUrl, VideoUrl};
++
++    use super::*;
++
++    fn user_with(parts: Vec<ContentPart>) -> ChatMessage {
++        ChatMessage::User {
++            content: MessageContent::Parts(parts),
++            name: None,
++        }
++    }
++
++    fn text_user(text: &str) -> ChatMessage {
++        ChatMessage::User {
++            content: MessageContent::Text(text.to_string()),
++            name: None,
++        }
++    }
++
++    fn image_part(url: &str) -> ContentPart {
++        ContentPart::ImageUrl {
++            image_url: ImageUrl {
++                url: url.into(),
++                detail: None,
++            },
++        }
++    }
++
++    fn video_part(url: &str) -> ContentPart {
++        ContentPart::VideoUrl {
++            video_url: VideoUrl { url: url.into() },
++        }
++    }
++
++    #[test]
++    fn video_is_found_behind_a_leading_image() {
++        let messages = vec![
++            text_user("first"),
++            user_with(vec![
++                image_part("https://example.invalid/a.png"),
++                video_part("https://example.invalid/a.mp4"),
++            ]),
++        ];
++        assert_eq!(first_video_message(&messages), Some(1));
++        assert_eq!(
++            first_video_message(&[user_with(vec![image_part("https://example.invalid/a.png")])]),
++            None
++        );
++    }
++
++    #[test]
++    fn video_in_an_assistant_turn_still_counts() {
++        let message = ChatMessage::Assistant {
++            content: Some(MessageContent::Parts(vec![video_part(
++                "https://example.invalid/a.mp4",
++            )])),
++            name: None,
++            tool_calls: None,
++            reasoning_content: None,
++        };
++        assert_eq!(first_video_message(&[message]), Some(0));
++    }
++
++    #[test]
++    fn images_are_counted_in_every_turn_but_video_is_not() {
++        let messages = vec![
++            ChatMessage::System {
++                content: MessageContent::Text("be brief".into()),
++                name: None,
++            },
++            user_with(vec![
++                image_part("https://example.invalid/a.png"),
++                image_part("https://example.invalid/b.png"),
++                video_part("https://example.invalid/a.mp4"),
++            ]),
++            ChatMessage::Assistant {
++                content: Some(MessageContent::Parts(vec![image_part(
++                    "https://example.invalid/c.png",
++                )])),
++                name: None,
++                tool_calls: None,
++                reasoning_content: None,
++            },
++            ChatMessage::Assistant {
++                content: None,
++                name: None,
++                tool_calls: None,
++                reasoning_content: None,
++            },
++        ];
++        assert_eq!(count_image_parts(&messages), 3);
++    }
++
++    fn data_url(bytes: &[u8], mime: &str) -> String {
++        format!("data:{mime};base64,{}", STANDARD.encode(bytes))
++    }
++
++    /// An area is read from the header alone; anything that cannot be read,
++    /// a remote URL above all, is charged the unmeasured default.
++    #[test]
++    fn image_area_comes_from_the_header_or_the_default() {
++        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR".to_vec();
++        png.extend_from_slice(&1920u32.to_be_bytes());
++        png.extend_from_slice(&1080u32.to_be_bytes());
++        png.extend_from_slice(&[8, 2, 0, 0, 0]);
++        assert_eq!(
++            image_url_pixels(&data_url(&png, "image/png"), 7),
++            1920 * 1080
++        );
++
++        // A JPEG with its start-of-frame behind an APP1 segment.
++        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x10];
++        jpeg.extend_from_slice(&[0u8; 14]);
++        jpeg.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]);
++        jpeg.extend_from_slice(&480u16.to_be_bytes());
++        jpeg.extend_from_slice(&640u16.to_be_bytes());
++        jpeg.extend_from_slice(&[0u8; 8]);
++        assert_eq!(
++            image_url_pixels(&data_url(&jpeg, "image/jpeg"), 7),
++            640 * 480
++        );
++
++        assert_eq!(image_url_pixels("https://example.invalid/a.png", 7), 7);
++        assert_eq!(
++            image_url_pixels(&data_url(b"not an image", "image/png"), 7),
++            7
++        );
++
++        let messages = vec![user_with(vec![
++            image_part(&data_url(&png, "image/png")),
++            image_part("https://example.invalid/b.png"),
++        ])];
++        assert_eq!(sum_image_pixels(&messages, 7), 1920 * 1080 + 7);
++    }
++}
+diff --git a/sgl-model-gateway/src/middleware.rs b/sgl-model-gateway/src/middleware.rs
+index ccade36..3c3501e 100644
+--- a/sgl-model-gateway/src/middleware.rs
++++ b/sgl-model-gateway/src/middleware.rs
+@@ -32,7 +32,7 @@ use crate::{
+         inflight_tracker::InFlightRequestTracker,
+         metrics::{method_to_static_str, metrics_labels, Metrics},
+     },
+-    routers::error::extract_error_code_from_response,
++    routers::error::{self, extract_error_code_from_response},
+     server::AppState,
+     wasm::{
+         module::{MiddlewareAttachPoint, WasmModuleAttachPoint},
+@@ -46,6 +46,13 @@ use crate::{
+     },
+ };
+ 
++/// `Retry-After` on an admission rejection.
++///
++/// Arbitrary; a permit frees whenever some request completes, and the gateway
++/// has no estimate of that. Picked to be long enough that a retrying client
++/// does not re-enter the ceiling immediately.
++const ADMISSION_RETRY_AFTER_SECONDS: u64 = 5;
++
+ /// A body wrapper that holds a token and returns it when the body is fully consumed or dropped.
+ /// This ensures that for streaming responses, the token is only returned after the entire
+ /// stream has been sent to the client.
+@@ -104,6 +111,41 @@ impl http_body::Body for TokenGuardBody {
+     }
+ }
+ 
++/// Holds an acquired token and returns it on drop unless disarmed.
++///
++/// Covers the window between acquiring a permit and handing it to
++/// `TokenGuardBody`: a request cancelled in that window would otherwise drop
++/// its permit, and a pure-concurrency bucket has no refill to recover it.
++struct PermitGuard {
++    token_bucket: Option<Arc<TokenBucket>>,
++    tokens: f64,
++}
++
++impl PermitGuard {
++    fn new(token_bucket: Arc<TokenBucket>, tokens: f64) -> Self {
++        Self {
++            token_bucket: Some(token_bucket),
++            tokens,
++        }
++    }
++
++    /// Hands the bucket to the body guard, which owns the return from here.
++    fn disarm(mut self) -> Arc<TokenBucket> {
++        self.token_bucket
++            .take()
++            .expect("PermitGuard is armed until disarmed exactly once")
++    }
++}
++
++impl Drop for PermitGuard {
++    fn drop(&mut self) {
++        if let Some(bucket) = self.token_bucket.take() {
++            debug!("PermitGuard: request dropped before response, returning token");
++            bucket.return_tokens_sync(self.tokens);
++        }
++    }
++}
++
+ #[derive(Clone)]
+ pub struct AuthConfig {
+     pub api_key: Option<String>,
+@@ -434,7 +476,12 @@ impl QueueProcessor {
+             if self.token_bucket.try_acquire(1.0).await.is_ok() {
+                 // Got token immediately
+                 debug!("Queue: acquired token immediately for queued request");
+-                let _ = queued.permit_tx.send(Ok(()));
++                // The token is already out of the bucket, so a waiter that has
++                // gone away (client disconnected, request cancelled) strands it.
++                if queued.permit_tx.send(Ok(())).is_err() {
++                    debug!("Queue: waiter gone before handoff, returning token");
++                    self.token_bucket.return_tokens_sync(1.0);
++                }
+             } else {
+                 // Need to wait for token
+                 let token_bucket = self.token_bucket.clone();
+@@ -447,7 +494,10 @@ impl QueueProcessor {
+                         .is_ok()
+                     {
+                         debug!("Queue: acquired token after waiting");
+-                        let _ = queued.permit_tx.send(Ok(()));
++                        if queued.permit_tx.send(Ok(())).is_err() {
++                            debug!("Queue: waiter gone before handoff, returning token");
++                            token_bucket.return_tokens_sync(1.0);
++                        }
+                     } else {
+                         warn!("Queue: request timed out waiting for token");
+                         let _ = queued.permit_tx.send(Err(StatusCode::REQUEST_TIMEOUT));
+@@ -534,13 +584,17 @@ pub async fn concurrency_limit_middleware(
+     if token_bucket.try_acquire(1.0).await.is_ok() {
+         debug!("Acquired token immediately");
+         Metrics::record_http_rate_limit(metrics_labels::RATE_LIMIT_ALLOWED);
++        Metrics::set_admission_state(token_bucket.capacity(), token_bucket.in_flight());
++        // Held across the handler so a cancelled request returns its token;
++        // `TokenGuardBody` only covers the window once the body exists.
++        let permit = PermitGuard::new(token_bucket, 1.0);
+         let response = next.run(request).await;
+ 
+         // Wrap the response body with TokenGuardBody to return token when stream ends
+         // This ensures that for streaming responses, the token is only returned
+         // after the entire stream has been sent to the client.
+         let (parts, body) = response.into_parts();
+-        let guarded_body = TokenGuardBody::new(body, token_bucket, 1.0);
++        let guarded_body = TokenGuardBody::new(body, permit.disarm(), 1.0);
+         Response::from_parts(parts, Body::new(guarded_body))
+     } else {
+         // No tokens available, try to queue if enabled
+@@ -573,25 +627,41 @@ pub async fn concurrency_limit_middleware(
+                                 EMBEDDINGS_QUEUE_SIZE.fetch_sub(1, Ordering::Relaxed);
+                             }
+ 
++                            Metrics::set_admission_state(
++                                token_bucket.capacity(),
++                                token_bucket.in_flight(),
++                            );
++                            // See the immediate-acquire path: the permit is live
++                            // from here, not from when the body is built.
++                            let permit = PermitGuard::new(token_bucket, 1.0);
+                             let response = next.run(request).await;
+ 
+                             // Wrap the response body with TokenGuardBody to return token when stream ends
+                             let (parts, body) = response.into_parts();
+-                            let guarded_body = TokenGuardBody::new(body, token_bucket, 1.0);
++                            let guarded_body = TokenGuardBody::new(body, permit.disarm(), 1.0);
+                             Response::from_parts(parts, Body::new(guarded_body))
+                         }
+                         Ok(Err(status)) => {
+                             warn!("Queue returned error status: {}", status);
+                             Metrics::record_http_rate_limit(metrics_labels::RATE_LIMIT_REJECTED);
++                            Metrics::record_admission_rejected("queue_timeout");
+                             // Dequeue for embeddings on error
+                             if is_embeddings {
+                                 EMBEDDINGS_QUEUE_SIZE.fetch_sub(1, Ordering::Relaxed);
+                             }
+-                            status.into_response()
++                            // Rejected because we stayed over capacity for the
++                            // whole wait, so this is rate limiting; the 408 the
++                            // queue reports blames the caller for our own load.
++                            error::too_many_requests(
++                                "admission_queue_timeout",
++                                "Timed out waiting for capacity.",
++                                ADMISSION_RETRY_AFTER_SECONDS,
++                            )
+                         }
+                         Err(_) => {
+                             error!("Queue response channel closed");
+                             Metrics::record_http_rate_limit(metrics_labels::RATE_LIMIT_REJECTED);
++                            Metrics::record_admission_rejected("queue_channel_closed");
+                             // Dequeue for embeddings on channel error
+                             if is_embeddings {
+                                 EMBEDDINGS_QUEUE_SIZE.fetch_sub(1, Ordering::Relaxed);
+@@ -603,13 +673,25 @@ pub async fn concurrency_limit_middleware(
+                 Err(_) => {
+                     warn!("Request queue is full, returning 429");
+                     Metrics::record_http_rate_limit(metrics_labels::RATE_LIMIT_REJECTED);
+-                    StatusCode::TOO_MANY_REQUESTS.into_response()
++                    Metrics::record_admission_rejected("queue_full");
++                    Metrics::set_admission_state(token_bucket.capacity(), token_bucket.in_flight());
++                    error::too_many_requests(
++                        "concurrency_limit_exceeded",
++                        "Server is at its concurrency limit and the wait queue is full.",
++                        ADMISSION_RETRY_AFTER_SECONDS,
++                    )
+                 }
+             }
+         } else {
+             warn!("No tokens available and queuing is disabled, returning 429");
+             Metrics::record_http_rate_limit(metrics_labels::RATE_LIMIT_REJECTED);
+-            StatusCode::TOO_MANY_REQUESTS.into_response()
++            Metrics::record_admission_rejected("no_queue");
++            Metrics::set_admission_state(token_bucket.capacity(), token_bucket.in_flight());
++            error::too_many_requests(
++                "concurrency_limit_exceeded",
++                "Server is at its concurrency limit.",
++                ADMISSION_RETRY_AFTER_SECONDS,
++            )
+         }
+     }
+ }
+diff --git a/sgl-model-gateway/src/observability/metrics.rs b/sgl-model-gateway/src/observability/metrics.rs
+index aabe701..7ea4cba 100644
+--- a/sgl-model-gateway/src/observability/metrics.rs
++++ b/sgl-model-gateway/src/observability/metrics.rs
+@@ -171,6 +171,38 @@ pub(crate) fn init_metrics() {
+         "smg_http_rate_limit_total",
+         "Rate limiting decisions by result (allowed/rejected)"
+     );
++    describe_gauge!(
++        "smg_admission_limit",
++        "Current admission ceiling (max concurrent requests on this gateway)"
++    );
++    describe_gauge!(
++        "smg_admission_inflight",
++        "Requests currently holding an admission permit"
++    );
++    describe_counter!(
++        "smg_admission_rejected_total",
++        "Requests refused by the admission limiter, by reason"
++    );
++    describe_gauge!(
++        "smg_image_limit",
++        "Ceiling on images in flight on this gateway (max_inflight_images; 0 = disabled)"
++    );
++    describe_gauge!(
++        "smg_image_inflight",
++        "Images held by admitted requests whose responses are still open"
++    );
++    describe_gauge!(
++        "smg_image_pixels_limit",
++        "Ceiling on image area in flight, in pixels (0 = disabled)"
++    );
++    describe_gauge!(
++        "smg_image_pixels_inflight",
++        "Image area held by admitted requests whose responses are still open, in pixels"
++    );
++    describe_counter!(
++        "smg_image_rejected_total",
++        "Requests refused by an image admission limit, by endpoint"
++    );
+ 
+     // Layer 2: Router metrics
+     describe_counter!(
+@@ -526,6 +558,48 @@ impl Metrics {
+         .increment(1);
+     }
+ 
++    /// Publish the admission ceiling alongside in-flight occupancy.
++    ///
++    /// Both are sampled from the live TokenBucket at each admission decision, so
++    /// a 429 spike can be attributed to load (inflight at limit) rather than to
++    /// someone lowering the limit via POST /admission.
++    pub fn set_admission_state(limit: f64, in_flight: f64) {
++        gauge!("smg_admission_limit").set(limit);
++        gauge!("smg_admission_inflight").set(in_flight);
++    }
++
++    pub fn record_admission_rejected(reason: &'static str) {
++        counter!(
++            "smg_admission_rejected_total",
++            "reason" => reason
++        )
++        .increment(1);
++    }
++
++    /// Publish the image ceilings; set once at startup, they have no runtime retune.
++    pub fn set_image_limits(images: i64, pixels: i64) {
++        gauge!("smg_image_limit").set(images as f64);
++        gauge!("smg_image_pixels_limit").set(pixels as f64);
++    }
++
++    pub fn set_image_inflight(in_flight: i64) {
++        gauge!("smg_image_inflight").set(in_flight as f64);
++    }
++
++    /// Image area in flight, in pixels: it rises before an out-of-memory, where
++    /// the count does not.
++    pub fn set_image_pixels_inflight(in_flight: i64) {
++        gauge!("smg_image_pixels_inflight").set(in_flight as f64);
++    }
++
++    pub fn record_image_rejected(endpoint: &'static str) {
++        counter!(
++            "smg_image_rejected_total",
++            "endpoint" => endpoint
++        )
++        .increment(1);
++    }
++
+     // ========================================================================
+     // Layer 2: Router metrics
+     // ========================================================================
+diff --git a/sgl-model-gateway/src/routers/error.rs b/sgl-model-gateway/src/routers/error.rs
+index d21fe96..e5f8641 100644
+--- a/sgl-model-gateway/src/routers/error.rs
++++ b/sgl-model-gateway/src/routers/error.rs
+@@ -1,5 +1,5 @@
+ use axum::{
+-    http::{HeaderMap, HeaderValue, StatusCode},
++    http::{header, HeaderMap, HeaderValue, StatusCode},
+     response::{IntoResponse, Response},
+     Json,
+ };
+@@ -52,6 +52,23 @@ pub fn method_not_allowed(code: impl Into<String>, message: impl Into<String>) -
+     create_error(StatusCode::METHOD_NOT_ALLOWED, code, message)
+ }
+ 
++/// Shed load with a retry hint.
++///
++/// `Retry-After` is what turns a rejection into backpressure: without it a
++/// client that retries immediately keeps the gateway at its ceiling, and the
++/// rejections do not shed any load.
++pub fn too_many_requests(
++    code: impl Into<String>,
++    message: impl Into<String>,
++    retry_after_secs: u64,
++) -> Response {
++    let mut response = create_error(StatusCode::TOO_MANY_REQUESTS, code, message);
++    if let Ok(value) = HeaderValue::from_str(&retry_after_secs.to_string()) {
++        response.headers_mut().insert(header::RETRY_AFTER, value);
++    }
++    response
++}
++
+ pub fn create_error(
+     status: StatusCode,
+     code: impl Into<String>,
+diff --git a/sgl-model-gateway/src/server.rs b/sgl-model-gateway/src/server.rs
+index 0fdddbf..0e50d16 100644
+--- a/sgl-model-gateway/src/server.rs
++++ b/sgl-model-gateway/src/server.rs
+@@ -1,6 +1,6 @@
+ use std::{
+     sync::{
+-        atomic::{AtomicBool, Ordering},
++        atomic::{AtomicBool, AtomicI64, Ordering},
+         Arc,
+     },
+     time::Duration,
+@@ -36,7 +36,7 @@ use crate::{
+     middleware::{self, AuthConfig, QueuedRequest},
+     observability::{
+         logging::{self, LoggingConfig},
+-        metrics::{self, PrometheusConfig},
++        metrics::{self, Metrics, PrometheusConfig},
+         otel_trace,
+     },
+     protocols::{
+@@ -181,15 +181,298 @@ async fn generate(
+         .await
+ }
+ 
++/// 400 for a declined modality, naming the offending field so a caller does not
++/// have to bisect a long conversation to find it.
++fn video_rejected(param: String) -> Response {
++    (
++        StatusCode::BAD_REQUEST,
++        Json(json!({"error": {
++            "message": "video input is not accepted by this deployment",
++            "type": "invalid_request_error",
++            "param": param,
++            "code": "video_not_supported",
++        }})),
++    )
++        .into_response()
++}
++
++/// Images held by admitted requests whose responses are still open.
++///
++/// Process-global: every admitted image lands on the same workers. Worker
++/// preprocessing load grows with the number of images handled concurrently,
++/// which is why this bounds images rather than requests
++/// (`max_concurrent_requests` already does that).
++static IMAGE_INFLIGHT: AtomicI64 = AtomicI64::new(0);
++
++/// Image area in flight, in pixels.
++///
++/// Preprocessing cost scales with area, not with how many files were attached.
++static IMAGE_PIXELS_INFLIGHT: AtomicI64 = AtomicI64::new(0);
++
++/// `Retry-After` on an image-capacity rejection.
++///
++/// Slots free as soon as an image-carrying response finishes, so a shorter
++/// hint than the request-admission one is appropriate.
++const IMAGE_RETRY_AFTER_SECONDS: u64 = 2;
++
++/// Image slots held by one request; released when dropped.
++///
++/// Must outlive the response body: a streaming response returns from the
++/// handler long before the worker is done with the images, so the guard is
++/// threaded into the body (see `hold_image_slots`) and released only when
++/// the body is consumed or dropped. A request that fails before routing
++/// drops it on the way out, which releases the same way.
++#[derive(Debug)]
++struct ImageSlotGuard {
++    counter: &'static AtomicI64,
++    images: i64,
++    pixel_counter: &'static AtomicI64,
++    pixels: i64,
++}
++
++impl Drop for ImageSlotGuard {
++    fn drop(&mut self) {
++        if self.images > 0 {
++            let previous = self.counter.fetch_sub(self.images, Ordering::AcqRel);
++            Metrics::set_image_inflight(previous - self.images);
++        }
++        if self.pixels > 0 {
++            let previous = self.pixel_counter.fetch_sub(self.pixels, Ordering::AcqRel);
++            Metrics::set_image_pixels_inflight(previous - self.pixels);
++        }
++    }
++}
++
++/// Reserve `amount` against `counter` without exceeding `limit`.
++///
++/// A CAS loop rather than fetch_add-then-check so a refused request never
++/// briefly inflates the count and refuses a neighbour that would have fit.
++/// `Ok` carries the new total, `Err` the headroom that was free at the time.
++fn try_reserve(counter: &'static AtomicI64, amount: i64, limit: i64) -> Result<i64, i64> {
++    match counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |inflight| {
++        inflight.checked_add(amount).filter(|total| *total <= limit)
++    }) {
++        Ok(previous) => Ok(previous + amount),
++        Err(inflight) => Err((limit - inflight).max(0)),
++    }
++}
++
++/// A request that did not fit under an image ceiling.
++///
++/// Rendered as a 429 with the same body shape and `Retry-After` as the
++/// request-admission rejection, so a client's existing backoff handles both.
++/// The two variants are reported separately because they mean different
++/// things operationally: a count refusal is a busy endpoint, an area refusal
++/// is traffic heavy enough to threaten base-GPU memory.
++#[derive(Debug)]
++enum ImageCapacityExceeded {
++    Count { images: i64, free: i64, limit: i64 },
++    Area { pixels: i64, free: i64, limit: i64 },
++}
++
++impl IntoResponse for ImageCapacityExceeded {
++    fn into_response(self) -> Response {
++        let message = match self {
++            Self::Count {
++                images,
++                free,
++                limit,
++            } => format!(
++                "request carries {images} image(s) but only {free} of {limit} image slots are free on this endpoint; retry shortly"
++            ),
++            Self::Area {
++                pixels,
++                free,
++                limit,
++            } => format!(
++                "request carries {:.1} MP of image data but only {:.1} of {:.1} MP are free on this endpoint; retry shortly",
++                pixels as f64 / 1e6,
++                free as f64 / 1e6,
++                limit as f64 / 1e6
++            ),
++        };
++        crate::routers::error::too_many_requests(
++            "image_capacity_exceeded",
++            message,
++            IMAGE_RETRY_AFTER_SECONDS,
++        )
++    }
++}
++
++/// A request carrying more images than the endpoint declares it accepts.
++///
++/// Distinct from the capacity ceilings: those are about what is in flight right
++/// now and clear on their own, so they answer 429. This is a property of the
++/// request itself -- retrying changes nothing -- so it answers 400.
++#[derive(Debug)]
++struct ImagesPerRequestExceeded {
++    images: i64,
++    limit: i64,
++}
++
++impl IntoResponse for ImagesPerRequestExceeded {
++    fn into_response(self) -> Response {
++        crate::routers::error::bad_request(
++            "images_per_request_exceeded",
++            format!(
++                "request carries {} image(s) but this endpoint accepts at most {} per request",
++                self.images, self.limit
++            ),
++        )
++    }
++}
++
++/// Reject a request that exceeds the declared per-request image maximum.
++///
++/// The in-flight ceilings alone leave behaviour load-dependent: a 399-image
++/// request is admitted on an idle endpoint and refused on a busy one, and the
++/// admitted case is a single allocation larger than anything the spec
++/// contemplates. Cap it explicitly so the boundary is a property of the
++/// endpoint rather than of the moment.
++fn admit_images_per_request(
++    config: &RouterConfig,
++    images: usize,
++) -> Result<(), ImagesPerRequestExceeded> {
++    let limit = config.max_images_per_request;
++    if limit <= 0 {
++        return Ok(());
++    }
++    let images = i64::try_from(images).unwrap_or(i64::MAX);
++    if images > limit {
++        return Err(ImagesPerRequestExceeded { images, limit });
++    }
++    Ok(())
++}
++
++/// Admit a request carrying `images` image parts covering `pixels` of area.
++///
++/// Two ceilings, because one cannot do the job: 200 thumbnails and 200
++/// full-resolution photographs are the same count and ~14x apart in
++/// preprocessing cost.
++///
++/// `Ok(None)` when both limits are off or the request carries no images, so
++/// text traffic is never touched. Count is reserved first and rolls back
++/// through `Drop` if the area check then refuses.
++fn admit_images(
++    config: &RouterConfig,
++    images: usize,
++    pixels: u64,
++    endpoint: &'static str,
++) -> Result<Option<ImageSlotGuard>, ImageCapacityExceeded> {
++    let count_limit = config.max_inflight_images;
++    let area_limit = config.max_inflight_megapixels.saturating_mul(1_000_000);
++    if images == 0 || (count_limit <= 0 && area_limit <= 0) {
++        return Ok(None);
++    }
++    let images = i64::try_from(images).unwrap_or(i64::MAX);
++    let pixels = i64::try_from(pixels).unwrap_or(i64::MAX);
++
++    let mut guard = ImageSlotGuard {
++        counter: &IMAGE_INFLIGHT,
++        images: 0,
++        pixel_counter: &IMAGE_PIXELS_INFLIGHT,
++        pixels: 0,
++    };
++
++    if count_limit > 0 {
++        match try_reserve(&IMAGE_INFLIGHT, images, count_limit) {
++            Ok(total) => {
++                guard.images = images;
++                Metrics::set_image_inflight(total);
++            }
++            Err(free) => {
++                Metrics::record_image_rejected(endpoint);
++                debug!(
++                    "Image admission: refused {endpoint} request carrying {images} image(s), {free} of {count_limit} slots free"
++                );
++                return Err(ImageCapacityExceeded::Count {
++                    images,
++                    free,
++                    limit: count_limit,
++                });
++            }
++        }
++    }
++
++    if area_limit > 0 {
++        match try_reserve(&IMAGE_PIXELS_INFLIGHT, pixels, area_limit) {
++            Ok(total) => {
++                guard.pixels = pixels;
++                Metrics::set_image_pixels_inflight(total);
++            }
++            Err(free) => {
++                Metrics::record_image_rejected(endpoint);
++                debug!(
++                    "Image admission: refused {endpoint} request carrying {pixels} px of image area, {free} of {area_limit} px free"
++                );
++                // `guard` drops on the way out, returning the slots above.
++                return Err(ImageCapacityExceeded::Area {
++                    pixels,
++                    free,
++                    limit: area_limit,
++                });
++            }
++        }
++    }
++
++    Ok(Some(guard))
++}
++
++/// Keep `guard` alive for as long as the response body.
++///
++/// The guard is moved into a frame mapper on the body, so it is dropped --
++/// and the slots released -- when the body is fully streamed or the client
++/// goes away, not when the handler returns.
++fn hold_image_slots(response: Response, guard: Option<ImageSlotGuard>) -> Response {
++    let Some(guard) = guard else {
++        return response;
++    };
++    response.map(|body| {
++        axum::body::Body::new(http_body_util::BodyExt::map_frame(body, move |frame| {
++            let _hold = &guard;
++            frame
++        }))
++    })
++}
++
+ async fn v1_chat_completions(
+     State(state): State<Arc<AppState>>,
+     headers: http::HeaderMap,
+     ValidatedJson(body): ValidatedJson<ChatCompletionRequest>,
+ ) -> Response {
+-    state
++    // Refused here rather than at the worker: the deployment has declared it
++    // does not take video, so the request must not reach a decoder at all.
++    if state.context.router_config.reject_video {
++        if let Some(index) = crate::media_policy::first_video_message(&body.messages) {
++            return video_rejected(format!("messages[{index}]"));
++        }
++    }
++
++    // Reserved before routing so an over-ceiling request never reaches a
++    // worker, and held until the body is done so a streaming response counts
++    // for its whole lifetime.
++    let image_count = crate::media_policy::count_image_parts(&body.messages);
++    if let Err(refused) = admit_images_per_request(&state.context.router_config, image_count) {
++        return refused.into_response();
++    }
++    let image_slots = match admit_images(
++        &state.context.router_config,
++        image_count,
++        crate::media_policy::sum_image_pixels(
++            &body.messages,
++            state.context.router_config.unmeasured_image_pixels(),
++        ),
++        "chat",
++    ) {
++        Ok(slots) => slots,
++        Err(refused) => return refused.into_response(),
++    };
++
++    let response = state
+         .router
+         .route_chat(Some(&headers), &body, Some(&body.model))
+-        .await
++        .await;
++    hold_image_slots(response, image_slots)
+ }
+ 
+ async fn v1_completions(
+@@ -398,6 +681,72 @@ async fn v1_conversations_delete_item(
+     .await
+ }
+ 
++#[derive(Deserialize)]
++struct SetAdmissionRequest {
++    max_concurrent: f64,
++}
++
++fn admission_snapshot(state: &AppState) -> Value {
++    match &state.context.rate_limiter {
++        Some(bucket) => json!({
++            "enabled": true,
++            "max_concurrent": bucket.capacity(),
++            "in_flight": bucket.in_flight(),
++        }),
++        None => json!({
++            "enabled": false,
++            "detail": "router started without --max-concurrent-requests; \
++                       admission limiting is disabled and cannot be enabled at runtime",
++        }),
++    }
++}
++
++async fn get_admission(State(state): State<Arc<AppState>>) -> Response {
++    Json(admission_snapshot(&state)).into_response()
++}
++
++/// Retune the admission ceiling. Lowering it never aborts in-flight requests:
++/// concurrency drains to the new ceiling as they complete.
++async fn set_admission(
++    State(state): State<Arc<AppState>>,
++    Json(req): Json<SetAdmissionRequest>,
++) -> Response {
++    if !req.max_concurrent.is_finite() || req.max_concurrent < 1.0 {
++        return (
++            StatusCode::BAD_REQUEST,
++            Json(json!({"error": "max_concurrent must be a finite number >= 1"})),
++        )
++            .into_response();
++    }
++
++    let Some(bucket) = state.context.rate_limiter.as_ref() else {
++        return (
++            StatusCode::SERVICE_UNAVAILABLE,
++            Json(admission_snapshot(&state)),
++        )
++            .into_response();
++    };
++
++    let previous = bucket.capacity();
++    bucket.set_capacity(req.max_concurrent);
++    info!(
++        "Admission limit changed {} -> {} via /admission",
++        previous, req.max_concurrent
++    );
++    // Also sampled on the admission path, but that only runs when a request is
++    // admitted; without this an idle router reports the old ceiling until the
++    // next request arrives.
++    Metrics::set_admission_state(bucket.capacity(), bucket.in_flight());
++
++    Json(json!({
++        "enabled": true,
++        "previous_max_concurrent": previous,
++        "max_concurrent": bucket.capacity(),
++        "in_flight": bucket.in_flight(),
++    }))
++    .into_response()
++}
++
+ async fn flush_cache(State(state): State<Arc<AppState>>, _req: Request) -> Response {
+     WorkerManager::flush_cache_all(&state.context.worker_registry, &state.context.client)
+         .await
+@@ -642,6 +991,7 @@ pub fn build_app(
+     // Build admin routes with control plane auth if configured, otherwise use simple API key auth
+     let admin_routes = Router::new()
+         .route("/flush_cache", post(flush_cache))
++        .route("/admission", get(get_admission).post(set_admission))
+         .route("/v1/loads", get(get_loads))
+         // TODO: Remove `/get_loads` alias after one release-cycle deprecation window.
+         .route("/get_loads", get(get_loads))
+@@ -980,10 +1330,45 @@ pub async fn startup(config: ServerConfig) -> Result<(), Box<dyn std::error::Err
+         Duration::from_secs(config.router_config.queue_timeout_secs),
+     );
+ 
+-    if app_context.rate_limiter.is_none() {
+-        info!("Rate limiting is disabled (max_concurrent_requests = -1)");
++    match &app_context.rate_limiter {
++        None => info!("Rate limiting is disabled (max_concurrent_requests = -1)"),
++        Some(bucket) => Metrics::set_admission_state(bucket.capacity(), bucket.in_flight()),
+     }
+ 
++    let router_config = &config.router_config;
++    if router_config.reject_video {
++        info!("Video input is refused with 400 (reject_video)");
++    }
++    if router_config.max_images_per_request > 0 {
++        info!(
++            "Per-request image limit enabled (max_images_per_request = {})",
++            router_config.max_images_per_request
++        );
++    }
++    if router_config.max_inflight_images > 0 {
++        info!(
++            "Image admission limit enabled (max_inflight_images = {})",
++            router_config.max_inflight_images
++        );
++    }
++    if router_config.max_inflight_megapixels > 0 {
++        info!(
++            "Image area limit enabled (max_inflight_megapixels = {}, unmeasured images charged {:.1} MP)",
++            router_config.max_inflight_megapixels,
++            router_config.unmeasured_image_pixels() as f64 / 1e6
++        );
++    }
++    // Occupancy is published on every reserve and release; seeding it here
++    // makes an idle router report 0 rather than nothing.
++    Metrics::set_image_limits(
++        router_config.max_inflight_images,
++        router_config
++            .max_inflight_megapixels
++            .saturating_mul(1_000_000),
++    );
++    Metrics::set_image_inflight(IMAGE_INFLIGHT.load(Ordering::Acquire));
++    Metrics::set_image_pixels_inflight(IMAGE_PIXELS_INFLIGHT.load(Ordering::Acquire));
++
+     match processor {
+         Some(proc) => {
+             spawn(proc.run());
+@@ -1191,3 +1576,144 @@ fn create_cors_layer(allowed_origins: Vec<String>) -> tower_http::cors::CorsLaye
+ 
+     cors.max_age(Duration::from_secs(3600))
+ }
++
++#[cfg(test)]
++mod image_admission_tests {
++    use super::*;
++
++    /// Reserve count-only slots and return the guard that releases them.
++    ///
++    /// `try_reserve` is now the bare CAS and builds no guard, so these tests
++    /// assemble the count half the way `admit_images` does. `pixels: 0` makes
++    /// the area half inert -- `ImageSlotGuard::drop` skips a zero.
++    fn reserve_slots(
++        counter: &'static AtomicI64,
++        images: i64,
++        limit: i64,
++    ) -> Result<ImageSlotGuard, i64> {
++        try_reserve(counter, images, limit).map(|total| {
++            Metrics::set_image_inflight(total);
++            ImageSlotGuard {
++                counter,
++                images,
++                pixel_counter: &IMAGE_PIXELS_INFLIGHT,
++                pixels: 0,
++            }
++        })
++    }
++
++    #[test]
++    fn slots_are_reserved_and_released_on_drop() {
++        static COUNTER: AtomicI64 = AtomicI64::new(0);
++
++        let first = reserve_slots(&COUNTER, 3, 4).unwrap();
++        assert_eq!(COUNTER.load(Ordering::Acquire), 3);
++
++        // One slot left: two do not fit, and the refusal reports what is free
++        // without consuming anything.
++        assert_eq!(reserve_slots(&COUNTER, 2, 4).unwrap_err(), 1);
++        assert_eq!(COUNTER.load(Ordering::Acquire), 3);
++
++        let second = reserve_slots(&COUNTER, 1, 4).unwrap();
++        assert_eq!(COUNTER.load(Ordering::Acquire), 4);
++        assert_eq!(reserve_slots(&COUNTER, 1, 4).unwrap_err(), 0);
++
++        drop(first);
++        assert_eq!(COUNTER.load(Ordering::Acquire), 1);
++        drop(second);
++        assert_eq!(COUNTER.load(Ordering::Acquire), 0);
++    }
++
++    #[test]
++    fn a_request_larger_than_the_ceiling_never_fits() {
++        static COUNTER: AtomicI64 = AtomicI64::new(0);
++
++        assert_eq!(reserve_slots(&COUNTER, 3, 2).unwrap_err(), 2);
++        assert_eq!(COUNTER.load(Ordering::Acquire), 0);
++    }
++
++    #[test]
++    fn admission_is_a_no_op_when_disabled_or_without_images() {
++        let disabled = RouterConfig {
++            max_inflight_images: 0,
++            ..RouterConfig::default()
++        };
++        assert!(admit_images(&disabled, 5, 0, "chat").unwrap().is_none());
++
++        let enabled = RouterConfig {
++            max_inflight_images: 2,
++            ..RouterConfig::default()
++        };
++        assert!(admit_images(&enabled, 0, 0, "chat").unwrap().is_none());
++    }
++
++    #[tokio::test]
++    async fn refusal_is_a_429_with_the_shared_error_shape() {
++        static COUNTER: AtomicI64 = AtomicI64::new(0);
++
++        // Fill the ceiling through the same reservation path the handlers use.
++        let _held = reserve_slots(&COUNTER, 3, 4).unwrap();
++        let free = reserve_slots(&COUNTER, 2, 4).unwrap_err();
++        assert_eq!(free, 1);
++
++        let rejected = ImageCapacityExceeded::Count {
++            images: 2,
++            free,
++            limit: 4,
++        }
++        .into_response();
++        assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
++        assert_eq!(
++            rejected
++                .headers()
++                .get(crate::routers::error::HEADER_X_SMG_ERROR_CODE)
++                .unwrap(),
++            "image_capacity_exceeded"
++        );
++        assert_eq!(
++            rejected.headers().get(http::header::RETRY_AFTER).unwrap(),
++            "2"
++        );
++
++        let body = http_body_util::BodyExt::collect(rejected.into_body())
++            .await
++            .unwrap()
++            .to_bytes();
++        let body: Value = serde_json::from_slice(&body).unwrap();
++        assert_eq!(body["error"]["code"], "image_capacity_exceeded");
++        assert_eq!(
++            body["error"]["message"],
++            "request carries 2 image(s) but only 1 of 4 image slots are free on this endpoint; retry shortly"
++        );
++    }
++
++    #[tokio::test]
++    async fn slots_are_held_until_the_body_is_consumed() {
++        static COUNTER: AtomicI64 = AtomicI64::new(0);
++
++        let guard = reserve_slots(&COUNTER, 2, 8).unwrap();
++        let response =
++            hold_image_slots(Response::new(axum::body::Body::from("hello")), Some(guard));
++        // Returning the response is not the end of the request for a stream.
++        assert_eq!(COUNTER.load(Ordering::Acquire), 2);
++
++        let bytes = http_body_util::BodyExt::collect(response.into_body())
++            .await
++            .unwrap()
++            .to_bytes();
++        assert_eq!(&bytes[..], b"hello");
++        assert_eq!(COUNTER.load(Ordering::Acquire), 0);
++    }
++
++    #[test]
++    fn slots_are_released_when_the_body_is_dropped_unread() {
++        static COUNTER: AtomicI64 = AtomicI64::new(0);
++
++        let guard = reserve_slots(&COUNTER, 2, 8).unwrap();
++        let response =
++            hold_image_slots(Response::new(axum::body::Body::from("hello")), Some(guard));
++        assert_eq!(COUNTER.load(Ordering::Acquire), 2);
++        drop(response);
++        assert_eq!(COUNTER.load(Ordering::Acquire), 0);
++    }
++}

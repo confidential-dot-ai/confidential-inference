@@ -1,9 +1,27 @@
 # SGLang Router image
 
-This image contains the router at the exact upstream source in `source.lock`.
-Its patch adds worker withdrawal, active-stream counts, a discovery fence,
-and drain status. It keeps upstream discovery and model routing.
-It also supports versioned model aliases for a staged model replacement.
+This image contains the router at the exact upstream source in `source.lock`:
+upstream SGLang `a7fd2e1` (2026-10-19), the commit the DeepSeek-V4.1 worker
+source (`images/sglang-dsv41`) is based on. Every deployment uses this one
+router, in regular mode for the aggregated workers and in prefill/decode mode
+for `inference.pd`. The build applies three patches, in the order
+`source.lock` lists them; each later patch is a diff on the tree the earlier
+ones produce:
+
+1. `worker-withdrawal.patch` adds worker withdrawal, active-stream counts, a
+   discovery fence, and drain status. It keeps upstream discovery and model
+   routing. It also supports versioned model aliases for a staged model
+   replacement. Withdrawal and model routes act on the regular router only:
+   the prefill/decode router answers their endpoints but does not consult
+   them when it picks workers.
+2. `admission-caps.patch` adds request admission limits. See
+   [Admission limits](#admission-limits).
+3. `pd-router.patch` changes only the prefill/decode router. See
+   [Prefill/decode relay](#prefilldecode-relay).
+
+`tests/images/sglang-router` checks each patch against its `source.lock`
+digest, the order the Dockerfile applies them in, and the image labels that
+record the digests.
 
 The image uses a pinned Python runtime. `requirements.lock` fixes every
 Python dependency version and file hash. It has a separate image name and
@@ -105,3 +123,60 @@ It does not provide the approved pipeline's build and publication evidence.
 
 A production-ready candidate uses approved release artifacts and still needs
 the router rehearsal and deployment checks.
+
+## Admission limits
+
+`admission-caps.patch` adds these `launch_router` flags. Each is off by
+default, so a router started without them behaves as before. The chart's
+aggregated router command sets none of them.
+
+| Flag | Effect |
+| --- | --- |
+| `--reject-video` | A chat request with a video part gets 400 (`video_not_supported`, `param` names the message). |
+| `--max-images-per-request N` | A chat request with more than N image parts gets 400 (`images_per_request_exceeded`). |
+| `--max-inflight-images N` | A chat request whose images would raise the images in flight above N gets 429 (`image_capacity_exceeded`) with `Retry-After: 2`. |
+| `--max-inflight-megapixels MP` | The same ceiling on image area in flight. The router reads width and height from the image header, not a decode. |
+| `--unmeasured-image-megapixels MP` | The area charged to an image whose size the router cannot read, such as a remote URL. 0 uses the built-in default. |
+
+Image slots are held until the response body ends or the client goes away,
+so a streaming response counts for its whole lifetime. The limits apply to
+`/v1/chat/completions` only: the pinned `openai-protocol` 1.0.0 drops every
+non-text `/v1/responses` part, so that endpoint carries no images to count.
+
+The patch also changes `--max-concurrent-requests N`. Without
+`--rate-limit-tokens-per-second`, N is now a concurrency ceiling: a permit
+returns only when its response body ends. Upstream refilled N permits per
+second, so the limit never bounded concurrency. A refusal is a 429 with a JSON
+error body and `Retry-After: 5`; a queue timeout is a 429, not a 408. A
+request cancelled before its response returns its permit.
+
+The private admin routes gain `GET /admission` and `POST /admission`
+(`{"max_concurrent": N}`), which read and change the live concurrency ceiling.
+Lowering it does not abort requests in flight. A router started without
+`--max-concurrent-requests` reports `enabled: false` and answers the POST
+with 503. The ceiling set this way is runtime state: it is not in the
+release allowlist, and a restart returns to the rendered flag.
+
+New metrics: `smg_admission_limit`, `smg_admission_inflight`,
+`smg_admission_rejected_total{reason}`, `smg_image_limit`,
+`smg_image_inflight`, `smg_image_pixels_limit`, `smg_image_pixels_inflight`
+and `smg_image_rejected_total{endpoint}`. Their labels are in the telemetry
+router label list.
+
+## Prefill/decode relay
+
+`pd-router.patch` changes `src/routers/http/pd_router.rs` and adds its
+reliability tests. The regular router is unchanged.
+
+- A streaming request without logprobs is relayed to the client as soon as
+  decode answers with a 2xx, instead of after prefill's response. Decode
+  sends its headers only with its first token, after prefill's KV has
+  arrived, while prefill's response trails the KV transfer by a prefill
+  scheduler iteration; the first token now skips that wait. Prefill keeps
+  being driven in the background, and its failure ends the client stream.
+- When decode rejects a request outright, the router returns that rejection
+  at once and drops the prefill request, so prefill aborts it instead of
+  waiting for a decode handshake until its bootstrap timeout.
+- A 4xx from either worker is the client's fault and does not count against
+  that worker's circuit breaker. When decode fails first and prefill is
+  cancelled, prefill is not charged either.
