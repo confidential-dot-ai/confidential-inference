@@ -86,7 +86,8 @@ class DraftRecipeTests(unittest.TestCase):
         self.assertGreater(len(entries), 200)
         for entry in entries:
             pin, *hashes = [part.strip() for part in entry.split("\\\n")]
-            self.assertRegex(pin, r"^[A-Za-z0-9_.\-]+==[A-Za-z0-9_.+\-!]+$")
+            # flashinfer-cubin is not on PyPI: a pinned release URL.
+            self.assertRegex(pin, r"^[A-Za-z0-9_.\-]+(==[A-Za-z0-9_.+\-!]+| @ https://github\.com/flashinfer-ai/flashinfer/releases/download/\S+\.whl)$")
             self.assertTrue(hashes, pin)
             for value in hashes:
                 self.assertRegex(value, r"^--hash=sha256:[0-9a-f]{64}$")
