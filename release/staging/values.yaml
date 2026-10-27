@@ -98,6 +98,7 @@ inference:
       - --served-model-name
       - deepseek-ai/DeepSeek-V4.1-Flash
       - --trust-remote-code
+      - --enable-metrics
       - --tool-call-parser
       - deepseekv41
       - --reasoning-parser
@@ -212,6 +213,7 @@ inference:
       - --served-model-name
       - deepseek-ai/DeepSeek-V4.1-Flash
       - --trust-remote-code
+      - --enable-metrics
       - --tool-call-parser
       - deepseekv41
       - --reasoning-parser
@@ -325,6 +327,7 @@ inference:
       - --served-model-name
       - deepseek-ai/DeepSeek-V4.1-Flash
       - --trust-remote-code
+      - --enable-metrics
       - --tool-call-parser
       - deepseekv41
       - --reasoning-parser
@@ -428,6 +431,7 @@ inference:
       - --served-model-name
       - deepseek-ai/DeepSeek-V4.1-Flash
       - --trust-remote-code
+      - --enable-metrics
       - --tool-call-parser
       - deepseekv41
       - --reasoning-parser
