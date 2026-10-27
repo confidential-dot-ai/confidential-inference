@@ -44,9 +44,6 @@ ARG_SUBSTITUTIONS = {
 ENV_REMOVED = {"CUDA_VISIBLE_DEVICES"}
 # The kernel cache is a pod emptyDir, never a host directory.
 ENV_PREFIX = ("/data/dsv41-bringup/container-cache/dsv41-pd-b300", CACHE)
-# The router starts with the pod, not after the workers are healthy as the
-# launcher starts it, so it must wait out their whole startup.
-ROUTER_ADDED = ["--worker-startup-timeout-secs=7200"]
 # Not in the plan: pod resource requests (calibration pending).
 RESOURCES = {"prefill": {"cpu": "16", "memory": "160Gi"}, "decode": {"cpu": "16", "memory": "64Gi"}}
 # Not in the plan: the gateway admits as many inference requests as the decode
@@ -60,9 +57,15 @@ def flag_values(argv: list[str]) -> dict[str, str]:
             if argv[i].startswith("--") and not argv[i + 1].startswith("--")}
 
 
+# The checkpoint's config and tokenizer load without it (#256), so the worker
+# runs no Python code from the model directory.
+ARGS_REMOVED = {"--trust-remote-code"}
+
+
 def worker_args(command: list[str]) -> list[str]:
     assert command[1:3] == ["-m", "sglang.launch_server"], command
-    args = list(command[3:])
+    assert ARGS_REMOVED <= set(command), command
+    args = [arg for arg in command[3:] if arg not in ARGS_REMOVED]
     for flag, (old, new) in ARG_SUBSTITUTIONS.items():
         index = args.index(flag)
         assert args[index + 1] == old, (flag, args[index + 1])
@@ -90,7 +93,7 @@ def router_args(command: list[str]) -> list[str]:
         else:
             kept.append(arg)
             index += 1
-    return kept + ROUTER_ADDED
+    return kept
 
 
 def decode_slots(plan: dict) -> int:
@@ -212,6 +215,9 @@ def check_render(values: dict) -> None:
     for worker in PLAN["workers"]:
         if "bootstrap_port" not in worker:
             expected += ["--decode", f"http://{POD_HOST}:{worker['url'].rsplit(':', 1)[1]}"]
+    # The router starts with the pod, not after the workers are healthy as the
+    # launcher starts it, so it waits out their whole startup.
+    expected += ["--worker-startup-timeout-secs=86400"]
     expected += router_args(PLAN["router"]["command"])
     expected += ["--health-check-timeout-secs=5", "--health-failure-threshold=3"]
     expected += ["--host=0.0.0.0", "--port=30000", "--prometheus-host=0.0.0.0", "--prometheus-port=29000"]
@@ -252,6 +258,8 @@ def check_refusals(values: dict) -> None:
     broken(set_arg("--port", "9999"), "args must set --port 8041")
     broken(set_arg("--served-model-name", "dsv41"), "args must set --served-model-name")
     broken(set_arg("--disaggregation-bootstrap-port", "9001"), "args must set --disaggregation-bootstrap-port 8999")
+    broken(lambda edited: edited["inference"]["pd"]["workers"][0]["args"].append("--trust-remote-code"),
+           "remove --trust-remote-code")
     broken(lambda edited: edited["inference"]["pd"]["workers"][0]["env"].update(CUDA_VISIBLE_DEVICES="0,1"),
            "remove CUDA_VISIBLE_DEVICES")
     broken(lambda edited: edited["images"].pop("sglangPd"), "inference.pd requires images.sglangPd")
