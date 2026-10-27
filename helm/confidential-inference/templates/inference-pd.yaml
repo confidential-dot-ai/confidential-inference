@@ -169,12 +169,21 @@ spec:
             - --expected-file={{ $file }}
             {{- end }}
             - --
+            {{- if $pd.engramHolder.mlock }}
             - {{ $pd.python }}
             - {{ $pd.engramHolder.script }}
             - --model
             - {{ $modelPath }}
             - --ready-file
             - {{ $readyFile }}
+            {{- else }}
+            # No mlock (the node's RLIMIT_MEMLOCK is below the Engram shards):
+            # wait-for-model has just read every file, so the shards sit in the
+            # page cache unlocked. Write the ready file and stay up.
+            - /bin/sh
+            - -c
+            - {{ printf "echo $$ > %s.tmp && mv %s.tmp %s && exec sleep infinity" $readyFile $readyFile $readyFile | quote }}
+            {{- end }}
           # No env: the image sets HOME=/tmp. A second HOME entry in the OCI
           # env makes C8s refuse this container (no GPU, so no CDI): C8s
           # rejects duplicate env names outside CDI injection.
