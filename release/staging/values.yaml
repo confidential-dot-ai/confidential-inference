@@ -97,7 +97,6 @@ inference:
       - /mnt/c8s-data/models/dsv41
       - --served-model-name
       - deepseek-ai/DeepSeek-V4.1-Flash
-      - --trust-remote-code
       - --enable-metrics
       - --tool-call-parser
       - deepseekv41
@@ -212,7 +211,6 @@ inference:
       - /mnt/c8s-data/models/dsv41
       - --served-model-name
       - deepseek-ai/DeepSeek-V4.1-Flash
-      - --trust-remote-code
       - --enable-metrics
       - --tool-call-parser
       - deepseekv41
@@ -326,7 +324,6 @@ inference:
       - /mnt/c8s-data/models/dsv41
       - --served-model-name
       - deepseek-ai/DeepSeek-V4.1-Flash
-      - --trust-remote-code
       - --enable-metrics
       - --tool-call-parser
       - deepseekv41
@@ -430,7 +427,6 @@ inference:
       - /mnt/c8s-data/models/dsv41
       - --served-model-name
       - deepseek-ai/DeepSeek-V4.1-Flash
-      - --trust-remote-code
       - --enable-metrics
       - --tool-call-parser
       - deepseekv41
@@ -539,7 +535,6 @@ inference:
     - '64'
     - --max-inflight-images
     - '256'
-    - --worker-startup-timeout-secs=7200
 
 # Telemetry to the admin-next relay (admin/vm/caddy in the internal
 # repository). Its address is the telemetry collector's one allowlist exit.
