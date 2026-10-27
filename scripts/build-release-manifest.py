@@ -710,6 +710,10 @@ def release_images(
     for key, value in values.get("images", {}).items():
         if not isinstance(value, str) or not value.startswith(release_profiles.REPOSITORY_IMAGES):
             continue
+        # TEST b200-20261026: sglang-dsv41 is not a release image yet; take the pinned dev build.
+        if key == "sglangPd" and "@" in value:
+            resolved[key] = value
+            continue
         require("@" not in value,
                 f"values.images.{key} pins a digest; the release takes it from the image publication")
         digest = published.get(value) or base.get(value)
