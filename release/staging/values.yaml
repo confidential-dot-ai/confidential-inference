@@ -81,6 +81,9 @@ inference:
     - dsv41
   pd:
     enabled: true
+    # B200 TEST: the node RLIMIT_MEMLOCK refuses the 101 GB shard mlock (ENOMEM).
+    engramHolder:
+      mlock: false
     python: /opt/dsv41/bin/python
     cacheDirectory: /var/cache/dsv41
     workers:
