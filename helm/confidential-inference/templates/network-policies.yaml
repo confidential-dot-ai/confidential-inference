@@ -206,7 +206,7 @@ spec:
         {{- else if .Values.inference.enabled }}
         - {protocol: TCP, port: {{ .Values.inference.port }}}
         {{- end }}
-    {{- if and .Values.telemetry.enabled .Values.inference.enabled }}
+    {{- if and .Values.telemetry.enabled .Values.inference.enabled (not .Values.inference.pd.enabled) }}
     - from:
         - podSelector:
             matchLabels:

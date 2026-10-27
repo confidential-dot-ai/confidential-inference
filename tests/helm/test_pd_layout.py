@@ -270,8 +270,11 @@ def check_refusals(values: dict) -> None:
                  "--set", "telemetry.metrics.tenantId=00000000-0000-0000-0000-000000000001",
                  "--set", "telemetry.metrics.clientId=00000000-0000-0000-0000-000000000002",
                  "--set", "telemetry.metrics.dataCollectionRule=dcr-" + "0" * 32)
-    output = render(values, *telemetry, success=False)
-    assert "inference.pd renders no worker scrape targets" in output
+    # Telemetry scrapes the gateway and the router, not the PD workers (no metrics port yet).
+    documents = render(values, *telemetry)
+    (argument,) = by_name(documents, "Deployment", "telemetry-collector")["spec"]["template"]["spec"]["containers"][0]["args"]
+    jobs = [job["job_name"] for job in json.loads(argument.removeprefix("--config=yaml:"))["receivers"]["prometheus"]["config"]["scrape_configs"]]
+    assert not any(job.startswith("inference-") for job in jobs), jobs
 
 
 def check_off_by_default() -> None:
