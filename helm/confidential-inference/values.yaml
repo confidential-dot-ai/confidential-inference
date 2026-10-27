@@ -223,6 +223,9 @@ inference:
   # target environment's release bundle carries the matching source.lock
   # argv and allowlist.
   reasoningParser: ""
+  # Model mode: the SGLang server arguments after --revision, in place of the
+  # production model's (DeepSeek-V4) arguments. Empty keeps those.
+  modelArgs: []
   # On SIGTERM SGLang answers /health with 503 and finishes its in-flight
   # requests; Kubernetes kills the pod after this many seconds.
   terminationGracePeriodSeconds: 600
