@@ -182,6 +182,11 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            # The image sets NVIDIA_VISIBLE_DEVICES=all. The holder has no GPU:
+            # without this the node's NVIDIA runtime injects every GPU and its
+            # driver files, which the allowlist entry does not admit.
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: void
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
