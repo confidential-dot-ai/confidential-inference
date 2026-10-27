@@ -249,12 +249,14 @@ def require_model_files(spec: dict[str, Any], documents: list[dict[str, Any]]) -
     The chart decides which files a worker checks, so this reads the rendered
     arguments, not the values.
     """
+    # The prefill/decode layout (inference-pd) checks the files in its engram-holder.
     workers = [item for item in documents if item.get("kind") == "StatefulSet"
-               and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
+               and (item.get("metadata", {}).get("name", "").startswith("inference-worker-")
+                    or item.get("metadata", {}).get("name") == "inference-pd")]
     require(bool(workers), "the chart renders no inference worker")
     for worker in workers:
         container = next(item for item in worker["spec"]["template"]["spec"]["containers"]
-                         if item["name"] == "sglang")
+                         if item["name"] in ("sglang", "engram-holder"))
         args = container.get("args", [])
         metadata = [arg.removeprefix("--revision-metadata=") for arg in args
                     if arg.startswith("--revision-metadata=")]
