@@ -175,14 +175,9 @@ spec:
             - {{ $modelPath }}
             - --ready-file
             - {{ $readyFile }}
-          env:
-            - name: HOME
-              value: /tmp
-            # The image sets NVIDIA_VISIBLE_DEVICES=all. The holder has no GPU:
-            # without this the node's NVIDIA runtime injects every GPU and its
-            # driver files, which the allowlist entry does not admit.
-            - name: NVIDIA_VISIBLE_DEVICES
-              value: void
+          # No env: the image sets HOME=/tmp. A second HOME entry in the OCI
+          # env makes C8s refuse this container (no GPU, so no CDI): C8s
+          # rejects duplicate env names outside CDI injection.
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
