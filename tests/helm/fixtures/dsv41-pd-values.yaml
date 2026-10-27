@@ -464,7 +464,6 @@ inference:
     - '64'
     - --max-inflight-images
     - '256'
-    - --worker-startup-timeout-secs=7200
 gateway:
   protection:
     inferenceConcurrency: 128

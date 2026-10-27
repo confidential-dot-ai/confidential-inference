@@ -110,6 +110,11 @@ spec:
             - {{ include "confidential-inference.pdWorkerUrl" $w }}
             {{- end }}
             {{- end }}
+            # The router starts with the pod and registers each worker once:
+            # a worker that is not up within this timeout is never added
+            # (restart the router). A PD pod can need several hour-long
+            # starts (kernel warm-up) before it is Ready, so wait a day.
+            - --worker-startup-timeout-secs=86400
             {{- range .Values.inference.pd.routerArgs }}
             - {{ toJson . }}
             {{- end }}
