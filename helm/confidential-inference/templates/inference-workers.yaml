@@ -203,6 +203,11 @@ spec:
             - --model-path={{ $modelPath }}
             - --served-model-name={{ $.Values.inference.model.name }}
             - --revision={{ $.Values.inference.model.revision }}
+            {{- if $.Values.inference.modelArgs }}
+            {{- range $.Values.inference.modelArgs }}
+            - {{ . | quote }}
+            {{- end }}
+            {{- else }}
             - --tool-call-parser=deepseekv4
             {{- if $.Values.inference.reasoningParser }}
             - --reasoning-parser={{ $.Values.inference.reasoningParser }}
@@ -215,6 +220,7 @@ spec:
             - --swa-full-tokens-ratio=0.1
             - --enable-metrics
             - --enable-cache-report
+            {{- end }}
             {{- if and $.Values.telemetry.enabled $.Values.telemetry.traces.enabled }}
             - --enable-trace
             - --trace-modules=request
