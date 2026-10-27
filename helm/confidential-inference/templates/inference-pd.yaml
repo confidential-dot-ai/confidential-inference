@@ -186,7 +186,7 @@ spec:
             # page cache unlocked. Write the ready file and stay up.
             - /bin/sh
             - -c
-            - {{ printf "echo $$ > %s.tmp && mv %s.tmp %s && exec sleep infinity" $readyFile $readyFile $readyFile | quote }}
+            - {{ printf "echo unlocked > %s.tmp && mv %s.tmp %s && exec sleep infinity" $readyFile $readyFile $readyFile | quote }}
             {{- end }}
           # No env: the image sets HOME=/tmp. A second HOME entry in the OCI
           # env makes C8s refuse this container (no GPU, so no CDI): C8s
