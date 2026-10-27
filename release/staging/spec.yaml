@@ -13,9 +13,9 @@ publicHostnames:
 # against this byte manifest. See the internal plan
 # docs/plans/staging-small-model.md.
 model:
-  repository: hf-internal-testing/tiny-random-LlamaForCausalLM
-  revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998
-  byteManifestSha256: d39aa41f901cb2cb07087157bcdc9c8ec32b6bf1e82c5018df35eff8cad6522e
+  repository: Qwen/Qwen3-1.7B
+  revision: 70d244cc86ccca08cf5af4e1e306ecf908b1ad5e
+  byteManifestSha256: aa6a59e108161a74075feb8c59188327258eb1b8bd8a1b1f263e2aa72fda4df3
 
 c8s:
   release: v0.74.0-beta.2

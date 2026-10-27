@@ -23,9 +23,9 @@ gateway:
   usage:
     enabled: true
     models:
-      hf-internal-testing/tiny-random-LlamaForCausalLM:
-        served_model: hf-internal-testing/tiny-random-LlamaForCausalLM
-        model_revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998
+      Qwen/Qwen3-1.7B:
+        served_model: Qwen/Qwen3-1.7B
+        model_revision: 70d244cc86ccca08cf5af4e1e306ecf908b1ad5e
   protection:
     # The node mesh proxy opens the final connection to the gateway.
     # Keep Pod proxies and the staging node network in the trusted scope.
@@ -43,45 +43,55 @@ attestationReceipts:
   # pod. The CDS armTLS certificate names no host; the gateway pins it by
   # attestation. The deployment supplies the two policy documents.
   cds:
-    url: https://10.43.58.194:30808
+    url: https://10.45.250.24:30808
 
 # kube-state-metrics needs the Kubernetes API, which a c8s >= v0.64 mesh member
 # pod cannot reach.
 kubeStateMetrics:
   enabled: false
 
+# C8S INTEGRATION TEST (b200int-20261027a): Qwen3-1.7B on one B200 (aggregated layout,
+# the standard SGLang worker image), from an encrypted c8s model volume.
 inference:
-  mode: simulator
-  gpusPerReplica: 0
-  gpuArchitectures: []
-  attestedGpuCount: 0
+  mode: model
+  replicas: 1
+  gpusPerReplica: 1
+  gpuArchitectures: [BLACKWELL]
+  attestedGpuCount: 1
+  attestedWorkloads: [inference-worker-0]
+  reasoningParser: qwen3
   resources:
-    cpu: '2'
-    memory: 16Gi
-  # The model pins of release/staging/spec.yaml.
+    cpu: '8'
+    memory: 32Gi
   model:
-    name: hf-internal-testing/tiny-random-LlamaForCausalLM
-    revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998
+    name: Qwen/Qwen3-1.7B
+    revision: 70d244cc86ccca08cf5af4e1e306ecf908b1ad5e
+    c8sVolumeSource: /confidential-inference/model-updates/b200int-qwen
+    volumeNames: [qwen17b]
     mountVerification:
       expectedFileList:
         - path: .model-lock-local-manifest.json
-          sha256: d39aa41f901cb2cb07087157bcdc9c8ec32b6bf1e82c5018df35eff8cad6522e
+          sha256: aa6a59e108161a74075feb8c59188327258eb1b8bd8a1b1f263e2aa72fda4df3
         - path: config.json
-          sha256: 5b52782dd9a2b8a4eb87f321448a61cd56cf0764493a1ff73f327259e14ab382
+          sha256: 1ddb5b89ebc90dcb417a45c213d818577e65976454d29385c8f6140771d95197
         - path: tokenizer_config.json
-          sha256: 1847d0a066bd2bd9fb9cb01a2141e7f3befb0a915689878903c3a4dad0f761f9
-  simulator:
-    validateModelMount: true
-    outputMode: BLOCKING
-    maxTotalTokens: 8192
-    maxRunningRequests: 48
-    chatTemplate: chatml
+          sha256: d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101
+  # Triton attention: no TRT-LLM-gen cubin downloads (the CVM has no exit).
+  modelArgs:
+    - --tool-call-parser=qwen25
+    - --reasoning-parser=qwen3
+    - --tp=1
+    - --attention-backend=triton
+    - --mem-fraction-static=0.85
+    - --context-length=32768
+    - --enable-metrics
+    - --enable-cache-report
 
 # Telemetry to the admin-next relay (admin/vm/caddy in the internal
 # repository). Its address is the telemetry collector's one allowlist exit.
 telemetry:
   enabled: true
-  deployment: staging-20260926
+  deployment: b200int-20261027a
   relay:
     serverName: ci-admin-next-loki.centralus.cloudapp.azure.com
     address: 172.173.67.102
