@@ -72,6 +72,10 @@ inference:
       expectedFileList:
       - path: .model-lock-local-manifest.json
         sha256: a0d3a3c29654399bcddf018c3a00de4528238399182d400427287d790798f41b
+      - path: config.json
+        sha256: 8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879
+      - path: tokenizer_config.json
+        sha256: 6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
     c8sVolumeSource: /confidential-inference/model-updates/b200-dsv41
     volumeNames:
     - dsv41
