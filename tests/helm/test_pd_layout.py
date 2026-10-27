@@ -311,6 +311,9 @@ B200_MODEL = {
     "name": "deepseek-ai/DeepSeek-V4.1-Flash",
     "revision": "5254448103b6254fc646dacbca1cbbf20e9216c1",
     "manifestSha256": "a0d3a3c29654399bcddf018c3a00de4528238399182d400427287d790798f41b",
+    # wait-for-model needs at least three expected files.
+    "configSha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+    "tokenizerConfigSha256": "6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547",
     "c8sVolumeSource": "/confidential-inference/model-updates/b200-dsv41",
 }
 
@@ -340,7 +343,9 @@ def derive_b200_layer(plan: dict) -> dict:
                 "c8sVolumeSource": model["c8sVolumeSource"],
                 "volumeNames": ["dsv41"],
                 "mountVerification": {"expectedFileList": [
-                    {"path": ".model-lock-local-manifest.json", "sha256": model["manifestSha256"]}]},
+                    {"path": ".model-lock-local-manifest.json", "sha256": model["manifestSha256"]},
+                    {"path": "config.json", "sha256": model["configSha256"]},
+                    {"path": "tokenizer_config.json", "sha256": model["tokenizerConfigSha256"]}]},
             },
         },
         "gateway": {
