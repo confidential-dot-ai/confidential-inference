@@ -219,6 +219,7 @@
               "required": ["script", "resources"],
               "properties": {
                 "script": {"type": "string", "pattern": "^/[^\\s]+\\.py$"},
+                "mlock": {"type": "boolean"},
                 "resources": {"$ref": "#/definitions/resources"}
               }
             },
