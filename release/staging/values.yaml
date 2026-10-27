@@ -193,7 +193,7 @@ inference:
         SGLANG_OPT_DSV41_CED_BOUNDARY_HANDOFF: '1'
         SGLANG_FORWARD_UNKNOWN_TOOLS: '1'
       resources:
-        cpu: '16'
+        cpu: '14'
         memory: 160Gi
     - name: prefill1
       role: prefill
@@ -308,7 +308,7 @@ inference:
         SGLANG_OPT_DSV41_CED_BOUNDARY_HANDOFF: '1'
         SGLANG_FORWARD_UNKNOWN_TOOLS: '1'
       resources:
-        cpu: '16'
+        cpu: '14'
         memory: 160Gi
     - name: decode0
       role: decode
@@ -412,7 +412,7 @@ inference:
         SGLANG_DSV41_CED_GRAPH_MIN_FREE_GB: '8'
         SGLANG_FORWARD_UNKNOWN_TOOLS: '1'
       resources:
-        cpu: '16'
+        cpu: '14'
         memory: 64Gi
     - name: decode1
       role: decode
@@ -516,7 +516,7 @@ inference:
         SGLANG_DSV41_CED_GRAPH_MIN_FREE_GB: '8'
         SGLANG_FORWARD_UNKNOWN_TOOLS: '1'
       resources:
-        cpu: '16'
+        cpu: '14'
         memory: 64Gi
     routerArgs:
     - --prefill-policy
