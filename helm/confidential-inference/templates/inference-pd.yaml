@@ -36,9 +36,6 @@ http://inference-pd-0.inference-pd:{{ .port }}
 {{- if .Values.inference.model.cache.enabled }}
 {{- fail "inference.pd reads the c8s model volume; set inference.model.cache.enabled=false" }}
 {{- end }}
-{{- if .Values.telemetry.enabled }}
-{{- fail "inference.pd renders no worker scrape targets yet; set telemetry.enabled=false" }}
-{{- end }}
 {{- if eq (len .Values.inference.gpuArchitectures) 0 }}
 {{- fail "inference.gpuArchitectures is required when inference.pd.enabled is true" }}
 {{- end }}

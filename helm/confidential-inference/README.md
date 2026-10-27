@@ -118,8 +118,10 @@ things from the node, which the chart cannot grant:
 - CUDA IPC between containers that each see only their own GPUs. This is
   not yet verified on a GPU node.
 
-Telemetry scraping and the plain model cache (`inference.model.cache`) are
-not yet supported with this layout; the render fails if either is enabled.
+The plain model cache (`inference.model.cache`) is not supported with this
+layout; the render fails if it is enabled. With telemetry on, the collector
+scrapes the gateway, the router and kube-state-metrics, and ships the logs,
+but it scrapes no PD worker: the workers expose no metrics port yet.
 
 ### Gateway admission and routing
 
