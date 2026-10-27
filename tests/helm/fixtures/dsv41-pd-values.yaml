@@ -30,7 +30,6 @@ inference:
       - /mnt/c8s-data/models/dsv41
       - --served-model-name
       - example/DeepSeek-V4.1-Flash-1017-NVFP4
-      - --trust-remote-code
       - --tool-call-parser
       - deepseekv41
       - --reasoning-parser
@@ -145,7 +144,6 @@ inference:
       - /mnt/c8s-data/models/dsv41
       - --served-model-name
       - example/DeepSeek-V4.1-Flash-1017-NVFP4
-      - --trust-remote-code
       - --tool-call-parser
       - deepseekv41
       - --reasoning-parser
@@ -257,7 +255,6 @@ inference:
       - /mnt/c8s-data/models/dsv41
       - --served-model-name
       - example/DeepSeek-V4.1-Flash-1017-NVFP4
-      - --trust-remote-code
       - --tool-call-parser
       - deepseekv41
       - --reasoning-parser
@@ -359,7 +356,6 @@ inference:
       - /mnt/c8s-data/models/dsv41
       - --served-model-name
       - example/DeepSeek-V4.1-Flash-1017-NVFP4
-      - --trust-remote-code
       - --tool-call-parser
       - deepseekv41
       - --reasoning-parser

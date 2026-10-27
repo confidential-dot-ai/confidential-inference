@@ -57,9 +57,15 @@ def flag_values(argv: list[str]) -> dict[str, str]:
             if argv[i].startswith("--") and not argv[i + 1].startswith("--")}
 
 
+# The checkpoint's config and tokenizer load without it (#256), so the worker
+# runs no Python code from the model directory.
+ARGS_REMOVED = {"--trust-remote-code"}
+
+
 def worker_args(command: list[str]) -> list[str]:
     assert command[1:3] == ["-m", "sglang.launch_server"], command
-    args = list(command[3:])
+    assert ARGS_REMOVED <= set(command), command
+    args = [arg for arg in command[3:] if arg not in ARGS_REMOVED]
     for flag, (old, new) in ARG_SUBSTITUTIONS.items():
         index = args.index(flag)
         assert args[index + 1] == old, (flag, args[index + 1])
@@ -250,6 +256,8 @@ def check_refusals(values: dict) -> None:
     broken(set_arg("--port", "9999"), "args must set --port 8041")
     broken(set_arg("--served-model-name", "dsv41"), "args must set --served-model-name")
     broken(set_arg("--disaggregation-bootstrap-port", "9001"), "args must set --disaggregation-bootstrap-port 8999")
+    broken(lambda edited: edited["inference"]["pd"]["workers"][0]["args"].append("--trust-remote-code"),
+           "remove --trust-remote-code")
     broken(lambda edited: edited["inference"]["pd"]["workers"][0]["env"].update(CUDA_VISIBLE_DEVICES="0,1"),
            "remove CUDA_VISIBLE_DEVICES")
     broken(lambda edited: edited["images"].pop("sglangPd"), "inference.pd requires images.sglangPd")
