@@ -269,6 +269,9 @@ inference:
     # workers start after its ready file exists.
     engramHolder:
       script: /opt/sglang/recipes/deepseek-v41/launcher/hold_engram_cache.py
+      # mlock the Engram shards (needs RLIMIT_MEMLOCK above their size, ~189
+      # GiB for DeepSeek-V4.1). false leaves them unlocked in the page cache.
+      mlock: true
       resources:
         cpu: "2"
         memory: 200Gi
