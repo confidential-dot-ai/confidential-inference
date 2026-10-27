@@ -120,8 +120,9 @@ things from the node, which the chart cannot grant:
 
 The plain model cache (`inference.model.cache`) is not supported with this
 layout; the render fails if it is enabled. With telemetry on, the collector
-scrapes the gateway, the router and kube-state-metrics, and ships the logs,
-but it scrapes no PD worker: the workers expose no metrics port yet.
+scrapes one job per PD worker (`inference-pd-<name>`, the worker's port: add
+`--enable-metrics` to its args) besides the gateway, the router and
+kube-state-metrics. The PD pod has no GPU exporter.
 
 ### Gateway admission and routing
 
