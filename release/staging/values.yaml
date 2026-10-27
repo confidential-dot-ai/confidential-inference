@@ -199,6 +199,7 @@ inference:
         SGLANG_DISAGGREGATION_WAITING_TIMEOUT: '1200'
         SGLANG_OPT_DSV41_CED_BOUNDARY_HANDOFF: '1'
         SGLANG_FORWARD_UNKNOWN_TOOLS: '1'
+        HF_HUB_OFFLINE: '1'
       resources:
         cpu: '14'
         memory: 160Gi
@@ -314,6 +315,7 @@ inference:
         SGLANG_DISAGGREGATION_WAITING_TIMEOUT: '1200'
         SGLANG_OPT_DSV41_CED_BOUNDARY_HANDOFF: '1'
         SGLANG_FORWARD_UNKNOWN_TOOLS: '1'
+        HF_HUB_OFFLINE: '1'
       resources:
         cpu: '14'
         memory: 160Gi
@@ -418,6 +420,7 @@ inference:
         SGLANG_DSV41_CED_TAIL_GRAPH_CHECK: '1'
         SGLANG_DSV41_CED_GRAPH_MIN_FREE_GB: '8'
         SGLANG_FORWARD_UNKNOWN_TOOLS: '1'
+        HF_HUB_OFFLINE: '1'
       resources:
         cpu: '14'
         memory: 64Gi
@@ -522,6 +525,7 @@ inference:
         SGLANG_DSV41_CED_TAIL_GRAPH_CHECK: '1'
         SGLANG_DSV41_CED_GRAPH_MIN_FREE_GB: '8'
         SGLANG_FORWARD_UNKNOWN_TOOLS: '1'
+        HF_HUB_OFFLINE: '1'
       resources:
         cpu: '14'
         memory: 64Gi
@@ -564,7 +568,7 @@ c8s:
   frontDoorNamespace: c8s-router
 
 images:
-  sglangPd: ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41@sha256:a216d9e3f67a9c0cd6ece5ae1c94e34db906c4234366221bb942a5d83136bd9a
+  sglangPd: ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41@sha256:ecab8deded179a3c8489d9bc5e886d01c637919eeace6ea6be02ec0602e4bafe
   c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:05bb6a32b7ad6009c63f77f46c7379ae70dacfc493f21783a16035429adc8993
 
 # The simulator uses the staging workload definitions.
