@@ -1,0 +1,29 @@
+diff --git a/sgl-model-gateway/src/core/steps/worker/local/submit_tokenizer_job.rs b/sgl-model-gateway/src/core/steps/worker/local/submit_tokenizer_job.rs
+index 4996f97..0a412b0 100644
+--- a/sgl-model-gateway/src/core/steps/worker/local/submit_tokenizer_job.rs
++++ b/sgl-model-gateway/src/core/steps/worker/local/submit_tokenizer_job.rs
+@@ -11,7 +11,7 @@ use wfaas::{StepExecutor, StepResult, WorkflowContext, WorkflowError, WorkflowRe
+ use crate::{
+     core::{
+         steps::{workflow_data::LocalWorkerWorkflowData, TokenizerConfigRequest},
+-        Job,
++        ConnectionMode, Job,
+     },
+     tokenizer::TokenizerRegistry,
+ };
+@@ -29,6 +29,15 @@ impl StepExecutor<LocalWorkerWorkflowData> for SubmitTokenizerJobStep {
+         &self,
+         context: &mut WorkflowContext<LocalWorkerWorkflowData>,
+     ) -> WorkflowResult<StepResult> {
++        // Only the gRPC routers tokenize: an HTTP worker gets the request text
++        // and tokenizes it itself (of the HTTP routes, only /v1/tokenize and
++        // /v1/detokenize read the registry). The worker's model path is not a
++        // path in the router's filesystem, so loading it here would download
++        // the tokenizer from the Hugging Face Hub.
++        if matches!(context.data.connection_mode, Some(ConnectionMode::Http)) {
++            debug!("HTTP worker, no router tokenizer to register");
++            return Ok(StepResult::Success);
++        }
+         let labels = &context.data.final_labels;
+         let app_context = context
+             .data

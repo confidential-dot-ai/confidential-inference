@@ -62,6 +62,10 @@ http://inference-pd-0.inference-pd:{{ .port }}
 {{- fail (printf "%s: args must set %s %s" $where $flag $expected) }}
 {{- end }}
 {{- end }}
+{{- /* The checkpoint's config and tokenizer load without remote code (#256). */}}
+{{- if hasKey $flags "--trust-remote-code" }}
+{{- fail (printf "%s: remove --trust-remote-code" $where) }}
+{{- end }}
 {{- if eq $w.role "prefill" }}
 {{- if ne (get $flags "--disaggregation-bootstrap-port") (toString $w.bootstrapPort) }}
 {{- fail (printf "%s: args must set --disaggregation-bootstrap-port %v" $where $w.bootstrapPort) }}
