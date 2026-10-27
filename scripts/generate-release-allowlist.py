@@ -194,12 +194,11 @@ def kubernetes_env(service_host: str) -> dict[str, str]:
 NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-def expand(value: str, known: dict[str, str | None]) -> str:
+def expand(value: str, known: dict[str, str]) -> str:
     """Mirror the kubelet $(VAR) expansion for names defined earlier.
 
     `$$` is an escaped `$`. `$(NAME)` becomes the value of an earlier name, and
-    stays as written when the name is unknown. A known name without a value
-    (None) is one the kubelet expands to a value the release does not pin.
+    stays as written when the name is unknown.
     """
     output: list[str] = []
     index = 0
@@ -215,13 +214,7 @@ def expand(value: str, known: dict[str, str | None]) -> str:
                 end = value.find(")", index + 2)
                 name = value[index + 2:end] if end != -1 else ""
                 if end != -1 and NAME.fullmatch(name):
-                    if name not in known:
-                        output.append(value[index:end + 1])
-                    elif known[name] is None:
-                        raise GenerationError(
-                            f"$({name}) in {value!r}: the kubelet expands it to a value the release does not pin")
-                    else:
-                        output.append(known[name])
+                    output.append(known.get(name, value[index:end + 1]))
                     index = end + 1
                     continue
         output.append(char)
@@ -285,45 +278,21 @@ def container_env(
     return dict(sorted(env.items()))
 
 
-def process_env(container: dict[str, Any]) -> dict[str, str | None]:
-    """The names the kubelet expands in a pod command and args.
-
-    They are the container's env, a literal value expanded as the kubelet
-    does, and the `kubernetes` Service variables. Any other value (a field
-    reference, the Service address) is None: the process does not pin it.
-    """
-    known: dict[str, str | None] = dict.fromkeys(kubernetes_env(""))
-    for item in container.get("env", []):
-        try:
-            known[item["name"]] = expand(str(item["value"]), known) if "value" in item else None
-        except GenerationError:
-            known[item["name"]] = None
-    return known
-
-
 def effective_process(container: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     """Merge the pod command and args with the image defaults, as the runtime does.
 
     A pod `command` replaces ENTRYPOINT and drops CMD; pod `args` replace CMD.
-    The kubelet expands `$$` and `$(NAME)` in the pod's command and args,
-    not in the image's ENTRYPOINT and CMD.
     """
     merged = dict(container)
-    known = process_env(container)
-    try:
-        command = [expand(str(arg), known) for arg in container.get("command") or []]
-        args = [expand(str(arg), known) for arg in container.get("args") or []]
-    except GenerationError as error:
-        raise GenerationError(f"container {container['name']}: {error}") from None
-    if command:
-        merged["command"] = command
-        merged["args"] = args
+    if container.get("command"):
+        merged["command"] = container["command"]
+        merged["args"] = container.get("args") or []
     else:
         entrypoint = config.get("entrypoint") or []
         if not entrypoint:
             raise GenerationError(f"container {container['name']}: the image has no ENTRYPOINT and the pod sets no command")
         merged["command"] = entrypoint
-        merged["args"] = args if args else (config.get("cmd") or [])
+        merged["args"] = container["args"] if container.get("args") else (config.get("cmd") or [])
     if not merged["args"]:
         merged.pop("args", None)
     return merged
