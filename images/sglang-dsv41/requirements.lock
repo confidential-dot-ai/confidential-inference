@@ -735,6 +735,11 @@ filelock==4.2.4 \
 flash-attn-4==4.0.0b35 \
     --hash=sha256:45c48469c851c54052f0004c9679b19ea7d70423960788a5be570a75f189e0ab \
     --hash=sha256:6df9a60fab0ca55c3f9c35244e794411afeff565100955e40db6c73e72848f94
+# Not on PyPI: the precompiled FlashInfer cubins (TRT-LLM-gen MoE/GEMM) of
+# flashinfer-python 0.7.2, from the FlashInfer v0.7.2 GitHub release. Without
+# them FlashInfer downloads cubins at run time, and the pod has no egress.
+flashinfer-cubin @ https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2/flashinfer_cubin-0.7.2-py3-none-any.whl \
+    --hash=sha256:31704fa5b2562d459d34c67cee9e80e0abb96c82f89943d542276d5a92c88079
 flashinfer-python==0.7.2 \
     --hash=sha256:31646a6c1a9a5268056ddd31f377fbb57adf0f68ba6c7714a3a3f348bd1d1454 \
     --hash=sha256:770550a0aa92b2f10e6c9a1f048dd43713f0f3bb6a12710186fcf8e4e9c99bd8
