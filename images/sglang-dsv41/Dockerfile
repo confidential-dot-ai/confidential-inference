@@ -9,7 +9,9 @@
 # Python wheels by SHA-256, and the SGLang source by one commit of the
 # Sglang-public fork (no patches: the other SGLang image patches upstream).
 # The image bakes no JIT cache: FlashInfer, Triton and the SGLang JIT kernels
-# compile at run time into the pod's emptyDir.
+# compile at run time into the pod's emptyDir. FlashInfer's precompiled
+# TRT-LLM-gen cubins come from the flashinfer-cubin wheel (requirements.lock):
+# the pod has no egress to download them.
 
 FROM ghcr.io/astral-sh/uv@sha256:265d074d08ed8080bc578087ca68a8e94611f9c7be671d40e18b3d3b1ad0dad4 AS uv
 
@@ -77,7 +79,7 @@ LABEL ai.confidential.sglang.revision="c2425f9b0a274a9f5c3bf91c7af363e94bdbf548"
 LABEL ai.confidential.upstream.source="https://github.com/sgl-project/sglang"
 LABEL ai.confidential.upstream.revision="a7fd2e1158c389c33077bae67fb797efa8dd09bd"
 LABEL ai.confidential.ubuntu.snapshot="20261020T000000Z"
-LABEL ai.confidential.python.requirements.sha256="178653143d416fa38c04408a9780ea108268b6154cf9d2afd50cd2af332fbedc"
+LABEL ai.confidential.python.requirements.sha256="ecf62490ebac298d5ead834137166fe521ff4c4f8efefe73b30a89f599a626ac"
 LABEL ai.confidential.uv.digest="sha256:265d074d08ed8080bc578087ca68a8e94611f9c7be671d40e18b3d3b1ad0dad4"
 WORKDIR /opt/sglang
 COPY --from=source /src/python /opt/sglang/python
