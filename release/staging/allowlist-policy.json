@@ -8,6 +8,10 @@
   "kubernetes": {
     "serviceHost": "10.53.0.1"
   },
+  "cdi": {
+    "driverVersion": "595.71.05",
+    "input": "release/inputs/cdi/nvidia-595.71.05.json"
+  },
   "workloads": [
     {
       "name": "gateway",
@@ -19,14 +23,9 @@
       ]
     },
     {
-      "name": "inference-worker-0",
-      "controller": "StatefulSet/inference-worker-0"
+      "name": "inference-pd-0",
+      "controller": "StatefulSet/inference-pd"
     },
-    {
-      "name": "inference-worker-1",
-      "controller": "StatefulSet/inference-worker-1"
-    },
-
     {
       "name": "telemetry-collector",
       "controller": "Deployment/telemetry-collector",
