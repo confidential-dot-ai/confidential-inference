@@ -458,6 +458,17 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(with_command["command"], ["/other"])
         self.assertNotIn("args", with_command)
 
+    def test_kubelet_expansion_of_pod_command_and_args(self):
+        container = {"name": "app", "image": IMAGE, "command": ["/bin/sh", "-c"],
+                     "args": ["echo $$; exec $(A) $(MISSING)"], "env": [{"name": "A", "value": "x"}]}
+        self.assertEqual(GEN.effective_process(container, self.config)["args"], ["echo $; exec x $(MISSING)"])
+        image_cmd = GEN.effective_process({"name": "app", "image": IMAGE}, {"entrypoint": ["/e"], "cmd": ["$$"]})
+        self.assertEqual(image_cmd["args"], ["$$"])
+        per_pod = {**container, "args": ["$(POD)"],
+                   "env": [{"name": "POD", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}}]}
+        with self.assertRaisesRegex(GEN.GenerationError, r"\$\(POD\).*does not pin"):
+            GEN.effective_process(per_pod, self.config)
+
     def test_c8s_carve_out_matches_cds(self):
         core = {GEN.split_image(CORE)[1]}
         self.assertTrue(GEN.is_carved_out({"image": CORE, "command": ["/c8s"]}, core))
