@@ -177,9 +177,7 @@ inference:
         SGLANG_RUST_SERVER: '0'
         SGLANG_TIMEOUT_KEEP_ALIVE: '300'
         SGLANG_DSV41_ENGRAM_CPU_STAGING: '1'
-        SGLANG_MOONCAKE_CUSTOM_MEM_POOL: INTRA_NODE_NVLINK
-        MC_INTRANODE_NVLINK: 'true'
-        MOONCAKE_PROTOCOL: rdma
+        MOONCAKE_PROTOCOL: tcp
         TRITON_CACHE_DIR: /var/cache/dsv41/triton
         TORCHINDUCTOR_CACHE_DIR: /var/cache/dsv41/inductor
         FLASHINFER_WORKSPACE_BASE: /var/cache/dsv41/flashinfer
@@ -293,9 +291,7 @@ inference:
         SGLANG_RUST_SERVER: '0'
         SGLANG_TIMEOUT_KEEP_ALIVE: '300'
         SGLANG_DSV41_ENGRAM_CPU_STAGING: '1'
-        SGLANG_MOONCAKE_CUSTOM_MEM_POOL: INTRA_NODE_NVLINK
-        MC_INTRANODE_NVLINK: 'true'
-        MOONCAKE_PROTOCOL: rdma
+        MOONCAKE_PROTOCOL: tcp
         TRITON_CACHE_DIR: /var/cache/dsv41/triton
         TORCHINDUCTOR_CACHE_DIR: /var/cache/dsv41/inductor
         FLASHINFER_WORKSPACE_BASE: /var/cache/dsv41/flashinfer
@@ -398,9 +394,7 @@ inference:
         SGLANG_RUST_SERVER: '0'
         SGLANG_TIMEOUT_KEEP_ALIVE: '300'
         SGLANG_DSV41_ENGRAM_CPU_STAGING: '1'
-        SGLANG_MOONCAKE_CUSTOM_MEM_POOL: INTRA_NODE_NVLINK
-        MC_INTRANODE_NVLINK: 'true'
-        MOONCAKE_PROTOCOL: rdma
+        MOONCAKE_PROTOCOL: tcp
         TRITON_CACHE_DIR: /var/cache/dsv41/triton
         TORCHINDUCTOR_CACHE_DIR: /var/cache/dsv41/inductor
         FLASHINFER_WORKSPACE_BASE: /var/cache/dsv41/flashinfer
@@ -503,9 +497,7 @@ inference:
         SGLANG_RUST_SERVER: '0'
         SGLANG_TIMEOUT_KEEP_ALIVE: '300'
         SGLANG_DSV41_ENGRAM_CPU_STAGING: '1'
-        SGLANG_MOONCAKE_CUSTOM_MEM_POOL: INTRA_NODE_NVLINK
-        MC_INTRANODE_NVLINK: 'true'
-        MOONCAKE_PROTOCOL: rdma
+        MOONCAKE_PROTOCOL: tcp
         TRITON_CACHE_DIR: /var/cache/dsv41/triton
         TORCHINDUCTOR_CACHE_DIR: /var/cache/dsv41/inductor
         FLASHINFER_WORKSPACE_BASE: /var/cache/dsv41/flashinfer
