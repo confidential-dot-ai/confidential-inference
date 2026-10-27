@@ -23,6 +23,7 @@ EXPECTED_PATCHES = [
     ("patches/worker-withdrawal.patch", "19eb3d6aad263455fb782c83dab676ee879c6191eef39e51104353e006f05b1a"),
     ("patches/admission-caps.patch", "eb542bb49728c7f926253da0a21ac521567382cf00cfc47c93e0022f337ad021"),
     ("patches/pd-router.patch", "ffe36900914b9fd0a7c881ce990b762069fdcb0c2ec97aad5a6037843dc37ba6"),
+    ("patches/http-no-tokenizer.patch", "85e982bf2bf2e21da3c27615819c3880f3a30da08495893de27ffbe9c30ba1c4"),
 ]
 
 

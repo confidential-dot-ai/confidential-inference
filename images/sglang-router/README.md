@@ -4,7 +4,7 @@ This image contains the router at the exact upstream source in `source.lock`:
 upstream SGLang `a7fd2e1` (2026-10-19), the commit the DeepSeek-V4.1 worker
 source (`images/sglang-dsv41`) is based on. Every deployment uses this one
 router, in regular mode for the aggregated workers and in prefill/decode mode
-for `inference.pd`. The build applies three patches, in the order
+for `inference.pd`. The build applies four patches, in the order
 `source.lock` lists them; each later patch is a diff on the tree the earlier
 ones produce:
 
@@ -18,6 +18,12 @@ ones produce:
    [Admission limits](#admission-limits).
 3. `pd-router.patch` changes only the prefill/decode router. See
    [Prefill/decode relay](#prefilldecode-relay).
+4. `http-no-tokenizer.patch` registers no router tokenizer for an HTTP
+   worker. Only the gRPC routers tokenize; for an HTTP worker the router
+   would load the worker's model path, which is not in the router's
+   filesystem, and so download the tokenizer from the Hugging Face Hub (the
+   router has no egress). The router's own `/v1/tokenize` and
+   `/v1/detokenize` then have no tokenizer; the gateway does not route them.
 
 `tests/images/sglang-router` checks each patch against its `source.lock`
 digest, the order the Dockerfile applies them in, and the image labels that
