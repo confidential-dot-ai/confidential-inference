@@ -44,7 +44,6 @@ inference:
       - /mnt/c8s-data/models/dsv41
       - --served-model-name
       - deepseek-ai/DeepSeek-V4.1-Flash
-      - --trust-remote-code
       - --tool-call-parser
       - deepseekv41
       - --reasoning-parser
@@ -159,7 +158,6 @@ inference:
       - /mnt/c8s-data/models/dsv41
       - --served-model-name
       - deepseek-ai/DeepSeek-V4.1-Flash
-      - --trust-remote-code
       - --tool-call-parser
       - deepseekv41
       - --reasoning-parser
@@ -271,7 +269,6 @@ inference:
       - /mnt/c8s-data/models/dsv41
       - --served-model-name
       - deepseek-ai/DeepSeek-V4.1-Flash
-      - --trust-remote-code
       - --tool-call-parser
       - deepseekv41
       - --reasoning-parser
@@ -375,7 +372,6 @@ inference:
       - /mnt/c8s-data/models/dsv41
       - --served-model-name
       - deepseek-ai/DeepSeek-V4.1-Flash
-      - --trust-remote-code
       - --tool-call-parser
       - deepseekv41
       - --reasoning-parser
@@ -482,7 +478,6 @@ inference:
     - '64'
     - --max-inflight-images
     - '256'
-    - --worker-startup-timeout-secs=7200
 gateway:
   protection:
     inferenceConcurrency: 128
