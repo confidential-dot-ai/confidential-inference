@@ -159,8 +159,25 @@ def check_values_file_is_the_plan() -> dict:
     return values
 
 
+def check_pinned_settings(documents: list[dict], model: str) -> None:
+    """Routes and gateway settings are pod env, never mutable ConfigMap data."""
+    router_pod = by_name(documents, "Deployment", "sglang-router")["spec"]["template"]["spec"]
+    router = router_pod["containers"][0]
+    assert router["command"] == ["python3", "-m", "sglang_router.launch_router"]
+    assert [item["name"] for item in router["env"]] == ["CI_ROUTER_MODEL_ROUTES"]
+    assert json.loads(router["env"][0]["value"]) == {"routes": {model: [model]}, "schemaVersion": 1}
+    assert not router.get("volumeMounts") and not router_pod.get("volumes")
+    gateway = by_name(documents, "Deployment", "gateway")["spec"]["template"]["spec"]
+    env = {item["name"]: item.get("value") for item in gateway["containers"][0]["env"]}
+    settings = json.loads(env["GATEWAY_RUNTIME_CONFIG"])
+    assert settings["catalogModelIds"] == settings["inferenceModelIds"] == [model]
+    assert not any("configMap" in volume for volume in gateway.get("volumes", []))
+    assert not any(item["kind"] == "ConfigMap" for item in documents)
+
+
 def check_render(values: dict) -> None:
     documents = render(values)
+    check_pinned_settings(documents, MODEL_NAME)
     names = {(item["kind"], item["metadata"]["name"]) for item in documents}
     # PD replaces the aggregated workers.
     assert not any(kind == "StatefulSet" and name.startswith("inference-worker-") for kind, name in names)
@@ -378,6 +395,7 @@ def check_b200_layer() -> None:
                             cwd=ROOT, text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
     documents = [item for item in yaml.safe_load_all(result.stdout) if item]
+    check_pinned_settings(documents, B200_MODEL["name"])
     template = by_name(documents, "StatefulSet", "inference-pd")["spec"]["template"]
     assert template["metadata"]["annotations"]["confidential.ai/attested-gpu-count"] == "8"
     containers = template["spec"]["containers"]
