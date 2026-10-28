@@ -28,7 +28,7 @@ gateway:
         model_revision: 70d244cc86ccca08cf5af4e1e306ecf908b1ad5e
   protection:
     # TEST: an entry-changing gateway setting for the upgrade roll test (default 48).
-    inferenceConcurrency: 46
+    inferenceConcurrency: 45
     # The node mesh proxy opens the final connection to the gateway.
     # Keep Pod proxies and the staging node network in the trusted scope.
     trustedProxyCidrs:
