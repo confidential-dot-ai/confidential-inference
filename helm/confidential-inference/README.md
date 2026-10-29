@@ -129,7 +129,11 @@ The plain model cache (`inference.model.cache`) is not supported with this
 layout; the render fails if it is enabled. With telemetry on, the collector
 scrapes one job per PD worker (`inference-pd-<name>`, the worker's port: add
 `--enable-metrics` to its args) besides the gateway, the router and
-kube-state-metrics. The PD pod has no GPU exporter.
+kube-state-metrics. The PD pod has no GPU exporter. SGLang serves
+`/metrics` on the worker's serving port and has no separate metrics
+listener, so the collector's NetworkPolicy rule admits it to that port and a
+port rule cannot limit it to `/metrics`. The ordinary workers have the same
+rule.
 
 ### Gateway admission and routing
 
