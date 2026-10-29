@@ -56,6 +56,10 @@ now removes or fixes:
 - `__pycache__/__editable___sglang_0_0_0_dev0_finder.cpython-312.pyc`, written
   by the final import check (`python -I` ignores `PYTHONDONTWRITEBYTECODE`):
   the check runs with `-B`.
+- `site-packages/build_backend.py`, the PEP 517 build shim that both
+  `flashinfer-python` and `torch-c-dlpack-ext` ship; uv installs wheels in
+  parallel, so either copy can win. Nothing imports it at run time: the
+  install deletes it and its `RECORD` line in both packages.
 
 These need a quiet build host before the image can be registered:
 
