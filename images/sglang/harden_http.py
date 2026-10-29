@@ -62,6 +62,12 @@ def harden_http(source, variant):
     if source.count(marker) != 1:
         raise ValueError("unsupported elastic router registration")
     result = apply_edits(source, edits).replace(marker, "# Administrative elastic EP router is not exposed.")
+    # FastAPI's /openapi.json, /docs, /docs/oauth2-redirect and /redoc.
+    docs = '    openapi_url=None if get_bool_env_var("DISABLE_OPENAPI_DOC") else "/openapi.json",\n'
+    if result.count(docs) != 1:
+        raise ValueError("unsupported FastAPI app construction")
+    result = result.replace(docs, "    openapi_url=None,\n    docs_url=None,\n    redoc_url=None,\n")
+    compile(result, "hardened_worker", "exec")
     return result
 
 
