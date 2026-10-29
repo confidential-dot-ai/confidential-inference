@@ -74,6 +74,9 @@ http://inference-pd-0.inference-pd:{{ .port }}
 {{- if and (eq $w.role "decode") (get $flags "--max-running-requests") }}
 {{- $decodeSlots = add $decodeSlots (atoi (get $flags "--max-running-requests")) }}
 {{- end }}
+{{- if hasKey $w.env "SGLANG_HOST_IP" }}
+{{- fail (printf "%s: the chart sets SGLANG_HOST_IP=127.0.0.1; remove it" $where) }}
+{{- end }}
 {{- if hasKey $w.env "CUDA_VISIBLE_DEVICES" }}
 {{- fail (printf "%s: the device plugin assigns GPUs; remove CUDA_VISIBLE_DEVICES" $where) }}
 {{- end }}
@@ -230,6 +233,10 @@ spec:
           env:
             - name: HOME
               value: {{ printf "%s/home" $pd.cacheDirectory | quote }}
+            # Every PD process runs in this pod, so the KV transfer ZMQ sockets
+            # bind to loopback and Mooncake advertises loopback.
+            - name: SGLANG_HOST_IP
+              value: "127.0.0.1"
             {{- range $name, $value := $w.env }}
             - name: {{ $name }}
               value: {{ toJson $value }}

@@ -191,7 +191,7 @@ def check_render(values: dict) -> None:
         # The exact launcher argv, after the documented substitutions.
         assert container["args"] == [PYTHON, "-m", "sglang.launch_server", *worker_args(worker["command"])]
         env = {item["name"]: item["value"] for item in container["env"]}
-        assert env == {"HOME": f"{CACHE}/home", **worker_env(worker["env"])}
+        assert env == {"HOME": f"{CACHE}/home", "SGLANG_HOST_IP": "127.0.0.1", **worker_env(worker["env"])}
         gpus = len(worker["env"]["CUDA_VISIBLE_DEVICES"].split(","))
         assert container["resources"]["limits"] == {"nvidia.com/gpu": gpus}
         # Workers start one at a time, after the holder, as the launcher starts them.
