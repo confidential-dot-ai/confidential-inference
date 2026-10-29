@@ -330,7 +330,6 @@ workloadOverrides:
             - --mem-fraction-static=0.90
             - --chunked-prefill-size=4096
             - --swa-full-tokens-ratio=0.1
-            - --trust-remote-code
             - --enable-metrics
             - --enable-cache-report
             - --host=0.0.0.0
@@ -414,7 +413,6 @@ workloadOverrides:
             - --mem-fraction-static=0.90
             - --chunked-prefill-size=4096
             - --swa-full-tokens-ratio=0.1
-            - --trust-remote-code
             - --enable-metrics
             - --enable-cache-report
             - --host=0.0.0.0
