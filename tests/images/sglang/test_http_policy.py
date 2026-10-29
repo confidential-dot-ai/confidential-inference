@@ -33,7 +33,7 @@ PINS = {
 # file, /v1/loads (v1_loads_router) and /metrics (--enable-metrics) also stay.
 SERVING_ROUTES = {
     "/", "/health", "/health_generate", "/model_info", "/get_model_info", "/server_info",
-    "/get_server_info", "/generate", "/encode", "/classify", "/abort_request",
+    "/get_server_info", "/generate", "/encode", "/classify",
     "/parse_function_call", "/separate_reasoning", "/v1/completions", "/v1/chat/completions",
     "/v1/embeddings", "/v1/classify", "/v1/tokenize", "/tokenize", "/v1/detokenize", "/detokenize",
     "/v1/audio/transcriptions", "/v1/realtime", "/v1/models", "/v1/models/{model:path}", "/v1/score",
@@ -43,7 +43,7 @@ SERVING_ROUTES = {
 }
 RETAINED = {
     "ordinary": SERVING_ROUTES | {"/get_load"},
-    "pd": SERVING_ROUTES | {"/ready", "/v1/decisions", "/v1/systemone"},
+    "pd": SERVING_ROUTES | {"/ready"},
 }
 
 
@@ -60,8 +60,20 @@ def route_path(decorator):
     return value.value if isinstance(value, ast.Constant) else value.args[1].value
 
 
+DOC_ROUTES = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
+
+
+def app_doc_kwargs(source):
+    """The constant openapi_url, docs_url and redoc_url of the module's FastAPI(...)."""
+    call = next(node.value for node in ast.parse(source).body
+                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+                and getattr(node.value.func, "id", None) == "FastAPI")
+    return {k.arg: k.value.value for k in call.keywords
+            if k.arg in ("openapi_url", "docs_url", "redoc_url") and isinstance(k.value, ast.Constant)}
+
+
 def synthetic_app(source):
-    app = FastAPI()
+    app = FastAPI(**app_doc_kwargs(source))
 
     async def echo(request: Request):
         payload = await request.body()
@@ -106,6 +118,8 @@ class WorkerHTTPPolicyTests(unittest.TestCase):
                 self.assertEqual(RETAINED[variant], {route_path(d) for _, d in declarations(hardened)})
                 self.assertNotIn("app.include_router(elastic_ep_router)", hardened)
                 self.assertIn("app.include_router(v1_loads_router)", hardened)
+                self.assertEqual({"openapi_url": None, "docs_url": None, "redoc_url": None},
+                                 app_doc_kwargs(hardened))
 
     @unittest.skipIf(FastAPI is None, "needs fastapi and httpx")
     def test_admin_routes_absent_with_or_without_credentials(self):
@@ -113,9 +127,12 @@ class WorkerHTTPPolicyTests(unittest.TestCase):
             hardened = policy.harden_http(sources["http"], variant)
             denied = {route_path(d) for node, d in declarations(sources["http"])
                       if node.name not in policy.SERVING_HANDLERS}
-            denied.update(("/scale_elastic_ep", "/is_scaling_elastic_ep"))
+            denied.update(("/scale_elastic_ep", "/is_scaling_elastic_ep", *DOC_ROUTES))
             self.assertGreater(len(denied), 35)
             self.assertIn("/dumper/{method}", denied)
+            self.assertIn("/abort_request", denied)
+            with TestClient(synthetic_app(sources["http"])) as client:
+                self.assertEqual(client.get("/openapi.json").status_code, 200)
             with TestClient(synthetic_app(hardened)) as client:
                 for path in sorted(denied):
                     for method in ("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"):
@@ -128,7 +145,7 @@ class WorkerHTTPPolicyTests(unittest.TestCase):
         payload = b'{"stream":true,"tools":[{"type":"function","function":{"name":"synthetic"}}]}'
         for variant, sources in self.sources.items():
             with TestClient(synthetic_app(policy.harden_http(sources["http"], variant))) as client:
-                for path in ("/generate", "/v1/chat/completions", "/v1/completions", "/parse_function_call", "/abort_request"):
+                for path in ("/generate", "/v1/chat/completions", "/v1/completions", "/parse_function_call"):
                     response = client.post(path, content=payload)
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.content, payload + b"\n[DONE]")
