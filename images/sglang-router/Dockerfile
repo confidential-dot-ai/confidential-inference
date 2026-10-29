@@ -50,11 +50,11 @@ LABEL org.opencontainers.image.base.name="docker.io/library/python"
 LABEL org.opencontainers.image.base.digest="sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258"
 LABEL ai.confidential.upstream.source="https://github.com/sgl-project/sglang"
 LABEL ai.confidential.upstream.revision="a7fd2e1158c389c33077bae67fb797efa8dd09bd"
-LABEL ai.confidential.sglang-router.worker-withdrawal-patch.sha256="19eb3d6aad263455fb782c83dab676ee879c6191eef39e51104353e006f05b1a"
+LABEL ai.confidential.sglang-router.worker-withdrawal-patch.sha256="c19733adbf8ec8c25bb58a517bfa35cb5f93d7c1a4b5a8b439e50104a9d6b3fa"
 LABEL ai.confidential.sglang-router.admission-caps-patch.sha256="eb542bb49728c7f926253da0a21ac521567382cf00cfc47c93e0022f337ad021"
 LABEL ai.confidential.sglang-router.pd-router-patch.sha256="ffe36900914b9fd0a7c881ce990b762069fdcb0c2ec97aad5a6037843dc37ba6"
 LABEL ai.confidential.sglang-router.http-no-tokenizer-patch.sha256="85e982bf2bf2e21da3c27615819c3880f3a30da08495893de27ffbe9c30ba1c4"
-LABEL ai.confidential.sglang-router.cargo-lock.sha256="54a80e8bd038e82e42a11c955a1c3954d161db4f9a5c22820b035667e2ba10d1"
+LABEL ai.confidential.sglang-router.cargo-lock.sha256="2a8bf58b2be1babdb06145ece924ae0c62919ecc3ee9a9a3ee3a9c6a12d6a5b6"
 COPY requirements.lock /router-requirements.lock
 RUN python3 -m pip install --no-cache-dir --require-hashes -r /router-requirements.lock
 LABEL ai.confidential.build.source-date-epoch="${SOURCE_DATE_EPOCH}"

@@ -56,15 +56,11 @@ c8s:
 
 attestationReceipts:
   evidenceBaseUrl: https://api.confidential.ai   # changed: the production hostname
-  # The release build sets releaseId to the release tag.
-  # These three values reach the gateway through the gateway-release-identity
-  # ConfigMap, not the allowlist. The deployment sets them in its own values.
+  # The release build sets releaseId to the release tag. The chart renders
+  # nothing from the other values; the schema still requires them
+  # (helm/confidential-inference/README.md).
   releaseBundleSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   policyMode: operator
-  # The deployment supplies the verified policy files and their hashes in
-  # gateway-release-identity. Keep the CDS origin in the signed workload.
-  cds:
-    url: https://c8s-cds.c8s-system.svc.cluster.local:8443
   expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   attestationApiPort: 8400
@@ -137,12 +133,10 @@ workloadOverrides:
               value: 0.0.0.0:9443
             - name: GATEWAY_METRICS_LISTEN
               value: 0.0.0.0:9090
-            - name: GATEWAY_RUNTIME_CONFIG_FILE
-              value: /mnt/c8s-data/runtime/settings.json
+            - name: GATEWAY_RUNTIME_CONFIG
+              value: '{{ include "confidential-inference.gatewaySettings" . }}'
             - name: GATEWAY_ROUTER_NAMESPACE
               value: confidential-inference
-            - name: GATEWAY_RELEASE_SELECTION_FILE
-              value: /mnt/c8s-data/release-selection/releases.json
             - name: GATEWAY_INFERENCE_URL
               value: http://router-headless.confidential-inference.svc.cluster.local:30000
             - name: GATEWAY_ALLOW_DIRECT_INFERENCE_URL
@@ -164,8 +158,6 @@ workloadOverrides:
               # A mesh relay can use a different outer node address. The gateway
               # uses that connection address without trusting its forwarded header.
               value: 10.52.0.0/16
-            - name: GATEWAY_RELEASE_IDENTITY_FILE
-              value: /mnt/c8s-data/release-identity/..data/release-identity.json
             - name: GATEWAY_ADMIN_CONFIG_FILE
               value: /run/c8s/secrets/product-usage
             - name: GATEWAY_API_KEY_PEPPER_FILE
@@ -176,19 +168,8 @@ workloadOverrides:
               value: /mnt/c8s-data/admin-api-key/..data/sha256
             - name: DEPLOYMENT_ENVIRONMENT
               value: production
-            - name: GATEWAY_METRICS_API_KEY_LABEL_ALLOWLIST
-              value: unassigned
             - name: GATEWAY_INSTANCE_ID
               value: gateway
-            - name: GATEWAY_C8S_CDS_URL
-              value: https://c8s-cds.c8s-system.svc.cluster.local:8443
-            - name: GATEWAY_RELEASE_URL
-              value: https://github.com/confidential-dot-ai/confidential-inference/releases/tag/{{
-                .Values.attestationReceipts.releaseId }}
-            - name: GATEWAY_C8S_IMAGE_POLICY
-              value: /mnt/c8s-data/release-identity/..data/cds-image-policy.json
-            - name: GATEWAY_C8S_SERVED_IMAGE_POLICY
-              value: /mnt/c8s-data/release-identity/..data/served-image-policy.json
             image: '{{ .Values.images.gateway }}'
             livenessProbe:
               failureThreshold: 3
@@ -210,12 +191,6 @@ workloadOverrides:
           schedulerName: default-scheduler
           serviceAccount: confidential-inference
           volumes:
-          - name: runtime-config
-            configMap:
-              name: gateway-runtime
-          - name: release-selection
-            configMap:
-              name: gateway-release-selection
           - name: admin-auth
             secret:
               defaultMode: 420
@@ -231,10 +206,6 @@ workloadOverrides:
                 path: sha256
               optional: true
               secretName: gateway-admin-api-key
-          - configMap:
-              defaultMode: 420
-              name: gateway-release-identity
-            name: release-identity
           - emptyDir: {}
             name: run
           - emptyDir: {}
@@ -288,8 +259,8 @@ workloadOverrides:
           containers:
           - name: sglang-router
             env:
-            - name: CI_ROUTER_MODEL_ROUTES_FILE
-              value: /mnt/c8s-data/model-routes/routes.json
+            - name: CI_ROUTER_MODEL_ROUTES
+              value: '{{ include "confidential-inference.routerRoutes" . }}'
             image: '{{ .Values.images.sglangRouter }}'
             livenessProbe:
               failureThreshold: 3
@@ -310,20 +281,11 @@ workloadOverrides:
               successThreshold: 1
             terminationMessagePath: /dev/termination-log
             terminationMessagePolicy: File
-            volumeMounts:
-            - mountPath: /mnt/c8s-data/model-routes
-              name: model-routes
-              readOnly: true
           dnsPolicy: ClusterFirst
           restartPolicy: Always
           schedulerName: default-scheduler
           serviceAccount: sglang-router
           terminationGracePeriodSeconds: 30
-          volumes:
-          - configMap:
-              defaultMode: 420
-              name: router-model-routes
-            name: model-routes
   StatefulSet/inference-worker-0:
     spec:
       persistentVolumeClaimRetentionPolicy:

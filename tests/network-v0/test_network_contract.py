@@ -163,7 +163,8 @@ class NetworkContractTests(unittest.TestCase):
 
     def test_application_limits_match_the_public_contract(self) -> None:
         expected = self.contract["publicProtection"]["application"]
-        settings = json.loads(named(self.documents, "ConfigMap", "gateway-runtime")["data"]["settings.json"])
+        gateway = named(self.documents, "Deployment", "gateway")["spec"]["template"]["spec"]["containers"][0]
+        settings = json.loads(next(item["value"] for item in gateway["env"] if item["name"] == "GATEWAY_RUNTIME_CONFIG"))
         self.assertEqual(settings["inferenceConcurrency"], expected["inferenceConcurrency"])
         self.assertEqual(settings["inferenceQueue"], expected["inferenceQueue"])
         self.assertEqual(settings["attestationConcurrency"], expected["attestationConcurrency"])

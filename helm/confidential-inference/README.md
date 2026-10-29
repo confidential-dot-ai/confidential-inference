@@ -30,11 +30,14 @@ them, and sends usage events back to the admin (`gateway.usage.enabled`).
 
 The gateway no longer serves `/attestation` (clients verify the front door with
 TEErminator; see [client verification](../../docs/verification.md)). The chart
-still renders the gateway's former attestation inputs (`attestationReceipts`
-except `attestationApiPort`,
-`runtimeConfig.releaseBundle`, the `gateway-release-identity` ConfigMap); the
-gateway ignores them. They go once production runs a release built from this
-chart.
+renders nothing from its former attestation inputs (`attestationReceipts`
+except `releaseId` and `attestationApiPort`, `runtimeConfig.releaseBundle`). It
+still accepts them, because `bin/deploy` sets them for every release it
+deploys; they go once production runs a release built from this chart.
+
+The gateway's settings are one environment variable, `GATEWAY_RUNTIME_CONFIG`,
+so the exact allowlist pins them. The gateway mounts only the admin signer
+certificate and the admin API key hashes, which differ per deployment.
 
 The chart does not own public addresses, DNS, secret-manager paths, machine
 names, or resource sizes. Keep those values in the operator repository.
@@ -44,12 +47,10 @@ names, or resource sizes. Keep those values in the operator repository.
 `helm upgrade` and `helm rollback` roll the gateway and the router
 (`RollingUpdate`, one extra pod each). The router Deployment (`sglang-router`)
 and the gateway's router Service (`router-headless`) keep their names across
-releases, so the old router serves until the new one is Ready. Set `runtimeConfig.releaseBundle` with `--set-file` to the
-verified `release-bundle.json` so the release selection changes with the
-release. The gateway and the router read their configuration files once at
-start. A `checksum/config` pod annotation rolls them when the files change.
-The gateway does not read the release selection, so a release that changes
-neither its image nor its settings does not roll it.
+releases, so the old router serves until the new one is Ready. A settings
+or routes change changes the gateway's or the router's pod template, so it
+rolls that pod. A release that changes neither the gateway image nor its
+settings does not roll the gateway.
 
 The inference workers use `updateStrategy: OnDelete`. Helm updates their
 StatefulSets, but a worker keeps its old pod until you delete it. Each worker

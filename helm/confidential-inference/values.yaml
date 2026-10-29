@@ -41,13 +41,11 @@ c8s:
   # its own namespace).
   frontDoorNamespace: c8s-system
 
+# The chart renders only releaseId (release values), evidenceEgressCidrs and
+# attestationApiPort. bin/deploy still sets the other values for older
+# releases, so the schema keeps them (README.md).
 attestationReceipts:
-  # This URL must be the c8s tls-lb front door. The gateway reads only c8s
-  # discovery and allowlist evidence from it.
   evidenceBaseUrl: https://api.example.invalid
-  # Both evidence addresses are in the gateway settings file
-  # (runtimeConfig.gatewayConfigMap).
-  # Connect to this cluster's router. Keep evidenceBaseUrl as the TLS name.
   evidenceConnectHost: ""
   # c8s serves GET /operator-keys on CDS, not on the public front door. Leave
   # this empty to read the operator key set from evidenceBaseUrl, which is the
@@ -63,12 +61,6 @@ attestationReceipts:
   policyMode: operator
   expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  # Schema 3 policy metadata (services/gateway/ATTESTATION.md, "CDS
-  # verification"). url is the CDS origin the gateway verifies (c8s >=
-  # C8s #1048: https://<launch server address>:30808, the node's CDS exit);
-  # empty leaves the policy settings to the deployment procedure. The
-  # deployment supplies the two policy documents with --set-file; the chart
-  # pins them in the release identity file. Set both or neither.
   cds:
     url: ""
     imagePolicy: ""
@@ -76,20 +68,12 @@ attestationReceipts:
   # The node-local attestation API that CDS uses to verify the requesting CVM.
   attestationApiPort: 8400
 
-# Files the gateway and the router read once at start. A change rolls their
-# pods through the checksum/config pod annotation.
+# The gateway settings and the router routes, both pinned environment.
 runtimeConfig:
   # One public-model definition generates both application views. An empty
   # map uses inference.model.name as both public and backend model name.
   modelRoutes: {}
-  gatewayConfigMap: gateway-runtime
-  routerConfigMap: router-model-routes
-  releaseConfigMap: gateway-release-selection
-  # The exact bytes of the release-bundle.json that the deployment verified,
-  # set with --set-file. The chart then renders releaseConfigMap, which selects
-  # this release, so an upgrade or rollback changes it with the release.
-  # The gateway always reads releaseConfigMap. Without releaseBundle the
-  # deployment must create it.
+  # Unused. bin/deploy still sets it for older releases (README.md).
   releaseBundle: ""
   attestationCacheSeconds: 10
 

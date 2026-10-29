@@ -62,12 +62,11 @@ python3 scripts/fetch-node-manifest.py --release release/staging
 
 ## Runtime configuration and attestation
 
-The staging profile enables the gateway and router file readers. It clears
-production model routes and uses the small staging model for both the public
-model name and the worker route. Helm creates `gateway-runtime` and
-`router-model-routes`. The existing Application Deployment workflow must
-create `gateway-release-selection` from verified signed release assets before
-it starts the gateway. Do not copy release metadata from a running pod.
+The staging profile clears production model routes and uses the small staging
+model for both the public model name and the worker route. The gateway and the
+router get their settings and routes in pinned environment variables
+(`GATEWAY_RUNTIME_CONFIG`, `CI_ROUTER_MODEL_ROUTES`); the release renders no
+ConfigMap.
 
 Applications serve plain HTTP inside their pods. The c8s per-pod mesh
 (c8s v0.64 and later) carries every pod-to-pod connection over mutual TLS and
@@ -77,10 +76,11 @@ mount rules, the gateway pepper secret grant, and encrypted-volume inputs.
 Refresh the image configuration record with the dependency bump. Preserve
 strict policy lint and verify that arbitrary component command overrides fail.
 
-The allowlist mirrors the node image's seed recorded in
-`release/inputs/c8s-seeds/<source-commit>.json`. `scripts/pin-local-c8s.py`
-records it from the build directory's `allowlist-seed.json`. Delete a record
-when no profile pins its commit.
+The allowlist mirrors the node image's seed: for a c8s release its signed
+asset `allowlist-seed-tdx.json` (C8s #975), for a dev build the record in
+`release/inputs/c8s-seeds/<source-commit>.json` that `scripts/pin-local-c8s.py`
+writes from the build directory's `allowlist-seed.json`. `bump-c8s.py` deletes
+a record when no profile pins its commit any more.
 
 ## In-cluster validation client
 

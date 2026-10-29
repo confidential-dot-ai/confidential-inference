@@ -63,8 +63,6 @@ spec:
         confidential.ai/environment: {{ .Values.environment | quote }}
       annotations:
         confidential.ai/cw: sglang-router
-        # The router reads its model routes once at start.
-        checksum/config: {{ include "confidential-inference.modelRoutes" . | sha256sum }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.router.metricsPort | quote }}
     spec:
@@ -140,15 +138,20 @@ spec:
             - --eviction-interval-secs=60
             - --max-tree-size=67108864
             - --health-check-endpoint=/health
-            # A worker that gets SIGTERM answers /health with 503 and drains
-            # (upstream SGLang). The router stops picking it within one 2 s
-            # health check. A request that fails on it in that window opens
-            # its circuit after 2 failures, and the router's retries (5 by
-            # default) go to another worker. A dead pod IP fails in 2 s, not
-            # the default 10 s connect timeout.
+            # SGLang's /health generates one token and polls once a second, so
+            # under load one check can take seconds. One slow check must not
+            # eject a worker (with one worker, every request gets 503), so
+            # this uses the upstream failure threshold and timeout: 3
+            # consecutive failures, 5 s each.
+            # A worker that gets SIGTERM answers /health with 503 at once and
+            # drains (upstream SGLang). The router stops picking it after 3
+            # checks, within 6 s. A request that fails on it in that window
+            # opens its circuit after 2 failures, and the router's retries (5
+            # by default) go to another worker. A dead pod IP fails in 2 s,
+            # not the default 10 s connect timeout.
             - --health-check-interval-secs=2
-            - --health-check-timeout-secs=2
-            - --health-failure-threshold=1
+            - --health-check-timeout-secs=5
+            - --health-failure-threshold=3
             - --cb-failure-threshold=2
             - --cb-timeout-duration-secs=10
             - --connect-timeout-secs=2
@@ -162,12 +165,9 @@ spec:
             - --prometheus-port={{ .Values.router.metricsPort }}
             {{- end }}
           env:
-            - name: CI_ROUTER_MODEL_ROUTES_FILE
-              value: /mnt/c8s-data/model-routes/routes.json
-          volumeMounts:
-            - name: model-routes
-              mountPath: /mnt/c8s-data/model-routes
-              readOnly: true
+            # Environment, so the exact allowlist pins the routes.
+            - name: CI_ROUTER_MODEL_ROUTES
+              value: {{ include "confidential-inference.routerRoutes" . | quote }}
           ports:
             - name: openai
               containerPort: {{ .Values.router.port }}
@@ -190,10 +190,6 @@ spec:
               port: openai
             periodSeconds: 30
             timeoutSeconds: 5
-      volumes:
-        - name: model-routes
-          configMap:
-            name: {{ .Values.runtimeConfig.routerConfigMap }}
 {{- end }}
 
 {{- end -}}
