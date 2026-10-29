@@ -33,7 +33,7 @@ PINS = {
 # file, /v1/loads (v1_loads_router) and /metrics (--enable-metrics) also stay.
 SERVING_ROUTES = {
     "/", "/health", "/health_generate", "/model_info", "/get_model_info", "/server_info",
-    "/get_server_info", "/generate", "/encode", "/classify", "/abort_request",
+    "/get_server_info", "/generate", "/encode", "/classify",
     "/parse_function_call", "/separate_reasoning", "/v1/completions", "/v1/chat/completions",
     "/v1/embeddings", "/v1/classify", "/v1/tokenize", "/tokenize", "/v1/detokenize", "/detokenize",
     "/v1/audio/transcriptions", "/v1/realtime", "/v1/models", "/v1/models/{model:path}", "/v1/score",
@@ -43,7 +43,7 @@ SERVING_ROUTES = {
 }
 RETAINED = {
     "ordinary": SERVING_ROUTES | {"/get_load"},
-    "pd": SERVING_ROUTES | {"/ready", "/v1/decisions", "/v1/systemone"},
+    "pd": SERVING_ROUTES | {"/ready"},
 }
 
 
@@ -116,6 +116,7 @@ class WorkerHTTPPolicyTests(unittest.TestCase):
             denied.update(("/scale_elastic_ep", "/is_scaling_elastic_ep"))
             self.assertGreater(len(denied), 35)
             self.assertIn("/dumper/{method}", denied)
+            self.assertIn("/abort_request", denied)
             with TestClient(synthetic_app(hardened)) as client:
                 for path in sorted(denied):
                     for method in ("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"):
@@ -128,7 +129,7 @@ class WorkerHTTPPolicyTests(unittest.TestCase):
         payload = b'{"stream":true,"tools":[{"type":"function","function":{"name":"synthetic"}}]}'
         for variant, sources in self.sources.items():
             with TestClient(synthetic_app(policy.harden_http(sources["http"], variant))) as client:
-                for path in ("/generate", "/v1/chat/completions", "/v1/completions", "/parse_function_call", "/abort_request"):
+                for path in ("/generate", "/v1/chat/completions", "/v1/completions", "/parse_function_call"):
                     response = client.post(path, content=payload)
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.content, payload + b"\n[DONE]")
