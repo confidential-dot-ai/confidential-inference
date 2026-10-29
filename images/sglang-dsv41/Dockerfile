@@ -4,10 +4,11 @@
 # has to happen first.
 #
 # Build context: the repository root (Dockerfile.dockerignore keeps only this
-# recipe and images/sglang/wait_for_model.py). Every input is pinned: base
+# recipe, images/sglang/wait_for_model.py and images/sglang/harden_http.py). Every input is pinned: base
 # images by linux/amd64 digest, Ubuntu packages by one snapshot timestamp,
 # Python wheels by SHA-256, and the SGLang source by one commit of the
 # Sglang-public fork (no patches: the other SGLang image patches upstream).
+# images/sglang/harden_http.py then removes the non-serving HTTP routes.
 # The image bakes no JIT cache: FlashInfer, Triton and the SGLang JIT kernels
 # compile at run time into the pod's emptyDir. FlashInfer's precompiled
 # TRT-LLM-gen cubins come from the flashinfer-cubin wheel (requirements.lock):
@@ -91,9 +92,11 @@ COPY --from=source /src/SOURCE_RECORD.json /opt/sglang/SOURCE_RECORD.json
 # ctime of pyproject.toml (uv's reinstall check, never used in the image), so
 # it leaves the dist-info and its RECORD line. The import check runs with -B:
 # -I ignores PYTHONDONTWRITEBYTECODE.
-RUN --mount=type=bind,source=images/sglang/wait_for_model.py,target=/run-src/wait-for-model,readonly \
+RUN --mount=type=bind,source=images/sglang/harden_http.py,target=/run-src/harden-http.py,readonly \
+    --mount=type=bind,source=images/sglang/wait_for_model.py,target=/run-src/wait-for-model,readonly \
     SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 SGLANG_BUILD_RUST_EXTS=none \
         uv pip install --no-deps --no-build-isolation -e /opt/sglang/python \
+    && python /run-src/harden-http.py --root /opt/sglang/python/sglang --variant pd \
     && dist=/opt/dsv41/lib/python3.12/site-packages/sglang-0.0.0.dev0.dist-info \
     && rm "$dist/uv_cache.json" \
     && sed -i '/^sglang-0\.0\.0\.dev0\.dist-info\/uv_cache\.json,/d' "$dist/RECORD" \

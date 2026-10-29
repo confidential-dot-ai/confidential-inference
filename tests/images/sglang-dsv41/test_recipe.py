@@ -133,6 +133,12 @@ class DraftRecipeTests(unittest.TestCase):
         ignore = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
         self.assertIn("!images/sglang/wait_for_model.py", ignore)
 
+    def test_build_removes_non_serving_http_routes(self) -> None:
+        self.assertIn("source=images/sglang/harden_http.py,target=/run-src/harden-http.py", DOCKERFILE)
+        self.assertIn("python /run-src/harden-http.py --root /opt/sglang/python/sglang --variant pd", DOCKERFILE)
+        ignore = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
+        self.assertIn("!images/sglang/harden_http.py", ignore)
+
 
 class FetchSourceLockTests(unittest.TestCase):
     """fetch_source.py refuses a source that is not one pinned commit, before any fetch."""

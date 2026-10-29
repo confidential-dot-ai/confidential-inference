@@ -22,6 +22,7 @@ Every input is pinned in `source.lock` and mirrored in a Dockerfile label.
 | Python environment | `requirements.lock`: 212 exact versions, each with the SHA-256 of every file PyPI publishes for it, installed with `--no-deps --require-hashes` |
 | SGLang source | One commit of the public `confidential-dot-ai/Sglang-public` fork, with no patches. `source.branch` names the branch that holds it; `source.upstream` records the upstream SGLang commit the fork is based on |
 | Model gate | `images/sglang/wait_for_model.py`, the public worker image's gate |
+| HTTP policy | `images/sglang/harden_http.py --variant pd`, shared with the public worker image (see its README) |
 
 The base is the CUDA devel image because FlashInfer, Triton and the SGLang JIT
 kernels compile at run time. The image bakes no JIT cache: compiled kernels

@@ -70,6 +70,7 @@ class SGLangImageRecipeTests(unittest.TestCase):
         for source in (
             "patches/cc-optimizations-v0518.patch",
             "patch_flashinfer_cuda_ipc.py",
+            "harden_http.py",
             "wait_for_model.py",
             "fetch_model.py",
             "dcgm-counters.csv",
@@ -81,6 +82,7 @@ class SGLangImageRecipeTests(unittest.TestCase):
         self.assertIn("install -D -m 0555 /run-dcgm/usr/bin/dcgm-exporter", DOCKERFILE)
         self.assertIn("git apply --check --directory=python", DOCKERFILE)
         self.assertIn("git apply --directory=python", DOCKERFILE)
+        self.assertIn("python3 /run-src/harden-http.py --root python/sglang --variant ordinary", DOCKERFILE)
 
     def test_patch_and_dependency_pins_are_exact(self) -> None:
         patch = RECIPE / "patches" / "cc-optimizations-v0518.patch"
@@ -196,6 +198,7 @@ class SGLangImageRecipeTests(unittest.TestCase):
             "fetch_model.py",
             "dcgm-counters.csv",
             "patch_flashinfer_cuda_ipc.py",
+            "harden_http.py",
         }
         actual = {path.name for path in RECIPE.iterdir() if path.is_file()}
         self.assertEqual(expected, actual)
