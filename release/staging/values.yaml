@@ -100,7 +100,7 @@ c8s:
   frontDoorNamespace: c8s-router
 
 images:
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:b710f0b5a5431fbb4e6ed49795345950035a09e274b4058123cafdb627418e93
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:38e2c52da58dc80e1e7591373b0881672c4412098394147bb44c0619b8552b75
 
 # The simulator uses the staging workload definitions.
 workloadOverridesEnabled: false
