@@ -76,6 +76,7 @@ IMAGES = (
             "images/sglang/Dockerfile",
             "images/sglang/dcgm-counters.csv",
             "images/sglang/patch_flashinfer_cuda_ipc.py",
+            "images/sglang/harden_http.py",
             "images/sglang/wait_for_model.py",
             "images/sglang/fetch_model.py",
             "images/sglang/patches/**",
