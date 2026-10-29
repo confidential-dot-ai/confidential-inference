@@ -5,3 +5,4 @@
 !images/sglang-dsv41/requirements.lock
 !images/sglang-dsv41/fetch_source.py
 !images/sglang/wait_for_model.py
+!images/sglang/harden_http.py
