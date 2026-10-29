@@ -51,11 +51,19 @@ ENV VIRTUAL_ENV=/opt/dsv41 \
 ENV PATH=/opt/dsv41/bin:${PATH}
 # The whole environment, by hash, without resolution. Epoch mtimes: FlashInfer's
 # JIT cache compares source and object mtimes, so a fresh install would
-# otherwise rebuild every op.
+# otherwise rebuild every op. flashinfer-python and torch-c-dlpack-ext both ship
+# a top-level build_backend.py (their PEP 517 build shim, never imported at run
+# time); uv installs wheels in parallel, so which copy survives varies between
+# builds. The file and both RECORD lines are removed to keep the layer
+# reproducible.
 RUN --mount=type=bind,source=images/sglang-dsv41,target=/inputs/recipe,readonly \
     python3.12 -I -c 'import json,hashlib; d=json.load(open("/inputs/recipe/source.lock")); assert hashlib.sha256(open("/inputs/recipe/requirements.lock","rb").read()).hexdigest()==d["python"]["requirementsLockSha256"]' \
     && uv venv --python /usr/bin/python3.12 /opt/dsv41 \
     && uv pip install --no-deps --require-hashes -r /inputs/recipe/requirements.lock \
+    && site=/opt/dsv41/lib/python3.12/site-packages \
+    && rm "$site/build_backend.py" \
+    && sed -i '/^build_backend\.py,/d' "$site"/flashinfer_python-*.dist-info/RECORD "$site"/torch_c_dlpack_ext-*.dist-info/RECORD \
+    && ! grep -l '^build_backend\.py,' "$site"/*.dist-info/RECORD \
     && find /opt/dsv41 -xdev -exec touch -h -d @0 {} +
 # Mooncake's transfer engine links the CUDA 12 runtime from its wheel.
 ENV LD_LIBRARY_PATH=/opt/dsv41/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:${LD_LIBRARY_PATH}

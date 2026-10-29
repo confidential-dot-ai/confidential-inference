@@ -118,6 +118,13 @@ things from the node, which the chart cannot grant:
 - CUDA IPC between containers that each see only their own GPUs. This is
   not yet verified on a GPU node.
 
+The chart sets `SGLANG_HOST_IP=127.0.0.1` for every PD worker. The prefill and
+decode KV transfer ZMQ sockets then bind to loopback, and Mooncake advertises
+loopback. Two listeners still bind every address, and only the NetworkPolicy
+keeps other pods out: the KV bootstrap server shares the worker's `--host`
+(`0.0.0.0`, which the router needs), and Mooncake's handshake listener always
+binds `INADDR_ANY`.
+
 The plain model cache (`inference.model.cache`) is not supported with this
 layout; the render fails if it is enabled. With telemetry on, the collector
 scrapes one job per PD worker (`inference-pd-<name>`, the worker's port: add
