@@ -29,7 +29,7 @@ http://inference-pd-0.inference-pd:{{ .port }}
 {{- define "confidential-inference.source.inference-pd" -}}
 {{- $pd := .Values.inference.pd }}
 {{- if and .Values.inference.enabled $pd.enabled }}
-{{- $image := required "inference.pd requires images.sglangPd" .Values.images.sglangPd }}
+{{- $image := required "inference.pd requires images.sglangWorker" .Values.images.sglangWorker }}
 {{- if ne .Values.inference.mode "model" }}
 {{- fail "inference.pd requires inference.mode=model" }}
 {{- end }}

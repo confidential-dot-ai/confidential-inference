@@ -2,7 +2,7 @@
 
 This image contains the router at the exact upstream source in `source.lock`:
 upstream SGLang `a7fd2e1` (2026-10-19), the commit the DeepSeek-V4.1 worker
-source (`images/sglang-dsv41`) is based on. Every deployment uses this one
+source (`images/sglang`) is based on. Every deployment uses this one
 router, in regular mode for the aggregated workers and in prefill/decode mode
 for `inference.pd`. The build applies four patches, in the order
 `source.lock` lists them; each later patch is a diff on the tree the earlier

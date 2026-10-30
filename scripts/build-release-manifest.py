@@ -690,8 +690,7 @@ def base_release_images(
     require(not unpublished,
             "image build inputs changed after the base release, and the publication has no new digest: "
             + ", ".join(unpublished))
-    # A staging simulator does not render the production PD worker. Its
-    # signed publication inventory still binds that audited image digest.
+    # Keep the complete signed inventory when a profile omits a component.
     images: dict[str, str] = dict(base.get("imagePublication", {}).get("images", {}))
     for key, image in base["images"].items():
         if "transition" in base and re.fullmatch(r"transitionInput[0-9]+", key):

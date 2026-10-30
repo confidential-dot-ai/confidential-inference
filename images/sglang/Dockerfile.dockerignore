@@ -1,0 +1,11 @@
+# Allowlist: the build context is the repository root.
+*
+!images/sglang/Dockerfile
+!images/sglang/source.lock
+!images/sglang/requirements.lock
+!images/sglang/fetch_source.py
+!images/sglang/wait_for_model.py
+!images/sglang/harden_http.py
+!images/sglang/fetch_model.py
+!images/sglang/simulator-upstream/**
+!images/sglang/patches/sglang-simulator-*.patch

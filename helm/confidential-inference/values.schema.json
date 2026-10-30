@@ -38,7 +38,6 @@
         "gateway": {"$ref": "#/definitions/image"},
         "sglang": {"$ref": "#/definitions/image"},
         "sglangWorker": {"$ref": "#/definitions/image"},
-        "sglangPd": {"$ref": "#/definitions/image"},
         "sglangRouter": {"$ref": "#/definitions/image"},
         "rolloutClient": {"$ref": "#/definitions/image"},
         "telemetryCollector": {"$ref": "#/definitions/image"},

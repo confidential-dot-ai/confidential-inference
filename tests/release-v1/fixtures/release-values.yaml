@@ -4,4 +4,3 @@ images:
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809
   sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang-router@sha256:7440bead8020d969b5ebe69c0689ba894edb2d2fd2a406bb16d346a86770918f
-  sglangPd: ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41@sha256:8888888888888888888888888888888888888888888888888888888888888888

@@ -119,7 +119,7 @@ def derive_values(plan: dict) -> dict:
                      resources=RESOURCES[role])
         workers.append(entry)
     return {
-        "images": {"sglangPd": "ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41@sha256:" + "0" * 64},
+        "images": {"sglangWorker": "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:" + "0" * 64},
         "inference": {
             "mode": "model",
             "gpuArchitectures": ["BLACKWELL"],
@@ -279,7 +279,7 @@ def check_refusals(values: dict) -> None:
            "remove --trust-remote-code")
     broken(lambda edited: edited["inference"]["pd"]["workers"][0]["env"].update(CUDA_VISIBLE_DEVICES="0,1"),
            "remove CUDA_VISIBLE_DEVICES")
-    broken(lambda edited: edited["images"].pop("sglangPd"), "inference.pd requires images.sglangPd")
+    broken(lambda edited: edited["images"].update(sglangWorker=None), "sglangWorker")
     broken(lambda edited: edited["inference"].update(mode="simulator"), "inference.pd requires inference.mode=model")
     broken(lambda edited: edited["inference"]["pd"].update(
         workers=[w for w in edited["inference"]["pd"]["workers"] if w["role"] == "prefill"]),
@@ -386,12 +386,12 @@ def check_b200_layer() -> None:
     """The B200 layer is the plan with the B200 limits, and renders on top of staging."""
     layer = yaml.safe_load(B200_LAYER.read_text())
     assert layer == derive_b200_layer(PLAN), "regenerate release/staging/b200/values.yaml (derive_b200_layer)"
-    image = "ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41@sha256:" + "0" * 64
+    image = "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:" + "0" * 64
     result = subprocess.run(["helm", "template", "example", str(CHART), "--namespace", "confidential-inference",
                              "--values", "release/values.yaml", "--values", "release/staging/values.yaml",
                              "--values", str(B200_LAYER), "--values", "tests/release-v1/fixtures/release-values.yaml",
                              "--set", "attestationReceipts.releaseId=v0.14.18-staging",
-                             "--set", f"images.sglangPd={image}"],
+                             "--set", f"images.sglangWorker={image}"],
                             cwd=ROOT, text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
     documents = [item for item in yaml.safe_load_all(result.stdout) if item]

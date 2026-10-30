@@ -148,7 +148,7 @@ jobs:
         run: |
           failed=0
           run() { echo "::group::$*"; "$@" || { echo "::error::failed: $*"; failed=1; }; echo "::endgroup::"; }
-          for suite in api image-workflow images/gateway images/sglang images/sglang-dsv41 images/sglang-router network-v0 release-v1; do
+          for suite in api image-workflow images/gateway images/sglang images/sglang-router network-v0 release-v1; do
             run python3 -m unittest discover -s "tests/$suite" -p 'test_*.py'
           done
           run python3 -m unittest discover -s tests/release-v0 -p test_release_signature.py

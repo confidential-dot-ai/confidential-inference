@@ -69,26 +69,21 @@ IMAGES = (
     ),
     Image(
         "sglang",
-        "images/sglang",
+        ".",
         "images/sglang/Dockerfile",
         "Confidential Inference SGLang",
         (
             "images/sglang/Dockerfile",
-            "images/sglang/dcgm-counters.csv",
-            "images/sglang/patch_flashinfer_cuda_ipc.py",
+            "images/sglang/Dockerfile.dockerignore",
+            "images/sglang/source.lock",
+            "images/sglang/requirements.lock",
+            "images/sglang/fetch_source.py",
             "images/sglang/harden_http.py",
             "images/sglang/wait_for_model.py",
             "images/sglang/fetch_model.py",
             "images/sglang/patches/**",
             "images/sglang/simulator-upstream/**",
         ),
-    ),
-    Image(
-        "sglang-dsv41",
-        ".",
-        "images/sglang-dsv41/Dockerfile",
-        "Confidential Inference SGLang DeepSeek-V4.1",
-        ("images/sglang-dsv41/**", "images/sglang/harden_http.py", "images/sglang/wait_for_model.py"),
     ),
     Image(
         "sglang-router",
@@ -184,7 +179,7 @@ def main() -> int:
         {**image.matrix_entry(), **dict(zip(("revision", "epoch"), input_revision(image, args.head)))}
         for image in selected
     ]
-    large = [entry for entry in matrix if entry["image"] in {"sglang", "sglang-dsv41"}]
+    large = [entry for entry in matrix if entry["image"] == "sglang"]
     standard = [entry for entry in matrix if entry not in large]
     print("matrix=" + json.dumps({"include": matrix}, separators=(",", ":")))
     print("standard_matrix=" + json.dumps({"include": standard}, separators=(",", ":")))
