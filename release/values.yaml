@@ -259,8 +259,8 @@ workloadOverrides:
           containers:
           - name: sglang-router
             env:
-            - name: CI_ROUTER_MODEL_ROUTES_FILE
-              value: /mnt/c8s-data/model-routes/routes.json
+            - name: CI_ROUTER_MODEL_ROUTES
+              value: '{{ include "confidential-inference.routerRoutes" . }}'
             image: '{{ .Values.images.sglangRouter }}'
             livenessProbe:
               failureThreshold: 3
@@ -281,20 +281,11 @@ workloadOverrides:
               successThreshold: 1
             terminationMessagePath: /dev/termination-log
             terminationMessagePolicy: File
-            volumeMounts:
-            - mountPath: /mnt/c8s-data/model-routes
-              name: model-routes
-              readOnly: true
           dnsPolicy: ClusterFirst
           restartPolicy: Always
           schedulerName: default-scheduler
           serviceAccount: sglang-router
           terminationGracePeriodSeconds: 30
-          volumes:
-          - configMap:
-              defaultMode: 420
-              name: router-model-routes
-            name: model-routes
   StatefulSet/inference-worker-0:
     spec:
       persistentVolumeClaimRetentionPolicy:

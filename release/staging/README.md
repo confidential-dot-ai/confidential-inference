@@ -63,9 +63,10 @@ python3 scripts/fetch-node-manifest.py --release release/staging
 ## Runtime configuration and attestation
 
 The staging profile clears production model routes and uses the small staging
-model for both the public model name and the worker route. The gateway gets
-its settings in the pinned `GATEWAY_RUNTIME_CONFIG` environment variable; Helm
-creates the router's `router-model-routes`.
+model for both the public model name and the worker route. The gateway and the
+router get their settings and routes in pinned environment variables
+(`GATEWAY_RUNTIME_CONFIG`, `CI_ROUTER_MODEL_ROUTES`); the release renders no
+ConfigMap.
 
 Applications serve plain HTTP inside their pods. The c8s per-pod mesh
 (c8s v0.64 and later) carries every pod-to-pod connection over mutual TLS and

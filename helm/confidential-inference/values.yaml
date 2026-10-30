@@ -66,12 +66,11 @@ attestationReceipts:
   # The node-local attestation API that CDS uses to verify the requesting CVM.
   attestationApiPort: 8400
 
-# The gateway settings (pinned environment) and the router routes file.
+# The gateway settings and the router routes, both pinned environment.
 runtimeConfig:
   # One public-model definition generates both application views. An empty
   # map uses inference.model.name as both public and backend model name.
   modelRoutes: {}
-  routerConfigMap: router-model-routes
   # Unused. bin/deploy still sets it for older releases (README.md).
   releaseBundle: ""
   attestationCacheSeconds: 10

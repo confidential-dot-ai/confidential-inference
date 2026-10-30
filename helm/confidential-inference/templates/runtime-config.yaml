@@ -1,6 +1,5 @@
-{{- /* The gateway settings are pinned environment. The router reads its
-       routes file once at start; its pod template carries a checksum of the
-       routes, so a change rolls the router. */}}
+{{- /* The gateway settings and the router routes are environment, so the
+       exact allowlist pins them, and a change rolls the pod. */}}
 {{- define "confidential-inference.modelRoutes" -}}
 {{- $routes := .Values.runtimeConfig.modelRoutes }}
 {{- if not $routes }}
@@ -21,13 +20,6 @@
 {{- toJson $settings }}
 {{- end }}
 
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ .Values.runtimeConfig.routerConfigMap }}
-  labels:
-    {{- include "confidential-inference.labels" . | nindent 4 }}
-    app.kubernetes.io/component: sglang-router
-data:
-  {{- /* The router image still requires a revision field; it is constant. */}}
-  routes.json: {{ toJson (dict "schemaVersion" 1 "revision" 1 "routes" (include "confidential-inference.modelRoutes" . | fromJson)) | quote }}
+{{- define "confidential-inference.routerRoutes" -}}
+{{- toJson (dict "schemaVersion" 1 "routes" (include "confidential-inference.modelRoutes" . | fromJson)) }}
+{{- end }}

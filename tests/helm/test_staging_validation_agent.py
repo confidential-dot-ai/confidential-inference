@@ -29,7 +29,7 @@ class StagingAgentTests(unittest.TestCase):
     def test_native_configuration_status_and_public_inference_are_permitted(self):
         for path in ('/runtime-config', '/release-config', '/metrics'):
             self.check(f'http://{GATEWAY}:9090{path}')
-        for path in ('/model-routes', '/model-routes/status', '/health', '/readiness'):
+        for path in ('/model-routes', '/health', '/readiness'):
             self.check(f'http://{ROUTER}:30000{path}')
         self.check(f'http://{GATEWAY}:9443/v1/chat/completions', 'POST', body='{}')
         self.check(f'http://{GATEWAY}:9443/attestation?nonce=public-test')
@@ -40,8 +40,9 @@ class StagingAgentTests(unittest.TestCase):
                 f'http://{ROUTER}:30000/workers/held/drain',
                 f'http://{ROUTER}:30000/model-routes/reload',
                 f'http://{GATEWAY}:9443/runtime-config',
-                f'http://{ROUTER}:9090/model-routes/status',
-                f'http://{ROUTER}:30000/model-routes/status?override=1',
+                f'http://{ROUTER}:30000/model-routes/status',
+                f'http://{ROUTER}:9090/model-routes',
+                f'http://{ROUTER}:30000/model-routes?override=1',
                 f'http://user@{GATEWAY}:9090/runtime-config',
                 f'http://{GATEWAY}:9090/runtime-config#fragment',
                 'http://unlisted.confidential-inference-staging.svc.cluster.local:9090/runtime-config']
