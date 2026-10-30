@@ -1,5 +1,5 @@
-//! Gateway settings from the chart's settings `ConfigMap`. The gateway reads
-//! them once at start; the chart rolls the pods when they change.
+//! Gateway settings from the chart, in `GATEWAY_RUNTIME_CONFIG`. They are
+//! environment, so the exact allowlist pins them and a change rolls the pods.
 
 use serde::Deserialize;
 
@@ -9,10 +9,8 @@ pub struct GatewaySettings {
     pub schema_version: u32,
     #[serde(default)]
     pub router_service: Option<String>,
-    // The chart still renders `evidence`, `attestationCacheSeconds` and
-    // `attestationConcurrency`; the gateway reads none of them.
-    #[serde(default)]
-    pub evidence: Option<serde_json::Value>,
+    // The chart still renders `attestationCacheSeconds` and
+    // `attestationConcurrency`; the gateway reads neither.
     pub catalog_model_ids: Vec<String>,
     pub inference_model_ids: Vec<String>,
     pub maximum_body_bytes: usize,
