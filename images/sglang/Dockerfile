@@ -29,6 +29,7 @@ LABEL org.opencontainers.image.base.name="docker.io/lmsysorg/sglang"
 LABEL org.opencontainers.image.base.digest="sha256:bde16a8447b19e89056b9eea06c72be6c02801dc89d528c9ea90c53368fd74bf"
 
 RUN --mount=type=bind,source=patches/cc-optimizations-v0518.patch,target=/run-src/cc-optimizations.patch,readonly \
+    --mount=type=bind,source=harden_http.py,target=/run-src/harden-http.py,readonly \
     --mount=type=bind,source=patch_flashinfer_cuda_ipc.py,target=/run-src/patch-flashinfer-cuda-ipc.py,readonly \
     --mount=type=bind,source=wait_for_model.py,target=/run-src/wait-for-model,readonly \
     --mount=type=bind,source=fetch_model.py,target=/run-src/fetch-model,readonly \
@@ -42,6 +43,7 @@ RUN --mount=type=bind,source=patches/cc-optimizations-v0518.patch,target=/run-sr
     && cd /sgl-workspace/sglang \
     && git apply --check --directory=python /tmp/cc-optimizations.patch \
     && git apply --directory=python /tmp/cc-optimizations.patch \
+    && python3 /run-src/harden-http.py --root python/sglang --variant ordinary \
     && cd python \
     && python3 -c 'from pathlib import Path; files=["sglang/srt/distributed/device_communicators/cuda_wrapper.py","sglang/srt/layers/flashinfer_comm_fusion.py","sglang/srt/managers/async_d2h_copy_worker.py","sglang/srt/managers/scheduler.py","sglang/srt/managers/utils.py","sglang/srt/utils/common.py"]; [compile(Path(name).read_text(encoding="utf-8"), name, "exec") for name in files]' \
     && python3 /tmp/patch-flashinfer-cuda-ipc.py \

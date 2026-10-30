@@ -161,6 +161,7 @@ def build_production(evidence: dict, download_dir: Path, tag: str = "v0.14.2") -
     # Staging runs no kube-state-metrics (it needs the Kubernetes API).
     metrics = PROFILES.read_values(PRODUCTION)["images"]["kubeStateMetrics"].rsplit("@", 1)[1]
     allowlist["workloads"]["production-kube-state-metrics"] = {"containers": [{"digest": metrics}]}
+    allowlist["workloads"]["production-pd"] = {"containers": [{"digest": RELEASE_IMAGES["sglangPd"].rsplit("@", 1)[1]}]}
     generated = json.dumps(allowlist).encode()
     return build_release(tag, evidence, download_dir, lambda *_args, **_kwargs: generated,
                          mock.patch.object(MAN, "require_allowlist_contract"),
@@ -178,7 +179,8 @@ def staging_allowlist(c8s: Path) -> bytes:
 
 def rendered_workers(profile) -> list[dict]:
     return [item for item in rendered(profile) if item.get("kind") == "StatefulSet"
-            and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
+            and (item.get("metadata", {}).get("name", "").startswith("inference-worker-")
+                 or item.get("metadata", {}).get("name") == "inference-pd")]
 
 DIGEST = "sha256:" + "a" * 64
 IMAGE = f"ghcr.io/example/app@{DIGEST}"
@@ -731,7 +733,8 @@ class ManifestTests(unittest.TestCase):
             "attestationReceipts": {"releaseId": "v0.14.2-staging"},
         })
         for key, image in RELEASE_IMAGES.items():
-            self.assertEqual(manifest["images"][key], image)
+            if key != "sglangPd":  # The simulator does not render the PD image.
+                self.assertEqual(manifest["images"][key], image)
 
     def test_the_staging_manifest_binds_the_package_and_the_profile_values(self):
         files = build_staging(publication(published_release_images()))
@@ -949,13 +952,14 @@ class ManifestTests(unittest.TestCase):
     @staticmethod
     def expected_file_args(profile) -> list[list[str]]:
         return [[arg.removeprefix("--expected-file=")
-                 for arg in worker["spec"]["template"]["spec"]["containers"][0]["args"]
+                 for arg in next(c for c in worker["spec"]["template"]["spec"]["containers"]
+                                 if c["name"] in ("sglang", "engram-holder"))["args"]
                  if arg.startswith("--expected-file=")]
                 for worker in rendered_workers(profile)]
 
     def test_production_workers_check_the_expected_files_map(self):
         verification = PROFILES.read_values(PRODUCTION)["inference"]["model"]["mountVerification"]
-        expected = [f"{name}={digest}" for name, digest in sorted(verification["expectedFiles"].items())]
+        expected = sorted(f"{item['path']}={item['sha256']}" for item in verification["expectedFileList"])
         for arguments in self.expected_file_args(PRODUCTION):
             self.assertEqual(arguments, expected)
 

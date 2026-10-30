@@ -29,7 +29,10 @@ class ImageTitleTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/release-images.yml").read_text(encoding="utf-8")
         literal = re.findall(r"org\.opencontainers\.image\.title=(?!\$\{\{)(.+)", workflow)
         sglang = next(image for image in SELECTOR.IMAGES if image.image == "sglang")
-        self.assertEqual(literal, [sglang.title])
+        self.assertEqual(literal, [])
+        self.assertIn("org.opencontainers.image.title=${{ matrix.title }}", workflow)
+        self.assertIn("fromJSON(needs.select-images.outputs.large_pass_matrix)", workflow)
+        self.assertIn("fromJSON(needs.select-images.outputs.large_matrix)", workflow)
 
 
 if __name__ == "__main__":

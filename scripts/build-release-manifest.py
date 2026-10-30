@@ -250,11 +250,12 @@ def require_model_files(spec: dict[str, Any], documents: list[dict[str, Any]]) -
     arguments, not the values.
     """
     workers = [item for item in documents if item.get("kind") == "StatefulSet"
-               and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
+               and (item.get("metadata", {}).get("name", "").startswith("inference-worker-")
+                    or item.get("metadata", {}).get("name") == "inference-pd")]
     require(bool(workers), "the chart renders no inference worker")
     for worker in workers:
         container = next(item for item in worker["spec"]["template"]["spec"]["containers"]
-                         if item["name"] == "sglang")
+                         if item["name"] in ("sglang", "engram-holder"))
         args = container.get("args", [])
         metadata = [arg.removeprefix("--revision-metadata=") for arg in args
                     if arg.startswith("--revision-metadata=")]
@@ -689,7 +690,9 @@ def base_release_images(
     require(not unpublished,
             "image build inputs changed after the base release, and the publication has no new digest: "
             + ", ".join(unpublished))
-    images: dict[str, str] = {}
+    # A staging simulator does not render the production PD worker. Its
+    # signed publication inventory still binds that audited image digest.
+    images: dict[str, str] = dict(base.get("imagePublication", {}).get("images", {}))
     for key, image in base["images"].items():
         if "transition" in base and re.fullmatch(r"transitionInput[0-9]+", key):
             continue

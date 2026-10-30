@@ -34,6 +34,20 @@ The exporter runs DCGM embedded in its own process (no separate host engine).
 It sees only the GPUs granted to that worker. `dcgm-counters.csv` is NVIDIA's
 `default-counters.csv` with the error, ECC, NVLink error, clock event and
 confidential-compute fields enabled. It exports no request data.
+`harden_http.py` runs at build time, on this image's source and on the
+`sglang-dsv41` source. It removes every SGLang HTTP route that is not
+inference, health, model or server info, or load reporting: cache flush,
+weight updates, profiling, LoRA, sessions, memory release, logging,
+`/abort_request` (its `abort_all` cancels every request), the decision
+scoring routes `/v1/decisions` and `/v1/systemone`, the elastic EP router,
+the env-gated `/dumper` route and FastAPI's `/openapi.json`, `/docs` and
+`/redoc`. No flag, environment
+variable or API key restores them. `/server_info` returns only the fields
+the router reads. `launch_server` refuses the Rust, gRPC, Ray and encoder
+frontends and the dumper listener, which have their own routes. The script
+checks the SHA-256 of both source files and fails the build when the source
+changes, so a new SGLang version needs a new review of its routes.
+
 The image also defines no role command.
 Kubernetes supplies the worker command and arguments at launch time.
 The router has a separate image and digest under

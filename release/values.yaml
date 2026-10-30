@@ -1,455 +1,544 @@
+stagingValidation:
+  enabled: false
 runtimeConfig:
-  attestationCacheSeconds: 3
-  modelRoutes:
-    deepseek-ai/DeepSeek-V4-Flash-0731:
-      - deepseek-ai/DeepSeek-V4-Flash-0731-rehearsal-worker-uf0b4c47afe
-
-# Chart values of the production release.
-#
-# These source definitions preserve the reviewed candidate workloads and
-# their current configurations. The release replaces the gateway metadata.
-# The deployment selects the target; this file does not change production.
-#
-# The allowlist is generated from this file, so every value that reaches a
-# container command, argument, environment variable, or mount is part of the
-# signed release. Values that differ per deployment do not belong here. The
-# deployment adds them with its own values file: the node names, the image
-# pull Secret name, and the release manifest SHA-256.
-#
-
-environment: production                        # changed: the target name
-
-imagePullSecret:
-  name: ghcr-pull                              # changed: no target name in the release
-
-# Placeholders. The deployment sets the real inner node names. The chart
-# renders them into pod node selectors only, so they are not allowlist input.
-scheduling:
-  gatewayNodeName: gateway-node-1
-  inferenceNodeName: inference-node-1
-  # changed: one node for each inference worker, and the router with the
-  # gateway on the control-plane node.
-  inferenceNodeNames: [inference-node-1, inference-node-2]
-  routerNodeName: gateway-node-1
-
+  modelRoutes: null
+environment: production
+gateway:
+  admin:
+    url: https://ci-admin-next-loki.centralus.cloudapp.azure.com/api/usage/ingest
+    address: 172.173.67.102
+  usage:
+    enabled: true
+    models:
+      deepseek-ai/DeepSeek-V4.1-Flash:
+        served_model: deepseek-ai/DeepSeek-V4.1-Flash
+        model_revision: 5254448103b6254fc646dacbca1cbbf20e9216c1
+  protection:
+    inferenceConcurrency: 128
+    inferenceQueue: 64
+    trustedProxyCidrs:
+    - 10.52.0.0/16
+    - 10.42.0.0/16
+attestationReceipts:
+  evidenceBaseUrl: https://api.confidential.ai
+  evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
+  cds:
+    url: https://10.45.250.25:30808
+kubeStateMetrics:
+  enabled: false
+inference:
+  mode: model
+  gpusPerReplica: 0
+  gpuArchitectures:
+  - BLACKWELL
+  attestedGpuCount: 0
+  resources:
+    cpu: '2'
+    memory: 16Gi
+  model:
+    name: deepseek-ai/DeepSeek-V4.1-Flash
+    revision: 5254448103b6254fc646dacbca1cbbf20e9216c1
+    mountVerification:
+      expectedFileList:
+      - path: .model-lock-local-manifest.json
+        sha256: a0d3a3c29654399bcddf018c3a00de4528238399182d400427287d790798f41b
+      - path: config.json
+        sha256: 8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879
+      - path: tokenizer_config.json
+        sha256: 6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
+    c8sVolumeSource: /confidential-inference/model-updates/b200-dsv41
+    volumeNames:
+    - dsv41
+  pd:
+    enabled: true
+    engramHolder:
+      mlock: false
+    python: /opt/dsv41/bin/python
+    cacheDirectory: /var/cache/dsv41
+    workers:
+    - name: prefill0
+      role: prefill
+      gpus: 2
+      port: 8041
+      bootstrapPort: 8999
+      args:
+      - --model-path
+      - /mnt/c8s-data/models/dsv41
+      - --served-model-name
+      - deepseek-ai/DeepSeek-V4.1-Flash
+      - --enable-metrics
+      - --tool-call-parser
+      - deepseekv41
+      - --reasoning-parser
+      - deepseek-v41
+      - --host
+      - 0.0.0.0
+      - --tp-size
+      - '1'
+      - --ep-size
+      - '1'
+      - --dp-size
+      - '1'
+      - --attention-backend
+      - dsv4
+      - --moe-a2a-backend
+      - none
+      - --moe-runner-backend
+      - auto
+      - --disaggregation-transfer-backend
+      - mooncake
+      - --disaggregation-bootstrap-port
+      - '8999'
+      - --context-length
+      - '131072'
+      - --chunked-prefill-size
+      - '12288'
+      - --mem-fraction-static
+      - '0.92'
+      - --page-size
+      - '256'
+      - --kv-cache-dtype
+      - fp8_e4m3
+      - --enforce-disable-flashinfer-allreduce-fusion
+      - --random-seed
+      - '0'
+      - --pp-size
+      - '2'
+      - --pp-async-batch-depth
+      - '1'
+      - --disaggregation-mode
+      - prefill
+      - --port
+      - '8041'
+      - --nccl-port
+      - '29600'
+      - --max-running-requests
+      - '16'
+      - --max-total-tokens
+      - '1572864'
+      - --tokenizer-worker-num
+      - '4'
+      - --schedule-policy
+      - hrrn
+      - --swa-prefix-tails
+      - '256'
+      - --enable-hierarchical-cache
+      - --hicache-ratio
+      - '4.0'
+      - --hicache-mem-layout
+      - layer_first
+      - --hicache-io-backend
+      - direct
+      - --hicache-write-policy
+      - write_back
+      - --cuda-graph-config
+      - '{"prefill": {"backend": "breakable", "bs": [256, 512, 1024, 2048, 4096, 8192,
+        12288], "max_seq_len": 65536}, "decode": {"backend": "disabled"}}'
+      - --no-enable-decoder-swa-bounded-replay
+      env:
+        PYTHONPATH: /opt/sglang/python
+        SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE: '1'
+        SGLANG_DSV41_ENGRAM_HOST_TABLE_PIN: '1'
+        SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT: auto
+        SGLANG_ENABLE_DSV41_ENGRAM_DROP_PAGE_CACHE: '0'
+        SGLANG_RAGGED_VERIFY_MODE: static
+        SGLANG_ENABLE_DSV41_ENGRAM_KV_PREFETCH: '0'
+        SGLANG_DSV41_DEEP_GEMM_CANDIDATE_INDEXER: '0'
+        SGLANG_RUST_SERVER: '0'
+        SGLANG_TIMEOUT_KEEP_ALIVE: '300'
+        SGLANG_DSV41_ENGRAM_CPU_STAGING: '1'
+        MOONCAKE_PROTOCOL: tcp
+        TRITON_CACHE_DIR: /var/cache/dsv41/triton
+        TORCHINDUCTOR_CACHE_DIR: /var/cache/dsv41/inductor
+        FLASHINFER_WORKSPACE_BASE: /var/cache/dsv41/flashinfer
+        CUDA_CACHE_PATH: /var/cache/dsv41/nv
+        SGLANG_CACHE_DIR: /var/cache/dsv41
+        SGLANG_OPT_DSV41_CED_SPLIT: '1'
+        SGLANG_DSV41_CED_DECODE_DRAFT_TOKENS: '6'
+        SGLANG_OPT_DSV41_PREFILL_GRAPH_EAGER_INDEXER: '1'
+        SGLANG_PP_LAYER_PARTITION: 8,13
+        SGLANG_OPT_DSV41_ENGRAM_STAGING_PREFETCH: '1'
+        SGLANG_DSV41_ENGRAM_GATHER_THREADS: '8'
+        SGLANG_PP_COMM_OVERLAP: '1'
+        NCCL_PROTO: LL128
+        SGLANG_FLASHINFER_AUTOTUNE_EXTEND: '1'
+        SGLANG_HRRN_SIZE_EXPONENT: '1.5'
+        SGLANG_OPT_PREFIX_PROMPT_ENCODE: '1'
+        SGLANG_DISAGGREGATION_WAITING_TIMEOUT: '1200'
+        SGLANG_OPT_DSV41_CED_BOUNDARY_HANDOFF: '1'
+        SGLANG_FORWARD_UNKNOWN_TOOLS: '1'
+        HF_HUB_OFFLINE: '1'
+      resources:
+        cpu: '14'
+        memory: 160Gi
+    - name: prefill1
+      role: prefill
+      gpus: 2
+      port: 8042
+      bootstrapPort: 9000
+      args:
+      - --model-path
+      - /mnt/c8s-data/models/dsv41
+      - --served-model-name
+      - deepseek-ai/DeepSeek-V4.1-Flash
+      - --enable-metrics
+      - --tool-call-parser
+      - deepseekv41
+      - --reasoning-parser
+      - deepseek-v41
+      - --host
+      - 0.0.0.0
+      - --tp-size
+      - '1'
+      - --ep-size
+      - '1'
+      - --dp-size
+      - '1'
+      - --attention-backend
+      - dsv4
+      - --moe-a2a-backend
+      - none
+      - --moe-runner-backend
+      - auto
+      - --disaggregation-transfer-backend
+      - mooncake
+      - --disaggregation-bootstrap-port
+      - '9000'
+      - --context-length
+      - '131072'
+      - --chunked-prefill-size
+      - '12288'
+      - --mem-fraction-static
+      - '0.92'
+      - --page-size
+      - '256'
+      - --kv-cache-dtype
+      - fp8_e4m3
+      - --enforce-disable-flashinfer-allreduce-fusion
+      - --random-seed
+      - '0'
+      - --pp-size
+      - '2'
+      - --pp-async-batch-depth
+      - '1'
+      - --disaggregation-mode
+      - prefill
+      - --port
+      - '8042'
+      - --nccl-port
+      - '29601'
+      - --max-running-requests
+      - '16'
+      - --max-total-tokens
+      - '1572864'
+      - --tokenizer-worker-num
+      - '4'
+      - --schedule-policy
+      - hrrn
+      - --swa-prefix-tails
+      - '256'
+      - --enable-hierarchical-cache
+      - --hicache-ratio
+      - '4.0'
+      - --hicache-mem-layout
+      - layer_first
+      - --hicache-io-backend
+      - direct
+      - --hicache-write-policy
+      - write_back
+      - --cuda-graph-config
+      - '{"prefill": {"backend": "breakable", "bs": [256, 512, 1024, 2048, 4096, 8192,
+        12288], "max_seq_len": 65536}, "decode": {"backend": "disabled"}}'
+      - --no-enable-decoder-swa-bounded-replay
+      env:
+        PYTHONPATH: /opt/sglang/python
+        SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE: '1'
+        SGLANG_DSV41_ENGRAM_HOST_TABLE_PIN: '1'
+        SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT: auto
+        SGLANG_ENABLE_DSV41_ENGRAM_DROP_PAGE_CACHE: '0'
+        SGLANG_RAGGED_VERIFY_MODE: static
+        SGLANG_ENABLE_DSV41_ENGRAM_KV_PREFETCH: '0'
+        SGLANG_DSV41_DEEP_GEMM_CANDIDATE_INDEXER: '0'
+        SGLANG_RUST_SERVER: '0'
+        SGLANG_TIMEOUT_KEEP_ALIVE: '300'
+        SGLANG_DSV41_ENGRAM_CPU_STAGING: '1'
+        MOONCAKE_PROTOCOL: tcp
+        TRITON_CACHE_DIR: /var/cache/dsv41/triton
+        TORCHINDUCTOR_CACHE_DIR: /var/cache/dsv41/inductor
+        FLASHINFER_WORKSPACE_BASE: /var/cache/dsv41/flashinfer
+        CUDA_CACHE_PATH: /var/cache/dsv41/nv
+        SGLANG_CACHE_DIR: /var/cache/dsv41
+        SGLANG_OPT_DSV41_CED_SPLIT: '1'
+        SGLANG_DSV41_CED_DECODE_DRAFT_TOKENS: '6'
+        SGLANG_OPT_DSV41_PREFILL_GRAPH_EAGER_INDEXER: '1'
+        SGLANG_PP_LAYER_PARTITION: 8,13
+        SGLANG_OPT_DSV41_ENGRAM_STAGING_PREFETCH: '1'
+        SGLANG_DSV41_ENGRAM_GATHER_THREADS: '8'
+        SGLANG_PP_COMM_OVERLAP: '1'
+        NCCL_PROTO: LL128
+        SGLANG_FLASHINFER_AUTOTUNE_EXTEND: '1'
+        SGLANG_HRRN_SIZE_EXPONENT: '1.5'
+        SGLANG_OPT_PREFIX_PROMPT_ENCODE: '1'
+        SGLANG_DISAGGREGATION_WAITING_TIMEOUT: '1200'
+        SGLANG_OPT_DSV41_CED_BOUNDARY_HANDOFF: '1'
+        SGLANG_FORWARD_UNKNOWN_TOOLS: '1'
+        HF_HUB_OFFLINE: '1'
+      resources:
+        cpu: '14'
+        memory: 160Gi
+    - name: decode0
+      role: decode
+      gpus: 2
+      port: 8043
+      args:
+      - --model-path
+      - /mnt/c8s-data/models/dsv41
+      - --served-model-name
+      - deepseek-ai/DeepSeek-V4.1-Flash
+      - --enable-metrics
+      - --tool-call-parser
+      - deepseekv41
+      - --reasoning-parser
+      - deepseek-v41
+      - --host
+      - 0.0.0.0
+      - --tp-size
+      - '2'
+      - --ep-size
+      - '2'
+      - --dp-size
+      - '1'
+      - --attention-backend
+      - dsv4
+      - --moe-a2a-backend
+      - none
+      - --moe-runner-backend
+      - auto
+      - --disaggregation-transfer-backend
+      - mooncake
+      - --disaggregation-bootstrap-port
+      - '8999'
+      - --context-length
+      - '131072'
+      - --chunked-prefill-size
+      - '12288'
+      - --mem-fraction-static
+      - '0.92'
+      - --page-size
+      - '256'
+      - --kv-cache-dtype
+      - fp8_e4m3
+      - --enforce-disable-flashinfer-allreduce-fusion
+      - --random-seed
+      - '0'
+      - --speculative-algorithm
+      - DSPARK
+      - --speculative-dspark-block-size
+      - '5'
+      - --disaggregation-mode
+      - decode
+      - --port
+      - '8043'
+      - --nccl-port
+      - '29602'
+      - --max-running-requests
+      - '64'
+      - --max-total-tokens
+      - '4194304'
+      - --tokenizer-worker-num
+      - '4'
+      - --disaggregation-decode-enable-radix-cache
+      - --cuda-graph-config
+      - '{"prefill": {"backend": "disabled"}, "decode": {"backend": "breakable", "bs":
+        [1, 2, 4, 8, 10, 12, 14, 16, 32, 64]}}'
+      - --enable-decoder-swa-bounded-replay
+      - --disaggregation-decode-polling-interval
+      - '2'
+      env:
+        PYTHONPATH: /opt/sglang/python
+        SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE: '1'
+        SGLANG_DSV41_ENGRAM_HOST_TABLE_PIN: '1'
+        SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT: auto
+        SGLANG_ENABLE_DSV41_ENGRAM_DROP_PAGE_CACHE: '0'
+        SGLANG_RAGGED_VERIFY_MODE: static
+        SGLANG_ENABLE_DSV41_ENGRAM_KV_PREFETCH: '0'
+        SGLANG_DSV41_DEEP_GEMM_CANDIDATE_INDEXER: '0'
+        SGLANG_RUST_SERVER: '0'
+        SGLANG_TIMEOUT_KEEP_ALIVE: '300'
+        SGLANG_DSV41_ENGRAM_CPU_STAGING: '1'
+        MOONCAKE_PROTOCOL: tcp
+        TRITON_CACHE_DIR: /var/cache/dsv41/triton
+        TORCHINDUCTOR_CACHE_DIR: /var/cache/dsv41/inductor
+        FLASHINFER_WORKSPACE_BASE: /var/cache/dsv41/flashinfer
+        CUDA_CACHE_PATH: /var/cache/dsv41/nv
+        SGLANG_CACHE_DIR: /var/cache/dsv41
+        SGLANG_OPT_DSV41_CED_SPLIT: '1'
+        SGLANG_OPT_DSV41_ENGRAM_STAGING_PREFETCH: '1'
+        SGLANG_DSV41_ENGRAM_GATHER_THREADS: '8'
+        SGLANG_OPT_PREFIX_PROMPT_ENCODE: '1'
+        SGLANG_DISAGGREGATION_WAITING_TIMEOUT: '1200'
+        SGLANG_OPT_DSV41_CED_BOUNDARY_HANDOFF: '1'
+        SGLANG_DSV41_CED_TAIL_LATE_GRAPH: '1'
+        SGLANG_DSV41_CED_TAIL_ENCODER_GRAPH: '1'
+        SGLANG_DSV41_CED_TAIL_GRAPH_PRECAPTURE_REQS: 1,2,3,4
+        SGLANG_DSV41_CED_TAIL_BATCH_SIZE: '4'
+        SGLANG_DSV41_CED_TAIL_MAX_WAIT_MS: '5'
+        SGLANG_DSV41_CED_TAIL_GRAPH_CHECK: '1'
+        SGLANG_DSV41_CED_GRAPH_MIN_FREE_GB: '8'
+        SGLANG_FORWARD_UNKNOWN_TOOLS: '1'
+        HF_HUB_OFFLINE: '1'
+      resources:
+        cpu: '14'
+        memory: 64Gi
+    - name: decode1
+      role: decode
+      gpus: 2
+      port: 8044
+      args:
+      - --model-path
+      - /mnt/c8s-data/models/dsv41
+      - --served-model-name
+      - deepseek-ai/DeepSeek-V4.1-Flash
+      - --enable-metrics
+      - --tool-call-parser
+      - deepseekv41
+      - --reasoning-parser
+      - deepseek-v41
+      - --host
+      - 0.0.0.0
+      - --tp-size
+      - '2'
+      - --ep-size
+      - '2'
+      - --dp-size
+      - '1'
+      - --attention-backend
+      - dsv4
+      - --moe-a2a-backend
+      - none
+      - --moe-runner-backend
+      - auto
+      - --disaggregation-transfer-backend
+      - mooncake
+      - --disaggregation-bootstrap-port
+      - '8999'
+      - --context-length
+      - '131072'
+      - --chunked-prefill-size
+      - '12288'
+      - --mem-fraction-static
+      - '0.92'
+      - --page-size
+      - '256'
+      - --kv-cache-dtype
+      - fp8_e4m3
+      - --enforce-disable-flashinfer-allreduce-fusion
+      - --random-seed
+      - '0'
+      - --speculative-algorithm
+      - DSPARK
+      - --speculative-dspark-block-size
+      - '5'
+      - --disaggregation-mode
+      - decode
+      - --port
+      - '8044'
+      - --nccl-port
+      - '29603'
+      - --max-running-requests
+      - '64'
+      - --max-total-tokens
+      - '4194304'
+      - --tokenizer-worker-num
+      - '4'
+      - --disaggregation-decode-enable-radix-cache
+      - --cuda-graph-config
+      - '{"prefill": {"backend": "disabled"}, "decode": {"backend": "breakable", "bs":
+        [1, 2, 4, 8, 10, 12, 14, 16, 32, 64]}}'
+      - --enable-decoder-swa-bounded-replay
+      - --disaggregation-decode-polling-interval
+      - '2'
+      env:
+        PYTHONPATH: /opt/sglang/python
+        SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE: '1'
+        SGLANG_DSV41_ENGRAM_HOST_TABLE_PIN: '1'
+        SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT: auto
+        SGLANG_ENABLE_DSV41_ENGRAM_DROP_PAGE_CACHE: '0'
+        SGLANG_RAGGED_VERIFY_MODE: static
+        SGLANG_ENABLE_DSV41_ENGRAM_KV_PREFETCH: '0'
+        SGLANG_DSV41_DEEP_GEMM_CANDIDATE_INDEXER: '0'
+        SGLANG_RUST_SERVER: '0'
+        SGLANG_TIMEOUT_KEEP_ALIVE: '300'
+        SGLANG_DSV41_ENGRAM_CPU_STAGING: '1'
+        MOONCAKE_PROTOCOL: tcp
+        TRITON_CACHE_DIR: /var/cache/dsv41/triton
+        TORCHINDUCTOR_CACHE_DIR: /var/cache/dsv41/inductor
+        FLASHINFER_WORKSPACE_BASE: /var/cache/dsv41/flashinfer
+        CUDA_CACHE_PATH: /var/cache/dsv41/nv
+        SGLANG_CACHE_DIR: /var/cache/dsv41
+        SGLANG_OPT_DSV41_CED_SPLIT: '1'
+        SGLANG_OPT_DSV41_ENGRAM_STAGING_PREFETCH: '1'
+        SGLANG_DSV41_ENGRAM_GATHER_THREADS: '8'
+        SGLANG_OPT_PREFIX_PROMPT_ENCODE: '1'
+        SGLANG_DISAGGREGATION_WAITING_TIMEOUT: '1200'
+        SGLANG_OPT_DSV41_CED_BOUNDARY_HANDOFF: '1'
+        SGLANG_DSV41_CED_TAIL_LATE_GRAPH: '1'
+        SGLANG_DSV41_CED_TAIL_ENCODER_GRAPH: '1'
+        SGLANG_DSV41_CED_TAIL_GRAPH_PRECAPTURE_REQS: 1,2,3,4
+        SGLANG_DSV41_CED_TAIL_BATCH_SIZE: '4'
+        SGLANG_DSV41_CED_TAIL_MAX_WAIT_MS: '5'
+        SGLANG_DSV41_CED_TAIL_GRAPH_CHECK: '1'
+        SGLANG_DSV41_CED_GRAPH_MIN_FREE_GB: '8'
+        SGLANG_FORWARD_UNKNOWN_TOOLS: '1'
+        HF_HUB_OFFLINE: '1'
+      resources:
+        cpu: '14'
+        memory: 64Gi
+    routerArgs:
+    - --prefill-policy
+    - manual
+    - --decode-policy
+    - manual
+    - --assignment-mode
+    - min_group
+    - --reject-video
+    - --max-concurrent-requests
+    - '256'
+    - --max-images-per-request
+    - '64'
+    - --max-inflight-images
+    - '256'
+telemetry:
+  enabled: true
+  deployment: production
+  relay:
+    serverName: ci-admin-next-loki.centralus.cloudapp.azure.com
+    address: 172.173.67.102
+  metrics:
+    tenantId: 693babab-0ab8-4ffb-8b5c-eb8aef3b10d1
+    clientId: c486ee14-1dca-4c1d-af4f-be163302ff44
+    dataCollectionRule: dcr-50a134d921ce434a86bcd8f01ab93b6e
+  kubeStateMetrics:
+    target: 10.53.0.11:8080
+c8s:
+  frontDoorPodLabelName: router
+  frontDoorNamespace: c8s-router
 images:
   rolloutClient: ghcr.io/confidential-dot-ai/confidential-inference/rollout-client
-  # The images that this repository builds have no digest here. The release
-  # build adds the digest from the image publication evidence or the signed
-  # base release (scripts/build-release-manifest.py).
   gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang
   sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang-router
-  # The stock OpenTelemetry Collector (contrib 0.163.2), unmodified.
   telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
-  # changed: the c8s operator image. It must be one of the spec.yaml
-  # c8s.coreImages, which scripts/bump-c8s.py moves together.
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:593dea857bfdb2512af5dcfbbec34b10c08de66bbd67f7d33d23a1f8581429b5
-
-c8s:
-  # c8s labels the front-door pod `router`.
-  frontDoorPodLabelName: router
-
-attestationReceipts:
-  evidenceBaseUrl: https://api.confidential.ai   # changed: the production hostname
-  # The release build sets releaseId to the release tag. The chart renders
-  # nothing from the other values; the schema still requires them
-  # (helm/confidential-inference/README.md).
-  releaseBundleSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  policyMode: operator
-  expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  attestationApiPort: 8400
-
-gateway:
-  attestedWorkload: gateway
-  secrets:
-    adminSigner:
-      secretName: gateway-admin-mtls           # changed: no target name in the release
-  service:
-    type: ClusterIP
-  shutdownGraceSeconds: 900
-  endpointDrainSeconds: 35
-  terminationGracePeriodSeconds: 960
-  c8sSecrets:
-    apiKeyPepper: {name: GATEWAY_API_KEY_PEPPER, sourcePath: /confidential-inference/gateway/api-key-pepper}
-  # changed: no state. The gateway pulls its keys from the admin and sends
-  # usage events there. gateway.admin is the gateway's one exit (C8s #1047)
-  # and allowlist input, so it belongs to the release, not to a deployment.
-  # The production admin is not chosen yet: the chart placeholder stays.
-
-inference:
-  enabled: true
-  mode: model
-  replicas: 2
-  gpusPerReplica: 4
-  gpuArchitectures: [BLACKWELL]
-  reasoningParser: deepseek-v4
-  # changed: each worker has its own 4-GPU CVM, so each attests 4 devices.
-  attestedGpuCount: 4
-  attestedWorkloads: [inference-worker-0, inference-worker-1]
-  model:
-    name: deepseek-ai/DeepSeek-V4-Flash-0731
-    revision: 9e165c30e2704aec5d9d593cce3eebd58bbef1cb
-    c8sVolumeSource: /confidential-inference/volumes/dsv4
-    volumeNames: [dsv4, dsv4-1]
-    # changed: an exact c8s mount rule needs the opened volume below
-    # /mnt/c8s-data/.
-    volumeDirectory: /mnt/c8s-data/models
-    # The worker checks every model file against the byte manifest, whose
-    # SHA-256 is the .model-lock-local-manifest.json entry below.
-    mountVerification:
-      revisionMetadata: .model-lock-local-manifest.json
-      expectedFiles:
-        .model-lock-local-manifest.json: cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c
-        config.json: 6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023
-        model.safetensors.index.json: 98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b
-        tokenizer_config.json: 6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
-
-router:
-  attestedWorkload: sglang-router
-  enabled: true
-
-kubeStateMetrics:
-  attestedWorkload: kube-state-metrics
-
-# Current workload changes. Unchanged fields come from the chart.
-workloadOverridesEnabled: true
-workloadOverrides:
-  Deployment/gateway:
-    spec:
-      progressDeadlineSeconds: 600
-      revisionHistoryLimit: 10
-      template:
-        spec:
-          containers:
-          - name: gateway
-            env:
-            - name: GATEWAY_LISTEN
-              value: 0.0.0.0:9443
-            - name: GATEWAY_METRICS_LISTEN
-              value: 0.0.0.0:9090
-            - name: GATEWAY_RUNTIME_CONFIG
-              value: '{{ include "confidential-inference.gatewaySettings" . }}'
-            - name: GATEWAY_ROUTER_NAMESPACE
-              value: confidential-inference
-            - name: GATEWAY_INFERENCE_URL
-              value: http://router-headless.confidential-inference.svc.cluster.local:30000
-            - name: GATEWAY_ALLOW_DIRECT_INFERENCE_URL
-              value: 'true'
-            - name: GATEWAY_MAXIMUM_HEADERS
-              value: '64'
-            - name: GATEWAY_MAXIMUM_HEADER_BYTES
-              value: '16384'
-            - name: GATEWAY_MAXIMUM_URI_BYTES
-              value: '2048'
-            - name: GATEWAY_HEADER_TIMEOUT_SECONDS
-              value: '5'
-            - name: GATEWAY_SHUTDOWN_GRACE_SECONDS
-              value: '900'
-            - name: GATEWAY_ENDPOINT_DRAIN_SECONDS
-              value: '35'
-            - name: GATEWAY_TRUSTED_PROXY_CIDRS
-              # The inner pod network is fixed by the approved C8s node image.
-              # A mesh relay can use a different outer node address. The gateway
-              # uses that connection address without trusting its forwarded header.
-              value: 10.52.0.0/16
-            - name: GATEWAY_ADMIN_CONFIG_FILE
-              value: /run/c8s/secrets/product-usage
-            - name: GATEWAY_API_KEY_PEPPER_FILE
-              value: /run/c8s/secrets/GATEWAY_API_KEY_PEPPER
-            - name: GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE
-              value: /mnt/c8s-data/admin-auth/..data/client.crt
-            - name: GATEWAY_ADMIN_API_KEY_HASHES_FILE
-              value: /mnt/c8s-data/admin-api-key/..data/sha256
-            - name: DEPLOYMENT_ENVIRONMENT
-              value: production
-            - name: GATEWAY_INSTANCE_ID
-              value: gateway
-            image: '{{ .Values.images.gateway }}'
-            livenessProbe:
-              failureThreshold: 3
-              successThreshold: 1
-            ports:
-            - containerPort: 9443
-              name: http
-              protocol: TCP
-            - containerPort: 9090
-              name: metrics
-              protocol: TCP
-            readinessProbe:
-              failureThreshold: 3
-              successThreshold: 1
-            terminationMessagePath: /dev/termination-log
-            terminationMessagePolicy: File
-          dnsPolicy: ClusterFirst
-          restartPolicy: Always
-          schedulerName: default-scheduler
-          serviceAccount: confidential-inference
-          volumes:
-          - name: admin-auth
-            secret:
-              defaultMode: 420
-              items:
-              - key: client.crt
-                path: client.crt
-              secretName: gateway-admin-mtls
-          - name: admin-api-key
-            secret:
-              defaultMode: 420
-              items:
-              - key: sha256
-                path: sha256
-              optional: true
-              secretName: gateway-admin-api-key
-          - emptyDir: {}
-            name: run
-          - emptyDir: {}
-            name: tmp
-  Deployment/kube-state-metrics:
-    spec:
-      progressDeadlineSeconds: 600
-      revisionHistoryLimit: 10
-      strategy:
-        rollingUpdate:
-          maxSurge: 25%
-          maxUnavailable: 25%
-        type: RollingUpdate
-      template:
-        spec:
-          containers:
-          - name: kube-state-metrics
-            image: '{{ .Values.images.kubeStateMetrics }}'
-            livenessProbe:
-              failureThreshold: 3
-              periodSeconds: 10
-              successThreshold: 1
-              timeoutSeconds: 1
-            ports:
-            - containerPort: 8080
-              name: metrics
-              protocol: TCP
-            readinessProbe:
-              failureThreshold: 3
-              periodSeconds: 10
-              successThreshold: 1
-              timeoutSeconds: 1
-            terminationMessagePath: /dev/termination-log
-            terminationMessagePolicy: File
-          dnsPolicy: ClusterFirst
-          restartPolicy: Always
-          schedulerName: default-scheduler
-          serviceAccount: kube-state-metrics
-          terminationGracePeriodSeconds: 30
-  Deployment/sglang-router:
-    spec:
-      progressDeadlineSeconds: 600
-      revisionHistoryLimit: 10
-      template:
-        metadata:
-          annotations:
-            # A new c8s workload per release: during the roll the old and the
-            # new router run side by side, each with its own allowlist entry.
-            confidential.ai/cw: router-{{ .Values.attestationReceipts.releaseId | replace "." "-" }}
-        spec:
-          containers:
-          - name: sglang-router
-            env:
-            - name: CI_ROUTER_MODEL_ROUTES
-              value: '{{ include "confidential-inference.routerRoutes" . }}'
-            image: '{{ .Values.images.sglangRouter }}'
-            livenessProbe:
-              failureThreshold: 3
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            ports:
-            - containerPort: 30000
-              name: openai
-              protocol: TCP
-            - containerPort: 29000
-              name: metrics
-              protocol: TCP
-            readinessProbe:
-              failureThreshold: 3
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            terminationMessagePath: /dev/termination-log
-            terminationMessagePolicy: File
-          dnsPolicy: ClusterFirst
-          restartPolicy: Always
-          schedulerName: default-scheduler
-          serviceAccount: sglang-router
-          terminationGracePeriodSeconds: 30
-  StatefulSet/inference-worker-0:
-    spec:
-      persistentVolumeClaimRetentionPolicy:
-        whenDeleted: Retain
-        whenScaled: Retain
-      podManagementPolicy: OrderedReady
-      revisionHistoryLimit: 10
-      template:
-        metadata:
-          annotations:
-            confidential.ai/c8s-volumes: md7b0eb3196a=/confidential-inference/model-updates/worker-uf0b4c47afe
-            confidential.ai/cw: inference-worker-0-u200b5c252a
-          labels:
-            confidential.ai/traffic-eligible: 'true'
-        spec:
-          containers:
-          - name: sglang
-            args:
-            - --path=/mnt/c8s-data/models/md7b0eb3196a
-            - --timeout-seconds=900
-            - --poll-seconds=1
-            - --expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731
-            - --expected-revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb
-            - --revision-metadata=.model-lock-local-manifest.json
-            - --expected-file=.model-lock-local-manifest.json=cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c
-            - --expected-file=config.json=6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023
-            - --expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b
-            - --expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
-            - --gpu-metrics-port=29000
-            - --
-            - python3
-            - -m
-            - sglang.launch_server
-            - --model-path=/mnt/c8s-data/models/md7b0eb3196a
-            - --served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731-rehearsal-worker-uf0b4c47afe
-            - --revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb
-            - --tool-call-parser=deepseekv4
-            - --reasoning-parser=deepseek-v4
-            - --tp=4
-            - --moe-runner-backend=flashinfer_mxfp4
-            - --speculative-algorithm=DSPARK
-            - --mem-fraction-static=0.90
-            - --chunked-prefill-size=4096
-            - --swa-full-tokens-ratio=0.1
-            - --enable-metrics
-            - --enable-cache-report
-            - --host=0.0.0.0
-            - --port=30000
-            env:
-            - name: HOME
-              value: /tmp
-            - name: HOSTNAME
-              value: inference-worker-0-u200b5c252a
-            image: '{{ .Values.images.sglangWorker }}'
-            livenessProbe:
-              failureThreshold: 3
-              successThreshold: 1
-            ports:
-            - containerPort: 30000
-              name: inference
-              protocol: TCP
-            - containerPort: 29000
-              name: gpu-metrics
-              protocol: TCP
-            readinessProbe:
-              failureThreshold: 3
-              successThreshold: 1
-            resources:
-              limits:
-                nvidia.com/gpu: '4'
-              requests:
-                nvidia.com/gpu: '4'
-            startupProbe:
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            terminationMessagePath: /dev/termination-log
-            terminationMessagePolicy: File
-          dnsPolicy: ClusterFirst
-          restartPolicy: Always
-          schedulerName: default-scheduler
-          serviceAccount: confidential-inference
-      updateStrategy: {}
-  StatefulSet/inference-worker-1:
-    spec:
-      persistentVolumeClaimRetentionPolicy:
-        whenDeleted: Retain
-        whenScaled: Retain
-      podManagementPolicy: OrderedReady
-      revisionHistoryLimit: 10
-      template:
-        metadata:
-          annotations:
-            confidential.ai/c8s-volumes: md5bca183f9f=/confidential-inference/model-updates/worker-uf0b4c47afe
-            confidential.ai/cw: inference-worker-1-u5f71fa321d
-          labels:
-            confidential.ai/traffic-eligible: 'true'
-        spec:
-          containers:
-          - name: sglang
-            args:
-            - --path=/mnt/c8s-data/models/md5bca183f9f
-            - --timeout-seconds=900
-            - --poll-seconds=1
-            - --expected-repository=deepseek-ai/DeepSeek-V4-Flash-0731
-            - --expected-revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb
-            - --revision-metadata=.model-lock-local-manifest.json
-            - --expected-file=.model-lock-local-manifest.json=cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c
-            - --expected-file=config.json=6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023
-            - --expected-file=model.safetensors.index.json=98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b
-            - --expected-file=tokenizer_config.json=6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547
-            - --gpu-metrics-port=29000
-            - --
-            - python3
-            - -m
-            - sglang.launch_server
-            - --model-path=/mnt/c8s-data/models/md5bca183f9f
-            - --served-model-name=deepseek-ai/DeepSeek-V4-Flash-0731-rehearsal-worker-uf0b4c47afe
-            - --revision=9e165c30e2704aec5d9d593cce3eebd58bbef1cb
-            - --tool-call-parser=deepseekv4
-            - --reasoning-parser=deepseek-v4
-            - --tp=4
-            - --moe-runner-backend=flashinfer_mxfp4
-            - --speculative-algorithm=DSPARK
-            - --mem-fraction-static=0.90
-            - --chunked-prefill-size=4096
-            - --swa-full-tokens-ratio=0.1
-            - --enable-metrics
-            - --enable-cache-report
-            - --host=0.0.0.0
-            - --port=30000
-            env:
-            - name: HOME
-              value: /tmp
-            - name: HOSTNAME
-              value: inference-worker-1-u5f71fa321d
-            image: '{{ .Values.images.sglangWorker }}'
-            livenessProbe:
-              failureThreshold: 3
-              successThreshold: 1
-            ports:
-            - containerPort: 30000
-              name: inference
-              protocol: TCP
-            - containerPort: 29000
-              name: gpu-metrics
-              protocol: TCP
-            readinessProbe:
-              failureThreshold: 3
-              successThreshold: 1
-            resources:
-              limits:
-                nvidia.com/gpu: '4'
-              requests:
-                nvidia.com/gpu: '4'
-            startupProbe:
-              httpGet:
-                scheme: HTTP
-              successThreshold: 1
-            terminationMessagePath: /dev/termination-log
-            terminationMessagePolicy: File
-          dnsPolicy: ClusterFirst
-          restartPolicy: Always
-          schedulerName: default-scheduler
-          serviceAccount: confidential-inference
-      updateStrategy: {}
-additionalWorkloads: []
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:38e2c52da58dc80e1e7591373b0881672c4412098394147bb44c0619b8552b75
+  sglangPd: ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41
+workloadOverridesEnabled: false
+scheduling:
+  gatewayNodeName: gateway-node-1
+  routerNodeName: gateway-node-1
+  inferenceNodeName: inference-node-1
+  inferenceNodeNames:
+  - inference-node-1

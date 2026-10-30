@@ -1,22 +1,9 @@
 stagingValidation:
   enabled: true
-
 runtimeConfig:
-  # Remove the production routes. The chart uses the staging model below.
   modelRoutes: null
-
-# Staging chart values
-#
-# Helm applies this file after release/values.yaml (release/profiles.json).
-# It holds only what differs from production: the staging names, the CPU
-# SGLang simulator, and the small model that the simulator first verifies on
-# the encrypted model mount.
-
 environment: staging
-
 gateway:
-  # The admin-next relay (admin/vm/caddy in the internal repository): key
-  # snapshot GET and usage POST. Its address is the gateway's one exit.
   admin:
     url: https://ci-admin-next-loki.centralus.cloudapp.azure.com/api/usage/ingest
     address: 172.173.67.102
@@ -27,29 +14,18 @@ gateway:
         served_model: hf-internal-testing/tiny-random-LlamaForCausalLM
         model_revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998
   protection:
-    # The node mesh proxy opens the final connection to the gateway.
-    # Keep Pod proxies and the staging node network in the trusted scope.
     trustedProxyCidrs:
-      - 10.52.0.0/16
-      - 10.42.0.0/16
-
+    - 10.52.0.0/16
+    - 10.42.0.0/16
+    inferenceConcurrency: 48
+    inferenceQueue: 0
 attestationReceipts:
   evidenceBaseUrl: https://staging.api.confidential.ai
   evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
-  # The gateway verifies CDS for its schema 3 policy metadata. On c8s >= C8s
-  # #1048 a member pod reaches CDS only at the node's bound endpoint: the
-  # server address of the signed launch configuration (staging-20260926
-  # CONTROL_IP) and the CDS NodePort. C8s admits that exit for every member
-  # pod. The CDS armTLS certificate names no host; the gateway pins it by
-  # attestation. The deployment supplies the two policy documents.
   cds:
     url: https://10.43.58.194:30808
-
-# kube-state-metrics needs the Kubernetes API, which a c8s >= v0.64 mesh member
-# pod cannot reach.
 kubeStateMetrics:
   enabled: false
-
 inference:
   mode: simulator
   gpusPerReplica: 0
@@ -58,27 +34,29 @@ inference:
   resources:
     cpu: '2'
     memory: 16Gi
-  # The model pins of release/staging/spec.yaml.
   model:
     name: hf-internal-testing/tiny-random-LlamaForCausalLM
     revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998
     mountVerification:
       expectedFileList:
-        - path: .model-lock-local-manifest.json
-          sha256: d39aa41f901cb2cb07087157bcdc9c8ec32b6bf1e82c5018df35eff8cad6522e
-        - path: config.json
-          sha256: 5b52782dd9a2b8a4eb87f321448a61cd56cf0764493a1ff73f327259e14ab382
-        - path: tokenizer_config.json
-          sha256: 1847d0a066bd2bd9fb9cb01a2141e7f3befb0a915689878903c3a4dad0f761f9
+      - path: .model-lock-local-manifest.json
+        sha256: d39aa41f901cb2cb07087157bcdc9c8ec32b6bf1e82c5018df35eff8cad6522e
+      - path: config.json
+        sha256: 5b52782dd9a2b8a4eb87f321448a61cd56cf0764493a1ff73f327259e14ab382
+      - path: tokenizer_config.json
+        sha256: 1847d0a066bd2bd9fb9cb01a2141e7f3befb0a915689878903c3a4dad0f761f9
+    volumeNames:
+    - dsv4
+    - dsv4-1
+    c8sVolumeSource: /confidential-inference/volumes/dsv4
   simulator:
     validateModelMount: true
     outputMode: BLOCKING
     maxTotalTokens: 8192
     maxRunningRequests: 48
     chatTemplate: chatml
-
-# Telemetry to the admin-next relay (admin/vm/caddy in the internal
-# repository). Its address is the telemetry collector's one allowlist exit.
+  pd:
+    enabled: false
 telemetry:
   enabled: true
   deployment: staging-20260926
@@ -89,18 +67,15 @@ telemetry:
     tenantId: 693babab-0ab8-4ffb-8b5c-eb8aef3b10d1
     clientId: c486ee14-1dca-4c1d-af4f-be163302ff44
     dataCollectionRule: dcr-50a134d921ce434a86bcd8f01ab93b6e
-  # C8s's platform kube-state-metrics (needs the c8s with its allow policy).
   kubeStateMetrics:
     target: 10.53.0.11:8080
-
-# c8s v0.66.0+ runs the router in its own namespace (c8s #814; chart value
-# from confidential-inference #203).
 c8s:
   frontDoorPodLabelName: router
   frontDoorNamespace: c8s-router
-
 images:
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:05bb6a32b7ad6009c63f77f46c7379ae70dacfc493f21783a16035429adc8993
-
-# The simulator uses the staging workload definitions.
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:38e2c52da58dc80e1e7591373b0881672c4412098394147bb44c0619b8552b75
 workloadOverridesEnabled: false
+scheduling:
+  inferenceNodeNames:
+  - inference-node-1
+  - inference-node-2
