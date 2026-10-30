@@ -34,7 +34,8 @@ def helm(*arguments: str, success: bool = True) -> str:
 
 def render(*arguments: str) -> list[dict]:
     """The documents of `helm template example CHART` with the neutral mode and arguments."""
-    output = helm("template", "example", str(CHART), *NEUTRAL_MODE, *arguments)
+    mode = () if any(arg.endswith(("release/values.yaml", "tests/api/values-sglang.yaml")) for arg in arguments) else NEUTRAL_MODE
+    output = helm("template", "example", str(CHART), *mode, *arguments)
     return [item for item in yaml.safe_load_all(output) if item]
 
 
