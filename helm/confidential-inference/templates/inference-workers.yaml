@@ -1,5 +1,6 @@
 {{- define "confidential-inference.source.inference-workers" -}}
-{{- if .Values.inference.enabled }}
+{{- /* inference.pd replaces these workers (templates/inference-pd.yaml). */}}
+{{- if and .Values.inference.enabled (not .Values.inference.pd.enabled) }}
 {{- if and (gt (int .Values.inference.gpusPerReplica) 0) (eq (len .Values.inference.gpuArchitectures) 0) }}
 {{- fail "inference.gpuArchitectures is required when inference.gpusPerReplica is greater than zero" }}
 {{- end }}

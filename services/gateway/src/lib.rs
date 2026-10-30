@@ -30,6 +30,7 @@ pub mod key_registry;
 pub mod metrics;
 mod model_response;
 pub mod protection;
+pub mod routing_key;
 pub mod settings;
 pub mod usage;
 
@@ -100,6 +101,7 @@ struct AppState {
     metrics: Arc<GatewayMetrics>,
     protection: Arc<ProtectionState>,
     usage: Option<Arc<usage::Recorder>>,
+    routing_keys: Option<Arc<routing_key::RoutingKeys>>,
 }
 
 /// The largest `maximum_body_bytes` a deployment can configure.
@@ -129,6 +131,12 @@ pub fn router_with_usage(
         .ok()
         .and_then(|url| url.host_str().map(str::to_owned))
         .unwrap_or_else(|| "fixed-router".into());
+    let routing_keys = routing_key::RoutingKeys::generate()
+        .inspect_err(|error| {
+            tracing::error!(%error, "no routing key secret: the router routes requests at random");
+        })
+        .ok()
+        .map(Arc::new);
     let state = Arc::new(AppState {
         config,
         router_label,
@@ -138,6 +146,7 @@ pub fn router_with_usage(
         metrics,
         protection: protection.clone(),
         usage,
+        routing_keys,
     });
     Router::new()
         .route("/health", get(health))
@@ -161,6 +170,7 @@ pub fn router_with_usage(
                     header::AUTHORIZATION,
                     header::CONTENT_TYPE,
                     header::ACCEPT,
+                    routing_key::HEADER.clone(),
                 ])),
         )
         .with_state(state)
@@ -249,6 +259,7 @@ async fn proxy_inference(
         Authentication::Revoked(key_id) => return revoked_key(&state, &key_id),
         Authentication::Invalid => return unauthorized(&state),
     };
+    let client_routing_key = request.headers().get(&routing_key::HEADER).cloned();
     let started = Instant::now();
     let router_request = state.metrics.router_request(&state.router_label);
     let body = match tokio::time::timeout(
@@ -283,6 +294,10 @@ async fn proxy_inference(
         return client_error(StatusCode::UNAUTHORIZED, "model_not_authorized");
     }
     let model = model.as_str();
+    let routing_key = state
+        .routing_keys
+        .as_ref()
+        .and_then(|keys| keys.derive(&key_id, route, client_routing_key.as_ref(), &payload));
     let mut usage_request = match &state.usage {
         Some(recorder) => match recorder.reserve(&key_id, model) {
             Some(guard) => Some(guard),
@@ -324,15 +339,16 @@ async fn proxy_inference(
         return protection::overload("inference_capacity");
     };
     let active_request = state.metrics.active_request();
-    let upstream = state
+    let mut upstream = state
         .http
         .post(format!("{}{route}", config.upstream_base_url))
         .timeout(config.upstream_timeout)
         .header(header::CONTENT_TYPE, "application/json")
-        .header("x-request-id", &request_id)
-        .body(body)
-        .send()
-        .await;
+        .header("x-request-id", &request_id);
+    if let Some(value) = routing_key {
+        upstream = upstream.header(routing_key::HEADER.clone(), value);
+    }
+    let upstream = upstream.body(body).send().await;
     let Ok(upstream) = upstream else {
         if let Some(usage) = &mut usage_request {
             usage.finish(usage::Outcome::Failed);
@@ -971,6 +987,27 @@ mod tests {
             serde_json::from_slice::<Value>(&body).unwrap_or_default()["error"]["code"],
             "key_registry_not_ready"
         );
+    }
+
+    #[tokio::test]
+    async fn browsers_may_send_a_routing_key() {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/v1/chat/completions")
+                    .header(header::ORIGIN, "https://client.example")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "x-smg-routing-key")
+                    .body(Body::empty())
+                    .unwrap_or_else(|_| unreachable!()),
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let allowed = response.headers()[header::ACCESS_CONTROL_ALLOW_HEADERS]
+            .to_str()
+            .unwrap_or_default();
+        assert!(allowed.contains("x-smg-routing-key"), "{allowed}");
     }
 
     #[test]

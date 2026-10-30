@@ -50,7 +50,18 @@ receivers:
             - {target_label: component, replacement: sglang-router}
           metric_relabel_configs:
             - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.router)) | quote }}}
-        {{- if .Values.inference.enabled }}
+        {{- if and .Values.inference.enabled .Values.inference.pd.enabled }}
+        {{- /* One job per PD worker; each serves /metrics on its port with --enable-metrics. */}}
+        {{- $host := printf "inference-pd-0.inference-pd.%s.svc.cluster.local" $ns }}
+        {{- range .Values.inference.pd.workers }}
+        - job_name: {{ printf "inference-pd-%s" .name }}
+          static_configs:
+            - targets: [{{ printf "%s:%v" $host .port | quote }}]
+              labels: {component: inference-worker, replica: {{ .name | quote }}}
+          metric_relabel_configs:
+            - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.worker)) | quote }}}
+        {{- end }}
+        {{- else if .Values.inference.enabled }}
         {{- range $index := until (int .Values.inference.replicas) }}
         {{- $host := printf "inference-worker-%d-0.inference-workers.%s.svc.cluster.local" $index $ns }}
         - job_name: {{ printf "inference-worker-%d" $index }}

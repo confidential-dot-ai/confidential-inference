@@ -11,7 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 COPY source.lock /inputs/source.lock
 COPY patches /inputs/patches
-RUN python3 -c 'import json,hashlib,pathlib; d=json.load(open("/inputs/source.lock")); p=pathlib.Path("/inputs")/d["patch"]["path"]; assert hashlib.sha256(p.read_bytes()).hexdigest()==d["patch"]["sha256"]' \
+# Every patch in /inputs/patches is listed in source.lock with its SHA-256, and
+# the build applies them in the listed order (tests/images/sglang-router).
+RUN python3 -c 'import json,hashlib,pathlib; d=json.load(open("/inputs/source.lock")); i=pathlib.Path("/inputs"); ps=d["patches"]; assert sorted(p["path"] for p in ps)==sorted(str(f.relative_to(i)) for f in (i/"patches").iterdir()); assert all(hashlib.sha256((i/p["path"]).read_bytes()).hexdigest()==p["sha256"] for p in ps)' \
     && git init . \
     && git remote add origin https://github.com/sgl-project/sglang \
     && router_commit="$(python3 -c 'import json,re; c=json.load(open("/inputs/source.lock"))["source"]["commit"]; assert re.fullmatch("[0-9a-f]{40}",c); print(c)')" \
@@ -19,7 +21,13 @@ RUN python3 -c 'import json,hashlib,pathlib; d=json.load(open("/inputs/source.lo
     && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${router_commit}" \
     && git apply --check /inputs/patches/worker-withdrawal.patch \
-    && git apply /inputs/patches/worker-withdrawal.patch
+    && git apply /inputs/patches/worker-withdrawal.patch \
+    && git apply --check /inputs/patches/admission-caps.patch \
+    && git apply /inputs/patches/admission-caps.patch \
+    && git apply --check /inputs/patches/pd-router.patch \
+    && git apply /inputs/patches/pd-router.patch \
+    && git apply --check /inputs/patches/http-no-tokenizer.patch \
+    && git apply /inputs/patches/http-no-tokenizer.patch
 COPY Cargo.lock /src/sgl-model-gateway/Cargo.lock
 RUN python3 -c 'import json,hashlib,pathlib; d=json.load(open("/inputs/source.lock")); assert hashlib.sha256(pathlib.Path("/src/sgl-model-gateway/Cargo.lock").read_bytes()).hexdigest()==d["cargoLockSha256"]'
 COPY canonicalize_wheel.py /inputs/canonicalize_wheel.py
@@ -40,6 +48,13 @@ LABEL org.opencontainers.image.version="sha-${SOURCE_REVISION}"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.base.name="docker.io/library/python"
 LABEL org.opencontainers.image.base.digest="sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258"
+LABEL ai.confidential.upstream.source="https://github.com/sgl-project/sglang"
+LABEL ai.confidential.upstream.revision="a7fd2e1158c389c33077bae67fb797efa8dd09bd"
+LABEL ai.confidential.sglang-router.worker-withdrawal-patch.sha256="c19733adbf8ec8c25bb58a517bfa35cb5f93d7c1a4b5a8b439e50104a9d6b3fa"
+LABEL ai.confidential.sglang-router.admission-caps-patch.sha256="eb542bb49728c7f926253da0a21ac521567382cf00cfc47c93e0022f337ad021"
+LABEL ai.confidential.sglang-router.pd-router-patch.sha256="ffe36900914b9fd0a7c881ce990b762069fdcb0c2ec97aad5a6037843dc37ba6"
+LABEL ai.confidential.sglang-router.http-no-tokenizer-patch.sha256="85e982bf2bf2e21da3c27615819c3880f3a30da08495893de27ffbe9c30ba1c4"
+LABEL ai.confidential.sglang-router.cargo-lock.sha256="2a8bf58b2be1babdb06145ece924ae0c62919ecc3ee9a9a3ee3a9c6a12d6a5b6"
 COPY requirements.lock /router-requirements.lock
 RUN python3 -m pip install --no-cache-dir --require-hashes -r /router-requirements.lock
 LABEL ai.confidential.build.source-date-epoch="${SOURCE_DATE_EPOCH}"
