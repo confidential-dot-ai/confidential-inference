@@ -13,9 +13,9 @@ publicHostnames:
 # against this byte manifest. See the internal plan
 # docs/plans/staging-small-model.md.
 model:
-  repository: hf-internal-testing/tiny-random-LlamaForCausalLM
-  revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998
-  byteManifestSha256: d39aa41f901cb2cb07087157bcdc9c8ec32b6bf1e82c5018df35eff8cad6522e
+  repository: deepseek-ai/DeepSeek-V4.1-Flash
+  revision: 5254448103b6254fc646dacbca1cbbf20e9216c1
+  byteManifestSha256: a0d3a3c29654399bcddf018c3a00de4528238399182d400427287d790798f41b
 
 c8s:
   release: v0.80.10
