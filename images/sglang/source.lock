@@ -71,6 +71,10 @@
     "parserFlagsNoopPatch": {
       "path": "images/sglang/patches/sglang-simulator-parser-flags-noop.patch",
       "sha256": "9c654801f916b9d57eb3981dacdde5a3624d5b29e4d352c20822a64ae51f9306"
+    },
+    "prefixLengthPatch": {
+      "path": "images/sglang/patches/sglang-simulator-prefix-length.patch",
+      "sha256": "e819be5b7de85d286a10301b1e719dd40c7feaf49a03a1b43dea3b779810e68e"
     }
   }
 }

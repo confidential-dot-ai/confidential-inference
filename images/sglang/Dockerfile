@@ -87,6 +87,7 @@ LABEL ai.confidential.python.requirements.sha256="ecf62490ebac298d5ead834137166f
 LABEL ai.confidential.sglang.simulator.revision="5e6af31ae3fe8d95f83bab8c78e4db834142b313"
 LABEL ai.confidential.sglang.simulator.patch.sha256="7b9116115b440bcfd6b06ff00e410bc779cabe2e2a86ee75d3d8851a4dbe302e"
 LABEL ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256="9c654801f916b9d57eb3981dacdde5a3624d5b29e4d352c20822a64ae51f9306"
+LABEL ai.confidential.sglang.simulator.prefix-length-patch.sha256="e819be5b7de85d286a10301b1e719dd40c7feaf49a03a1b43dea3b779810e68e"
 LABEL ai.confidential.uv.digest="sha256:265d074d08ed8080bc578087ca68a8e94611f9c7be671d40e18b3d3b1ad0dad4"
 WORKDIR /opt/sglang
 COPY --from=source /src/python /opt/sglang/python
@@ -120,6 +121,8 @@ RUN --mount=type=bind,source=images/sglang/simulator-upstream,target=/run-src/sg
     && git apply /run-src/patches/sglang-simulator-replay-only.patch \
     && git apply --check /run-src/patches/sglang-simulator-parser-flags-noop.patch \
     && git apply /run-src/patches/sglang-simulator-parser-flags-noop.patch \
+    && git apply --check /run-src/patches/sglang-simulator-prefix-length.patch \
+    && git apply /run-src/patches/sglang-simulator-prefix-length.patch \
     && install -D -m 0555 /run-src/fetch-model /usr/local/bin/fetch-model
 ENV HOME=/tmp
 USER 1001:1001

@@ -1,0 +1,46 @@
+--- a/src/sglang_simulator/simulation/sglang/scheduler.py
++++ b/src/sglang_simulator/simulation/sglang/scheduler.py
+@@ -70,7 +70,7 @@
+                 **kwargs,
+             )
+             req_infos = request_stats_manager.get_req_stats(req.rid)
+-            req_infos.before_adder_device_hit_len = len(req.prefix_indices)
++            req_infos.before_adder_device_hit_len = req.prefix_len
+             req_infos.final_host_hit_len = req.host_hit_length
+ 
+             return original_add_one_req(self, *args, **kwargs)
+@@ -395,7 +395,7 @@
+                 **kwargs,
+             )
+             req_stats = request_stats_manager.get_req_stats(req.rid)
+-            req_stats.recv_device_hit_len = len(req.prefix_indices)
++            req_stats.recv_device_hit_len = req.prefix_len
+             req_stats.recv_host_hit_len = req.host_hit_length
+ 
+         def wrapped_run_batch(self, *args, **kwargs):
+@@ -409,14 +409,11 @@
+                 simulation_batch = SimulationScheduleBatch(reqs=[])
+                 if batch.forward_mode.is_extend():
+                     for req in batch.reqs:
+-                        extend_length = getattr(req, "extend_input_len", None)
+-                        if extend_length is None:
+-                            # The range API represents extend tokens as a half-open interval.
+-                            extend_length = req.extend_range.length
++                        extend_length = req.extend_len
+                         simulation_batch.reqs.append(
+                             ScheduleRequest(
+                                 extend_length=extend_length,
+-                                past_kv_length=len(req.prefix_indices)
++                                past_kv_length=req.prefix_len
+                                 + len(req.output_ids),
+                             )
+                         )
+@@ -425,7 +422,7 @@
+                         simulation_batch.reqs.append(
+                             ScheduleRequest(
+                                 extend_length=1,
+-                                past_kv_length=len(req.prefix_indices)
++                                past_kv_length=req.prefix_len
+                                 + len(req.output_ids),
+                             )
+                         )

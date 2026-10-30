@@ -138,13 +138,15 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(simulator["patch"]["sha256"], found["ai.confidential.sglang.simulator.patch.sha256"])
         self.assertEqual(simulator["parserFlagsNoopPatch"]["sha256"],
                          found["ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256"])
+        self.assertEqual(simulator["prefixLengthPatch"]["sha256"],
+                         found["ai.confidential.sglang.simulator.prefix-length-patch.sha256"])
         source = ROOT / simulator["path"]
         files = sorted(path for path in source.rglob("*")
                        if path.is_file() and path.name not in {"UPSTREAM.md", "LICENSE"})
         content = "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  "
                           f"{path.relative_to(source).as_posix()}\n" for path in files).encode()
         self.assertEqual(simulator["contentSha256"], hashlib.sha256(content).hexdigest())
-        for key in ("patch", "parserFlagsNoopPatch"):
+        for key in ("patch", "parserFlagsNoopPatch", "prefixLengthPatch"):
             patch = ROOT / simulator[key]["path"]
             self.assertEqual(simulator[key]["sha256"], hashlib.sha256(patch.read_bytes()).hexdigest())
             self.assertIn(f"git apply --check /run-src/patches/{patch.name}", DOCKERFILE)

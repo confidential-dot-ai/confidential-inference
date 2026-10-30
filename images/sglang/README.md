@@ -81,7 +81,21 @@ router (`sgl-model-gateway`), which this image does not copy.
 
 ## CPU staging
 
-The same image includes the existing pinned CPU simulator and its two reviewed
+The same image includes the existing pinned CPU simulator and its reviewed
 patches. Staging selects it with `PYTHONPATH`; production does not. The
 simulator does not require a second worker package. Run its startup and
 completion checks on the published image before signing a release.
+
+The simulator adapter uses `Req.prefix_len` and `Req.extend_len` from the pinned SGLang source.
+The old `prefix_indices` field no longer exists. The pinned prefix-length
+patch changes only simulator accounting; it does not patch the worker.
+
+Run the CPU staging checks on the published worker image:
+
+```sh
+python3 tests/images/sglang/smoke.py ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:<digest>
+```
+
+The check starts an isolated CPU container with no network access. It requires
+startup, model discovery, and streaming and nonstreaming completion responses.
+It saves the results and container log. It does not contact a cluster.
