@@ -8,7 +8,7 @@
 # the per-worker limits of the B200 1p1d tuning run. The test checks that this
 # file is still exactly that.
 #
-# The deployment adds images.sglangPd (sglang-dsv41 by digest), the node
+# The deployment adds images.sglangWorker (sglang by digest), the node
 # names and the release values. The worker memory requests are not calibrated
 # for B200.
 inference:

@@ -161,7 +161,7 @@ def build_production(evidence: dict, download_dir: Path, tag: str = "v0.14.2") -
     # Staging runs no kube-state-metrics (it needs the Kubernetes API).
     metrics = PROFILES.read_values(PRODUCTION)["images"]["kubeStateMetrics"].rsplit("@", 1)[1]
     allowlist["workloads"]["production-kube-state-metrics"] = {"containers": [{"digest": metrics}]}
-    allowlist["workloads"]["production-pd"] = {"containers": [{"digest": RELEASE_IMAGES["sglangPd"].rsplit("@", 1)[1]}]}
+    allowlist["workloads"]["production-pd"] = {"containers": [{"digest": RELEASE_IMAGES["sglangWorker"].rsplit("@", 1)[1]}]}
     generated = json.dumps(allowlist).encode()
     return build_release(tag, evidence, download_dir, lambda *_args, **_kwargs: generated,
                          mock.patch.object(MAN, "require_allowlist_contract"),
@@ -733,8 +733,7 @@ class ManifestTests(unittest.TestCase):
             "attestationReceipts": {"releaseId": "v0.14.2-staging"},
         })
         for key, image in RELEASE_IMAGES.items():
-            if key != "sglangPd":  # The simulator does not render the PD image.
-                self.assertEqual(manifest["images"][key], image)
+            self.assertEqual(manifest["images"][key], image)
 
     def test_the_staging_manifest_binds_the_package_and_the_profile_values(self):
         files = build_staging(publication(published_release_images()))

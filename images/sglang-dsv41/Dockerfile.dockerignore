@@ -1,8 +1,0 @@
-# Allowlist: the build context is the repository root.
-*
-!images/sglang-dsv41/Dockerfile
-!images/sglang-dsv41/source.lock
-!images/sglang-dsv41/requirements.lock
-!images/sglang-dsv41/fetch_source.py
-!images/sglang/wait_for_model.py
-!images/sglang/harden_http.py

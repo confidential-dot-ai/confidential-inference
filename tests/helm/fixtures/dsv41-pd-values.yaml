@@ -4,7 +4,7 @@
 # is still exactly the plan plus the substitutions it lists. The image digest,
 # model name and revision are placeholders.
 images:
-  sglangPd: ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:0000000000000000000000000000000000000000000000000000000000000000
 inference:
   mode: model
   gpuArchitectures:

@@ -1,107 +1,101 @@
-# SGLang image
+# SGLang DeepSeek-V4.1 image
 
-This recipe starts from the official SGLang v0.5.18 Linux AMD64 image.
-It applies one public, hash-pinned patch with two reviewed confidential-compute fixes.
-It also adds the model-mount gate.
-It does not rebuild CUDA, FlashInfer, or the remaining Python stack.
+This is the release recipe for the worker image of the chart's prefill/decode
+layout (`inference.pd`). The same image runs the prefill workers, the decode
+workers and the Engram holder. The router runs from `images/sglang-router`.
 
-The `source.lock` file records the official image digest, upstream source commit,
-FlashInfer version, patch digest, and source commits for both fixes.
-The Dockerfile repeats both values so that a reviewer can inspect the recipe without running a tool.
-The focused tests stop the build when these values differ.
+The approved release workflow builds this image twice on separate runners,
+compares the digests, then requires the publication build to match. Local
+builds are test evidence only. Candidate GPU tests use the published image.
 
-The first fix moves blocking device-to-host result copies to a host worker thread.
-The second fix selects a multicast-free FlashInfer all-reduce path under confidential compute.
-The worker also selects the canonical CUDA runtime and verifies that it exports
-`cudaDeviceReset`. It does not select TileLang's limited CUDA stub.
-FlashInfer 0.6.17 already contains the merged global-timer and multicast-free workspace fixes.
+## Inputs
 
-The image also contains the public `wait_for_model.py` and `fetch_model.py` repository files.
-The gate waits for the late c8s mount and checks its read-only dm-verity source.
-With `--plain-cache` the path is instead a read-only plain cache disk (public weights the
-host can read); the byte check below is then the only integrity check, on every start.
-`fetch-model fetch` fills that cache from Hugging Face before the worker starts. Its argv pins
-the SHA-256 of the byte manifest; it downloads every file whose bytes differ and deletes every
-file the manifest does not list. `fetch-model manifest` prints the byte manifest of a revision.
-The gate also checks the model revision, metadata digests, model index, and weight shard presence.
-The gate then hashes every file on the volume against the byte manifest. The release pins the
-manifest's SHA-256 with `--expected-file`. A missing, extra, resized, or changed file fails the gate.
-The gate fails closed before SGLang starts.
-Each worker starts NVIDIA's dcgm-exporter after the model mount passes.
-The image copies the binary and the DCGM libraries from the official
-`nvcr.io/nvidia/k8s/dcgm-exporter` image at the digest in `source.lock`.
-The exporter runs DCGM embedded in its own process (no separate host engine).
-It sees only the GPUs granted to that worker. `dcgm-counters.csv` is NVIDIA's
-`default-counters.csv` with the error, ECC, NVLink error, clock event and
-confidential-compute fields enabled. It exports no request data.
-`harden_http.py` runs at build time, on this image's source and on the
-`sglang-dsv41` source. It removes every SGLang HTTP route that is not
-inference, health, model or server info, or load reporting: cache flush,
-weight updates, profiling, LoRA, sessions, memory release, logging,
-`/abort_request` (its `abort_all` cancels every request), the decision
-scoring routes `/v1/decisions` and `/v1/systemone`, the elastic EP router,
-the env-gated `/dumper` route and FastAPI's `/openapi.json`, `/docs` and
-`/redoc`. No flag, environment
-variable or API key restores them. `/server_info` returns only the fields
-the router reads. `launch_server` refuses the Rust, gRPC, Ray and encoder
-frontends and the dumper listener, which have their own routes. The script
-checks the SHA-256 of both source files and fails the build when the source
-changes, so a new SGLang version needs a new review of its routes.
+Every input is pinned in `source.lock` and mirrored in a Dockerfile label.
+`tests/images/sglang` fails when the two differ.
 
-The image also defines no role command.
-Kubernetes supplies the worker command and arguments at launch time.
-The router has a separate image and digest under
-[images/sglang-router](../sglang-router/README.md).
+| Input | Pin |
+| --- | --- |
+| Base image | `docker.io/nvidia/cuda:13.0.3-devel-ubuntu24.04`, linux/amd64 manifest digest (the index digest is recorded too) |
+| uv | `ghcr.io/astral-sh/uv:0.11.16`, linux/amd64 manifest digest |
+| Ubuntu packages | One `snapshot.ubuntu.com` timestamp. The base image's NVIDIA apt source is not read |
+| Python environment | `requirements.lock`: 212 exact versions, each with the SHA-256 of every file PyPI publishes for it, installed with `--no-deps --require-hashes` |
+| SGLang source | One commit of the public `confidential-dot-ai/Sglang-public` fork, with no patches. `source.branch` names the branch that holds it; `source.upstream` records the upstream SGLang commit the fork is based on |
+| Model gate | `images/sglang/wait_for_model.py`, the public worker image's gate |
+| HTTP policy | `images/sglang/harden_http.py --variant pd`, shared with the public worker image (see its README) |
 
-## GPU-free staging mode
+The base is the CUDA devel image because FlashInfer, Triton and the SGLang JIT
+kernels compile at run time. The image bakes no JIT cache: compiled kernels
+are machine-specific build outputs and would make the image depend on the
+build host's GPU. The chart gives the pod an emptyDir for them instead, so a
+pod compiles them once per start.
 
-The same image contains the SGLang simulator from upstream pull request 33824.
-The source is pinned to one commit in `source.lock`.
-It is stored under `/opt/confidential-inference/sglang-simulator`.
-It is not present on the normal Python import path.
+## Reproducible build
 
-Production uses `python3 -m sglang.launch_server` and the real model volume.
-Staging sets `inference.mode=simulator` in Helm.
-This starts the SGLang HTTP server, scheduler, cache, streaming path, and metrics on CPU.
-Only the GPU model execution is simulated.
-The server returns deterministic `prefix` text and does not load model weights.
+The release workflow builds a candidate twice, from clean builders, and
+publishes only when both image digests are equal. This recipe is written for
+that check:
 
-The simulator accepts `--reasoning-parser` and `--tool-call-parser` for command
-compatibility. It removes both options before SGLang parses the arguments.
-They do not change simulator output. Production still passes these options to
-the normal SGLang server and keeps the normal parser behavior.
+- `SOURCE_DATE_EPOCH` is the source commit time, and the exporter rewrites
+  file timestamps (`rewrite-timestamp=true`).
+- No apt list, cache, or log stays in a layer. No BuildKit cache mount is
+  used. uv runs without a cache.
+- No bytecode is written at build time or at run time.
+- The Python environment's files get mtime 0, as in the tested image.
+- The source stage removes `.git`. setuptools-scm gets a fixed version
+  (`0.0.0.dev0`, the version of the tested image), not one derived from tags.
 
-The small `sglang-simulator-replay-only.patch` delays imports for optional simulator
-predictors. Replay mode does not need those packages. The patch does not change SGLang's
-production module or Python environment.
+Two builds from clean builders differed in these files, which the recipe
+now removes or fixes:
 
-## Build and smoke test
+- `/var/cache/fontconfig/*.cache-9`, written by the fontconfig trigger in the
+  apt layer: removed with the apt lists.
+- `sglang-0.0.0.dev0.dist-info/uv_cache.json`, which holds the build-time
+  ctime of `pyproject.toml` (uv's reinstall check), and `RECORD`, which hashes
+  it: the install deletes the file and its `RECORD` line.
+- `__pycache__/__editable___sglang_0_0_0_dev0_finder.cpython-312.pyc`, written
+  by the final import check (`python -I` ignores `PYTHONDONTWRITEBYTECODE`):
+  the check runs with `-B`.
+- `site-packages/build_backend.py`, the PEP 517 build shim that both
+  `flashinfer-python` and `torch-c-dlpack-ext` ship; uv installs wheels in
+  parallel, so either copy can win. Nothing imports it at run time: the
+  install deletes it and its `RECORD` line in both packages.
 
-Run these commands from the repository root:
+The image selector tracks this recipe and its shared model gate and HTTP
+hardening inputs. The release workflow gives each clean worker build its
+own runner and disk cleanup. GPU acceptance remains a deployment gate.
+
+## Source
+
+The worker builds from one pinned commit of the public
+`confidential-dot-ai/Sglang-public` fork. It replaces the prior worker recipe
+in `images/sglang`; git history keeps that recipe. The worker package remains
+`ghcr.io/confidential-dot-ai/confidential-inference/sglang`.
+
+The fork is public, so the build needs no credentials and anyone can rebuild
+the image and compare its digest with the allowlist, which ties the digest to
+reviewable source.
+
+The pinned commit is on `Deepseek-V41-release-ced-pp-hicache-fix`, the commit
+the tested image was built from. Later commits on that branch change only the
+router (`sgl-model-gateway`), which this image does not copy.
+
+## CPU staging
+
+The same image includes the existing pinned CPU simulator and its reviewed
+patches. Staging selects it with `PYTHONPATH`; production does not. The
+simulator does not require a second worker package. Run its startup and
+completion checks on the published image before signing a release.
+
+The simulator adapter uses `Req.prefix_len` and `Req.extend_len` from the pinned SGLang source.
+The old `prefix_indices` field no longer exists. The pinned prefix-length
+patch changes only simulator accounting; it does not patch the worker.
+
+Run the CPU staging checks on the published worker image:
 
 ```sh
-./images/sglang/build.sh
-docker run --rm confidential-inference/sglang:local python3 -m sglang.launch_server --help
+python3 tests/images/sglang/smoke.py ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:<digest>
 ```
 
-Set `IMAGE_NAME` to select a different local image name.
-Local builds are for development tests. A production-ready candidate must
-use the approved build and signed release pipeline. Local test results do
-not authorize publication of a locally built release image.
-
-The image is large. Build it on a machine with at least 40 GiB of free Docker storage.
-This repository has no automated Blackwell correctness or performance test.
-After deploy, send a real prompt through the deployed worker inside a TDX inference CVM.
-Confirm that the response is correct.
-
-## Release publication
-
-Use the approved `Release images` workflow on public `main`. Publication
-requires two clean builds with equal Linux AMD64 platform digests. SGLang
-is built again for publication and must produce the same verified digest.
-The signed release binds the selected image publication evidence.
-See [release publication](../../release/README.md) for inputs and checks.
-
-Do not replace the read-only build mounts with `COPY`. Git does not store file
-modification times. A `COPY` layer would make the digest depend on the machine
-that checked out the files.
+The check starts an isolated CPU container with no network access. It requires
+startup, model discovery, and streaming and nonstreaming completion responses.
+It saves the results and container log. It does not contact a cluster.

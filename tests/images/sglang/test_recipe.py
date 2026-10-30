@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Focused tests for the public production SGLang image recipe."""
+"""Focused tests for the DeepSeek-V4.1 prefill/decode worker image recipe."""
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import re
+import runpy
 import unittest
 from pathlib import Path
 
@@ -14,203 +15,178 @@ ROOT = Path(__file__).resolve().parents[3]
 RECIPE = ROOT / "images" / "sglang"
 LOCK = json.loads((RECIPE / "source.lock").read_text(encoding="utf-8"))
 DOCKERFILE = (RECIPE / "Dockerfile").read_text(encoding="utf-8")
-
-EXPECTED_IMAGE = "docker.io/lmsysorg/sglang"
-EXPECTED_DIGEST = "sha256:bde16a8447b19e89056b9eea06c72be6c02801dc89d528c9ea90c53368fd74bf"
-EXPECTED_SOURCE = "https://github.com/sgl-project/sglang"
-EXPECTED_COMMIT = "71de97b264b04dcd514cf904003028aefe9775c8"
-EXPECTED_PATCH_DIGEST = "da0afb59209a6bce8a910b21c6e63fcde768f5b82675bfa2bd22ae230c978570"
+REQUIREMENTS = (RECIPE / "requirements.lock").read_text(encoding="utf-8")
+fetch_source = runpy.run_path(str(RECIPE / "fetch_source.py"))
+affected = runpy.run_path(str(ROOT / "scripts" / "affected-release-images.py"))
 
 
 def instructions() -> list[str]:
-    return [
-        line.strip()
-        for line in DOCKERFILE.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
+    """Dockerfile instructions with continuation lines joined."""
+    joined = re.sub(r"\\\n\s*", " ", DOCKERFILE)
+    return [line.strip() for line in joined.splitlines() if line.strip() and not line.lstrip().startswith("#")]
 
 
-class SGLangImageRecipeTests(unittest.TestCase):
-    def test_source_lock_has_the_approved_upstream_pins(self) -> None:
-        self.assertEqual(1, LOCK["schemaVersion"])
-        self.assertEqual(EXPECTED_IMAGE, LOCK["image"]["reference"])
-        self.assertEqual(EXPECTED_DIGEST, LOCK["image"]["digest"])
-        self.assertEqual(EXPECTED_SOURCE, LOCK["source"]["repository"])
-        self.assertEqual(EXPECTED_COMMIT, LOCK["source"]["commit"])
+def labels() -> dict[str, str]:
+    found = {}
+    for line in instructions():
+        match = re.fullmatch(r'LABEL (\S+)="([^"]*)"', line)
+        if match:
+            found[match.group(1)] = match.group(2)
+    return found
 
-    def test_from_uses_the_exact_digest_without_a_tag(self) -> None:
-        from_lines = [line for line in instructions() if line.upper().startswith("FROM ")]
-        dcgm = LOCK["dcgmExporter"]
+
+class RecipeTests(unittest.TestCase):
+    def test_base_images_are_the_locked_amd64_digests(self) -> None:
+        from_lines = [line for line in instructions() if line.startswith("FROM ")]
         self.assertEqual(
-            [f"FROM {dcgm['reference']}@{dcgm['digest']} AS dcgm-exporter", f"FROM {EXPECTED_IMAGE}@{EXPECTED_DIGEST}"],
+            [
+                f"FROM {LOCK['uv']['reference']}@{LOCK['uv']['digest']} AS uv",
+                f"FROM {LOCK['image']['reference']}@{LOCK['image']['digest']} AS base",
+                "FROM base AS source",
+                "FROM base",
+            ],
             from_lines,
         )
-        self.assertNotRegex(from_lines[1], r"lmsysorg/sglang:[^@\s]+")
+        for pin in (LOCK["uv"], LOCK["image"]):
+            self.assertRegex(pin["digest"], r"^sha256:[0-9a-f]{64}$")
+            self.assertRegex(pin["indexDigest"], r"^sha256:[0-9a-f]{64}$")
 
-    def test_labels_record_the_source_and_base_pins(self) -> None:
-        required = {
-            'LABEL org.opencontainers.image.source="https://github.com/confidential-dot-ai/confidential-inference"',
-            'LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"',
-            f'LABEL ai.confidential.upstream.source="{EXPECTED_SOURCE}"',
-            f'LABEL ai.confidential.upstream.revision="{EXPECTED_COMMIT}"',
-            f'LABEL org.opencontainers.image.base.name="{EXPECTED_IMAGE}"',
-            f'LABEL org.opencontainers.image.base.digest="{EXPECTED_DIGEST}"',
+    def test_labels_mirror_the_lock(self) -> None:
+        found = labels()
+        expected = {
+            "org.opencontainers.image.base.name": LOCK["image"]["reference"],
+            "org.opencontainers.image.base.digest": LOCK["image"]["digest"],
+            "ai.confidential.sglang.source": LOCK["source"]["repository"],
+            "ai.confidential.sglang.revision": LOCK["source"]["commit"],
+            "ai.confidential.upstream.source": LOCK["source"]["upstream"]["repository"],
+            "ai.confidential.upstream.revision": LOCK["source"]["upstream"]["commit"],
+            "ai.confidential.ubuntu.snapshot": LOCK["ubuntuSnapshot"],
+            "ai.confidential.python.requirements.sha256": LOCK["python"]["requirementsLockSha256"],
+            "ai.confidential.uv.digest": LOCK["uv"]["digest"],
         }
-        self.assertTrue(required.issubset(set(instructions())))
+        for name, value in expected.items():
+            self.assertEqual(value, found.get(name), name)
         self.assertNotIn("org.opencontainers.image.created", DOCKERFILE)
 
-    def test_recipe_applies_only_the_reviewed_patch_and_model_gate(self) -> None:
-        forbidden = {"ADD", "CMD", "ENTRYPOINT"}
-        used = {line.split(maxsplit=1)[0].upper() for line in instructions()}
-        self.assertTrue(forbidden.isdisjoint(used))
-        copy_lines = [line for line in instructions() if line.startswith("COPY ")]
-        self.assertEqual([], copy_lines)
-        run_lines = [line for line in instructions() if line.startswith("RUN ")]
-        self.assertEqual(1, len(run_lines))
-        for source in (
-            "patches/cc-optimizations-v0518.patch",
-            "patch_flashinfer_cuda_ipc.py",
-            "harden_http.py",
-            "wait_for_model.py",
-            "fetch_model.py",
-            "dcgm-counters.csv",
-            "patches/sglang-simulator-parser-flags-noop.patch",
-        ):
-            self.assertIn(f"source={source}", DOCKERFILE)
-        self.assertIn("install -D -m 0555 /run-src/wait-for-model", DOCKERFILE)
-        self.assertIn("install -D -m 0555 /run-src/fetch-model", DOCKERFILE)
-        self.assertIn("install -D -m 0555 /run-dcgm/usr/bin/dcgm-exporter", DOCKERFILE)
-        self.assertIn("git apply --check --directory=python", DOCKERFILE)
-        self.assertIn("git apply --directory=python", DOCKERFILE)
-        self.assertIn("python3 /run-src/harden-http.py --root python/sglang --variant ordinary", DOCKERFILE)
+    def test_apt_reads_only_the_locked_snapshot(self) -> None:
+        self.assertRegex(LOCK["ubuntuSnapshot"], r"^\d{8}T\d{6}Z$")
+        self.assertIn(f"https://snapshot.ubuntu.com/ubuntu/{LOCK['ubuntuSnapshot']} %s main universe", DOCKERFILE)
+        commands = re.findall(r"apt-get[^&]*", " ".join(instructions()))
+        self.assertEqual(2, len(commands))
+        for command in commands:
+            self.assertIn("-o Dir::Etc::SourceList=/tmp/snapshot.list -o Dir::Etc::SourceParts=/dev/null", command)
+        install = commands[1].split("--no-install-recommends", 1)[1].split()
+        self.assertEqual(LOCK["aptPackages"], install)
 
-    def test_patch_and_dependency_pins_are_exact(self) -> None:
-        patch = RECIPE / "patches" / "cc-optimizations-v0518.patch"
-        self.assertEqual(EXPECTED_PATCH_DIGEST, hashlib.sha256(patch.read_bytes()).hexdigest())
-        optimizations = LOCK["optimizations"]
-        self.assertEqual(EXPECTED_PATCH_DIGEST, optimizations["patch"]["sha256"])
-        self.assertEqual("0.6.17", optimizations["flashInfer"]["version"])
-        cuda_ipc_patch = RECIPE / "patch_flashinfer_cuda_ipc.py"
-        self.assertEqual(
-            hashlib.sha256(cuda_ipc_patch.read_bytes()).hexdigest(),
-            optimizations["flashInfer"]["cudaIpcPatch"]["sha256"],
-        )
-        self.assertEqual(
-            "aea6d45cde342a1455186e7b9e3c3191b8c97f8d",
-            optimizations["sglang"]["asyncDeviceToHostCommit"],
-        )
-        self.assertEqual(
-            "64121c62a8dca7f5d1fdd39c8155ac3b8fc9da70",
-            optimizations["sglang"]["flashInferConfidentialComputeCommit"],
-        )
-        simulator = optimizations["sglang"]["simulator"]
-        self.assertEqual(33824, simulator["pullRequest"])
-        self.assertEqual(
-            "5e6af31ae3fe8d95f83bab8c78e4db834142b313",
-            simulator["commit"],
-        )
-        simulator_patch = ROOT / simulator["patch"]["path"]
-        self.assertEqual(
-            simulator["patch"]["sha256"],
-            hashlib.sha256(simulator_patch.read_bytes()).hexdigest(),
-        )
-        parser_flags_noop_patch = ROOT / simulator["parserFlagsNoopPatch"]["path"]
-        self.assertEqual(
-            simulator["parserFlagsNoopPatch"]["sha256"],
-            hashlib.sha256(parser_flags_noop_patch.read_bytes()).hexdigest(),
-        )
-        self.assertIn(
-            f'LABEL ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256='
-            f'"{simulator["parserFlagsNoopPatch"]["sha256"]}"',
-            instructions(),
-        )
+    def test_python_environment_is_installed_by_hash(self) -> None:
+        self.assertEqual(LOCK["python"]["requirementsLockSha256"], hashlib.sha256(REQUIREMENTS.encode()).hexdigest())
+        self.assertIn("uv pip install --no-deps --require-hashes -r /inputs/recipe/requirements.lock", " ".join(instructions()))
+        entries = re.split(r"\n(?=\S)", re.sub(r"(?m)^#.*\n", "", REQUIREMENTS).strip())
+        self.assertGreater(len(entries), 200)
+        for entry in entries:
+            pin, *hashes = [part.strip() for part in entry.split("\\\n")]
+            # flashinfer-cubin is not on PyPI: a pinned release URL.
+            self.assertRegex(pin, r"^[A-Za-z0-9_.\-]+(==[A-Za-z0-9_.+\-!]+| @ https://github\.com/flashinfer-ai/flashinfer/releases/download/\S+\.whl)$")
+            self.assertTrue(hashes, pin)
+            for value in hashes:
+                self.assertRegex(value, r"^--hash=sha256:[0-9a-f]{64}$")
 
-    def test_simulator_accepts_parser_flags_as_noops(self) -> None:
-        # Production keeps its normal parser flags. The simulator accepts the
-        # same flags, but its launcher removes them before SGLang parses them.
-        for role_name in ("inference-worker-0", "inference-worker-1"):
-            self.assertNotIn("--reasoning-parser=deepseek-v4", LOCK["roles"][role_name]["argv"])
-            self.assertIn(
-                "--reasoning-parser=deepseek-v4",
-                LOCK["simulatorRoles"][role_name]["argv"],
-            )
-            self.assertIn(
-                "--reasoning-parser=deepseek-v4",
-                LOCK["environmentRoles"]["candidate"][role_name]["argv"],
-            )
-        self.assertIn(
-            'LABEL ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256='
-            f'"{LOCK["optimizations"]["sglang"]["simulator"]["parserFlagsNoopPatch"]["sha256"]}"',
-            DOCKERFILE,
-        )
-
-    def test_one_image_supports_each_locked_role(self) -> None:
-        modules = {
-            "sglang.launch_server" if "sglang.launch_server" in role["argv"] else "sglang_router.launch_router"
-            for role in LOCK["roles"].values()
-        }
-        self.assertEqual({"sglang.launch_server", "sglang_router.launch_router"}, modules)
-        for role_name in ("inference-worker-0", "inference-worker-1"):
-            argv = LOCK["roles"][role_name]["argv"]
-            self.assertEqual("/usr/local/bin/wait-for-model", argv[0])
-            self.assertIn("sglang.launch_server", argv)
-            # Each worker has a separate pod network, so both can use one port.
-            self.assertIn("--gpu-metrics-port=29000", argv)
-            for argument in (
-                "--tp=4",
-                "--moe-runner-backend=flashinfer_mxfp4",
-                "--speculative-algorithm=DSPARK",
-                "--mem-fraction-static=0.90",
-                "--chunked-prefill-size=4096",
-                "--swa-full-tokens-ratio=0.1",
-            ):
-                self.assertIn(argument, argv)
-            for old_argument in ("--dp=4", "--enable-dp-attention", "--moe-a2a-backend=megamoe"):
-                self.assertNotIn(old_argument, argv)
-
-        simulator_roles = LOCK["simulatorRoles"]
-        worker_simulator_roles = {"inference-worker-0", "inference-worker-1"}
-        # simulatorRoles also carries the sglang-router role: staging names
-        # its workers like production (--worker-urls).
+    def test_no_baked_cache_entrypoint_or_root_runtime(self) -> None:
+        lines = instructions()
+        used = {line.split(maxsplit=1)[0] for line in lines}
+        self.assertTrue({"ADD", "CMD", "ENTRYPOINT"}.isdisjoint(used))
+        self.assertEqual("USER 1001:1001", lines[-1])
+        # Only the uv binary, the fork's source and the holder script are copied in.
         self.assertEqual(
-            worker_simulator_roles | {"sglang-router"},
-            set(simulator_roles),
+            [
+                "COPY --from=uv /uv /usr/local/bin/uv",
+                "COPY --from=source /src/python /opt/sglang/python",
+                "COPY --from=source /src/recipes/deepseek-v41/launcher/hold_engram_cache.py "
+                "/opt/sglang/recipes/deepseek-v41/launcher/hold_engram_cache.py",
+                "COPY --from=source /src/SOURCE_RECORD.json /opt/sglang/SOURCE_RECORD.json",
+            ],
+            [line for line in lines if line.startswith("COPY")],
         )
-        for name in worker_simulator_roles:
-            argv = simulator_roles[name]["argv"]
-            self.assertEqual("python3", argv[0])
-            self.assertIn(
-                "sglang_simulator.simulation.sglang.launch_server", argv
-            )
-            self.assertIn("--max-running-requests=48", argv)
-        self.assertEqual(
-            LOCK["roles"]["sglang-router"]["argv"],
-            simulator_roles["sglang-router"]["argv"],
-        )
+        self.assertIn("UV_NO_CACHE=1", DOCKERFILE)
+        self.assertNotIn("type=cache", DOCKERFILE)
 
-    def test_recipe_directory_has_only_public_build_material(self) -> None:
-        expected = {
-            "Dockerfile",
-            "README.md",
-            "build.sh",
-            "source.lock",
-            "wait_for_model.py",
-            "fetch_model.py",
-            "dcgm-counters.csv",
-            "patch_flashinfer_cuda_ipc.py",
-            "harden_http.py",
-        }
-        actual = {path.name for path in RECIPE.iterdir() if path.is_file()}
-        self.assertEqual(expected, actual)
-        self.assertEqual(
-            {
-                "cc-optimizations-v0518.patch",
-                "sglang-simulator-replay-only.patch",
-                "sglang-simulator-parser-flags-noop.patch",
-            },
-            {path.name for path in (RECIPE / "patches").iterdir() if path.is_file()},
-        )
-        self.assertNotRegex(DOCKERFILE, re.compile(r"candidate-private|private[-_]optimization", re.I))
+    def test_source_is_one_pinned_commit_of_the_fork(self) -> None:
+        source = LOCK["source"]
+        self.assertEqual("https://github.com/confidential-dot-ai/Sglang-public", source["repository"])
+        self.assertRegex(source["commit"], r"^[0-9a-f]{40}$")
+        self.assertRegex(source["upstream"]["commit"], r"^[0-9a-f]{40}$")
+        self.assertNotIn("patches", source)
+        fetch_source["check_lock"](LOCK)
+        # The fork is public: the fetch takes no credentials.
+        self.assertNotIn("type=secret", DOCKERFILE)
+        self.assertNotIn("sglang_source_token", (RECIPE / "fetch_source.py").read_text(encoding="utf-8"))
+        self.assertIn("python3.12 -I /inputs/recipe/fetch_source.py --recipe /inputs/recipe --out /src", " ".join(instructions()))
+
+    def test_release_build_tracks_all_worker_inputs(self) -> None:
+        self.assertNotIn("status", LOCK)
+        self.assertEqual("ghcr.io/confidential-dot-ai/confidential-inference/sglang", LOCK["deploymentImage"]["reference"])
+        for path in ("images/sglang/Dockerfile", "images/sglang/source.lock",
+                     "images/sglang/requirements.lock", "images/sglang/fetch_source.py",
+                     "images/sglang/simulator-upstream/src/usercustomize.py",
+                     "images/sglang/harden_http.py", "images/sglang/wait_for_model.py"):
+            self.assertIn("sglang", {i.image for i in affected["affected_images"]([path])})
+
+    def test_staging_simulator_source_and_patches_are_pinned(self) -> None:
+        simulator = LOCK["simulator"]
+        found = labels()
+        self.assertEqual(simulator["commit"], found["ai.confidential.sglang.simulator.revision"])
+        self.assertEqual(simulator["patch"]["sha256"], found["ai.confidential.sglang.simulator.patch.sha256"])
+        self.assertEqual(simulator["parserFlagsNoopPatch"]["sha256"],
+                         found["ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256"])
+        self.assertEqual(simulator["prefixLengthPatch"]["sha256"],
+                         found["ai.confidential.sglang.simulator.prefix-length-patch.sha256"])
+        source = ROOT / simulator["path"]
+        files = sorted(path for path in source.rglob("*")
+                       if path.is_file() and path.name not in {"UPSTREAM.md", "LICENSE"})
+        content = "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  "
+                          f"{path.relative_to(source).as_posix()}\n" for path in files).encode()
+        self.assertEqual(simulator["contentSha256"], hashlib.sha256(content).hexdigest())
+        for key in ("patch", "parserFlagsNoopPatch", "prefixLengthPatch"):
+            patch = ROOT / simulator[key]["path"]
+            self.assertEqual(simulator[key]["sha256"], hashlib.sha256(patch.read_bytes()).hexdigest())
+            self.assertIn(f"git apply --check /run-src/patches/{patch.name}", DOCKERFILE)
+        self.assertIn("/opt/confidential-inference/sglang-simulator", DOCKERFILE)
+        # Production uses its existing environment; staging opts into the simulator.
+        self.assertNotRegex(DOCKERFILE, r"(?m)^ENV PYTHONPATH=")
+
+    def test_wait_for_model_is_the_public_worker_gate(self) -> None:
+        self.assertIn("source=images/sglang/wait_for_model.py,target=/run-src/wait-for-model", DOCKERFILE)
+        ignore = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
+        self.assertIn("!images/sglang/wait_for_model.py", ignore)
+
+    def test_build_removes_non_serving_http_routes(self) -> None:
+        self.assertIn("source=images/sglang/harden_http.py,target=/run-src/harden-http.py", DOCKERFILE)
+        self.assertIn("python /run-src/harden-http.py --root /opt/sglang/python/sglang --variant pd", DOCKERFILE)
+        ignore = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
+        self.assertIn("!images/sglang/harden_http.py", ignore)
+
+
+class FetchSourceLockTests(unittest.TestCase):
+    """fetch_source.py refuses a source that is not one pinned commit, before any fetch."""
+
+    def lock(self, **source: object) -> dict:
+        pinned = {"repository": "https://github.com/confidential-dot-ai/Sglang-public", "commit": "a" * 40}
+        return {"source": {**pinned, **source}}
+
+    def test_a_pinned_commit_is_accepted(self) -> None:
+        fetch_source["check_lock"](self.lock())
+
+    def test_a_moving_reference_is_refused(self) -> None:
+        with self.assertRaisesRegex(fetch_source["LockError"], "40-hex"):
+            fetch_source["check_lock"](self.lock(commit="main"))
+
+    def test_a_repository_off_github_is_refused(self) -> None:
+        with self.assertRaisesRegex(fetch_source["LockError"], "github.com"):
+            fetch_source["check_lock"](self.lock(repository="https://example.com/sglang"))
+
+    def test_patches_are_refused(self) -> None:
+        with self.assertRaisesRegex(fetch_source["LockError"], "patches"):
+            fetch_source["check_lock"](self.lock(patches=[{"path": "patches/dsv41.patch", "sha256": "0" * 64}]))
 
 
 if __name__ == "__main__":

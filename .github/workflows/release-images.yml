@@ -667,7 +667,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: free disk space
-        if: matrix.image == 'sglang' || matrix.image == 'sglang-dsv41'
+        if: matrix.image == 'sglang'
         run: |
           sudo rm -rf -- /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache \
             /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell /usr/local/julia* \

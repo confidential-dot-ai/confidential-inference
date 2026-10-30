@@ -61,16 +61,6 @@ class ContractTests(unittest.TestCase):
         ).hexdigest()
         self.assertTrue(digest.startswith("sha256:"))
 
-    def test_the_source_lock_keeps_production_as_the_default_node_image(self):
-        """An older reader of `nodeImage` still gets production's image."""
-        per_environment = self.source_lock.get("nodeImages")
-        self.assertIsInstance(per_environment, dict)
-        self.assertEqual(
-            sorted(per_environment),
-            ["candidate", "conf-inference-prod", "production", "staging"],
-        )
-        self.assertEqual(self.source_lock["nodeImage"], per_environment["production"])
-
     def test_release_rejects_tag_in_place_of_digest(self):
         for digest in ("latest", "sha256:" + "A" * 64, "sha256:" + "a" * 63, "sha512:" + "a" * 64):
             with self.subTest(digest=digest):
@@ -123,69 +113,16 @@ class ContractTests(unittest.TestCase):
                     validate(altered, self.release_schema)
 
     def test_source_lock_has_required_immutable_pins(self):
-        lock = load(ROOT / "images/sglang/source.lock")
+        lock = self.source_lock
         self.assertRegex(lock["source"]["commit"], r"^[0-9a-f]{40}$")
-        self.assertRegex(lock["model"]["revision"], r"^[0-9a-f]{40}$")
-        self.assertRegex(lock["image"]["digest"], r"^sha256:[0-9a-f]{64}$")
-        self.assertEqual(
-            lock["deploymentImage"],
-            {"reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang"},
-        )
-        self.assertRegex(lock["nodeImage"]["digest"], r"^sha256:[0-9a-f]{64}$")
-        self.assertRegex(
-            lock["nodeEvidenceArtifact"]["digest"], r"^sha256:[0-9a-f]{64}$"
-        )
-        self.assertEqual(
-            set(lock["nodeEvidenceArtifacts"]),
-            {"candidate", "conf-inference-prod", "production", "staging"},
-        )
-        for artifact in lock["nodeEvidenceArtifacts"].values():
-            self.assertRegex(artifact["digest"], r"^sha256:[0-9a-f]{64}$")
-        self.assertEqual(
-            set(lock["roles"]),
-            {"sglang-router", "inference-worker-0", "inference-worker-1"},
-        )
-        for role in lock["roles"].values():
-            self.assertEqual(set(role), {"argv"})
-            self.assertTrue(role["argv"])
-
-    def test_source_lock_matches_rendered_production_argv(self):
-        output = subprocess.run(
-            [
-                "helm",
-                "template",
-                "v0",
-                str(ROOT / "helm/confidential-inference"),
-                "--namespace",
-                "confidential-inference",
-                "-f",
-                str(ROOT / "tests/api/values-sglang.yaml"),
-            ],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        documents = [document for document in yaml.safe_load_all(output) if document]
-        router = next(
-            document for document in documents
-            if document.get("kind") == "Deployment" and document["metadata"]["name"] == "sglang-router"
-        )
-        workers = {
-            document["metadata"]["name"]: document
-            for document in documents
-            if document.get("kind") == "StatefulSet"
-            and document["metadata"]["name"] in {"inference-worker-0", "inference-worker-1"}
-        }
-        rendered = {
-            "sglang-router": router["spec"]["template"]["spec"]["containers"][0],
-            "inference-worker-0": workers["inference-worker-0"]["spec"]["template"]["spec"]["containers"][0],
-            "inference-worker-1": workers["inference-worker-1"]["spec"]["template"]["spec"]["containers"][0],
-        }
-        self.assertEqual(set(rendered), set(self.source_lock["roles"]))
-        for name, role in self.source_lock["roles"].items():
-            container = rendered[name]
-            self.assertEqual(container.get("command", []) + container.get("args", []), role["argv"])
+        self.assertRegex(lock["source"]["upstream"]["commit"], r"^[0-9a-f]{40}$")
+        for image in (lock["image"], lock["uv"]):
+            self.assertRegex(image["digest"], r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(lock["deploymentImage"], {
+            "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang",
+        })
+        self.assertEqual(lock["python"]["requirementsLockSha256"], hashlib.sha256(
+            (ROOT / "images/sglang/requirements.lock").read_bytes()).hexdigest())
 
 
 class GatewayInferenceContractTests(unittest.TestCase):
