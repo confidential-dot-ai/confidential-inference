@@ -329,7 +329,7 @@ def main() -> None:
         '/mnt/c8s-data/admin-auth', '/mnt/c8s-data/admin-api-key', '/run/confidential-gateway', '/tmp'}
     assert not any(name.startswith(('GATEWAY_C8S_', 'GATEWAY_RELEASE_')) for name in gateway_environment)
     production_settings = json.loads(gateway_environment['GATEWAY_RUNTIME_CONFIG'])
-    assert production_settings['catalogModelIds'] == ['deepseek-ai/DeepSeek-V4-Flash-0731']
+    assert production_settings['catalogModelIds'] == ['deepseek-ai/DeepSeek-V4.1-Flash']
     # Values that bin/deploy sets per deployment do not reach the pod.
     deployed = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
         '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
@@ -345,7 +345,7 @@ def main() -> None:
                    for item in deployed)
     assert gateway_environment['GATEWAY_ADMIN_CONFIG_FILE'] == '/run/c8s/secrets/product-usage'
     assert not any(name.startswith('GATEWAY_STATE_') for name in gateway_environment)
-    assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://router-headless.confidential-inference.svc.cluster.local:30000'
+    assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://sglang-router:30000'
     # The router Deployment and Service keep their names across releases, so
     # an upgrade rolls the router behind the same address. Its c8s workload is
     # per release: the old and the new pod each match their own allowlist entry.
@@ -355,7 +355,7 @@ def main() -> None:
     assert router['spec']['selector']['matchLabels'] == {'app.kubernetes.io/part-of': 'confidential-inference',
                                                          'app.kubernetes.io/component': 'sglang-router'}
     assert router['spec']['strategy']['rollingUpdate'] == {'maxUnavailable': 0, 'maxSurge': 1}
-    assert router['spec']['template']['metadata']['annotations']['confidential.ai/cw'] == 'router-v0-14-18'
+    assert router['spec']['template']['metadata']['annotations']['confidential.ai/cw'] == 'sglang-router'
     # One model definition produces both views, each in its pod's pinned
     # environment: the gateway settings and the router routes.
     routes_json = 'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}'

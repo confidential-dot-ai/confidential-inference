@@ -67,6 +67,8 @@ jobs:
       standard_matrix: ${{ steps.select.outputs.standard_matrix }}
       standard_pass_matrix: ${{ steps.select.outputs.standard_pass_matrix }}
       sglang: ${{ steps.select.outputs.sglang }}
+      large_matrix: ${{ steps.select.outputs.large_matrix }}
+      large_pass_matrix: ${{ steps.select.outputs.large_pass_matrix }}
       names: ${{ steps.select.outputs.names }}
       standard_names: ${{ steps.select.outputs.standard_names }}
       base_ref: ${{ steps.base.outputs.base_ref }}
@@ -268,7 +270,7 @@ jobs:
   # instead: two independent jobs record a small manifest/digest each,
   # and a third job compares the two recordings.
   reproducibility-sglang-build:
-    name: 'rebuild sglang #${{ matrix.pass }}'
+    name: 'rebuild ${{ matrix.image }} #${{ matrix.pass }}'
     if: >-
       inputs.rebuild_audit &&
       needs.select-images.outputs.sglang == 'true'
@@ -277,8 +279,7 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      matrix:
-        pass: [1, 2]
+      matrix: ${{ fromJSON(needs.select-images.outputs.large_pass_matrix) }}
     env:
       TMPDIR: /mnt/tmp
       DOCKER_TMPDIR: /mnt/tmp
@@ -290,7 +291,7 @@ jobs:
         id: source
         run: |
           test -z "$(git status --porcelain --untracked-files=all)"
-          test -f "images/sglang/Dockerfile"
+          test -f "${{ matrix.dockerfile }}"
           printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
       - name: free disk space
@@ -329,7 +330,7 @@ jobs:
         id: builder
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
         with:
-          name: release-sglang-${{ github.run_id }}-${{ matrix.pass }}
+          name: release-${{ matrix.image }}-${{ github.run_id }}-${{ matrix.pass }}
           driver: docker-container
           version: ${{ env.BUILDX_VERSION }}
           driver-opts: image=${{ env.BUILDKIT_IMAGE }}
@@ -349,20 +350,20 @@ jobs:
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           builder: ${{ steps.builder.outputs.name }}
-          context: images/sglang
-          file: images/sglang/Dockerfile
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           build-args: |
-            SOURCE_REVISION=${{ github.sha }}
-            SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
+            SOURCE_REVISION=${{ matrix.revision }}
+            SOURCE_DATE_EPOCH=${{ matrix.epoch }}
           platforms: linux/amd64
           no-cache: true
           push: false
-          outputs: type=oci,dest=/mnt/release-oci/sglang-${{ matrix.pass }}.tar,rewrite-timestamp=true
+          outputs: type=oci,dest=/mnt/release-oci/${{ matrix.image }}-${{ matrix.pass }}.tar,rewrite-timestamp=true
           labels: |
-            org.opencontainers.image.title=Confidential Inference SGLang
+            org.opencontainers.image.title=${{ matrix.title }}
             org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=sha-${{ github.sha }}
+            org.opencontainers.image.revision=${{ matrix.revision }}
+            org.opencontainers.image.version=sha-${{ matrix.revision }}
           provenance: false
           sbom: false
 
@@ -374,7 +375,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-sglang-disk-usage-${{ matrix.pass }}
+          name: release-${{ matrix.image }}-disk-usage-${{ matrix.pass }}
           path: /mnt/disk-usage-${{ matrix.pass }}.log
           if-no-files-found: ignore
           retention-days: 1
@@ -384,24 +385,27 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          printf '%s\n' "$DIGEST" > /tmp/sglang-${{ matrix.pass }}.digest
+          printf '%s\n' "$DIGEST" > /tmp/${{ matrix.image }}-${{ matrix.pass }}.digest
 
       - name: upload digest record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-sglang-record-${{ matrix.pass }}
-          path: /tmp/sglang-${{ matrix.pass }}.digest
+          name: release-${{ matrix.image }}-record-${{ matrix.pass }}
+          path: /tmp/${{ matrix.image }}-${{ matrix.pass }}.digest
           if-no-files-found: error
           retention-days: 1
 
   reproducibility-sglang-compare:
-    name: compare sglang
+    name: compare ${{ matrix.image }}
     if: >-
       inputs.rebuild_audit &&
       needs.select-images.outputs.sglang == 'true'
     needs: [select-images, reproducibility-sglang-build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select-images.outputs.large_matrix) }}
     steps:
       - name: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -409,26 +413,26 @@ jobs:
       - name: 'download record #1'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: release-sglang-record-1
-          path: /tmp/sglang-1
+          name: release-${{ matrix.image }}-record-1
+          path: /tmp/${{ matrix.image }}-1
 
       - name: 'download record #2'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: release-sglang-record-2
-          path: /tmp/sglang-2
+          name: release-${{ matrix.image }}-record-2
+          path: /tmp/${{ matrix.image }}-2
 
       - name: compare digests
         run: |
-          cmp /tmp/sglang-1/sglang-1.digest /tmp/sglang-2/sglang-2.digest \
+          cmp /tmp/${{ matrix.image }}-1/${{ matrix.image }}-1.digest /tmp/${{ matrix.image }}-2/${{ matrix.image }}-2.digest \
             || { echo "The two clean builds differ." >&2; exit 1; }
-          cp /tmp/sglang-1/sglang-1.digest /tmp/sglang.platform-digest
+          cp /tmp/${{ matrix.image }}-1/${{ matrix.image }}-1.digest /tmp/${{ matrix.image }}.platform-digest
 
       - name: upload digest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-platform-digest-sglang
-          path: /tmp/sglang.platform-digest
+          name: release-platform-digest-${{ matrix.image }}
+          path: /tmp/${{ matrix.image }}.platform-digest
           if-no-files-found: error
           retention-days: 1
 
@@ -531,7 +535,7 @@ jobs:
   # publish job builds it once more and pushes only a digest equal to the
   # audited one. No unaudited sglang bytes reach the registry.
   publish-sglang:
-    name: publish sglang
+    name: publish ${{ matrix.image }}
     if: >-
       always() &&
       inputs.publish &&
@@ -541,6 +545,9 @@ jobs:
     needs: [select-images, reproducibility-sglang-compare]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select-images.outputs.large_matrix) }}
     environment: ghcr-production
     permissions:
       contents: read
@@ -553,19 +560,10 @@ jobs:
         id: source
         run: printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
-      # The publish title comes from the image selector, as it does for the
-      # standard images, so the workflow holds one SGLang title literal.
-      - name: get image title
-        id: title
-        run: >-
-          python3 -c 'import runpy; m = runpy.run_path("scripts/affected-release-images.py");
-          print("title=" + next(i.title for i in m["IMAGES"] if i.image == "sglang"))'
-          >> "$GITHUB_OUTPUT"
-
       - name: download digest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: release-platform-digest-sglang
+          name: release-platform-digest-${{ matrix.image }}
           path: /tmp/verified-digest
 
       - name: free disk space
@@ -604,19 +602,19 @@ jobs:
         id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
-          context: images/sglang
-          file: images/sglang/Dockerfile
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           build-args: |
-            SOURCE_REVISION=${{ github.sha }}
-            SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
+            SOURCE_REVISION=${{ matrix.revision }}
+            SOURCE_DATE_EPOCH=${{ matrix.epoch }}
           platforms: linux/amd64
           no-cache: true
-          outputs: type=image,name=ghcr.io/confidential-dot-ai/confidential-inference/sglang:sha-${{ github.sha }},push=true,rewrite-timestamp=true
+          outputs: type=image,name=ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}:sha-${{ github.sha }},push=true,rewrite-timestamp=true
           labels: |
-            org.opencontainers.image.title=${{ steps.title.outputs.title }}
+            org.opencontainers.image.title=${{ matrix.title }}
             org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=sha-${{ github.sha }}
+            org.opencontainers.image.revision=${{ matrix.revision }}
+            org.opencontainers.image.version=sha-${{ matrix.revision }}
           # The pushed object must have the same digest as the deterministic
           # platform manifest. Extra attestations create a different index
           # digest, so release image provenance is the publication manifest.
@@ -626,7 +624,7 @@ jobs:
       - name: record image digest
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-          IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/sglang
+          IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}
           BASE_REF: ${{ needs.select-images.outputs.base_ref }}
           BASE_REF_COMMIT: ${{ needs.select-images.outputs.base_ref_commit }}
         run: |
@@ -634,18 +632,18 @@ jobs:
           python3 scripts/image-publication-manifest.py record \
             --image "$IMAGE_NAME" \
             --pushed-digest "$IMAGE_DIGEST" \
-            --reproducibility-digest "$(tr -d '\n' < /tmp/verified-digest/sglang.platform-digest)" \
+            --reproducibility-digest "$(tr -d '\n' < /tmp/verified-digest/${{ matrix.image }}.platform-digest)" \
             --source-commit "$GITHUB_SHA" \
             --base-ref "$BASE_REF" \
             --base-ref-commit "$BASE_REF_COMMIT" \
-            --output /tmp/sglang.publication.json
+            --output /tmp/${{ matrix.image }}.publication.json
           printf "### %s\n\n\`%s@%s\`\n" "$IMAGE_NAME" "$IMAGE_NAME" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
       - name: upload publication record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-image-publication-record-sglang
-          path: /tmp/sglang.publication.json
+          name: release-image-publication-record-${{ matrix.image }}
+          path: /tmp/${{ matrix.image }}.publication.json
           if-no-files-found: error
           retention-days: 1
 
@@ -669,7 +667,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: free disk space
-        if: matrix.image == 'sglang'
+        if: matrix.image == 'sglang' || matrix.image == 'sglang-dsv41'
         run: |
           sudo rm -rf -- /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache \
             /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell /usr/local/julia* \

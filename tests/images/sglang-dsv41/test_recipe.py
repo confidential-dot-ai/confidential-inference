@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Focused tests for the draft DeepSeek-V4.1 prefill/decode worker image recipe."""
+"""Focused tests for the DeepSeek-V4.1 prefill/decode worker image recipe."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def labels() -> dict[str, str]:
     return found
 
 
-class DraftRecipeTests(unittest.TestCase):
+class RecipeTests(unittest.TestCase):
     def test_base_images_are_the_locked_amd64_digests(self) -> None:
         from_lines = [line for line in instructions() if line.startswith("FROM ")]
         self.assertEqual(
@@ -123,10 +123,11 @@ class DraftRecipeTests(unittest.TestCase):
         self.assertNotIn("sglang_source_token", (RECIPE / "fetch_source.py").read_text(encoding="utf-8"))
         self.assertIn("python3.12 -I /inputs/recipe/fetch_source.py --recipe /inputs/recipe --out /src", " ".join(instructions()))
 
-    def test_draft_stays_out_of_release_builds(self) -> None:
-        # Registering the image ends the draft: drop the status and this test then.
-        self.assertEqual("draft", LOCK["status"])
-        self.assertNotIn("sglang-dsv41", {image.image for image in affected["IMAGES"]})
+    def test_release_build_tracks_all_worker_inputs(self) -> None:
+        self.assertNotIn("status", LOCK)
+        for path in ("images/sglang-dsv41/Dockerfile", "images/sglang-dsv41/source.lock",
+                     "images/sglang/harden_http.py", "images/sglang/wait_for_model.py"):
+            self.assertIn("sglang-dsv41", {i.image for i in affected["affected_images"]([path])})
 
     def test_wait_for_model_is_the_public_worker_gate(self) -> None:
         self.assertIn("source=images/sglang/wait_for_model.py,target=/run-src/wait-for-model", DOCKERFILE)

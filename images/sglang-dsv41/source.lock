@@ -1,7 +1,5 @@
 {
   "schemaVersion": 1,
-  "status": "draft",
-  "draftNote": "Not a release image yet: no release build has produced it and scripts/affected-release-images.py does not list it. See README.md.",
   "source": {
     "repository": "https://github.com/confidential-dot-ai/Sglang-public",
     "branch": "Deepseek-V41-release-ced-pp-hicache-fix",

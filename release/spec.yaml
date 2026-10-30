@@ -1,48 +1,28 @@
-# Release specification
-#
-# The one source of truth for what the next software release is. A person
-# writes this file. The release build reads it with the other files in this
-# directory. It holds no version and no image digest of this repository: the
-# build takes the version from the release tag and the digests from the image
-# publication evidence. See release/README.md.
-
 c8s:
-  # The c8s release. It fixes the node image and its measurements.
-  release: v0.59.1
-  sourceCommit: 4c916ecea7221e506988ff9e37725a314a64b562
+  release: v0.80.10
+  sourceCommit: cd68ff62791ffc792ecf45583151a278e7291512
   nodeImage:
     reference: ghcr.io/confidential-dot-ai/node-guest-base
-    tag: rke2-tdx-cdi-v0.59.1
-    digest: sha256:2073fef8adf5c6bf217d5003b3ff56d233abc1df16d5682b6b8fa2fbc1f28da1
-  # The C8s core images. The generated policy preserves the measured
-  # node's component command pins.
+    tag: rke2-tdx-cdi-v0.80.10
+    digest: sha256:4b400d258b55c94d292c7768ace29ee7c8d724d79670d1dbce83adf1fef6a500
   coreImages:
-    - ghcr.io/confidential-dot-ai/c8s-operator@sha256:593dea857bfdb2512af5dcfbbec34b10c08de66bbd67f7d33d23a1f8581429b5
-    - ghcr.io/confidential-dot-ai/cds@sha256:aaf6a581487d27b24228ceb10e4a600e1ae1a4b405d0f6f4b8f95422ae8ba204
-    - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:3fce8c123911f7242cab3f323edc11a4e73b764e8475e6e8128d3bd0248423e1
-    - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:9ecc1b70bb93746a6811a95f62b88445407bcb3f20d462dee1788ff4c2cdc4a6
-    - ghcr.io/confidential-dot-ai/volumed@sha256:8e8f4a8bb691a8e200b1a54e23da405459223e276ce25049e09833bc8d2dde1f
-    - nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0
-  # The artifact that c8s publishes with the node image. It holds the TDX
-  # measurements MRTD, RTMR1, and RTMR2.
+  - ghcr.io/confidential-dot-ai/c8s-operator@sha256:38e2c52da58dc80e1e7591373b0881672c4412098394147bb44c0619b8552b75
+  - ghcr.io/confidential-dot-ai/cds@sha256:5c7337b189ad7b95b69382ab103d2058d1cf9c30eab07283d59865621e73db2a
+  - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:7d136dc13d675a17ba8f50c25eabdb3c16bad0180910e9be362b2960b777d17e
+  - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:6b30a4cd196b8db217f8787665f2c006dd07b1f22567fa845938f9d8673d3376
+  - ghcr.io/confidential-dot-ai/volumed@sha256:98fc6d348290de3810499b283f35a9137057873f7e3666f5e338d7cd1ebe1a33
+  - nginxinc/nginx-unprivileged@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6
   nodeManifestArtifact:
-    tag: rke2-tdx-v0.59.1
-    digest: sha256:8840a408d93f143e115a4027e6db5ddde256b965c7c8529017aa81313e89f4e7
-    # The SHA-256 of the manifest.json layer, which is node-manifest.json.
-    manifestJson: sha256:83605d4415a75985c6eb2a347360419166ecb80f3ee54c84c5276323d6ed57c9
-
+    tag: rke2-tdx-v0.80.10
+    digest: sha256:1eb606af70dd4db9fc9f6c20399dd0e8822714b3f9ce7f66359de0f189b1f389
+    manifestJson: sha256:722aecaf42c8838f4e5a8f7e88f39a1417573a328d6101233762095f9de8b8ec
 model:
-  repository: deepseek-ai/DeepSeek-V4-Flash-0731
-  revision: 9e165c30e2704aec5d9d593cce3eebd58bbef1cb
-  # The SHA-256 of the byte manifest. The manifest lists the SHA-256 of every
-  # model file.
-  byteManifestSha256: cd9eecd89a3d31dedd7b707158e86ebeab241c68d55e9661d3efa508015a697c
-
+  repository: deepseek-ai/DeepSeek-V4.1-Flash
+  revision: 5254448103b6254fc646dacbca1cbbf20e9216c1
+  byteManifestSha256: a0d3a3c29654399bcddf018c3a00de4528238399182d400427287d790798f41b
 publicHostnames:
-  - api.confidential.ai
-  - candidate.api.confidential.ai
-
-# Keep the test program and its exact rules in the reviewed release source.
+- api.confidential.ai
+- candidate.api.confidential.ai
 transition:
   fromRelease: v0.14.17
   helpers:
@@ -58,184 +38,134 @@ transition:
           argv:
           - -u
           - -c
-          - |
-            """Run reviewed gateway checks inside the C8s mesh.
-
-            The operator submits signed admin packets through one namespaced Secret.
-            The service account can read only that Secret. No signer private key enters
-            this process. Responses exclude request headers, tokens, and snapshot bodies.
-            """
-            import base64
-            import concurrent.futures
-            import json
-            import os
-            import re
-            import ssl
-            import socket
-            import time
-            import urllib.error
-            import urllib.parse
-            import urllib.request
-
-
-            PATHS = {
-                "/health", "/ready", "/metrics", "/runtime-config", "/release-config", "/attestation",
-                "/v1/chat/completions", "/admin/v1/api-keys/source",
-                "/admin/v1/api-keys/snapshot",
-                "/.well-known/c8s/attest-pq",
-            }
-
-
-            class NoRedirect(urllib.request.HTTPRedirectHandler):
-                def redirect_request(self, request, fp, code, message, headers, new_url):
-                    raise ValueError("Redirects are not permitted for signed gateway requests.")
-
-
-            def validate_action(action, allowed_hosts, router_hosts=(), *, worker_hosts=(), worker_control=False):
-                parsed = urllib.parse.urlsplit(action["url"])
-                if parsed.hostname in worker_hosts:
-                    if parsed.hostname in allowed_hosts or parsed.hostname in router_hosts:
-                        raise ValueError('A worker target must be separate from other targets.')
-                    paths = {'/health': 'GET', '/v1/models': 'GET', '/get_model_info': 'GET',
-                             '/v1/chat/completions': 'POST'}
-                    if (parsed.scheme != 'http' or parsed.username or parsed.password or parsed.fragment
-                            or parsed.query or parsed.port != 30000 or parsed.path not in paths
-                            or action.get('method', 'GET') != paths[parsed.path]):
-                        raise ValueError('The worker action is not approved.')
-                    checked_body(action)
-                    return parsed
-                if parsed.hostname in router_hosts:
-                    if parsed.hostname in allowed_hosts:
-                        raise ValueError('A router target cannot also be a gateway target.')
-                    paths = {'/health': 'GET', '/readiness': 'GET', '/workers': 'GET',
-                             '/v1/chat/completions': 'POST', '/metrics': 'GET',
-                             '/model-routes': 'GET', '/model-routes/status': 'GET'}
-                    methods = {path: {method} for path, method in paths.items()}
-                    if worker_control:
-                        methods['/model-routes'] = {'GET'}
-                        methods['/model-routes/status'] = {'GET'}
-                        if re.fullmatch(r'/workers/[a-zA-Z0-9_-]{1,128}/drain', parsed.path):
-                            methods[parsed.path] = {'GET', 'POST', 'DELETE'}
-                    expected_port = 29000 if parsed.path == '/metrics' else 30000
-                    if (parsed.scheme != 'http' or parsed.username or parsed.password
-                            or parsed.fragment or parsed.query or parsed.path not in methods
-                            or parsed.port != expected_port
-                            or action.get('method', 'GET') not in methods[parsed.path]):
-                        raise ValueError('The router action is not approved.')
-                    checked_body(action)
-                    return parsed
-                if (parsed.scheme != "http" or parsed.hostname not in allowed_hosts
-                        or parsed.port not in (9443, 9090, 8800) or parsed.username
-                        or parsed.password or parsed.fragment or parsed.path not in PATHS):
-                    raise ValueError("The action destination is not approved.")
-                method = action.get("method", "GET")
-                expected = "PUT" if parsed.path.endswith("/snapshot") else (
-                    "POST" if parsed.path == "/v1/chat/completions" else "GET")
-                if method != expected or (parsed.query and parsed.path not in ('/attestation', '/.well-known/c8s/attest-pq')):
-                    raise ValueError("The action method or query is not approved.")
-                if parsed.path in ("/metrics", "/runtime-config", "/release-config") and parsed.port != 9090:
-                    raise ValueError("Metrics must use the metrics port.")
-                if parsed.path == '/.well-known/c8s/attest-pq' and parsed.port != 8800:
-                    raise ValueError('Workload evidence must use the evidence port.')
-                if parsed.path not in ('/metrics', '/runtime-config', '/release-config', '/.well-known/c8s/attest-pq') and parsed.port != 9443:
-                    raise ValueError("Gateway checks must use the gateway port.")
-                checked_body(action)
-                return parsed
-
-
-            def checked_body(action):
-                body = action.get("body")
-                if body is not None and (not isinstance(body, str) or len(body.encode()) > 4 * 1024 * 1024):
-                    raise ValueError("The request body exceeds the limit.")
-                if action.get('method', 'GET') == "GET" and body is not None:
-                    raise ValueError("A GET action cannot have a body.")
-
-
-            def perform(action, allowed_hosts, router_hosts=(), *, worker_hosts=(), worker_control=False):
-                parsed = validate_action(action, allowed_hosts, router_hosts,
-                                         worker_hosts=worker_hosts, worker_control=worker_control)
-                body = action.get("body")
-                data = None if body is None else body.encode()
-                request = urllib.request.Request(action["url"], data=data,
-                                                headers=action.get("headers", {}),
-                                                method=action.get("method", "GET"))
-                start = time.monotonic()
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-                try:
-                    with opener.open(request, timeout=45) as response:
-                        status = response.status
-                        instance = response.headers.get('X-Confidential-Gateway')
-                        raw = response.read(4 * 1024 * 1024 + 1)
-                except urllib.error.HTTPError as error:
-                    status, raw = error.code, error.read(8192)
-                    instance = error.headers.get('X-Confidential-Gateway')
-                if len(raw) > 4 * 1024 * 1024:
-                    raise ValueError("The response exceeds the limit.")
-                result = {"name": action["name"], "status": status,
-                          "durationSeconds": round(time.monotonic() - start, 3)}
-                if instance:
-                    result['gatewayIdentity'] = instance
-                if parsed.path == "/metrics":
-                    result["metrics"] = raw.decode()
-                else:
-                    try:
-                        document = json.loads(raw)
-                    except (ValueError, UnicodeDecodeError):
-                        document = {"code": "non_json_response"}
-                    if parsed.path == "/v1/chat/completions":
-                        result["validCompletion"] = isinstance(document.get("choices"), list) and bool(document["choices"])
-                        result["requestId"] = document.get("id")
-                        result['responseModel'] = document.get('model')
-                    else:
-                        # These endpoints return public evidence or safe key-source state.
-                        result["response"] = document
-                return result
-
-
-            def main():
-                namespace = os.environ["UPDATE_NAMESPACE"]
-                secret = os.environ["UPDATE_SECRET"]
-                hosts = json.loads(os.environ["UPDATE_HOSTS"])
-                router_hosts = json.loads(os.environ.get('UPDATE_ROUTER_HOSTS', '[]'))
-                worker_hosts = json.loads(os.environ.get('UPDATE_WORKER_HOSTS', '[]'))
-                worker_control = os.environ.get('UPDATE_WORKER_CONTROL', 'false') == 'true'
-                account = "/var/run/secrets/kubernetes.io/serviceaccount/"
-                context = ssl.create_default_context(cafile=account + "ca.crt")
-                url = f"https://kubernetes.default.svc/api/v1/namespaces/{namespace}/secrets/{secret}"
-                last = None
-                while True:
-                    try:
-                        with open(account + "token") as stream:
-                            token = stream.read().strip()
-                        request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
-                        with urllib.request.urlopen(request, context=context, timeout=10) as response:
-                            record = json.load(response)
-                        packet = json.loads(base64.b64decode(record["data"]["task.json"]))
-                        if not isinstance(packet.get("actions"), list) or not 1 <= len(packet["actions"]) <= 32:
-                            raise ValueError("The task must have one to 32 actions.")
-                        if packet["id"] != last:
-                            results = []
-                            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-                                futures = [pool.submit(perform, action, hosts, router_hosts,
-                                                      worker_hosts=worker_hosts, worker_control=worker_control)
-                                           for action in packet["actions"]]
-                                for action, future in zip(packet["actions"], futures):
-                                    try:
-                                        results.append(future.result())
-                                    except Exception as error:
-                                        results.append({"name": action["name"], "status": 0,
-                                                        "error": type(error).__name__,
-                                                        "cause": type(getattr(error, "reason", error)).__name__,
-                                                        "errno": getattr(getattr(error, "reason", error), "errno", None)})
-                            print(json.dumps({"taskId": packet["id"], "results": results}), flush=True)
-                            last = packet["id"]
-                    except Exception as error:
-                        print(json.dumps({"agentError": type(error).__name__}), flush=True)
-                    time.sleep(0.5)
-
-
-            if __name__ == "__main__":
-                main()
+          - "\"\"\"Run reviewed gateway checks inside the C8s mesh.\n\nThe operator\
+            \ submits signed admin packets through one namespaced Secret.\nThe service\
+            \ account can read only that Secret. No signer private key enters\nthis\
+            \ process. Responses exclude request headers, tokens, and snapshot bodies.\n\
+            \"\"\"\nimport base64\nimport concurrent.futures\nimport json\nimport\
+            \ os\nimport re\nimport ssl\nimport socket\nimport time\nimport urllib.error\n\
+            import urllib.parse\nimport urllib.request\n\n\nPATHS = {\n    \"/health\"\
+            , \"/ready\", \"/metrics\", \"/runtime-config\", \"/release-config\",\
+            \ \"/attestation\",\n    \"/v1/chat/completions\", \"/admin/v1/api-keys/source\"\
+            ,\n    \"/admin/v1/api-keys/snapshot\",\n    \"/.well-known/c8s/attest-pq\"\
+            ,\n}\n\n\nclass NoRedirect(urllib.request.HTTPRedirectHandler):\n    def\
+            \ redirect_request(self, request, fp, code, message, headers, new_url):\n\
+            \        raise ValueError(\"Redirects are not permitted for signed gateway\
+            \ requests.\")\n\n\ndef validate_action(action, allowed_hosts, router_hosts=(),\
+            \ *, worker_hosts=(), worker_control=False):\n    parsed = urllib.parse.urlsplit(action[\"\
+            url\"])\n    if parsed.hostname in worker_hosts:\n        if parsed.hostname\
+            \ in allowed_hosts or parsed.hostname in router_hosts:\n            raise\
+            \ ValueError('A worker target must be separate from other targets.')\n\
+            \        paths = {'/health': 'GET', '/v1/models': 'GET', '/get_model_info':\
+            \ 'GET',\n                 '/v1/chat/completions': 'POST'}\n        if\
+            \ (parsed.scheme != 'http' or parsed.username or parsed.password or parsed.fragment\n\
+            \                or parsed.query or parsed.port != 30000 or parsed.path\
+            \ not in paths\n                or action.get('method', 'GET') != paths[parsed.path]):\n\
+            \            raise ValueError('The worker action is not approved.')\n\
+            \        checked_body(action)\n        return parsed\n    if parsed.hostname\
+            \ in router_hosts:\n        if parsed.hostname in allowed_hosts:\n   \
+            \         raise ValueError('A router target cannot also be a gateway target.')\n\
+            \        paths = {'/health': 'GET', '/readiness': 'GET', '/workers': 'GET',\n\
+            \                 '/v1/chat/completions': 'POST', '/metrics': 'GET',\n\
+            \                 '/model-routes': 'GET', '/model-routes/status': 'GET'}\n\
+            \        methods = {path: {method} for path, method in paths.items()}\n\
+            \        if worker_control:\n            methods['/model-routes'] = {'GET'}\n\
+            \            methods['/model-routes/status'] = {'GET'}\n            if\
+            \ re.fullmatch(r'/workers/[a-zA-Z0-9_-]{1,128}/drain', parsed.path):\n\
+            \                methods[parsed.path] = {'GET', 'POST', 'DELETE'}\n  \
+            \      expected_port = 29000 if parsed.path == '/metrics' else 30000\n\
+            \        if (parsed.scheme != 'http' or parsed.username or parsed.password\n\
+            \                or parsed.fragment or parsed.query or parsed.path not\
+            \ in methods\n                or parsed.port != expected_port\n      \
+            \          or action.get('method', 'GET') not in methods[parsed.path]):\n\
+            \            raise ValueError('The router action is not approved.')\n\
+            \        checked_body(action)\n        return parsed\n    if (parsed.scheme\
+            \ != \"http\" or parsed.hostname not in allowed_hosts\n            or\
+            \ parsed.port not in (9443, 9090, 8800) or parsed.username\n         \
+            \   or parsed.password or parsed.fragment or parsed.path not in PATHS):\n\
+            \        raise ValueError(\"The action destination is not approved.\"\
+            )\n    method = action.get(\"method\", \"GET\")\n    expected = \"PUT\"\
+            \ if parsed.path.endswith(\"/snapshot\") else (\n        \"POST\" if parsed.path\
+            \ == \"/v1/chat/completions\" else \"GET\")\n    if method != expected\
+            \ or (parsed.query and parsed.path not in ('/attestation', '/.well-known/c8s/attest-pq')):\n\
+            \        raise ValueError(\"The action method or query is not approved.\"\
+            )\n    if parsed.path in (\"/metrics\", \"/runtime-config\", \"/release-config\"\
+            ) and parsed.port != 9090:\n        raise ValueError(\"Metrics must use\
+            \ the metrics port.\")\n    if parsed.path == '/.well-known/c8s/attest-pq'\
+            \ and parsed.port != 8800:\n        raise ValueError('Workload evidence\
+            \ must use the evidence port.')\n    if parsed.path not in ('/metrics',\
+            \ '/runtime-config', '/release-config', '/.well-known/c8s/attest-pq')\
+            \ and parsed.port != 9443:\n        raise ValueError(\"Gateway checks\
+            \ must use the gateway port.\")\n    checked_body(action)\n    return\
+            \ parsed\n\n\ndef checked_body(action):\n    body = action.get(\"body\"\
+            )\n    if body is not None and (not isinstance(body, str) or len(body.encode())\
+            \ > 4 * 1024 * 1024):\n        raise ValueError(\"The request body exceeds\
+            \ the limit.\")\n    if action.get('method', 'GET') == \"GET\" and body\
+            \ is not None:\n        raise ValueError(\"A GET action cannot have a\
+            \ body.\")\n\n\ndef perform(action, allowed_hosts, router_hosts=(), *,\
+            \ worker_hosts=(), worker_control=False):\n    parsed = validate_action(action,\
+            \ allowed_hosts, router_hosts,\n                             worker_hosts=worker_hosts,\
+            \ worker_control=worker_control)\n    body = action.get(\"body\")\n  \
+            \  data = None if body is None else body.encode()\n    request = urllib.request.Request(action[\"\
+            url\"], data=data,\n                                    headers=action.get(\"\
+            headers\", {}),\n                                    method=action.get(\"\
+            method\", \"GET\"))\n    start = time.monotonic()\n    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),\
+            \ NoRedirect())\n    try:\n        with opener.open(request, timeout=45)\
+            \ as response:\n            status = response.status\n            instance\
+            \ = response.headers.get('X-Confidential-Gateway')\n            raw =\
+            \ response.read(4 * 1024 * 1024 + 1)\n    except urllib.error.HTTPError\
+            \ as error:\n        status, raw = error.code, error.read(8192)\n    \
+            \    instance = error.headers.get('X-Confidential-Gateway')\n    if len(raw)\
+            \ > 4 * 1024 * 1024:\n        raise ValueError(\"The response exceeds\
+            \ the limit.\")\n    result = {\"name\": action[\"name\"], \"status\"\
+            : status,\n              \"durationSeconds\": round(time.monotonic() -\
+            \ start, 3)}\n    if instance:\n        result['gatewayIdentity'] = instance\n\
+            \    if parsed.path == \"/metrics\":\n        result[\"metrics\"] = raw.decode()\n\
+            \    else:\n        try:\n            document = json.loads(raw)\n   \
+            \     except (ValueError, UnicodeDecodeError):\n            document =\
+            \ {\"code\": \"non_json_response\"}\n        if parsed.path == \"/v1/chat/completions\"\
+            :\n            result[\"validCompletion\"] = isinstance(document.get(\"\
+            choices\"), list) and bool(document[\"choices\"])\n            result[\"\
+            requestId\"] = document.get(\"id\")\n            result['responseModel']\
+            \ = document.get('model')\n        else:\n            # These endpoints\
+            \ return public evidence or safe key-source state.\n            result[\"\
+            response\"] = document\n    return result\n\n\ndef main():\n    namespace\
+            \ = os.environ[\"UPDATE_NAMESPACE\"]\n    secret = os.environ[\"UPDATE_SECRET\"\
+            ]\n    hosts = json.loads(os.environ[\"UPDATE_HOSTS\"])\n    router_hosts\
+            \ = json.loads(os.environ.get('UPDATE_ROUTER_HOSTS', '[]'))\n    worker_hosts\
+            \ = json.loads(os.environ.get('UPDATE_WORKER_HOSTS', '[]'))\n    worker_control\
+            \ = os.environ.get('UPDATE_WORKER_CONTROL', 'false') == 'true'\n    account\
+            \ = \"/var/run/secrets/kubernetes.io/serviceaccount/\"\n    context =\
+            \ ssl.create_default_context(cafile=account + \"ca.crt\")\n    url = f\"\
+            https://kubernetes.default.svc/api/v1/namespaces/{namespace}/secrets/{secret}\"\
+            \n    last = None\n    while True:\n        try:\n            with open(account\
+            \ + \"token\") as stream:\n                token = stream.read().strip()\n\
+            \            request = urllib.request.Request(url, headers={\"Authorization\"\
+            : \"Bearer \" + token})\n            with urllib.request.urlopen(request,\
+            \ context=context, timeout=10) as response:\n                record =\
+            \ json.load(response)\n            packet = json.loads(base64.b64decode(record[\"\
+            data\"][\"task.json\"]))\n            if not isinstance(packet.get(\"\
+            actions\"), list) or not 1 <= len(packet[\"actions\"]) <= 32:\n      \
+            \          raise ValueError(\"The task must have one to 32 actions.\"\
+            )\n            if packet[\"id\"] != last:\n                results = []\n\
+            \                with concurrent.futures.ThreadPoolExecutor(max_workers=8)\
+            \ as pool:\n                    futures = [pool.submit(perform, action,\
+            \ hosts, router_hosts,\n                                          worker_hosts=worker_hosts,\
+            \ worker_control=worker_control)\n                               for action\
+            \ in packet[\"actions\"]]\n                    for action, future in zip(packet[\"\
+            actions\"], futures):\n                        try:\n                \
+            \            results.append(future.result())\n                       \
+            \ except Exception as error:\n                            results.append({\"\
+            name\": action[\"name\"], \"status\": 0,\n                           \
+            \                 \"error\": type(error).__name__,\n                 \
+            \                           \"cause\": type(getattr(error, \"reason\"\
+            , error)).__name__,\n                                            \"errno\"\
+            : getattr(getattr(error, \"reason\", error), \"errno\", None)})\n    \
+            \            print(json.dumps({\"taskId\": packet[\"id\"], \"results\"\
+            : results}), flush=True)\n                last = packet[\"id\"]\n    \
+            \    except Exception as error:\n            print(json.dumps({\"agentError\"\
+            : type(error).__name__}), flush=True)\n        time.sleep(0.5)\n\n\nif\
+            \ __name__ == \"__main__\":\n    main()\n"
         mounts:
           policy: exact
           rules:
@@ -258,8 +188,10 @@ transition:
             PATH: /usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             PYTHON_SHA256: c2c4321961fab0fb999d66e0cecf521c2ab3994c7992873ea99e306c1094fd5a
             PYTHON_VERSION: 3.12.15
-            UPDATE_HOSTS: '["gateway-update-old.confidential-inference.svc.cluster.local", "gateway.confidential-inference.svc.cluster.local"]'
+            UPDATE_HOSTS: '["gateway-update-old.confidential-inference.svc.cluster.local",
+              "gateway.confidential-inference.svc.cluster.local"]'
             UPDATE_NAMESPACE: confidential-inference
-            UPDATE_ROUTER_HOSTS: '["sglang-router.confidential-inference.svc.cluster.local", "${ROUTER_WORKLOAD_ID}.confidential-inference.svc.cluster.local"]'
+            UPDATE_ROUTER_HOSTS: '["sglang-router.confidential-inference.svc.cluster.local",
+              "${ROUTER_WORKLOAD_ID}.confidential-inference.svc.cluster.local"]'
             UPDATE_SECRET: gateway-update-task
         imageKey: rolloutClient

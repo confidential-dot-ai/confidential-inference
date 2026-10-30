@@ -1,13 +1,12 @@
-# SGLang DeepSeek-V4.1 image (draft)
+# SGLang DeepSeek-V4.1 image
 
-This is a draft recipe for the worker image of the chart's prefill/decode
+This is the release recipe for the worker image of the chart's prefill/decode
 layout (`inference.pd`). The same image runs the prefill workers, the decode
 workers and the Engram holder. The router runs from `images/sglang-router`.
 
-It is not a release image: no release build has produced it, and
-`scripts/affected-release-images.py` does not list it. `source.lock` says
-`draft`, and `tests/images/sglang-dsv41` fails if someone registers the image
-before that changes. Do not build it for a candidate.
+The approved release workflow builds this image twice on separate runners,
+compares the digests, then requires the publication build to match. Local
+builds are test evidence only. Candidate GPU tests use the published image.
 
 ## Inputs
 
@@ -61,16 +60,9 @@ now removes or fixes:
   parallel, so either copy can win. Nothing imports it at run time: the
   install deletes it and its `RECORD` line in both packages.
 
-These need a quiet build host before the image can be registered:
-
-1. Build twice from clean builders with the release workflow's flags and
-   compare digests.
-2. Compare `pip list` and `dpkg -l` of the new image with the tested image.
-   The versions of `vcs-versioning` and of the Ubuntu packages were not
-   recorded by the tested build.
-3. Run the worker smoke and benchmark on GPUs with the new image.
-4. Add a build job sized like the `sglang` job (large disk), then register
-   the image in `scripts/affected-release-images.py`.
+The image selector tracks this recipe and its shared model gate and HTTP
+hardening inputs. The release workflow gives each clean worker build its
+own runner and disk cleanup. GPU acceptance remains a deployment gate.
 
 ## Source
 

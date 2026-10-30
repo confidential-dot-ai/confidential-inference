@@ -1,37 +1,24 @@
-# Staging release specification
-#
-# This layer applies on top of release/spec.yaml (release/profiles.json). Each
-# key that it sets replaces the key of the production specification. Set `c8s`
-# here only to move staging ahead of production; the node manifest then
-# belongs in this directory.
-
 publicHostnames:
-  - staging.api.confidential.ai
-
-# Staging mounts a small public model, not the production model. The
-# simulator reads no weight; the worker still checks the encrypted mount
-# against this byte manifest. See the internal plan
-# docs/plans/staging-small-model.md.
+- staging.api.confidential.ai
 model:
   repository: hf-internal-testing/tiny-random-LlamaForCausalLM
   revision: 9fb191250dd56d0ba7ec9785a025ed29c03d5998
   byteManifestSha256: d39aa41f901cb2cb07087157bcdc9c8ec32b6bf1e82c5018df35eff8cad6522e
-
 c8s:
-  release: v0.74.0-beta.2
-  sourceCommit: 4c0f5fd659ea9a1da675174dd63558f283885645
+  release: v0.80.10
+  sourceCommit: cd68ff62791ffc792ecf45583151a278e7291512
   nodeImage:
     reference: ghcr.io/confidential-dot-ai/node-guest-base
-    tag: rke2-tdx-cdi-v0.74.0-beta.2
-    digest: sha256:abc5638cc19d62d32e0f48fec0ca312767eb3569f670d05787adf9c2a28e9582
+    tag: rke2-tdx-cdi-v0.80.10
+    digest: sha256:4b400d258b55c94d292c7768ace29ee7c8d724d79670d1dbce83adf1fef6a500
   coreImages:
-  - ghcr.io/confidential-dot-ai/c8s-operator@sha256:05bb6a32b7ad6009c63f77f46c7379ae70dacfc493f21783a16035429adc8993
-  - ghcr.io/confidential-dot-ai/cds@sha256:48f6faac418dd4c14f2710dcb057451d2b8c3d993c48172b79a8acb22e1f5897
-  - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:603bb235588240b18fa45318b93abf081af0227471faa73749f8ca6f8c664f5f
-  - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:af5d194d3806dd03ebc7a39e29509f218310fa7efaf96ecd7db1a41359f08bf9
-  - ghcr.io/confidential-dot-ai/volumed@sha256:0438ef1caf4324702d3a7789a51ca85e403a72de83e53f88719fc9a8af7a255f
+  - ghcr.io/confidential-dot-ai/c8s-operator@sha256:38e2c52da58dc80e1e7591373b0881672c4412098394147bb44c0619b8552b75
+  - ghcr.io/confidential-dot-ai/cds@sha256:5c7337b189ad7b95b69382ab103d2058d1cf9c30eab07283d59865621e73db2a
+  - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:7d136dc13d675a17ba8f50c25eabdb3c16bad0180910e9be362b2960b777d17e
+  - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:6b30a4cd196b8db217f8787665f2c006dd07b1f22567fa845938f9d8673d3376
+  - ghcr.io/confidential-dot-ai/volumed@sha256:98fc6d348290de3810499b283f35a9137057873f7e3666f5e338d7cd1ebe1a33
   - nginxinc/nginx-unprivileged@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6
   nodeManifestArtifact:
-    tag: rke2-tdx-v0.74.0-beta.2
-    digest: sha256:59a7f7be5351e8162d56bc2cd00423e8aa8100113803c4baa6d1a84d49253c24
-    manifestJson: sha256:a065a6a7d6c6e1994ade97f42b569f47dedd320426b79d4d3f6c415af67dfe8b
+    tag: rke2-tdx-v0.80.10
+    digest: sha256:1eb606af70dd4db9fc9f6c20399dd0e8822714b3f9ce7f66359de0f189b1f389
+    manifestJson: sha256:722aecaf42c8838f4e5a8f7e88f39a1417573a328d6101233762095f9de8b8ec

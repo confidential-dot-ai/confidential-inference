@@ -84,6 +84,13 @@ IMAGES = (
         ),
     ),
     Image(
+        "sglang-dsv41",
+        ".",
+        "images/sglang-dsv41/Dockerfile",
+        "Confidential Inference SGLang DeepSeek-V4.1",
+        ("images/sglang-dsv41/**", "images/sglang/harden_http.py", "images/sglang/wait_for_model.py"),
+    ),
+    Image(
         "sglang-router",
         "images/sglang-router",
         "images/sglang-router/Dockerfile",
@@ -177,13 +184,16 @@ def main() -> int:
         {**image.matrix_entry(), **dict(zip(("revision", "epoch"), input_revision(image, args.head)))}
         for image in selected
     ]
-    standard = [entry for entry in matrix if entry["image"] != "sglang"]
+    large = [entry for entry in matrix if entry["image"] in {"sglang", "sglang-dsv41"}]
+    standard = [entry for entry in matrix if entry not in large]
     print("matrix=" + json.dumps({"include": matrix}, separators=(",", ":")))
     print("standard_matrix=" + json.dumps({"include": standard}, separators=(",", ":")))
     # One job per clean build: the audit builds each standard image twice.
     passes = [{**entry, "pass": number} for entry in standard for number in (1, 2)]
     print("standard_pass_matrix=" + json.dumps({"include": passes}, separators=(",", ":")))
-    print("sglang=" + str(any(image.image == "sglang" for image in selected)).lower())
+    print("sglang=" + str(bool(large)).lower())
+    print("large_matrix=" + json.dumps({"include": large}, separators=(",", ":")))
+    print("large_pass_matrix=" + json.dumps({"include": [{**entry, "pass": number} for entry in large for number in (1, 2)]}, separators=(",", ":")))
     print("names=" + ",".join(image.image for image in selected))
     print("standard_names=" + ",".join(entry["image"] for entry in standard))
     return 0

@@ -2,7 +2,7 @@
   "schema": "confidential.ai/release-allowlist-policy/v2",
   "chart": {
     "release": "confidential-inference",
-    "namespace": "confidential-inference",
+    "namespace": "confidential-inference-staging",
     "kubeVersion": "1.32.0"
   },
   "kubernetes": {
@@ -16,26 +16,28 @@
     {
       "name": "gateway",
       "controller": "Deployment/gateway",
-      "egress": {"port": 443},
+      "egress": {
+        "port": 443
+      },
       "secretReads": [
-        "/confidential-inference/gateway/api-key-pepper"
+        "/confidential-inference/gateway/api-key-pepper",
+        "/confidential-inference/gateway/product-usage"
       ]
     },
     {
-      "name": "kube-state-metrics",
-      "controller": "Deployment/kube-state-metrics"
+      "name": "inference-pd-0",
+      "controller": "StatefulSet/inference-pd"
     },
     {
-      "name": "router-{release}",
+      "name": "telemetry-collector",
+      "controller": "Deployment/telemetry-collector",
+      "egress": {
+        "port": 443
+      }
+    },
+    {
+      "name": "sglang-router",
       "controller": "Deployment/sglang-router"
-    },
-    {
-      "name": "inference-worker-0-u200b5c252a",
-      "controller": "StatefulSet/inference-worker-0"
-    },
-    {
-      "name": "inference-worker-1-u5f71fa321d",
-      "controller": "StatefulSet/inference-worker-1"
     }
   ]
 }
