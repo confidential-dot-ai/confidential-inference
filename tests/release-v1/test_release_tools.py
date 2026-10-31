@@ -809,6 +809,50 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(manifest["images"]["gateway"], RELEASE_IMAGES["gateway"])
         self.assertEqual(manifest["imagePublication"]["images"], {sglang: published_release_images()[sglang]})
 
+    @staticmethod
+    def base_with_values(raw: bytes, *, cached: bytes | None = None,
+                         signed_values: bool = True) -> dict[str, str]:
+        helper = "ghcr.io/confidential-dot-ai/confidential-inference/rollout-client"
+        base = {"source": {"commit": "c" * 40}, "images": {}}
+        if signed_values:
+            base["releaseValues"] = {"sha256": MAN.sha256(raw)}
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            if cached is not None:
+                (directory / "release-values.yaml").write_bytes(cached)
+            with mock.patch.object(MAN, "signed_release", return_value=base), \
+                    mock.patch.object(MAN, "changed_paths", return_value=[]), \
+                    mock.patch.object(MAN, "fetch", return_value=raw) as fetch:
+                result = MAN.base_release_images(publication({}, base_ref="v0.14.1"),
+                                                directory, required_images={helper})
+                if cached is None and signed_values:
+                    fetch.assert_called_once_with(
+                        f"{REPOSITORY}/releases/download/v0.14.1/release-values.yaml")
+                else:
+                    fetch.assert_not_called()
+                return result
+
+    def test_profile_omitted_helper_comes_from_hash_bound_base_values(self):
+        reference = RELEASE_IMAGES["rolloutClient"]
+        raw = json.dumps({"images": {"rolloutClient": reference}}).encode()
+        self.assertEqual(self.base_with_values(raw), dict([reference.split("@", 1)]))
+
+    def test_base_values_hash_is_checked_even_for_a_cached_asset(self):
+        raw = json.dumps({"images": {"rolloutClient": RELEASE_IMAGES["rolloutClient"]}}).encode()
+        with self.assertRaisesRegex(MAN.ManifestError, "values differ from its signed manifest"):
+            self.base_with_values(raw, cached=b"untrusted values")
+
+    def test_base_values_cannot_choose_between_conflicting_helper_digests(self):
+        helper = RELEASE_IMAGES["rolloutClient"].split("@", 1)[0]
+        raw = json.dumps({"images": {"one": helper + "@sha256:" + "1" * 64,
+                                     "two": helper + "@sha256:" + "2" * 64}}).encode()
+        with self.assertRaisesRegex(MAN.ManifestError, "ambiguous component image digests"):
+            self.base_with_values(raw)
+
+    def test_unbound_values_do_not_supply_a_missing_helper(self):
+        raw = json.dumps({"images": {"rolloutClient": RELEASE_IMAGES["rolloutClient"]}}).encode()
+        self.assertEqual(self.base_with_values(raw, signed_values=False), {})
+
     def test_the_base_release_must_match_the_publication(self):
         base = json.loads(build_staging(publication(published_release_images()))["release-bundle.json"])
         base["release"]["name"] = "v0.14.1-staging"
