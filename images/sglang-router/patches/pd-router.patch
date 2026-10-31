@@ -1,5 +1,5 @@
 diff --git a/sgl-model-gateway/src/routers/http/pd_router.rs b/sgl-model-gateway/src/routers/http/pd_router.rs
-index a0a196d..2f9908c 100644
+index a0a196d..8182f99 100644
 --- a/sgl-model-gateway/src/routers/http/pd_router.rs
 +++ b/sgl-model-gateway/src/routers/http/pd_router.rs
 @@ -1,4 +1,4 @@
@@ -26,7 +26,46 @@ index a0a196d..2f9908c 100644
  #[derive(Debug)]
  pub struct PDRouter {
      pub worker_registry: Arc<WorkerRegistry>,
-@@ -575,6 +586,7 @@ impl PDRouter {
+@@ -372,6 +383,23 @@ impl PDRouter {
+         original_request: &T,
+         context: PDRequestContext<'_>,
+     ) -> Response {
++        // Resolve the public model before PD selection and serialization. Both
++        // workers must receive the same backend name, including on retries.
++        let backend_model = match self.worker_registry.resolve_model_route(context.model_id) {
++            Some(models) if models.len() == 1 => Some(models[0].clone()),
++            Some(_) => {
++                return error::bad_request(
++                    "invalid_model_route",
++                    "PD routes require exactly one backend model",
++                )
++            }
++            None => None,
++        };
++        let resolved_model_route = backend_model.is_some();
++        let context = PDRequestContext {
++            model_id: backend_model.as_deref().or(context.model_id),
++            ..context
++        };
+         let start_time = Instant::now();
+ 
+         let route = context.route;
+@@ -423,6 +451,14 @@ impl PDRouter {
+                             Ok(v) => v,
+                             Err(e) => return Self::handle_serialization_error(e),
+                         };
++                        if resolved_model_route && json_request.get("model").is_some() {
++                            json_request["model"] = Value::String(
++                                context
++                                    .model_id
++                                    .expect("resolved backend model")
++                                    .to_string(),
++                            );
++                        }
+                         // ResponsesRequest serializes an absent stream as null, which SRT rejects.
+                         if context.route == "/v1/responses" {
+                             json_request["stream"] = Value::Bool(context.is_stream);
+@@ -575,6 +611,7 @@ impl PDRouter {
                  Some(response_headers),
                  prefill,
                  decode,
@@ -34,7 +73,7 @@ index a0a196d..2f9908c 100644
              )
          } else {
              // Handle non-streaming error response
-@@ -707,27 +719,93 @@ impl PDRouter {
+@@ -707,27 +744,93 @@ impl PDRouter {
          }
          .emit();
  
@@ -138,7 +177,7 @@ index a0a196d..2f9908c 100644
  
          // Decode can't generate without prefill's KV, so any prefill failure
          // (non-2xx / transport error) dooms the paired decode request, which would
-@@ -778,6 +856,18 @@ impl PDRouter {
+@@ -778,6 +881,18 @@ impl PDRouter {
  
          events::RequestReceivedEvent {}.emit();
  
@@ -157,7 +196,7 @@ index a0a196d..2f9908c 100644
          // Process decode response
          match decode_result {
              Ok(res) => {
-@@ -785,48 +875,6 @@ impl PDRouter {
+@@ -785,48 +900,6 @@ impl PDRouter {
                      .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
                  debug!("Decode response status: {}", status);
  
@@ -206,7 +245,7 @@ index a0a196d..2f9908c 100644
                  // Process prefill response
                  let prefill_body = if context.return_logprob {
                      match self
-@@ -874,6 +922,7 @@ impl PDRouter {
+@@ -874,6 +947,7 @@ impl PDRouter {
                          Some(response_headers),
                          prefill,
                          decode,
@@ -214,7 +253,7 @@ index a0a196d..2f9908c 100644
                      )
                  } else {
                      // Non-streaming response
-@@ -908,41 +957,62 @@ impl PDRouter {
+@@ -908,41 +982,62 @@ impl PDRouter {
                      }
                  }
              }
@@ -304,7 +343,7 @@ index a0a196d..2f9908c 100644
      }
  
      fn policies_need_request_text(&self) -> bool {
-@@ -1114,6 +1184,7 @@ impl PDRouter {
+@@ -1114,6 +1209,7 @@ impl PDRouter {
          headers: Option<HeaderMap>,
          prefill: Arc<dyn Worker>,
          decode: Arc<dyn Worker>,
@@ -312,7 +351,7 @@ index a0a196d..2f9908c 100644
      ) -> Response {
          use crate::core::AttachedBody;
  
-@@ -1140,10 +1211,33 @@ impl PDRouter {
+@@ -1140,10 +1236,33 @@ impl PDRouter {
              tracked.mark_errored();
          }
          let decode_for_log = decode.clone();
@@ -346,7 +385,7 @@ index a0a196d..2f9908c 100644
                      chunk_result = tracked.next() => {
                          match chunk_result {
                              Some(Ok(chunk)) => {
-@@ -1171,6 +1265,7 @@ impl PDRouter {
+@@ -1171,6 +1290,7 @@ impl PDRouter {
                                          "Receiver dropped (likely client disconnect), \
                                          cancelling upstream PD stream"
                                      );
@@ -354,7 +393,7 @@ index a0a196d..2f9908c 100644
                                      break;
                                  }
  
-@@ -1193,10 +1288,22 @@ impl PDRouter {
+@@ -1193,10 +1313,22 @@ impl PDRouter {
                              "Client disconnected, cancelling upstream PD stream from {}",
                              decode_for_log.url()
                          );
@@ -377,7 +416,7 @@ index a0a196d..2f9908c 100644
          });
  
          let stream = UnboundedReceiverStream::new(rx);
-@@ -1217,6 +1324,62 @@ impl PDRouter {
+@@ -1217,6 +1349,62 @@ impl PDRouter {
          AttachedBody::wrap_response(response, guards)
      }
  
@@ -440,7 +479,7 @@ index a0a196d..2f9908c 100644
      // Helper to process non-streaming decode response with logprob merging
      async fn process_non_streaming_response(
          &self,
-@@ -2046,6 +2209,7 @@ mod tests {
+@@ -2046,6 +2234,7 @@ mod tests {
                  None,
                  prefill_ref.clone(),
                  decode_ref.clone(),

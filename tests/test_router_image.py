@@ -59,6 +59,15 @@ class Worker(BaseHTTPRequestHandler):
 
 @unittest.skipUnless(os.environ.get('ROUTER_TEST_IMAGE'), 'Set ROUTER_TEST_IMAGE to the built digest.')
 class RouterImageTests(unittest.TestCase):
+    def test_pd_model_aliases_in_published_image(self):
+        from pathlib import Path
+        import sys
+        result = subprocess.run([
+            sys.executable, str(Path(__file__).parent / 'images/sglang-router/smoke_alias.py'),
+            '--image', os.environ['ROUTER_TEST_IMAGE'],
+        ], capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_model_routing_and_stream_drain_in_published_image(self):
         workers = []
         name = 'ci-router-test-' + uuid.uuid4().hex[:12]

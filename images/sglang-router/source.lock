@@ -17,7 +17,7 @@
     },
     {
       "path": "patches/pd-router.patch",
-      "sha256": "ffe36900914b9fd0a7c881ce990b762069fdcb0c2ec97aad5a6037843dc37ba6"
+      "sha256": "f69f0d7910123bf080d46c362b8d019a04c393149c5b17010254cefcc419df0b"
     },
     {
       "path": "patches/http-no-tokenizer.patch",
