@@ -26,8 +26,9 @@ each one from signed evidence:
 - an image that changed after the base release of the image publication: the
   publication evidence of the release-images run, which pushed the audited
   digest;
-- any other image: the signed manifest of that base release. The build
-  verifies its signature and that no build input of the image changed since.
+- any other image: the signed manifest or hash-bound values asset of that
+  base release. The build verifies its signature, each values asset hash,
+  and that no build input of the image changed since.
 
 The publication evidence names its base (source.baseRef). When the base is a
 release tag, the build downloads release-bundle.json and
@@ -665,6 +666,7 @@ def base_release_images(
     publication: dict[str, Any],
     download_dir: Path,
     repo: Path = ROOT,
+    required_images: set[str] | None = None,
 ) -> dict[str, str]:
     """Return the repository image digests of the base release of the publication.
 
@@ -700,6 +702,26 @@ def base_release_images(
             require(name not in images or images[name] == digest,
                     "the base release has ambiguous component image digests")
             images[name] = digest
+    # A normal profile may omit a staging-only helper from its rendered
+    # inventory. Its values asset still pins that image. Trust it only after
+    # checking the asset hash bound by the verified base signature.
+    missing = (required_images or set()) - images.keys() - published
+    if missing and "releaseValues" in base:
+        path = download_dir / "release-values.yaml"
+        if not path.is_file():
+            path.write_bytes(fetch(f"{REPOSITORY}/releases/download/{source['baseRef']}/release-values.yaml"))
+        require(sha256(path.read_bytes()) == base["releaseValues"]["sha256"],
+                "the base release values differ from its signed manifest")
+        values = read_yaml(path)
+        require(isinstance(values, dict) and isinstance(values.get("images"), dict),
+                "the base release values have no image mapping")
+        for reference in values["images"].values():
+            match = OCI.fullmatch(reference) if isinstance(reference, str) else None
+            if match and match.group(1) in missing:
+                name, digest = match.groups()
+                require(name not in images or images[name] == digest,
+                        "the base release values have ambiguous component image digests")
+                images[name] = digest
     return images
 
 
@@ -805,11 +827,14 @@ def build(
     spec = read_spec(profile)
     publication_bytes, publication = read_publication(publication_path)
     verify_image_source_boundary(publication["source"]["commit"], source_commit)
-    with tempfile.TemporaryDirectory(prefix="base-release-") as directory:
-        base = base_release_images(publication, download_dir or Path(directory))
-    policy = read_allowlist_policy(profile.policy, tag)
     values = release_profiles.read_values(profile)
     require(isinstance(values, dict) and bool(values), "the profile values are not a mapping")
+    required_images = {value for value in values.get("images", {}).values()
+                       if isinstance(value, str) and value.startswith(release_profiles.REPOSITORY_IMAGES)}
+    with tempfile.TemporaryDirectory(prefix="base-release-") as directory:
+        base = base_release_images(publication, download_dir or Path(directory),
+                                   required_images=required_images)
+    policy = read_allowlist_policy(profile.policy, tag)
     node = node_measurements(release_profiles.node_manifest(profile), spec)
     overlay = {
         "images": release_images(values, publication, base),
