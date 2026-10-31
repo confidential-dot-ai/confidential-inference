@@ -23,6 +23,7 @@ NEW = "deepseek-ai/DeepSeek-V4.1-Flash"
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--enable-igw", action="store_true")
     args = parser.parse_args()
     received: list[tuple[str, str, str, bool]] = []
 
@@ -99,7 +100,8 @@ def main() -> None:
                         f"http://127.0.0.1:{workers[1].server_port}",
                         "--host", "127.0.0.1", "--port", str(port),
                         "--prometheus-port", str(metrics_port), "--disable-retries",
-                        "--worker-startup-timeout-secs", "30"],
+                        "--worker-startup-timeout-secs", "30",
+                        *(["--enable-igw"] if args.enable_igw else [])],
                        check=True, capture_output=True)
         origin = f"http://127.0.0.1:{port}"
         deadline = time.monotonic() + 60
@@ -114,7 +116,7 @@ def main() -> None:
                 raise AssertionError("PD router did not become ready")
             time.sleep(0.2)
         received.clear()
-        for model in (OLD, NEW):
+        for model in (NEW, OLD):
             for route in ("/v1/chat/completions", "/v1/completions"):
                 for stream in (False, True):
                     body = {"model": model, "max_tokens": 1, "stream": stream}
