@@ -1,7 +1,11 @@
 stagingValidation:
   enabled: false
 runtimeConfig:
-  modelRoutes: null
+  modelRoutes:
+    deepseek-ai/DeepSeek-V4-Flash-0731:
+    - deepseek-ai/DeepSeek-V4.1-Flash
+    deepseek-ai/DeepSeek-V4.1-Flash:
+    - deepseek-ai/DeepSeek-V4.1-Flash
 environment: production
 gateway:
   admin:
@@ -10,6 +14,9 @@ gateway:
   usage:
     enabled: true
     models:
+      deepseek-ai/DeepSeek-V4-Flash-0731:
+        served_model: deepseek-ai/DeepSeek-V4.1-Flash
+        model_revision: 5254448103b6254fc646dacbca1cbbf20e9216c1
       deepseek-ai/DeepSeek-V4.1-Flash:
         served_model: deepseek-ai/DeepSeek-V4.1-Flash
         model_revision: 5254448103b6254fc646dacbca1cbbf20e9216c1
