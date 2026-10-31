@@ -1,5 +1,58 @@
 # Verify Confidential Inference
 
+## v0.16.2 verification profile
+
+This profile verifies `https://candidate.api.confidential.ai/` with release
+`v0.16.2`, C8s `v0.80.10`, and TEErminator `v0.0.4`. The operator key identifies
+this deployment. The signed release bundle identifies its software. Use this
+profile for `api.confidential.ai` only when that endpoint serves this same
+release and operator key.
+
+Install TEErminator as shown below. Use [Cosign v3](https://github.com/sigstore/cosign)
+for the signature check. Download and verify the release pins:
+
+```sh
+curl -fsSL --remote-name-all https://github.com/confidential-dot-ai/confidential-inference/releases/download/v0.16.2/{release-bundle.json,release-bundle.sigstore.json,allowlist.json}
+cosign verify-blob --bundle release-bundle.sigstore.json \
+  --certificate-identity https://github.com/confidential-dot-ai/confidential-inference/.github/workflows/release-bundle.yml@refs/tags/v0.16.2 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com release-bundle.json
+curl -fsSL -o operator-key-b200.pem https://raw.githubusercontent.com/confidential-dot-ai/confidential-inference/main/docs/operator-keys/cea9208dbb615c4e.pem
+openssl pkey -pubin -in operator-key-b200.pem -outform DER | sha256sum
+sha256sum allowlist.json
+```
+
+Require `Verified OK` from Cosign. The operator key's SPKI SHA-256 must be
+`cea9208dbb615c4ea6f136572a3bc80087d9fb597bfa683ee97c88bd249ceb02`.
+Review the signed release and policy before connecting. The allowlist SHA-256
+must be
+`65306c56f036fdb98ec6d32610dc5ff820891baebf908b3dd3315899d703058b`.
+
+Configure the image, operator, and Intel status pins. Then fetch and pin the
+live allowlist:
+
+```sh
+./teerminator remote add 127.0.0.1:8080 https://candidate.api.confidential.ai/ \
+  --mode attest-lb --image-manifest release-bundle.json \
+  --workload c8s-router-7210bdeb078b \
+  --route-operator-key operator-key-b200.pem \
+  --expected-rtmr3 256e9368dbd9aff2e28044988a756d4554c1ec5880fa4ea829cd5bc854f62842b61ab7c25c55327d048fa5c9e1666ba8 \
+  --tdx-tcb-status UpToDate
+./teerminator allowlist fetch 127.0.0.1:8080 --output allowlist-live.json --pin
+cmp allowlist.json allowlist-live.json
+./teerminator status
+```
+
+The RTMR3 value pins the operator-key seed for this deployment. Stop if `cmp`
+reports a difference. Require `Verified`, `tdx tcb status UpToDate`, and an
+`operator-signed` route. The status command can exit with 0 after a failed
+check, so read its output. Only then start the proxy and send requests as in
+step 4 below.
+
+## v0.15.15 example
+
+The following example retains the release and operator key used for
+`v0.15.15`. Select the profile that matches the endpoint you intend to trust.
+
 ## What verification proves
 
 TEErminator checks the server before your request leaves your machine. It
