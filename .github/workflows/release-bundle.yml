@@ -280,6 +280,8 @@ jobs:
   publish-release:
     name: publish
     needs: sign-release-bundle
+    # A tag push skips the images ancestor. Publish when signing succeeded.
+    if: ${{ !cancelled() && needs.sign-release-bundle.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
