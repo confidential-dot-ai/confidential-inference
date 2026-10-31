@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import tempfile
 import threading
@@ -22,7 +23,9 @@ NEW = "deepseek-ai/DeepSeek-V4.1-Flash"
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--image", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--image")
+    source.add_argument("--binary", help="Local test binary; never used for deployment")
     parser.add_argument("--enable-igw", action="store_true")
     args = parser.parse_args()
     received: list[tuple[str, str, str, bool]] = []
@@ -92,17 +95,24 @@ def main() -> None:
         metrics_port = reservation.getsockname()[1]
     routes = json.dumps({"schemaVersion": 1, "routes": {OLD: [NEW], NEW: [NEW]}})
     name = f"ci-pd-alias-smoke-{port}"
+    process = None
+    log_file = tempfile.NamedTemporaryFile(prefix="ci-pd-alias-", suffix=".log", delete=False)
     try:
-        subprocess.run(["docker", "run", "--detach", "--name", name, "--network", "host",
-                        "--env", "CI_ROUTER_MODEL_ROUTES=" + routes, args.image,
-                        "--pd-disaggregation", "--prefill",
+        launch = ["--pd-disaggregation", "--prefill",
                         f"http://127.0.0.1:{workers[0].server_port}", "8998", "--decode",
                         f"http://127.0.0.1:{workers[1].server_port}",
                         "--host", "127.0.0.1", "--port", str(port),
                         "--prometheus-port", str(metrics_port), "--disable-retries",
                         "--worker-startup-timeout-secs", "30",
-                        *(["--enable-igw"] if args.enable_igw else [])],
-                       check=True, capture_output=True)
+                        *(["--enable-igw"] if args.enable_igw else [])]
+        if args.binary:
+            process = subprocess.Popen([args.binary, *launch],
+                                       env={**os.environ, "CI_ROUTER_MODEL_ROUTES": routes},
+                                       stdout=log_file, stderr=subprocess.STDOUT)
+        else:
+            subprocess.run(["docker", "run", "--detach", "--name", name, "--network", "host",
+                            "--env", "CI_ROUTER_MODEL_ROUTES=" + routes, args.image, *launch],
+                           check=True, capture_output=True)
         origin = f"http://127.0.0.1:{port}"
         deadline = time.monotonic() + 60
         while True:
@@ -139,11 +149,19 @@ def main() -> None:
                     assert all(row[2] == NEW for row in sent), sent
         print("PASS: both model names, chat/text, streaming/nonstream; both PD workers receive V4.1")
     finally:
-        logs = subprocess.run(["docker", "logs", name], capture_output=True, text=True)
-        with tempfile.NamedTemporaryFile(prefix="ci-pd-alias-", suffix=".log", delete=False) as log:
-            log.write((logs.stdout + logs.stderr).encode())
-            print("Router log:", log.name)
-        subprocess.run(["docker", "rm", "--force", name], capture_output=True)
+        if process is not None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        elif args.image:
+            logs = subprocess.run(["docker", "logs", name], capture_output=True, text=True)
+            log_file.write((logs.stdout + logs.stderr).encode())
+            subprocess.run(["docker", "rm", "--force", name], capture_output=True)
+        log_file.close()
+        print("Router log:", log_file.name)
         for server in workers:
             server.shutdown()
 
