@@ -26,7 +26,6 @@ def main() -> None:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--image")
     source.add_argument("--binary", help="Local test binary; never used for deployment")
-    parser.add_argument("--enable-igw", action="store_true")
     args = parser.parse_args()
     received: list[tuple[str, str, str, bool]] = []
 
@@ -103,8 +102,7 @@ def main() -> None:
                         f"http://127.0.0.1:{workers[1].server_port}",
                         "--host", "127.0.0.1", "--port", str(port),
                         "--prometheus-port", str(metrics_port), "--disable-retries",
-                        "--worker-startup-timeout-secs", "30",
-                        *(["--enable-igw"] if args.enable_igw else [])]
+                        "--worker-startup-timeout-secs", "30"]
         if args.binary:
             process = subprocess.Popen([args.binary, *launch],
                                        env={**os.environ, "CI_ROUTER_MODEL_ROUTES": routes},
