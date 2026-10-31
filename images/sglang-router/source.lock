@@ -27,5 +27,5 @@
   "deploymentImage": {
     "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang-router"
   },
-  "cargoLockSha256": "2a8bf58b2be1babdb06145ece924ae0c62919ecc3ee9a9a3ee3a9c6a12d6a5b6"
+  "cargoLockSha256": "5615b8acf44ff01924f2548d8b84cc763040bed8449031ebbac7b0e5b1a02ea3"
 }

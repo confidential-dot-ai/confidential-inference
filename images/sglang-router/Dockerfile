@@ -38,7 +38,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --manifest-path sgl-model-gateway/bindings/python/Cargo.toml --out /out \
     && python3 /inputs/canonicalize_wheel.py /out/*.whl
 
-FROM docker.io/library/python@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+FROM docker.io/library/python@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337
 ARG SOURCE_REVISION
 ARG SOURCE_DATE_EPOCH
 LABEL org.opencontainers.image.title="Confidential Inference SGLang Router"
@@ -47,14 +47,14 @@ LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 LABEL org.opencontainers.image.version="sha-${SOURCE_REVISION}"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.base.name="docker.io/library/python"
-LABEL org.opencontainers.image.base.digest="sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258"
+LABEL org.opencontainers.image.base.digest="sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337"
 LABEL ai.confidential.upstream.source="https://github.com/sgl-project/sglang"
 LABEL ai.confidential.upstream.revision="a7fd2e1158c389c33077bae67fb797efa8dd09bd"
 LABEL ai.confidential.sglang-router.worker-withdrawal-patch.sha256="c19733adbf8ec8c25bb58a517bfa35cb5f93d7c1a4b5a8b439e50104a9d6b3fa"
 LABEL ai.confidential.sglang-router.admission-caps-patch.sha256="eb542bb49728c7f926253da0a21ac521567382cf00cfc47c93e0022f337ad021"
 LABEL ai.confidential.sglang-router.pd-router-patch.sha256="f69f0d7910123bf080d46c362b8d019a04c393149c5b17010254cefcc419df0b"
 LABEL ai.confidential.sglang-router.http-no-tokenizer-patch.sha256="85e982bf2bf2e21da3c27615819c3880f3a30da08495893de27ffbe9c30ba1c4"
-LABEL ai.confidential.sglang-router.cargo-lock.sha256="2a8bf58b2be1babdb06145ece924ae0c62919ecc3ee9a9a3ee3a9c6a12d6a5b6"
+LABEL ai.confidential.sglang-router.cargo-lock.sha256="5615b8acf44ff01924f2548d8b84cc763040bed8449031ebbac7b0e5b1a02ea3"
 COPY requirements.lock /router-requirements.lock
 RUN python3 -m pip install --no-cache-dir --require-hashes -r /router-requirements.lock
 LABEL ai.confidential.build.source-date-epoch="${SOURCE_DATE_EPOCH}"
