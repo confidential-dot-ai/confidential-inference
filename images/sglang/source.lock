@@ -24,7 +24,7 @@
     "indexDigest": "sha256:440fd6477af86a2f1b38080c539f1672cd22acb1b1a47e321dba5158ab08864d",
     "digest": "sha256:265d074d08ed8080bc578087ca68a8e94611f9c7be671d40e18b3d3b1ad0dad4"
   },
-  "ubuntuSnapshot": "20261020T000000Z",
+  "ubuntuSnapshot": "20261021T000000Z",
   "aptPackages": [
     "python3.12",
     "python3.12-dev",
@@ -51,7 +51,7 @@
   ],
   "python": {
     "version": "3.12",
-    "requirementsLockSha256": "ecf62490ebac298d5ead834137166fe521ff4c4f8efefe73b30a89f599a626ac"
+    "requirementsLockSha256": "83e1fd25ca604fd84a9256fef8bbeff7f4ff7651bd42f01a0783bb1c520b1ad9"
   },
   "router": {
     "note": "The router runs from images/sglang-router, not from this image."

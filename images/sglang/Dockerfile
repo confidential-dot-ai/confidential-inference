@@ -21,7 +21,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # for intra-node NVLink; FFmpeg keeps torchcodec's import quiet; the OpenSSL
 # headers serve the HiCache hash extension's JIT build; git serves the
 # source stage.
-RUN printf 'deb https://snapshot.ubuntu.com/ubuntu/20261020T000000Z %s main universe\n' \
+RUN printf 'deb https://snapshot.ubuntu.com/ubuntu/20261021T000000Z %s main universe\n' \
         noble noble-updates noble-security > /tmp/snapshot.list \
     && apt-get -o Dir::Etc::SourceList=/tmp/snapshot.list -o Dir::Etc::SourceParts=/dev/null \
         -o Acquire::Check-Valid-Until=false update \
@@ -82,8 +82,8 @@ LABEL ai.confidential.sglang.source="https://github.com/confidential-dot-ai/Sgla
 LABEL ai.confidential.sglang.revision="c2425f9b0a274a9f5c3bf91c7af363e94bdbf548"
 LABEL ai.confidential.upstream.source="https://github.com/sgl-project/sglang"
 LABEL ai.confidential.upstream.revision="a7fd2e1158c389c33077bae67fb797efa8dd09bd"
-LABEL ai.confidential.ubuntu.snapshot="20261020T000000Z"
-LABEL ai.confidential.python.requirements.sha256="ecf62490ebac298d5ead834137166fe521ff4c4f8efefe73b30a89f599a626ac"
+LABEL ai.confidential.ubuntu.snapshot="20261021T000000Z"
+LABEL ai.confidential.python.requirements.sha256="83e1fd25ca604fd84a9256fef8bbeff7f4ff7651bd42f01a0783bb1c520b1ad9"
 LABEL ai.confidential.sglang.simulator.revision="5e6af31ae3fe8d95f83bab8c78e4db834142b313"
 LABEL ai.confidential.sglang.simulator.patch.sha256="7b9116115b440bcfd6b06ff00e410bc779cabe2e2a86ee75d3d8851a4dbe302e"
 LABEL ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256="9c654801f916b9d57eb3981dacdde5a3624d5b29e4d352c20822a64ae51f9306"
