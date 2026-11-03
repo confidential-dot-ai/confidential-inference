@@ -31,13 +31,12 @@ class ContractTests(unittest.TestCase):
     def setUpClass(cls):
         cls.release_schema = load(ROOT / "api/release-bundle.schema.json")
         cls.release = load(FIXTURES / "release-bundle.valid.json")
-        cls.production_release = load(ROOT / "releases/production/release-bundle.json")
         cls.source_lock = load(ROOT / "images/sglang/source.lock")
 
         jsonschema.Draft202012Validator.check_schema(cls.release_schema)
 
     def test_valid_release_bundle(self):
-        release = self.production_release
+        release = self.release
         validate(release, self.release_schema)
 
         names = [workload["name"] for workload in release["workloads"]]

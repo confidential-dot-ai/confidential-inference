@@ -85,14 +85,13 @@ allowlist is the exact policy that the client reviews and pins. In an operator
 managed deployment, that policy can differ from the signed initial policy.
 
 The C8s operator key holds CDS update authority. The release-signing policy is
-a separate Sigstore policy under `releases/trust/`; it is not the C8s operator
+a separate Sigstore policy under `release/trust/`; it is not the C8s operator
 key.
 
 Use [release/README.md](release/README.md) for source and publication
-evidence. The files under `releases/production/` preserve historical inputs;
-they are not the active production trust files. Earlier C8s deployment inputs
-are available in Git history. Read the
-[notice beside the old PEM files](releases/production/trust/README.md).
+evidence. Release signing rules and the Sigstore trusted root are under
+`release/trust/`. Historical release snapshots and C8s deployment inputs
+are available in Git history. Published assets remain on GitHub Releases.
 
 ## Configuration ownership
 

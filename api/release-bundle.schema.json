@@ -21,7 +21,7 @@
       "additionalProperties": false,
       "required": ["policyPath", "policySha256", "signatureType"],
       "properties": {
-        "policyPath": {"const": "releases/trust/release-signing-policy.json"},
+        "policyPath": {"enum": ["release/trust/release-signing-policy.json", "releases/trust/release-signing-policy.json"]},
         "policySha256": {"$ref": "#/$defs/sha256Digest"},
         "signatureType": {"const": "sigstore-keyless"}
       }

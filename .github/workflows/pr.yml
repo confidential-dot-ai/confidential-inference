@@ -45,7 +45,7 @@ jobs:
               scripts/*.py|images/*/*.py) python=true ;;
               helm/confidential-inference/*) helm_app=true ;;
               helm/maintenance-gateway/*) helm_maintenance=true ;;
-              api/*.json|releases/*.json|images/*/source.lock)
+              api/*.json|release/*.json|images/*/source.lock)
                 config=true
                 ;;
               .github/workflows/pr.yml)
@@ -120,7 +120,7 @@ jobs:
               *.json|*/source.lock) python3 -m json.tool "$path" >/dev/null ;;
             esac
           done < <(git diff --name-only -z "$BASE_SHA" "$GITHUB_SHA" -- \
-            'api/**' 'releases/**' 'images/*/source.lock')
+            'api/**' 'release/**' 'images/*/source.lock')
 
   # Every test suite, on every pull request: together they take about a minute.
   tests:
@@ -151,7 +151,6 @@ jobs:
           for suite in api image-workflow images/gateway images/sglang images/sglang-router network-v0 release-v1; do
             run python3 -m unittest discover -s "tests/$suite" -p 'test_*.py'
           done
-          run python3 -m unittest discover -s tests/release-v0 -p test_release_signature.py
           exit "$failed"
 
       - name: test chart
