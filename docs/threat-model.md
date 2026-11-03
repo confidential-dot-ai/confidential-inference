@@ -1,7 +1,7 @@
 # Threat model
 
 This document describes the current client-verification contract. For exact commands, read [verification.md](verification.md).
-Historical files under `releases/production/`, `c8s/`, and the old node profile
+Historical files under `releases/production/` and the old node profile
 do not describe the current serving cluster.
 
 ## Request path and trust boundary

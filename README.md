@@ -89,8 +89,9 @@ a separate Sigstore policy under `releases/trust/`; it is not the C8s operator
 key.
 
 Use [release/README.md](release/README.md) for source and publication
-evidence. The files under `releases/production/` and `c8s/` preserve
-historical inputs; they are not the active production trust files. Read the
+evidence. The files under `releases/production/` preserve historical inputs;
+they are not the active production trust files. Earlier C8s deployment inputs
+are available in Git history. Read the
 [notice beside the old PEM files](releases/production/trust/README.md).
 
 ## Configuration ownership
