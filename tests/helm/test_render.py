@@ -628,14 +628,15 @@ def main() -> None:
     assert "inference" in result.stderr
     assert "mode" in result.stderr
 
-    # Each release profile must state its own mode, since
+    # Each committed environment values file must state its own mode, since
     # the chart will not choose one for it.
     production_values = yaml.safe_load(
-        (ROOT / "release/values.yaml").read_text()
+        (ROOT / "c8s/production-values.yaml").read_text()
     )
     assert production_values["inference"]["mode"] == "model"
+    assert production_values["inference"]["reasoningParser"] == "deepseek-v4"
     staging_values = yaml.safe_load(
-        (ROOT / "release/staging/values.yaml").read_text()
+        (ROOT / "c8s/staging-values.yaml").read_text()
     )
     assert staging_values["inference"]["mode"] == "simulator"
 

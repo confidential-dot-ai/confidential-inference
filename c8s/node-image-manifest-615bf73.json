@@ -1,0 +1,48 @@
+{
+  "version": 3,
+  "build": {
+    "timestamp": "2026-08-23T07:28:22Z",
+    "memory": "16G",
+    "format": "raw",
+    "platform": "tdx"
+  },
+  "inputs": {
+    "kernel": {
+      "linux_version": "6.16.12",
+      "vmlinuz_sha256": "b1db0a1f55b0a3d3607e36710ab9ecfb99a25559240e878bca0de588698a7058",
+      "required_config_sha256": "ea97d2774893e2d33674db7bab601a2e029402ee3058b1f414fe14ace19618f2",
+      "hardening_config_sha256": "6d11310996c8d7805ca9ed95d790e86e9ec0932ec8a555107434373de34bc66b",
+      "kernel_extra_config_sha256": "39e6e85c1fd6ca832eb173eb927a030f25d5d3242fcfd7c662fc4830b6931fe0",
+      "snapshot_config_sha256": "5012ad31aa023b2125a223308fde4d204930daf0932a1132e08589e14df04f9c",
+      "module_signing_cert_sha256": "7c9f63b0206dc794e5be126b86ce50c68cd33d1c22ecd5979984614c476a986e",
+      "randstruct_seed_sha256": "7d6b81e63586f80ea22920623630caee43ec2eeab3113be606ab75da779ce317"
+    },
+    "initrd": {
+      "path": "combined-initrd.img",
+      "sha256": "5d25095fbb9574d181f6e3f9d9d34ee73f7020c7981f19a670934a3c748b26d9"
+    },
+    "base_image": {
+      "path": "image.raw",
+      "sha256": "0465405c32a93753663703372c48a1d598a0605f54f040e0bea63f1e5387354a"
+    }
+  },
+  "outputs": {
+    "disk_image": {
+      "path": "disk.raw",
+      "sha256": "0465405c32a93753663703372c48a1d598a0605f54f040e0bea63f1e5387354a"
+    },
+    "uki": {
+      "path": "uki.efi",
+      "sha256": "411e517553b80f49f500638981f3d3a5168192442495aa1e469fef2310a3ecaa"
+    }
+  },
+  "tdx": {
+    "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
+    "rtmr1": "7c1e546fb176eca5bba4a1de49a2f42d41ca95521c1f3427067e41fbe1828e20f686a0881186dab06de2bc78b30589ca",
+    "rtmr2": "5bb3131f7ed356536f2c63f37ae7bde3ab53abb872469be1451cbea1ecc49017a420d8f8b185063286942754b53671a7",
+    "firmware": {
+      "path": "OVMF.tdx.fd",
+      "sha256": "a7edaeff6fc4bef8924461cb0fb68a194c3595d08ccad2720cca926dea12f7cf"
+    }
+  }
+}
