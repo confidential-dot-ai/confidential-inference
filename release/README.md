@@ -1,8 +1,8 @@
 # Release
 
-This directory is the one source of truth for the next production release. It
-replaces the per-target files in `releases/` and `c8s/`. Those files stay
-until the release tools no longer read them.
+This directory is the one source of truth for the next production release.
+Historical bundles remain under `releases/`. Current releases use the inputs
+in this directory.
 
 The release contains no target, placement, operator key, or mesh CA. The
 private deployment repository holds the targets.
