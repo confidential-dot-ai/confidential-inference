@@ -17,14 +17,17 @@ FROM docker.io/nvidia/cuda@sha256:7d56ebe2b7cd864a60dca3c8b2d0a39f8fc110417e8253
 ENV DEBIAN_FRONTEND=noninteractive
 # Ubuntu packages come from one snapshot.ubuntu.com timestamp (source.lock
 # ubuntuSnapshot), never the moving archive. The base image's NVIDIA apt
-# source is not read. Mooncake links ibverbs/mlx5, libnl, numa and curl even
+# source is not read. The upgrade brings the CUDA base image's own packages
+# to the snapshot's security fixes. Mooncake links ibverbs/mlx5, libnl, numa and curl even
 # for intra-node NVLink; FFmpeg keeps torchcodec's import quiet; the OpenSSL
 # headers serve the HiCache hash extension's JIT build; git serves the
 # source stage.
-RUN printf 'deb https://snapshot.ubuntu.com/ubuntu/20261021T000000Z %s main universe\n' \
+RUN printf 'deb https://snapshot.ubuntu.com/ubuntu/20261104T000000Z %s main universe\n' \
         noble noble-updates noble-security > /tmp/snapshot.list \
     && apt-get -o Dir::Etc::SourceList=/tmp/snapshot.list -o Dir::Etc::SourceParts=/dev/null \
         -o Acquire::Check-Valid-Until=false update \
+    && apt-get -o Dir::Etc::SourceList=/tmp/snapshot.list -o Dir::Etc::SourceParts=/dev/null \
+        upgrade -y --no-install-recommends \
     && apt-get -o Dir::Etc::SourceList=/tmp/snapshot.list -o Dir::Etc::SourceParts=/dev/null \
         install -y --no-install-recommends \
         python3.12 python3.12-dev python3.12-venv \
@@ -83,7 +86,7 @@ LABEL ai.confidential.sglang.source="https://github.com/confidential-dot-ai/Sgla
 LABEL ai.confidential.sglang.revision="2f51fbb3ba2778765962758db6f9fb0e72b85c36"
 LABEL ai.confidential.upstream.source="https://github.com/sgl-project/sglang"
 LABEL ai.confidential.upstream.revision="a7fd2e1158c389c33077bae67fb797efa8dd09bd"
-LABEL ai.confidential.ubuntu.snapshot="20261021T000000Z"
+LABEL ai.confidential.ubuntu.snapshot="20261104T000000Z"
 LABEL ai.confidential.python.requirements.sha256="83e1fd25ca604fd84a9256fef8bbeff7f4ff7651bd42f01a0783bb1c520b1ad9"
 LABEL ai.confidential.sglang.simulator.revision="5e6af31ae3fe8d95f83bab8c78e4db834142b313"
 LABEL ai.confidential.sglang.simulator.patch.sha256="7b9116115b440bcfd6b06ff00e410bc779cabe2e2a86ee75d3d8851a4dbe302e"
