@@ -71,13 +71,16 @@ pub struct TracingAuditSink;
 
 impl AuditSink for TracingAuditSink {
     fn record(&self, event: AuditEvent) {
-        tracing::info!(
-            request_id = %event.request_id,
-            route = event.route,
-            status = event.status,
-            key_id = ?event.key_id,
-            "gateway request completed"
-        );
+        // The collector clears log attributes. Put only the reviewed audit
+        // fields in the body so the safe correlation metadata reaches it.
+        let record = json!({
+            "event": "gateway_request_completed",
+            "request_id": event.request_id,
+            "route": event.route,
+            "status": event.status,
+            "key_id": event.key_id,
+        });
+        tracing::info!("{record}");
     }
 }
 

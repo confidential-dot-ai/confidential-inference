@@ -38,6 +38,15 @@ impl AuditSink for Audit {
     fn record(&self, _: AuditEvent) {}
 }
 
+#[derive(Default)]
+struct CapturedAudit(Mutex<Vec<AuditEvent>>);
+
+impl AuditSink for CapturedAudit {
+    fn record(&self, event: AuditEvent) {
+        self.0.lock().unwrap_or_else(|_| unreachable!()).push(event);
+    }
+}
+
 async fn spawn_upstream() -> (SocketAddr, oneshot::Sender<()>) {
     async fn completion(Json(value): Json<Value>) -> Json<Value> {
         Json(json!({
@@ -185,13 +194,6 @@ fn app(address: SocketAddr) -> Router {
 
 #[tokio::test]
 async fn caller_ids_cannot_enter_audit_records_or_upstream_headers() {
-    #[derive(Default)]
-    struct SavedAudit(Mutex<Vec<AuditEvent>>);
-    impl AuditSink for SavedAudit {
-        fn record(&self, event: AuditEvent) {
-            self.0.lock().unwrap_or_else(|_| unreachable!()).push(event);
-        }
-    }
     let observed = Arc::new(Mutex::new(Vec::<String>::new()));
     let captured = Arc::clone(&observed);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -219,15 +221,22 @@ async fn caller_ids_cannot_enter_audit_records_or_upstream_headers() {
         )
         .await;
     });
-    let audit = Arc::new(SavedAudit::default());
+    let audit = Arc::new(CapturedAudit::default());
     let gateway = app_with_audit(address, no_redirect_client(), audit.clone());
     let private = "PRIVATE_PROMPT_RESPONSE_CREDENTIAL_IN_CLIENT_ID";
     let mut public_ids = Vec::new();
-    for route in ["/v1/models", "/v1/chat/completions", "/v1/chat/completions"] {
+    for (route, caller_id) in [
+        ("/v1/models", private),
+        ("/v1/chat/completions", private),
+        (
+            "/v1/chat/completions",
+            "c0ffee00-cafe-4000-8000-deadbeef0001",
+        ),
+    ] {
         let mut request = Request::builder()
             .uri(route)
-            .header("x-request-id", private)
-            .header("x-ci-request-id", private)
+            .header("x-request-id", caller_id)
+            .header("x-ci-request-id", caller_id)
             .header(header::ORIGIN, "https://example.test");
         let body = if route == "/v1/models" {
             Body::empty()
@@ -244,7 +253,8 @@ async fn caller_ids_cannot_enter_audit_records_or_upstream_headers() {
             .await
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers()["x-request-id"], private);
+        assert_eq!(response.headers()["x-request-id"], caller_id);
+        assert_ne!(response.headers()["x-ci-request-id"], caller_id);
         public_ids.push(
             response.headers()["x-ci-request-id"]
                 .to_str()
@@ -267,11 +277,9 @@ async fn caller_ids_cannot_enter_audit_records_or_upstream_headers() {
             .map(|event| event.request_id.clone())
             .collect::<Vec<_>>()
     );
-    assert!(
-        !serde_json::to_string(&*events)
-            .unwrap_or_default()
-            .contains(private)
-    );
+    let serialized = serde_json::to_string(&*events).unwrap_or_default();
+    assert!(!serialized.contains(private));
+    assert!(!serialized.contains("c0ffee00-cafe-4000-8000-deadbeef0001"));
     assert!(
         events
             .iter()
