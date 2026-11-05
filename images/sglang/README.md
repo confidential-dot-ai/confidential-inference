@@ -230,3 +230,9 @@ NCCL entries first. It reports successful sends and rejected entries. These
 bounds also mean that an overloaded or damaged logging path can lose context.
 Scheduler token counts use only the lengths of native token arrays; token
 values never enter the record.
+
+Both image recipes remove group and world write permissions from installed
+SGLang source. The image build then checks that the stack catalog includes
+the scheduler, Engram staging, GPU communicator, and NCCL code locations.
+Missing critical locations fail the build. This keeps the code-location safety
+filter strict and checks that it retains useful application frames.

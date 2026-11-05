@@ -108,6 +108,7 @@ RUN --mount=type=bind,source=images/sglang/harden_http.py,target=/run-src/harden
     SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 SGLANG_BUILD_RUST_EXTS=none \
         uv pip install --no-deps --no-build-isolation -e /opt/sglang/python \
     && python /run-src/harden-http.py --root /opt/sglang/python/sglang --variant pd \
+    && chmod -R go-w /opt/sglang/python \
     && dist=/opt/dsv41/lib/python3.12/site-packages/sglang-0.0.0.dev0.dist-info \
     && rm "$dist/uv_cache.json" \
     && sed -i '/^sglang-0\.0\.0\.dev0\.dist-info\/uv_cache\.json,/d' "$dist/RECORD" \
@@ -115,6 +116,7 @@ RUN --mount=type=bind,source=images/sglang/harden_http.py,target=/run-src/harden
     && install -D -m 0555 /run-src/sglang-pair /usr/local/bin/sglang-pair \
     && install -D -m 0444 /run-src/pair_diagnostics.py /usr/local/bin/pair_diagnostics.py \
     && install -D -m 0444 /run-src/private_log_sink.py /usr/local/bin/private_log_sink.py \
+    && python -I -B /usr/local/bin/pair_diagnostics.py \
     && python -I -B -c 'import importlib.util as u; assert u.find_spec("sglang") and u.find_spec("mooncake")'
 # CPU staging uses the same image. Its simulator is outside the production
 # import path and is enabled only by the staging PYTHONPATH.

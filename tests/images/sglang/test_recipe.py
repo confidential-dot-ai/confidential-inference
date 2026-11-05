@@ -159,6 +159,13 @@ class RecipeTests(unittest.TestCase):
         ignore = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
         self.assertIn("!images/sglang/wait_for_model.py", ignore)
 
+    def test_both_images_check_critical_diagnostic_code_locations(self) -> None:
+        for filename in ('Dockerfile','Dockerfile.gpu-test'):
+            recipe=(RECIPE/filename).read_text()
+            self.assertIn('chmod -R go-w /opt/sglang/python',recipe)
+            self.assertIn('python -I -B /usr/local/bin/pair_diagnostics.py',recipe)
+            self.assertLess(recipe.index('chmod -R go-w'),recipe.index('python -I -B /usr/local/bin/pair_diagnostics.py'))
+
     def test_build_removes_non_serving_http_routes(self) -> None:
         self.assertIn("source=images/sglang/harden_http.py,target=/run-src/harden-http.py", DOCKERFILE)
         self.assertIn("python /run-src/harden-http.py --root /opt/sglang/python/sglang --variant pd", DOCKERFILE)

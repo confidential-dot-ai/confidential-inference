@@ -241,3 +241,20 @@ class StackSnapshots:
                     connection.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
+
+
+def verify_catalog():
+    """Fail the image build if critical public code cannot enter a snapshot."""
+    required = {
+        'sglang/srt/managers/scheduler.py',
+        'sglang/srt/layers/engram_staging.py',
+        'sglang/srt/distributed/parallel_state.py',
+        'sglang/srt/distributed/device_communicators/pynccl_wrapper.py',
+        'torch/distributed/distributed_c10d.py',
+    }
+    if not required <= set(code_catalog().values()):
+        raise RuntimeError('required diagnostic code locations are missing')
+
+
+if __name__ == '__main__':
+    verify_catalog()

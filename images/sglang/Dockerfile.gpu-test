@@ -15,6 +15,8 @@ COPY images/sglang/pair_diagnostics.py /usr/local/bin/pair_diagnostics.py
 COPY images/sglang-router/private_log_sink.py /usr/local/bin/private_log_sink.py
 COPY images/sglang/harden_http.py /tmp/harden-http.py
 RUN python /tmp/harden-http.py --root /opt/sglang/python/sglang --variant pd \
+    && chmod -R go-w /opt/sglang/python \
+    && python -I -B /usr/local/bin/pair_diagnostics.py \
     && chmod 0555 /usr/local/bin/sglang-pair \
     && rm /tmp/harden-http.py
 USER 1001:1001
