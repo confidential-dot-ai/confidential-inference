@@ -1,0 +1,247 @@
+diff --git a/sgl-model-gateway/src/routers/http/pd_router.rs b/sgl-model-gateway/src/routers/http/pd_router.rs
+--- a/sgl-model-gateway/src/routers/http/pd_router.rs
++++ b/sgl-model-gateway/src/routers/http/pd_router.rs
+@@ -1,12 +1,19 @@
+-use std::{borrow::Cow, future::Future, pin::Pin, sync::Arc, time::Instant};
++use std::{
++    borrow::Cow,
++    collections::HashMap,
++    future::Future,
++    pin::Pin,
++    sync::{Arc, OnceLock},
++    time::Instant,
++};
+ 
+ use async_trait::async_trait;
+ use axum::{
+     body::Body,
+     extract::Request,
+     http::{
+-        header::{CONTENT_LENGTH, CONTENT_TYPE},
+         HeaderMap, HeaderValue, StatusCode,
++        header::{CONTENT_LENGTH, CONTENT_TYPE},
+     },
+     response::{IntoResponse, Response},
+ };
+@@ -14,7 +21,7 @@
+ use memchr::memmem;
+ use reqwest::Client;
+ use serde::Serialize;
+-use serde_json::{json, Value};
++use serde_json::{Value, json};
+ use tokio_stream::wrappers::UnboundedReceiverStream;
+ use tracing::{debug, error, warn};
+ 
+@@ -22,12 +29,12 @@
+ use crate::{
+     config::types::RetryConfig,
+     core::{
+-        is_retryable_status, HashRing, RetryExecutor, Worker, WorkerLoadGuard, WorkerRegistry,
+-        WorkerType, UNKNOWN_MODEL_ID,
++        HashRing, RetryExecutor, UNKNOWN_MODEL_ID, Worker, WorkerLoadGuard, WorkerRegistry,
++        WorkerType, is_retryable_status,
+     },
+     observability::{
+         events::{self, Event},
+-        metrics::{bool_to_static_str, metrics_labels, Metrics},
++        metrics::{Metrics, bool_to_static_str, metrics_labels},
+         otel_trace::inject_trace_context_http,
+     },
+     policies::{LoadBalancingPolicy, PolicyRegistry, SelectWorkerInfo},
+@@ -42,11 +49,10 @@
+         responses::ResponsesRequest,
+     },
+     routers::{
+-        error,
++        RouterTrait, error,
+         grpc::utils::{error_type_from_status, route_to_endpoint},
+         header_utils,
+         streaming_utils::BreakerTrackedStream,
+-        RouterTrait,
+     },
+ };
+ 
+@@ -61,6 +67,55 @@
+     worker_ok: bool,
+ }
+ 
++fn parse_pd_pairs(raw: &str) -> Result<HashMap<String, String>, String> {
++    let invalid = || "Invalid PD pair configuration".to_string();
++    let pairs: HashMap<String, String> = serde_json::from_str(raw).map_err(|_| invalid())?;
++    let unique: std::collections::HashSet<_> = pairs.values().collect();
++    if pairs.len() != 2 || unique.len() != pairs.len() {
++        return Err(invalid());
++    }
++    for (prefill, decode) in &pairs {
++        let p = reqwest::Url::parse(prefill).map_err(|_| invalid())?;
++        let d = reqwest::Url::parse(decode).map_err(|_| invalid())?;
++        if p.scheme() != "http"
++            || d.scheme() != "http"
++            || p.host_str() != d.host_str()
++            || p.port().is_none()
++            || d.port().is_none()
++            || p.port() == d.port()
++            || [&p, &d].iter().any(|u| {
++                !u.username().is_empty()
++                    || u.password().is_some()
++                    || u.query().is_some()
++                    || u.fragment().is_some()
++                    || u.path() != "/"
++            })
++        {
++            return Err(invalid());
++        }
++    }
++    Ok(pairs)
++}
++
++// Exact peer pairs are release-owned environment. A missing or unhealthy
++// peer removes the complete pair from selection. Never cross pair boundaries.
++fn configured_pd_pairs() -> Result<Option<&'static HashMap<String, String>>, String> {
++    static PAIRS: OnceLock<Result<Option<HashMap<String, String>>, String>> = OnceLock::new();
++    match PAIRS.get_or_init(|| {
++        let raw = match std::env::var("CI_ROUTER_PD_PAIRS") {
++            Ok(value) => value,
++            Err(std::env::VarError::NotPresent) => return Ok(None),
++            Err(_) => return Err("Invalid PD pair configuration".to_string()),
++        };
++        let pairs = parse_pd_pairs(&raw)?;
++        Ok(Some(pairs))
++    }) {
++        Ok(Some(pairs)) => Ok(Some(pairs)),
++        Ok(None) => Ok(None),
++        Err(error) => Err(error.clone()),
++    }
++}
++
+ #[derive(Debug)]
+ pub struct PDRouter {
+     pub worker_registry: Arc<WorkerRegistry>,
+@@ -391,7 +446,7 @@
+                 return error::bad_request(
+                     "invalid_model_route",
+                     "PD routes require exactly one backend model",
+-                )
++                );
+             }
+             None => None,
+         };
+@@ -1061,11 +1116,7 @@
+         // current message, tool content) and is the same routing text the regular
+         // (non-PD) router uses, keeping cache-aware routing consistent across both.
+         let text = body.extract_text_for_routing();
+-        if text.is_empty() {
+-            None
+-        } else {
+-            Some(text)
+-        }
++        if text.is_empty() { None } else { Some(text) }
+     }
+ 
+     async fn select_pd_pair(
+@@ -1081,7 +1132,7 @@
+             self.enable_igw, model_id, effective_model_id
+         );
+ 
+-        let prefill_workers = if let Some(model) = effective_model_id {
++        let prefill_workers: Vec<Arc<dyn Worker>> = if let Some(model) = effective_model_id {
+             self.worker_registry
+                 .get_by_model(model)
+                 .iter()
+@@ -1092,7 +1143,7 @@
+             self.worker_registry.get_prefill_workers()
+         };
+ 
+-        let decode_workers = if let Some(model) = effective_model_id {
++        let decode_workers: Vec<Arc<dyn Worker>> = if let Some(model) = effective_model_id {
+             self.worker_registry
+                 .get_by_model(model)
+                 .iter()
+@@ -1103,6 +1154,20 @@
+             self.worker_registry.get_decode_workers()
+         };
+ 
++        let pairs = configured_pd_pairs()?;
++        let prefill_workers: Vec<_> = prefill_workers
++            .into_iter()
++            .filter(|p| {
++                pairs.is_none_or(|routes| {
++                    routes.get(p.base_url()).is_some_and(|peer| {
++                        decode_workers
++                            .iter()
++                            .any(|d| d.base_url() == peer.as_str() && d.is_available())
++                    })
++                })
++            })
++            .collect();
++
+         let prefill_policy = self.policy_registry.get_prefill_policy();
+         let decode_policy = self.policy_registry.get_decode_policy();
+ 
+@@ -1121,6 +1186,16 @@
+         )
+         .await?;
+ 
++        let decode_workers: Vec<_> = decode_workers
++            .into_iter()
++            .filter(|d| {
++                pairs.is_none_or(|routes| {
++                    routes
++                        .get(prefill.base_url())
++                        .is_some_and(|peer| d.base_url() == peer.as_str())
++                })
++            })
++            .collect();
+         let decode = Self::pick_worker_by_policy_arc(
+             &decode_workers,
+             &*decode_policy,
+@@ -1464,8 +1539,7 @@
+             Err(e) => {
+                 error!(
+                     "Prefill server failed (CRITICAL) prefill_url={} error={}. Decode will timeout without prefill KV cache.",
+-                    prefill_url,
+-                    e
++                    prefill_url, e
+                 );
+ 
+                 // Return error immediately - don't wait for decode to timeout
+@@ -2196,7 +2270,7 @@
+     #[tokio::test]
+     async fn test_streaming_load_tracking() {
+         use futures_util::StreamExt;
+-        use tokio::time::{sleep, Duration};
++        use tokio::time::{Duration, sleep};
+ 
+         let router = create_test_pd_router();
+ 
+@@ -2260,3 +2334,30 @@
+         assert_eq!(decode_ref.load(), 0);
+     }
+ }
++
++#[cfg(test)]
++mod pair_configuration_tests {
++    use super::parse_pd_pairs;
++
++    #[test]
++    fn pairs_stay_on_their_own_pod() {
++        let routes = parse_pd_pairs(r#"{"http://pair-a:8041":"http://pair-a:8043","http://pair-b:8042":"http://pair-b:8044"}"#)
++            .expect("valid pair configuration");
++        assert_eq!(
++            routes.get("http://pair-a:8041").map(String::as_str),
++            Some("http://pair-a:8043")
++        );
++    }
++
++    #[test]
++    fn cross_pod_pair_and_credential_urls_are_refused() {
++        for raw in [
++            r#"{"http://pair-a:8041":"http://pair-b:8043","http://pair-b:8042":"http://pair-b:8044"}"#,
++            r#"{"http://secret@pair-a:8041":"http://pair-a:8043","http://pair-b:8042":"http://pair-b:8044"}"#,
++            r#"{}"#,
++            r#"{"http://pair-a:8041":"http://pair-a:8043","http://pair-a:8042":"http://pair-a:8043"}"#,
++        ] {
++            assert!(parse_pd_pairs(raw).is_err());
++        }
++    }
++}

@@ -27,7 +27,11 @@ RUN python3 -c 'import json,hashlib,pathlib; d=json.load(open("/inputs/source.lo
     && git apply --check /inputs/patches/pd-router.patch \
     && git apply /inputs/patches/pd-router.patch \
     && git apply --check /inputs/patches/http-no-tokenizer.patch \
-    && git apply /inputs/patches/http-no-tokenizer.patch
+    && git apply /inputs/patches/http-no-tokenizer.patch \
+    && git apply --check /inputs/patches/pd-pairs.patch \
+    && git apply /inputs/patches/pd-pairs.patch \
+    && git apply --check /inputs/patches/private-errors.patch \
+    && git apply /inputs/patches/private-errors.patch
 COPY Cargo.lock /src/sgl-model-gateway/Cargo.lock
 RUN python3 -c 'import json,hashlib,pathlib; d=json.load(open("/inputs/source.lock")); assert hashlib.sha256(pathlib.Path("/src/sgl-model-gateway/Cargo.lock").read_bytes()).hexdigest()==d["cargoLockSha256"]'
 COPY canonicalize_wheel.py /inputs/canonicalize_wheel.py
@@ -42,6 +46,7 @@ FROM docker.io/library/python@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a
 ARG SOURCE_REVISION
 ARG SOURCE_DATE_EPOCH
 LABEL org.opencontainers.image.title="Confidential Inference SGLang Router"
+ENV CI_DIAGNOSTIC_SOURCE_REVISION=${SOURCE_REVISION}
 LABEL org.opencontainers.image.source="https://github.com/confidential-dot-ai/confidential-inference"
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 LABEL org.opencontainers.image.version="sha-${SOURCE_REVISION}"
@@ -54,6 +59,8 @@ LABEL ai.confidential.sglang-router.worker-withdrawal-patch.sha256="c19733adbf8e
 LABEL ai.confidential.sglang-router.admission-caps-patch.sha256="eb542bb49728c7f926253da0a21ac521567382cf00cfc47c93e0022f337ad021"
 LABEL ai.confidential.sglang-router.pd-router-patch.sha256="f69f0d7910123bf080d46c362b8d019a04c393149c5b17010254cefcc419df0b"
 LABEL ai.confidential.sglang-router.http-no-tokenizer-patch.sha256="85e982bf2bf2e21da3c27615819c3880f3a30da08495893de27ffbe9c30ba1c4"
+LABEL ai.confidential.sglang-router.pd-pairs-patch.sha256="3d6c2f8e9a337e5dec42157b93437a7d9ab5fb6ab2b723ce603a0023c8273eab"
+LABEL ai.confidential.sglang-router.private-errors-patch.sha256="645f17a966d2476663052cf7be423eba06d55571abfbf47726217ca7494f6aa8"
 LABEL ai.confidential.sglang-router.cargo-lock.sha256="2a8bf58b2be1babdb06145ece924ae0c62919ecc3ee9a9a3ee3a9c6a12d6a5b6"
 COPY requirements.lock /router-requirements.lock
 RUN python3 -m pip install --no-cache-dir --require-hashes -r /router-requirements.lock
@@ -65,6 +72,8 @@ COPY --from=build /out /router-wheels
 RUN python3 -m pip install --no-cache-dir --disable-pip-version-check --no-compile --no-deps --force-reinstall /router-wheels/*.whl \
     && rm -rf /router-wheels \
     && python3 -B -c 'import sglang_router.sglang_router_rs'
+COPY private_router.py /usr/local/bin/ci-sglang-router
+COPY private_log_sink.py /usr/local/bin/private_log_sink.py
 USER 1001:1001
 EXPOSE 30000 29000
-ENTRYPOINT ["python3", "-m", "sglang_router.launch_router"]
+ENTRYPOINT ["python3", "/usr/local/bin/ci-sglang-router"]

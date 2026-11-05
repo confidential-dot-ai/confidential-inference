@@ -163,7 +163,7 @@ def check_pinned_settings(documents: list[dict], model: str) -> None:
     """Routes and gateway settings are pod env, never mutable ConfigMap data."""
     router_pod = by_name(documents, "Deployment", "sglang-router")["spec"]["template"]["spec"]
     router = router_pod["containers"][0]
-    assert router["command"] == ["python3", "-m", "sglang_router.launch_router"]
+    assert router["command"] == ["python3", "/usr/local/bin/ci-sglang-router"]
     assert [item["name"] for item in router["env"]] == ["CI_ROUTER_MODEL_ROUTES"]
     assert json.loads(router["env"][0]["value"]) == {"routes": {model: [model]}, "schemaVersion": 1}
     assert not router.get("volumeMounts") and not router_pod.get("volumes")
@@ -225,6 +225,7 @@ def check_render(values: dict) -> None:
     assert not any("hostPath" in volume for volume in pod["volumes"])
     # The router: PD mode with the plan's policy and admission flags.
     router = by_name(documents, "Deployment", "sglang-router")["spec"]["template"]["spec"]["containers"][0]
+    assert router["command"] == ["python3", "/usr/local/bin/ci-sglang-router"]
     expected = ["--pd-disaggregation"]
     for worker in PLAN["workers"]:
         if "bootstrap_port" in worker:
@@ -391,6 +392,7 @@ def check_b200_layer() -> None:
                              "--values", "release/values.yaml", "--values", "release/staging/values.yaml",
                              "--values", str(B200_LAYER), "--values", "tests/release-v1/fixtures/release-values.yaml",
                              "--set", "attestationReceipts.releaseId=v0.14.18-staging",
+                             "--set", "inference.pd.paired.enabled=false",
                              "--set", f"images.sglangWorker={image}"],
                             cwd=ROOT, text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
@@ -410,12 +412,111 @@ def check_b200_layer() -> None:
     assert admission["refusals"](documents) == []
 
 
+def check_pair_render(values: dict) -> None:
+    documents = render(values, "--values", str(FIXTURES / "pd-pairs-values.yaml"))
+    pods = [item for item in documents if item["kind"] == "StatefulSet"
+            and item["metadata"]["name"].startswith("inference-pd")]
+    assert {item["metadata"]["name"] for item in pods} == {"inference-pd-a", "inference-pd-b"}
+    expected = {worker["name"]: worker for worker in values["inference"]["pd"]["workers"]}
+    routes = {}
+    for pod, names in zip(sorted(pods, key=lambda item: item["metadata"]["name"]),
+                          (("prefill0", "decode0"), ("prefill1", "decode1"))):
+        name = pod["metadata"]["name"]
+        policy = by_name(documents, "NetworkPolicy", name + "-internal")["spec"]
+        labels = {"app.kubernetes.io/component": "inference-worker", "app.kubernetes.io/instance": name}
+        assert policy["podSelector"]["matchLabels"] == labels
+        assert policy["ingress"][0]["from"][0]["podSelector"]["matchLabels"] == labels
+        assert policy["egress"][0]["to"][0]["podSelector"]["matchLabels"] == labels
+        spec = pod["spec"]["template"]["spec"]
+        assert not any(spec.get(key) for key in ("hostPID", "hostIPC", "shareProcessNamespace"))
+        assert len(spec["containers"]) == 1
+        app = spec["containers"][0]
+        assert app["name"] == "sglang-pair"
+        assert app["resources"]["limits"]["nvidia.com/gpu"] == 4
+        expected_ports = {8050, *(expected[n]["port"] for n in names),
+                          *(expected[n]["bootstrapPort"] for n in names if expected[n].get("bootstrapPort"))}
+        assert {port["containerPort"] for port in app["ports"]} == expected_ports
+        service = by_name(documents, "Service", name)
+        assert {port["targetPort"] for port in service["spec"]["ports"]} == expected_ports
+        config = json.loads(app["args"][1])
+        for worker, worker_name in zip(config["workers"], names):
+            source = expected[worker_name]
+            assert worker["command"] == [PYTHON, "-m", "sglang.launch_server", *source["args"]]
+            expected_env = {key: value for key, value in source["env"].items()
+                            if key not in {"MC_FORCE_TCP", "MC_INTRANODE_NVLINK", "SGLANG_MOONCAKE_CUSTOM_MEM_POOL"}}
+            expected_env.update(MOONCAKE_PROTOCOL="tcp", MC_FORCE_TCP="1")
+            assert worker["env"] == expected_env
+            assert worker["gpus"] == worker["ranks"] == source["gpus"]
+        for probe, path in (("livenessProbe", "/livez"), ("readinessProbe", "/readyz"),
+                            ("startupProbe", "/startupz")):
+            assert app[probe]["httpGet"] == {"path": path, "port": 8050}
+            assert app[probe]["timeoutSeconds"] <= 5
+            if probe != "readinessProbe":
+                assert app[probe]["terminationGracePeriodSeconds"] == config["shutdownTimeoutSeconds"] + 15
+        host = f"{name}-0.{name}"
+        routes[f"http://{host}:{expected[names[0]]['port']}"] = f"http://{host}:{expected[names[1]]['port']}"
+    router = by_name(documents, "Deployment", "sglang-router")["spec"]["template"]["spec"]["containers"][0]
+    env = {item["name"]: item["value"] for item in router["env"]}
+    assert router["command"] == ["python3", "/usr/local/bin/ci-sglang-router"]
+    assert json.loads(env["CI_ROUTER_PD_PAIRS"]) == routes
+    assert admission["refusals"](documents) == []
+    observed = copy.deepcopy(values)
+    observed["telemetry"] = yaml.safe_load((ROOT / "release/values.yaml").read_text())["telemetry"]
+    rendered = render(observed, "--values", str(FIXTURES / "pd-pairs-values.yaml"))
+    for name in ("inference-pd-a", "inference-pd-b"):
+        app = by_name(rendered, "StatefulSet", name)["spec"]["template"]["spec"]["containers"][0]
+        telemetry_env = {item["name"]: item["value"] for item in app["env"]}
+        assert telemetry_env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] == "http://telemetry-collector.default.svc.cluster.local:4318/v1/logs"
+        assert telemetry_env["OTEL_SERVICE_NAME"] == name
+    app = by_name(rendered, "Deployment", "sglang-router")["spec"]["template"]["spec"]["containers"][0]
+    telemetry_env = {item["name"]: item["value"] for item in app["env"]}
+    assert telemetry_env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] == "http://telemetry-collector.default.svc.cluster.local:4318/v1/logs"
+    assert telemetry_env["OTEL_SERVICE_NAME"] == "sglang-router"
+    # Direct log export needs both source egress and collector ingress.
+    for policy_name in ("router-paths", "pd-workers-to-telemetry"):
+        policy = by_name(rendered, "NetworkPolicy", policy_name)["spec"]
+        assert any(rule.get("to") == [{"podSelector": {"matchLabels": {
+            "app.kubernetes.io/component": "telemetry-collector"}}}]
+            and {"protocol": "TCP", "port": 4318} in rule.get("ports", [])
+            for rule in policy["egress"])
+    collector = by_name(rendered, "NetworkPolicy", "telemetry-collector-paths")["spec"]
+    http_rule = next(rule for rule in collector["ingress"]
+                     if {"protocol": "TCP", "port": 4318} in rule["ports"])
+    assert set(http_rule["from"][0]["podSelector"]["matchExpressions"][0]["values"]) == {
+        "gateway", "sglang-router", "inference-worker"}
+    # A transport change must remove stale presence-based overrides. Even "0"
+    # selects a native Mooncake override, so setting it to zero is unsafe.
+    stale = copy.deepcopy(values)
+    for worker in stale["inference"]["pd"]["workers"]:
+        worker["env"].update(MC_FORCE_TCP="0", MC_INTRANODE_NVLINK="0",
+                             SGLANG_MOONCAKE_CUSTOM_MEM_POOL="NVLINK")
+    for transport in ("tcp", "nvlink"):
+        rendered = render(stale, "--values", str(FIXTURES / "pd-pairs-values.yaml"),
+                          "--set", f"inference.pd.paired.transport={transport}")
+        for pod in rendered:
+            if pod["kind"] != "StatefulSet" or not pod["metadata"]["name"].startswith("inference-pd-"):
+                continue
+            app = pod["spec"]["template"]["spec"]["containers"][0]
+            for worker in json.loads(app["args"][1])["workers"]:
+                env = worker["env"]
+                assert env["MOONCAKE_PROTOCOL"] == "tcp"
+                if transport == "tcp":
+                    assert env["MC_FORCE_TCP"] == "1"
+                    assert "MC_INTRANODE_NVLINK" not in env
+                    assert "SGLANG_MOONCAKE_CUSTOM_MEM_POOL" not in env
+                else:
+                    assert "MC_FORCE_TCP" not in env
+                    assert env["MC_INTRANODE_NVLINK"] == "1"
+                    assert env["SGLANG_MOONCAKE_CUSTOM_MEM_POOL"] == "INTRA_NODE_NVLINK"
+
+
 def main() -> None:
     values = check_values_file_is_the_plan()
     check_render(values)
     check_refusals(values)
     check_off_by_default()
     check_b200_layer()
+    check_pair_render(values)
     print("PD layout checks passed")
 
 

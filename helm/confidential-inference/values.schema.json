@@ -190,6 +190,87 @@
           "properties": {
             "enabled": {"type": "boolean"},
             "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
+            "paired": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "enabled",
+                "transport",
+                "pairs",
+                "statusPort",
+                "progressTimeoutSeconds",
+                "startupTimeoutSeconds",
+                "shutdownTimeoutSeconds"
+              ],
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "transport": {
+                  "type": "string",
+                  "enum": ["tcp", "nvlink"]
+                },
+                "pairs": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "name",
+                      "prefill",
+                      "decode"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9-]{0,19}$"
+                      },
+                      "prefill": {
+                        "type": "string"
+                      },
+                      "decode": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "statusPort": {
+                  "type": "integer",
+                  "minimum": 1024,
+                  "maximum": 65534
+                },
+                "progressTimeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 86400
+                },
+                "startupTimeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 86400
+                },
+                "shutdownTimeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 86400
+                }
+              },
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "pairs": {
+                    "minItems": 2,
+                    "maxItems": 2
+                  }
+                }
+              }
+            },
             "python": {"type": "string", "pattern": "^/[^\\s]+$"},
             "workers": {
               "type": "array",

@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "source": {
     "repository": "https://github.com/confidential-dot-ai/Sglang-public",
-    "branch": "Deepseek-V41-release-ced-pp-hicache-fix",
-    "commit": "c2425f9b0a274a9f5c3bf91c7af363e94bdbf548",
-    "commitDate": "2026-10-25T16:51:31Z",
+    "branch": "fix/worker-recovery-20261104",
+    "commit": "190c329f86e8ef8297f00aa0b4982bf848ad1a29",
+    "commitDate": "2026-11-05T00:04:43Z",
     "upstream": {
       "repository": "https://github.com/sgl-project/sglang",
       "commit": "a7fd2e1158c389c33077bae67fb797efa8dd09bd",

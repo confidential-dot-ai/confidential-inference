@@ -58,6 +58,12 @@ inference:
     - dsv41
   pd:
     enabled: true
+    paired:
+      enabled: true
+      transport: tcp
+      pairs:
+      - {name: a, prefill: prefill0, decode: decode0}
+      - {name: b, prefill: prefill1, decode: decode1}
     engramHolder:
       mlock: false
     python: /opt/dsv41/bin/python

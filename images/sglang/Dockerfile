@@ -71,6 +71,7 @@ RUN --mount=type=bind,source=images/sglang,target=/inputs/recipe,readonly \
 FROM base
 ARG SOURCE_REVISION
 ARG SOURCE_DATE_EPOCH
+ENV CI_DIAGNOSTIC_SOURCE_REVISION=${SOURCE_REVISION}
 LABEL org.opencontainers.image.title="Confidential Inference SGLang"
 LABEL org.opencontainers.image.source="https://github.com/confidential-dot-ai/confidential-inference"
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
@@ -79,7 +80,7 @@ LABEL org.opencontainers.image.base.name="docker.io/nvidia/cuda"
 LABEL org.opencontainers.image.base.digest="sha256:7d56ebe2b7cd864a60dca3c8b2d0a39f8fc110417e8253e32505c3387f59119c"
 LABEL ai.confidential.build.source-date-epoch="${SOURCE_DATE_EPOCH}"
 LABEL ai.confidential.sglang.source="https://github.com/confidential-dot-ai/Sglang-public"
-LABEL ai.confidential.sglang.revision="c2425f9b0a274a9f5c3bf91c7af363e94bdbf548"
+LABEL ai.confidential.sglang.revision="190c329f86e8ef8297f00aa0b4982bf848ad1a29"
 LABEL ai.confidential.upstream.source="https://github.com/sgl-project/sglang"
 LABEL ai.confidential.upstream.revision="a7fd2e1158c389c33077bae67fb797efa8dd09bd"
 LABEL ai.confidential.ubuntu.snapshot="20261020T000000Z"
@@ -101,6 +102,9 @@ COPY --from=source /src/SOURCE_RECORD.json /opt/sglang/SOURCE_RECORD.json
 # -I ignores PYTHONDONTWRITEBYTECODE.
 RUN --mount=type=bind,source=images/sglang/harden_http.py,target=/run-src/harden-http.py,readonly \
     --mount=type=bind,source=images/sglang/wait_for_model.py,target=/run-src/wait-for-model,readonly \
+    --mount=type=bind,source=images/sglang/pair_supervisor.py,target=/run-src/sglang-pair,readonly \
+    --mount=type=bind,source=images/sglang/pair_diagnostics.py,target=/run-src/pair_diagnostics.py,readonly \
+    --mount=type=bind,source=images/sglang-router/private_log_sink.py,target=/run-src/private_log_sink.py,readonly \
     SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 SGLANG_BUILD_RUST_EXTS=none \
         uv pip install --no-deps --no-build-isolation -e /opt/sglang/python \
     && python /run-src/harden-http.py --root /opt/sglang/python/sglang --variant pd \
@@ -108,6 +112,9 @@ RUN --mount=type=bind,source=images/sglang/harden_http.py,target=/run-src/harden
     && rm "$dist/uv_cache.json" \
     && sed -i '/^sglang-0\.0\.0\.dev0\.dist-info\/uv_cache\.json,/d' "$dist/RECORD" \
     && install -D -m 0555 /run-src/wait-for-model /usr/local/bin/wait-for-model \
+    && install -D -m 0555 /run-src/sglang-pair /usr/local/bin/sglang-pair \
+    && install -D -m 0444 /run-src/pair_diagnostics.py /usr/local/bin/pair_diagnostics.py \
+    && install -D -m 0444 /run-src/private_log_sink.py /usr/local/bin/private_log_sink.py \
     && python -I -B -c 'import importlib.util as u; assert u.find_spec("sglang") and u.find_spec("mooncake")'
 # CPU staging uses the same image. Its simulator is outside the production
 # import path and is enabled only by the staging PYTHONPATH.
