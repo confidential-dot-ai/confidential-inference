@@ -2,7 +2,7 @@
   "schema": "confidential.ai/release-allowlist-policy/v2",
   "chart": {
     "release": "confidential-inference",
-    "namespace": "confidential-inference-staging",
+    "namespace": "confidential-inference",
     "kubeVersion": "1.32.0"
   },
   "kubernetes": {
