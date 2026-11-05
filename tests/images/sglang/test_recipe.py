@@ -72,10 +72,11 @@ class RecipeTests(unittest.TestCase):
         self.assertRegex(LOCK["ubuntuSnapshot"], r"^\d{8}T\d{6}Z$")
         self.assertIn(f"https://snapshot.ubuntu.com/ubuntu/{LOCK['ubuntuSnapshot']} %s main universe", DOCKERFILE)
         commands = re.findall(r"apt-get[^&]*", " ".join(instructions()))
-        self.assertEqual(2, len(commands))
+        self.assertEqual(3, len(commands))
         for command in commands:
             self.assertIn("-o Dir::Etc::SourceList=/tmp/snapshot.list -o Dir::Etc::SourceParts=/dev/null", command)
-        install = commands[1].split("--no-install-recommends", 1)[1].split()
+        self.assertIn(" upgrade -y ", commands[1])
+        install = commands[2].split("--no-install-recommends", 1)[1].split()
         self.assertEqual(LOCK["aptPackages"], install)
 
     def test_python_environment_is_installed_by_hash(self) -> None:
