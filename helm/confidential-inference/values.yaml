@@ -246,6 +246,16 @@ inference:
     enabled: false
     # The pod's c8s workload (confidential.ai/cw).
     attestedWorkload: inference-pd-0
+    # Two independent pairs. Each pair runs both workers in one application
+    # container; C8s support containers keep their own process namespaces.
+    paired:
+      enabled: false
+      transport: tcp
+      pairs: []
+      statusPort: 8050
+      progressTimeoutSeconds: 90
+      startupTimeoutSeconds: 7200
+      shutdownTimeoutSeconds: 30
     # The interpreter of images.sglangWorker that runs every PD container.
     python: /opt/dsv41/bin/python
     # The workers, in start order. A worker starts after the previous one

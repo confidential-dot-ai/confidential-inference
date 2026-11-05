@@ -1003,4 +1003,40 @@ mod otlp_log_tests {
         assert!(body.windows(needle.len()).any(|window| window == needle));
         Ok(())
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reviewed_audit_metadata_reaches_the_otlp_body() -> Result<()> {
+        use confidential_gateway::{AuditEvent, AuditSink, TracingAuditSink};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}/v1/logs", listener.local_addr()?);
+        let server = std::thread::spawn(move || receive_one(&listener));
+        let provider = super::otlp_log_export(endpoint)?;
+        let subscriber = tracing_subscriber::registry().with(super::otlp_log_layer(&provider));
+        tracing::subscriber::with_default(subscriber, || {
+            TracingAuditSink.record(AuditEvent {
+                request_id: "c0ffee00-cafe-4000-8000-deadbeef0002".to_owned(),
+                route: "/v1/chat/completions",
+                status: 503,
+                key_id: Some("nonsecret_key_record".to_owned()),
+            });
+        });
+        tokio::task::spawn_blocking(move || provider.shutdown()).await??;
+        let (_, body) = server
+            .join()
+            .map_err(|_| anyhow!("the OTLP test server panicked"))??;
+        for field in [
+            "gateway_request_completed",
+            "c0ffee00-cafe-4000-8000-deadbeef0002",
+            "nonsecret_key_record",
+            "request_id",
+            "key_id",
+            "503",
+        ] {
+            assert!(
+                body.windows(field.len())
+                    .any(|window| window == field.as_bytes())
+            );
+        }
+        Ok(())
+    }
 }

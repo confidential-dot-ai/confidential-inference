@@ -180,7 +180,7 @@ def staging_allowlist(c8s: Path) -> bytes:
 def rendered_workers(profile) -> list[dict]:
     return [item for item in rendered(profile) if item.get("kind") == "StatefulSet"
             and (item.get("metadata", {}).get("name", "").startswith("inference-worker-")
-                 or item.get("metadata", {}).get("name") == "inference-pd")]
+                 or item.get("metadata", {}).get("name", "").startswith("inference-pd"))]
 
 DIGEST = "sha256:" + "a" * 64
 IMAGE = f"ghcr.io/example/app@{DIGEST}"
@@ -994,11 +994,19 @@ class ManifestTests(unittest.TestCase):
 
     @staticmethod
     def expected_file_args(profile) -> list[list[str]]:
-        return [[arg.removeprefix("--expected-file=")
-                 for arg in next(c for c in worker["spec"]["template"]["spec"]["containers"]
-                                 if c["name"] in ("sglang", "engram-holder"))["args"]
-                 if arg.startswith("--expected-file=")]
-                for worker in rendered_workers(profile)]
+        result = []
+        workers = rendered_workers(profile)
+        if not workers:
+            raise AssertionError("the profile must render inference workers")
+        for worker in workers:
+            container = next(c for c in worker["spec"]["template"]["spec"]["containers"]
+                             if c["name"] in ("sglang", "engram-holder", "sglang-pair"))
+            args = container["args"]
+            if container["name"] == "sglang-pair":
+                args = json.loads(args[1])["modelGate"]
+            result.append([arg.removeprefix("--expected-file=") for arg in args
+                           if arg.startswith("--expected-file=")])
+        return result
 
     def test_production_workers_check_the_expected_files_map(self):
         verification = PROFILES.read_values(PRODUCTION)["inference"]["model"]["mountVerification"]

@@ -4,7 +4,7 @@ This image contains the router at the exact upstream source in `source.lock`:
 upstream SGLang `a7fd2e1` (2026-10-19), the commit the DeepSeek-V4.1 worker
 source (`images/sglang`) is based on. Every deployment uses this one
 router, in regular mode for the aggregated workers and in prefill/decode mode
-for `inference.pd`. The build applies four patches, in the order
+for `inference.pd`. The build applies six patches, in the order
 `source.lock` lists them; each later patch is a diff on the tree the earlier
 ones produce:
 
@@ -24,6 +24,9 @@ ones produce:
    filesystem, and so download the tokenizer from the Hugging Face Hub (the
    router has no egress). The router's own `/v1/tokenize` and
    `/v1/detokenize` then have no tokenizer; the gateway does not route them.
+5. `pd-pairs.patch` keeps each prefill worker with its assigned decode worker.
+6. `private-errors.patch` gives PD errors fixed event names and numeric status
+   fields. It removes worker error bodies and arbitrary error text from logs.
 
 `tests/images/sglang-router` checks each patch against its `source.lock`
 digest, the order the Dockerfile applies them in, and the image labels that
@@ -169,3 +172,40 @@ reliability tests. The regular router is unchanged.
 - A 4xx from either worker is the client's fault and does not count against
   that worker's circuit breaker. When decode fails first and prefill is
   cancelled, prefill is not charged either.
+
+## Fixed prefill/decode pairs
+
+The optional `CI_ROUTER_PD_PAIRS` environment value maps two prefill URLs to
+their decode URLs. Both URLs of a pair must use the same host and distinct
+ports. A request can select a pair only when both workers are available.
+The decode selection stays inside the selected pair. Invalid configuration
+fails closed. Without this value, the existing selection behavior stays in
+place. The `pd-pairs.patch` build input pins this change separately.
+
+Run `tests/images/sglang-router/smoke_alias.py --image IMAGE --pairs --policy manual --private-errors` on the
+test CVM to check a built image with synthetic workers. It checks fixed pair
+selection, removal of a pair when decode fails, and return of both pairs.
+It also checks model aliases, chat and text requests, and streaming.
+
+`private-errors.patch` removes response bodies, body previews, worker URLs,
+and arbitrary error text from PD request error logs. Those records use fixed
+event names, fixed worker roles, and HTTP status numbers. Client responses
+keep their existing error behavior.
+
+The PD chart runs `private_router.py`. It reads the child process output in
+memory and constructs new records from approved event names, fixed roles and
+numeric status codes. It does not copy messages, request spans, client request
+IDs, routing keys or credentials. It blocks file logging and raw tracing
+options, disables core files, and passes shutdown signals to the child.
+
+The parent adds the image source revision and sends these reviewed records to
+stdout and, when telemetry is enabled, the internal OTLP/HTTP collector. The
+shared sender uses a bounded queue and shutdown wait. It does not read request
+objects, credentials, proxy settings or tracing baggage. Collector delivery
+failure reports counts only. It can lose records during an outage. The chart
+permits this internal path through both source and collector network rules.
+
+Container stdout writes are nonblocking and at most 4096 bytes. A full pipe
+can lose a record, but it cannot stop router shutdown or the separate bounded
+OTLP submission. The fixed field parser still reviews every native record
+before either output path.

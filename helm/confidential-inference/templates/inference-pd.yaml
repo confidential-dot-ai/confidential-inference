@@ -23,7 +23,8 @@ maps to "". The PD template checks the flags it also derives elsewhere.
 
 {{- /* The address the router gives for one PD worker. */}}
 {{- define "confidential-inference.pdWorkerUrl" -}}
-http://inference-pd-0.inference-pd:{{ .port }}
+{{- $host := include "confidential-inference.pdWorkerHost" . -}}
+http://{{ $host }}:{{ .worker.port }}
 {{- end }}
 
 {{- define "confidential-inference.source.inference-pd" -}}
@@ -307,4 +308,6 @@ spec:
 {{- end }}
 
 {{- end -}}
+{{- if not .Values.inference.pd.paired.enabled }}
 {{- include "confidential-inference.applyWorkloadOverrides" (dict "root" . "body" (include "confidential-inference.source.inference-pd" .)) }}
+{{- end }}

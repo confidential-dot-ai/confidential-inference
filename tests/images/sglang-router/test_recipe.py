@@ -20,10 +20,13 @@ EXPECTED_COMMIT = "a7fd2e1158c389c33077bae67fb797efa8dd09bd"
 # The reviewed patches, in the order the build applies them. A change to a
 # patch's bytes must change this list, source.lock and the Dockerfile labels.
 EXPECTED_PATCHES = [
+    # The pair and privacy patches follow the reviewed PD relay fixes.
     ("patches/worker-withdrawal.patch", "c19733adbf8ec8c25bb58a517bfa35cb5f93d7c1a4b5a8b439e50104a9d6b3fa"),
     ("patches/admission-caps.patch", "eb542bb49728c7f926253da0a21ac521567382cf00cfc47c93e0022f337ad021"),
     ("patches/pd-router.patch", "f69f0d7910123bf080d46c362b8d019a04c393149c5b17010254cefcc419df0b"),
     ("patches/http-no-tokenizer.patch", "85e982bf2bf2e21da3c27615819c3880f3a30da08495893de27ffbe9c30ba1c4"),
+    ("patches/pd-pairs.patch", "3d6c2f8e9a337e5dec42157b93437a7d9ab5fb6ab2b723ce603a0023c8273eab"),
+    ("patches/private-errors.patch", "645f17a966d2476663052cf7be423eba06d55571abfbf47726217ca7494f6aa8"),
 ]
 
 
