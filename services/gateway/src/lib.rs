@@ -166,6 +166,7 @@ pub fn router_with_usage(
             CorsLayer::new()
                 .allow_origin(Any)
                 .allow_methods([http::Method::GET, http::Method::POST])
+                .expose_headers([http::HeaderName::from_static("x-ci-request-id")])
                 .allow_headers(AllowHeaders::list([
                     header::AUTHORIZATION,
                     header::CONTENT_TYPE,
@@ -193,6 +194,9 @@ async fn request_id(mut request: Request, next: Next) -> Response<Body> {
     let mut response = next.run(request).await;
     if let Ok(value) = HeaderValue::from_str(&response_id) {
         response.headers_mut().insert("x-request-id", value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert("x-ci-request-id", value);
     }
     response
 }

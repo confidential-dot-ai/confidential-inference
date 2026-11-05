@@ -222,10 +222,13 @@ async fn caller_ids_cannot_enter_audit_records_or_upstream_headers() {
     let audit = Arc::new(SavedAudit::default());
     let gateway = app_with_audit(address, no_redirect_client(), audit.clone());
     let private = "PRIVATE_PROMPT_RESPONSE_CREDENTIAL_IN_CLIENT_ID";
+    let mut public_ids = Vec::new();
     for route in ["/v1/models", "/v1/chat/completions", "/v1/chat/completions"] {
         let mut request = Request::builder()
             .uri(route)
-            .header("x-request-id", private);
+            .header("x-request-id", private)
+            .header("x-ci-request-id", private)
+            .header(header::ORIGIN, "https://example.test");
         let body = if route == "/v1/models" {
             Body::empty()
         } else {
@@ -242,9 +245,28 @@ async fn caller_ids_cannot_enter_audit_records_or_upstream_headers() {
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()["x-request-id"], private);
+        public_ids.push(
+            response.headers()["x-ci-request-id"]
+                .to_str()
+                .unwrap_or_default()
+                .to_owned(),
+        );
+        assert!(
+            response.headers()["access-control-expose-headers"]
+                .to_str()
+                .unwrap_or_default()
+                .contains("x-ci-request-id")
+        );
     }
     let events = audit.0.lock().unwrap_or_else(|_| unreachable!());
     assert_eq!(events.len(), 3);
+    assert_eq!(
+        public_ids,
+        events
+            .iter()
+            .map(|event| event.request_id.clone())
+            .collect::<Vec<_>>()
+    );
     assert!(
         !serde_json::to_string(&*events)
             .unwrap_or_default()
