@@ -10,9 +10,10 @@ import subprocess
 import sys
 import threading
 
-from private_log_sink import LogSink
+from private_log_sink import LogSink, NonblockingStdout
 
 LOG_SINK = None
+LOG_STDOUT = None
 SOURCE_REVISION = os.environ.get("CI_DIAGNOSTIC_SOURCE_REVISION", "")
 if not re.fullmatch(r"[0-9a-f]{40}", SOURCE_REVISION):
     SOURCE_REVISION = "unknown"
@@ -61,14 +62,18 @@ def emit(event, **fields):
             raise ValueError("invalid diagnostic fields")
     record = {"timestamp": datetime.now(timezone.utc).isoformat(),
               "source_revision": SOURCE_REVISION, **value}
-    print(json.dumps(record, separators=(",", ":")), flush=True)
+    if LOG_STDOUT is None:
+        print(json.dumps(record, separators=(",", ":")), flush=True)
+    else:
+        LOG_STDOUT.write(record)
     if LOG_SINK is not None:
         LOG_SINK.submit(record)
 
 
 def main():
-    global LOG_SINK
+    global LOG_SINK, LOG_STDOUT
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    LOG_STDOUT = NonblockingStdout()
     LOG_SINK = LogSink.from_environment()
     for argument in sys.argv[1:]:
         flag = argument.split("=", 1)[0].replace("_", "-")

@@ -220,3 +220,13 @@ TCP is an explicit recovery configuration. Do not assume that an NVLink
 transfer error causes a transparent switch to TCP. Verify the restart with
 the TCP configuration separately. Keep raw buffers, addresses, handles and
 native diagnostic output out of worker logs.
+
+
+Diagnostic output is bounded. A full container stdout pipe drops complete
+records instead of blocking the supervisor. The independent OTLP queue can
+still export them. Neither path exports raw worker output. On failure, the
+snapshot sender waits at most 20 ms per record and sends the newest reviewed
+NCCL entries first. It reports successful sends and rejected entries. These
+bounds also mean that an overloaded or damaged logging path can lose context.
+Scheduler token counts use only the lengths of native token arrays; token
+values never enter the record.

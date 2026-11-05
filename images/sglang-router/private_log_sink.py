@@ -13,6 +13,28 @@ import urllib.parse
 import urllib.request
 
 
+class NonblockingStdout:
+    """Write one bounded record to a container pipe without waiting for readers.
+
+    The caller must review the schema. This is not a content filter. A full
+    pipe drops that stdout record; independent OTLP delivery can still proceed.
+    """
+    def __init__(self, fd=1):
+        self.fd = fd
+        os.set_blocking(fd, False)
+
+    def write(self, record):
+        payload = (json.dumps(record, separators=(',', ':')) + '\n').encode()
+        # Linux pipe writes at or below PIPE_BUF are atomic. A full pipe must
+        # never leave half a JSON line or block the failure/restart path.
+        if len(payload) > 4096:
+            return False
+        try:
+            return os.write(self.fd, payload) == len(payload)
+        except OSError:
+            return False
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, message, headers, newurl):
         return None

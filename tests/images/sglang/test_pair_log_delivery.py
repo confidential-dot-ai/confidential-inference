@@ -2,6 +2,8 @@
 import contextlib
 import io
 import json
+import os
+import subprocess
 from pathlib import Path
 import sys
 import threading
@@ -13,10 +15,48 @@ ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT/'images/sglang'))
 sys.path.insert(0,str(ROOT/'images/sglang-router'))
 import pair_supervisor as pair
-from private_log_sink import LogSink
+from private_log_sink import LogSink, NonblockingStdout
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_full_stdout_pipe_cannot_block_supervisor_or_otlp_submission(self):
+        source = """
+import sys
+sys.path.insert(0, sys.argv[1]);sys.path.insert(0, sys.argv[2])
+import pair_supervisor as pair
+from private_log_sink import NonblockingStdout
+class Sink:
+    count = 0
+    def submit(self, record): self.count += 1
+pair.LOG_STDOUT = NonblockingStdout()
+pair.LOG_SINK = Sink()
+for _ in range(20000): pair.emit('rank_failed', 'decode', rank=0)
+assert pair.LOG_SINK.count == 20000
+"""
+        child = subprocess.Popen([sys.executable, '-c', source,
+                                  str(ROOT/'images/sglang'),str(ROOT/'images/sglang-router')],
+                                 stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            self.assertEqual(0,child.wait(timeout=5))
+            output,errors=child.communicate(timeout=1)
+        finally:
+            if child.poll() is None:child.kill();child.wait()
+        self.assertEqual(b'',errors)
+        rows=[json.loads(line) for line in output.splitlines()]
+        self.assertTrue(rows)
+        self.assertLess(len(rows),20000)
+        self.assertTrue(all(row['event']=='rank_failed' for row in rows))
+
+    def test_oversized_stdout_record_cannot_leave_partial_json(self):
+        read_fd,write_fd=os.pipe()
+        try:
+            writer=NonblockingStdout(write_fd)
+            self.assertFalse(writer.write({'event':'x'*4096}))
+            self.assertTrue(writer.write({'event':'router_failed'}))
+            self.assertEqual({'event':'router_failed'},json.loads(os.read(read_fd,4096)))
+        finally:
+            os.close(read_fd);os.close(write_fd)
+
     def receiver(self, response=None):
         received=[]
         class Handler(BaseHTTPRequestHandler):

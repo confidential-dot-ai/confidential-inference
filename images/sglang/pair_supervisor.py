@@ -30,7 +30,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from pair_diagnostics import SNAPSHOT_SECONDS, StackSnapshots
-from private_log_sink import LogSink
+from private_log_sink import LogSink, NonblockingStdout
 
 
 ROLES = {"prefill", "decode"}
@@ -61,6 +61,8 @@ SOURCE_REVISION = os.environ.get("CI_DIAGNOSTIC_SOURCE_REVISION", "")
 if not re.fullmatch(r"[0-9a-f]{40}", SOURCE_REVISION):
     SOURCE_REVISION = "unknown"
 LOG_SINK = None
+LOG_STDOUT = None
+LOG_LOCK = threading.Lock()
 INHERITED_ENV = {"PATH", "LD_LIBRARY_PATH", "HOME", "LANG", "LC_ALL", "TZ", "VIRTUAL_ENV",
                  "PYTHONDONTWRITEBYTECODE", "NVIDIA_VISIBLE_DEVICES", "NVIDIA_DRIVER_CAPABILITIES",
                  "NVIDIA_REQUIRE_CUDA"}
@@ -115,9 +117,13 @@ def emit(event: str, role: str = "pair", **fields) -> None:
     # A generated timestamp is the only field added outside the fixed schema.
     record = {"timestamp_ns": time.time_ns(), "run_id": RUN_ID,
               "source_revision": SOURCE_REVISION, **value}
-    print(json.dumps(record, separators=(",", ":")), flush=True)
-    if LOG_SINK is not None:
-        LOG_SINK.submit(record)
+    with LOG_LOCK:
+        if LOG_STDOUT is None:
+            print(json.dumps(record, separators=(",", ":")), flush=True)
+        else:
+            LOG_STDOUT.write(record)
+        if LOG_SINK is not None:
+            LOG_SINK.submit(record)
 
 
 class PrivateStatusServer(ThreadingHTTPServer):
@@ -514,7 +520,7 @@ class Supervisor:
 
 
 def main() -> int:
-    global LOG_SINK
+    global LOG_SINK, LOG_STDOUT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config-json", required=True)
     parser.add_argument("--run-dir", type=Path, default=Path("/run/dsv41/pair"))
@@ -524,6 +530,7 @@ def main() -> int:
         # Core files can include prompts, tensors and credentials. No raw core
         # file belongs to the reviewed error-only diagnostics profile.
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        LOG_STDOUT = NonblockingStdout()
         LOG_SINK = LogSink.from_environment()
         supervisor = Supervisor(json.loads(args.config_json), args.run_dir, assigned_gpus())
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT):

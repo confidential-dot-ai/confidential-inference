@@ -204,3 +204,8 @@ shared sender uses a bounded queue and shutdown wait. It does not read request
 objects, credentials, proxy settings or tracing baggage. Collector delivery
 failure reports counts only. It can lose records during an outage. The chart
 permits this internal path through both source and collector network rules.
+
+Container stdout writes are nonblocking and at most 4096 bytes. A full pipe
+can lose a record, but it cannot stop router shutdown or the separate bounded
+OTLP submission. The fixed field parser still reviews every native record
+before either output path.
