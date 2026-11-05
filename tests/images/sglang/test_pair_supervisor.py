@@ -69,7 +69,7 @@ class PrivacyTests(unittest.TestCase):
         self.assertNotIn(canary, output + errors)
         self.assertEqual("", errors)
         record = json.loads(output)
-        self.assertEqual({"timestamp_ns", "run_id", "source_revision", "event", "role"}, set(record))
+        self.assertEqual({"schema_version", "component", "timestamp_ns", "run_id", "source_revision", "event", "role"}, set(record))
         self.assertRegex(record["run_id"], r"^[0-9a-f]{32}$")
         self.assertEqual("status_request_failed", record["event"])
 
@@ -85,7 +85,7 @@ class PrivacyTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             pair.emit("nccl_error", "decode", rank=1, code=7, count=2)
         record = json.loads(output.getvalue())
-        self.assertEqual({"timestamp_ns", "run_id", "source_revision", "event", "role", "rank", "code", "count"}, set(record))
+        self.assertEqual({"schema_version", "component", "timestamp_ns", "run_id", "source_revision", "event", "role", "rank", "code", "count"}, set(record))
         self.assertEqual("nccl_error", record["event"])
 
     def test_refuses_raw_artifact_outputs(self):
@@ -274,7 +274,7 @@ class ProcessAcceptanceTests(unittest.TestCase):
             self.assertTrue(any(record["event"] == "cuda_error" for record in records))
             for record in records:
                     self.assertRegex(record["run_id"], r"^[0-9a-f]{32}$")
-                    self.assertIsNotNone(pair.reviewed_event({k: v for k, v in record.items() if k not in {"timestamp_ns", "run_id", "source_revision"}}))
+                    self.assertIsNotNone(pair.reviewed_event({k: v for k, v in record.items() if k not in {"schema_version", "component", "timestamp_ns", "run_id", "source_revision"}}))
             self.assertTrue(all(child.poll() is not None for child in supervisor.children.values()))
 
     def test_http_alive_gpu_progress_stalled_fails_and_stops_pair(self):

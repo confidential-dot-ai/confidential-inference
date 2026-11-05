@@ -603,3 +603,44 @@ async fn gateway_keeps_a_conversation_on_one_routing_key() {
     assert!(keys.iter().flatten().all(|key| !key.contains("session")));
     let _ = stop.send(());
 }
+
+#[tokio::test]
+async fn upstream_error_bodies_and_headers_are_not_forwarded() {
+    for code in [400, 401, 413, 422, 429, 500, 502, 503, 504] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let address = listener.local_addr().unwrap_or_else(|_| unreachable!());
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(
+                listener,
+                Router::new().route(
+                    "/v1/chat/completions",
+                    post(move || async move {
+                        (
+                            StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY),
+                            [
+                                (header::RETRY_AFTER, "2"),
+                                (header::SERVER, "PRIVATE_BACKEND_HEADER"),
+                            ],
+                            "PRIVATE_BACKEND_BODY_PROMPT_TOKEN_EXCEPTION",
+                        )
+                    }),
+                ),
+            )
+            .await;
+        });
+        let response = app(address).oneshot(Request::builder().method("POST").uri("/v1/chat/completions")
+            .header("authorization","Bearer accepted").header("content-type","application/json")
+            .body(Body::from(json!({"model":"deepseek","messages":[{"role":"user","content":"PRIVATE_PROMPT"}]}).to_string())).unwrap_or_else(|_| unreachable!()))
+            .await.unwrap_or_else(|_| unreachable!());
+        assert_eq!(response.status().as_u16(), code);
+        assert!(!format!("{:?}", response.headers()).contains("PRIVATE"));
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert!(!String::from_utf8_lossy(&body).contains("PRIVATE"));
+        assert!(serde_json::from_slice::<Value>(&body).is_ok());
+        server.abort();
+    }
+}

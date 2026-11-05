@@ -31,6 +31,7 @@ pub mod metrics;
 mod model_response;
 pub mod protection;
 pub mod routing_key;
+pub mod safe_logging;
 pub mod settings;
 pub mod usage;
 
@@ -71,16 +72,13 @@ pub struct TracingAuditSink;
 
 impl AuditSink for TracingAuditSink {
     fn record(&self, event: AuditEvent) {
-        // The collector clears log attributes. Put only the reviewed audit
-        // fields in the body so the safe correlation metadata reaches it.
-        let record = json!({
-            "event": "gateway_request_completed",
-            "request_id": event.request_id,
-            "route": event.route,
-            "status": event.status,
-            "key_id": event.key_id,
-        });
-        tracing::info!("{record}");
+        safe_logging::emit(
+            "gateway_response_started",
+            json!({
+                "route": event.route,
+                "status": event.status,
+            }),
+        );
     }
 }
 
@@ -135,8 +133,8 @@ pub fn router_with_usage(
         .and_then(|url| url.host_str().map(str::to_owned))
         .unwrap_or_else(|| "fixed-router".into());
     let routing_keys = routing_key::RoutingKeys::generate()
-        .inspect_err(|error| {
-            tracing::error!(%error, "no routing key secret: the router routes requests at random");
+        .inspect_err(|_| {
+            safe_logging::emit("gateway_routing_key_failed", json!({}));
         })
         .ok()
         .map(Arc::new);
@@ -397,6 +395,39 @@ async fn proxy_inference(
             key_id: Some(key_id),
         });
         return inference_unavailable();
+    }
+    // Never forward an upstream error body, including validation errors.
+    if !status.is_success() {
+        if let Some(usage) = &mut usage_request {
+            usage.finish(usage::Outcome::Failed);
+        }
+        state
+            .metrics
+            .record_request(model, &key_id, status.as_u16());
+        state.metrics.observe_request_duration(
+            model,
+            status.as_u16(),
+            started.elapsed().as_secs_f64(),
+        );
+        state.audit.record(AuditEvent {
+            request_id,
+            route,
+            status: status.as_u16(),
+            key_id: Some(key_id),
+        });
+        let retry_after = safe_retry_after(upstream.headers());
+        let mut response = client_error(
+            status,
+            if status.is_client_error() {
+                "upstream_request_rejected"
+            } else {
+                "upstream_failed"
+            },
+        );
+        if let Some(value) = retry_after {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        return response;
     }
     let content_type = upstream.headers().get(header::CONTENT_TYPE).cloned();
     let is_event_stream = content_type

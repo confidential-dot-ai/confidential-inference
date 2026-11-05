@@ -141,7 +141,7 @@ impl Recorder {
         if queue.events.len() >= self.capacity {
             queue.events.pop_front();
             self.metrics.record_usage_event_dropped();
-            tracing::error!("the usage queue is full; dropped the oldest event");
+            crate::safe_logging::emit("gateway_usage_queue_full", serde_json::json!({}));
         }
         let sequence = queue.next_sequence;
         queue.next_sequence += 1;
@@ -202,7 +202,10 @@ impl Recorder {
                 Err(SendError::Rejected(status)) => {
                     self.acknowledge(last);
                     self.metrics.record_usage_event_rejected(status);
-                    tracing::error!(status, "the admin refused a usage event; dropped it");
+                    crate::safe_logging::emit(
+                        "gateway_usage_rejected",
+                        serde_json::json!({"status":status}),
+                    );
                     limit = MAX_BATCH_EVENTS;
                 }
                 Err(SendError::Retry(reason)) => {
@@ -223,7 +226,10 @@ impl Recorder {
             delay = match self.send_pending(&client).await {
                 Ok(()) => SEND_INTERVAL,
                 Err(reason) => {
-                    tracing::warn!(reason, pending = self.pending(), "usage delivery delayed");
+                    crate::safe_logging::emit(
+                        "gateway_usage_delayed",
+                        serde_json::json!({"reason":reason,"pending":self.pending()}),
+                    );
                     (delay * 2).min(MAX_RETRY_INTERVAL)
                 }
             };
@@ -245,7 +251,10 @@ impl Recorder {
         }
         let pending = self.pending();
         if pending > 0 {
-            tracing::error!(pending, "usage events were not delivered before shutdown");
+            crate::safe_logging::emit(
+                "gateway_usage_shutdown_incomplete",
+                serde_json::json!({"pending":pending}),
+            );
         }
     }
 

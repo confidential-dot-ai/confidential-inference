@@ -133,12 +133,7 @@ processors:
       - 'keep_keys(resource.attributes, ["service.name"])'
       - {{ printf "keep_keys(span.attributes, %s)" (toJson $t.spanAttributes) | quote }}
       - 'keep_keys(spanevent.attributes, [])'
-  transform/logs:
-    error_mode: ignore
-    log_statements:
-      - 'keep_keys(resource.attributes, ["service.name"])'
-      - 'keep_keys(log.attributes, [])'
-      - 'replace_pattern(log.body, "(?i)bearer\\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]")'
+  {{- include "confidential-inference.safeLogProcessors" . | nindent 2 }}
 connectors:
   spanmetrics:
     histogram:
@@ -163,7 +158,7 @@ exporters:
 service:
   extensions: [health_check, oauth2client, basicauth/loki]
   telemetry:
-    logs: {level: info}
+    logs: {level: info, output_paths: [/dev/null], error_output_paths: [/dev/null]}
     metrics:
       level: normal
       readers:
@@ -185,7 +180,7 @@ service:
     {{- end }}
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, transform/logs, resource/identity, batch]
+      processors: [memory_limiter, transform/logs, filter/safe_logs, transform/log_envelope, resource/identity, batch]
       exporters: [otlphttp/loki]
 {{- end -}}
 

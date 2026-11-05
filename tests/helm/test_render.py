@@ -131,7 +131,7 @@ def check_model_cache() -> None:
         pod = worker["spec"]["template"]["spec"]
         assert "confidential.ai/c8s-volumes" not in worker["spec"]["template"]["metadata"]["annotations"]
         fetch, = pod["initContainers"]
-        assert fetch["command"] == ["/usr/local/bin/fetch-model"]
+        assert fetch["command"] == ["python3", "/usr/local/bin/ci-private-process", "/usr/local/bin/fetch-model"]
         assert "--path=/mnt/c8s-data/models/cache" in fetch["args"]
         assert f"--manifest-sha256={pin}" in fetch["args"]
         assert {"name": "model-cache", "mountPath": "/mnt/c8s-data/models/cache"} in fetch["volumeMounts"]
@@ -272,7 +272,8 @@ def check_telemetry_collector() -> None:
     processors = config["processors"]
     assert "keep_keys(spanevent.attributes, [])" in processors["transform/traces"]["trace_statements"]
     assert not any("gen_ai.request.id" in statement for statement in processors["transform/traces"]["trace_statements"])
-    assert "keep_keys(log.attributes, [])" in processors["transform/logs"]["log_statements"]
+    assert "set(log.attributes, {})" in processors["transform/logs"]["log_statements"]
+    assert "filter/safe_logs" in config["service"]["pipelines"]["logs"]["processors"]
     assert config["service"]["pipelines"]["traces"]["exporters"] == ["spanmetrics"]
 
     # C8s's platform kube-state-metrics: off without a target, then one job
@@ -602,7 +603,7 @@ def main() -> None:
         container = next(
             item for item in pod["spec"]["containers"] if item["name"] == "sglang"
         )
-        assert container["command"] == ["python3"]
+        assert container["command"] == ["python3", "/usr/local/bin/ci-private-process", "python3"]
         assert "sglang_simulator.simulation.sglang.launch_server" in container["args"]
         assert "--chat-template=chatml" in container["args"]
         assert f"--random-seed={worker_index}" in container["args"]
@@ -648,7 +649,7 @@ def main() -> None:
     settings = Gateway(staging_documents).settings
     staging_router = next(item for item in staging_documents if item["kind"] == "Deployment"
                           and item["metadata"]["name"] == "sglang-router")
-    routes = json.loads(staging_router["spec"]["template"]["spec"]["containers"][0]["env"][0]["value"])
+    routes = json.loads(next(item["value"] for item in staging_router["spec"]["template"]["spec"]["containers"][0]["env"] if item["name"] == "CI_ROUTER_MODEL_ROUTES"))
     assert settings["catalogModelIds"] == [model]
     assert settings["inferenceModelIds"] == [model]
     router_slot = next(item for item in staging_documents if item["kind"] == "Service" and item["metadata"]["name"] == settings["routerService"])

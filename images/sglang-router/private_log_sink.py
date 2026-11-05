@@ -7,10 +7,13 @@ import json
 import os
 import queue
 import re
+import signal
 import threading
 import time
 import urllib.parse
 import urllib.request
+
+from safe_events import validate
 
 
 class NonblockingStdout:
@@ -24,6 +27,9 @@ class NonblockingStdout:
         os.set_blocking(fd, False)
 
     def write(self, record):
+        record = validate(record)
+        if record is None:
+            return False
         payload = (json.dumps(record, separators=(',', ':')) + '\n').encode()
         # Linux pipe writes at or below PIPE_BUF are atomic. A full pipe must
         # never leave half a JSON line or block the failure/restart path.
@@ -49,7 +55,7 @@ class LogSink:
                 or parsed.query or parsed.fragment or parsed.path != '/v1/logs'
                 or parsed.port is None):
             raise ValueError('invalid internal log endpoint')
-        if not re.fullmatch(r'(sglang-router|inference-pd-[a-z0-9-]{1,24})', service):
+        if not re.fullmatch(r'(sglang-router|inference-worker-[0-9]{1,4}|inference-pd-[a-z0-9-]{1,24})', service):
             raise ValueError('invalid diagnostic service name')
         self.endpoint, self.service, self.timeout = endpoint, service, timeout
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
@@ -67,7 +73,11 @@ class LogSink:
         return cls(endpoint, os.environ.get('OTEL_SERVICE_NAME', 'sglang-router'))
 
     def submit(self, record):
-        # Store serialized, bounded records. Never retain a request object.
+        # Validate before the queue. Rejected input is never formatted or retained.
+        record = validate(record)
+        if record is None:
+            self.dropped += 1
+            return
         body = json.dumps(record, separators=(',', ':'))
         if len(body.encode()) > 4096:
             self.dropped += 1
@@ -128,3 +138,39 @@ class LogSink:
         self.thread.join(timeout)
         return {'exported': self.sent, 'dropped': self.dropped,
                 'pending': self.queue.unfinished_tasks, 'failures': self.failures}
+
+
+def consume_child_output(child, accept):
+    """Drain bounded lines while the parent waits for the actual child exit.
+
+    A surviving helper can keep a pipe open after the worker exits. It must
+    not hide that exit or prevent a restart. Never format reader exceptions.
+    """
+    rejected = [0]
+    def read():
+        try:
+            while True:
+                raw = child.stdout.readline(8193)
+                if not raw:
+                    return
+                if len(raw) > 8192:
+                    while raw and not raw.endswith(b'\n'):
+                        raw = child.stdout.readline(8193)
+                    rejected[0] += 1
+                    continue
+                try:
+                    if not accept(raw):
+                        rejected[0] += 1
+                except Exception:
+                    rejected[0] += 1
+        except Exception:
+            rejected[0] += 1
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    code = child.wait()
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    reader.join(timeout=1)
+    return code, rejected[0]

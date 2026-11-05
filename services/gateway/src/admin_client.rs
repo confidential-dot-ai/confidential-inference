@@ -203,12 +203,18 @@ pub async fn sync_keys(
         match client.key_snapshot().await {
             Ok(snapshot) => {
                 if let Err(error) = store.apply(&snapshot) {
-                    tracing::error!(code = error.code(), "refused the pulled key snapshot");
+                    crate::safe_logging::emit(
+                        "gateway_snapshot_refused",
+                        serde_json::json!({"reason":error.code()}),
+                    );
                 }
             }
             Err(reason) => {
                 metrics.record_key_registry_fetch_failure(reason);
-                tracing::warn!(reason, "the key snapshot pull failed");
+                crate::safe_logging::emit(
+                    "gateway_snapshot_fetch_failed",
+                    serde_json::json!({"reason":reason}),
+                );
             }
         }
         if let Some(seconds) = store.stale_seconds() {

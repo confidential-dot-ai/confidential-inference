@@ -89,7 +89,7 @@ class SnapshotPrivacyTests(unittest.TestCase):
         frames = [row for row in rows if row['event'] == 'stack_frame']
         self.assertTrue(frames, json.dumps(rows))
         self.assertTrue(all(row['location'] == PUBLIC_LABEL for row in frames))
-        self.assertTrue(all(set(row) == {'timestamp_ns','run_id','source_revision','event','role','rank','thread','frame','location','line'} for row in frames))
+        self.assertTrue(all(set(row) == {'schema_version','component','timestamp_ns','run_id','source_revision','event','role','rank','thread','frame','location','line'} for row in frames))
         summary = next(row for row in rows if row['event'] == 'stack_dump_complete')
         self.assertGreater(summary['rejected'], 0)
 

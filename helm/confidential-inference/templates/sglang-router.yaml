@@ -89,11 +89,7 @@ spec:
             runAsGroup: 1001
             capabilities:
               drop: ["ALL"]
-          {{- if $pd }}
           command: ["python3", "/usr/local/bin/ci-sglang-router"]
-          {{- else }}
-          command: ["python3", "-m", "sglang_router.launch_router"]
-          {{- end }}
           args:
             {{- if $pd }}
             # Prefill/decode mode (inference.pd): each prefill URL and its
@@ -174,7 +170,7 @@ spec:
             - --prometheus-port={{ .Values.router.metricsPort }}
             {{- end }}
           env:
-            {{- if and $pd .Values.telemetry.enabled }}
+            {{- if .Values.telemetry.enabled }}
             - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
               value: {{ printf "http://telemetry-collector.%s.svc.cluster.local:%v/v1/logs" .Release.Namespace .Values.telemetry.otlpHttpPort | quote }}
             - name: OTEL_SERVICE_NAME

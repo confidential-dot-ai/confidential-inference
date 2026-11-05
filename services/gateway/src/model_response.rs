@@ -6,6 +6,9 @@ use std::io;
 const MAXIMUM_PENDING_BYTES: usize = 16 * 1024 * 1024;
 
 fn rewrite_value(mut value: Value, model: &str) -> io::Result<Vec<u8>> {
+    if value.get("error").is_some() {
+        value = serde_json::json!({"error":{"code":"upstream_failed","message":"The upstream request failed."}});
+    }
     if let Some(name) = value.get_mut("model") {
         *name = Value::String(model.to_owned());
     }
@@ -60,7 +63,7 @@ impl ModelResponse {
             value.get("model").and_then(Value::as_str) != Some(expected.as_str())
         }) {
             if !self.model_mismatch {
-                tracing::warn!("usage model identity did not match its approved binding");
+                crate::safe_logging::emit("gateway_model_binding_mismatch", serde_json::json!({}));
             }
             self.model_mismatch = true;
         }
@@ -237,6 +240,25 @@ mod tests {
         assert!(text.ends_with("data: [DONE]\n\n"));
         assert_eq!(text.matches("\"model\":\"public\"").count(), 2);
         assert!(text.contains("\"completion_tokens\":1"));
+    }
+
+    #[test]
+    fn upstream_json_and_stream_error_objects_use_a_fixed_message() {
+        let private = "PRIVATE_PROMPT_RESPONSE_EXCEPTION";
+        let body =
+            serde_json::to_vec(&json!({"error":{"message":private,"body":private}})).unwrap();
+        let mut ordinary = ModelResponse::new("public".into(), false);
+        ordinary.push(&body).unwrap();
+        let output = String::from_utf8(ordinary.finish().unwrap()).unwrap();
+        assert!(!output.contains(private));
+        assert!(output.contains("upstream_failed"));
+        let mut stream = ModelResponse::new("public".into(), true);
+        let mut frame = b"data: ".to_vec();
+        frame.extend(body);
+        frame.extend(b"\n\n");
+        let output = String::from_utf8(stream.push(&frame).unwrap()).unwrap();
+        assert!(!output.contains(private));
+        assert!(output.contains("upstream_failed"));
     }
 
     #[test]
