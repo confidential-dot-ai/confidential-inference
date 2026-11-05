@@ -177,15 +177,21 @@ pub fn router_with_usage(
 }
 
 async fn request_id(mut request: Request, next: Next) -> Response<Body> {
-    let request_id = request
+    let response_id = request
         .headers()
         .get("x-request-id")
         .and_then(|value| value.to_str().ok())
         .filter(|value| valid_request_id(value))
         .map_or_else(|| Uuid::new_v4().to_string(), ToOwned::to_owned);
+    // Caller IDs can contain customer text. Preserve the response contract,
+    // but mint a separate ID for audit records and internal worker requests.
+    let request_id = Uuid::new_v4().to_string();
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        request.headers_mut().insert("x-request-id", value);
+    }
     request.extensions_mut().insert(request_id.clone());
     let mut response = next.run(request).await;
-    if let Ok(value) = HeaderValue::from_str(&request_id) {
+    if let Ok(value) = HeaderValue::from_str(&response_id) {
         response.headers_mut().insert("x-request-id", value);
     }
     response

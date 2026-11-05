@@ -155,6 +155,14 @@ fn no_redirect_client() -> reqwest::Client {
 }
 
 fn app_with_client(address: SocketAddr, client: reqwest::Client) -> Router {
+    app_with_audit(address, client, Arc::new(Audit))
+}
+
+fn app_with_audit(
+    address: SocketAddr,
+    client: reqwest::Client,
+    audit: Arc<dyn AuditSink>,
+) -> Router {
     router(
         GatewayConfig {
             catalog_model_ids: vec!["deepseek".to_owned()],
@@ -165,7 +173,7 @@ fn app_with_client(address: SocketAddr, client: reqwest::Client) -> Router {
             protection: confidential_gateway::protection::ProtectionConfig::default(),
         },
         Arc::new(Keys),
-        Arc::new(Audit),
+        audit,
         Arc::new(GatewayMetrics::new("test")),
         client,
     )
@@ -173,6 +181,88 @@ fn app_with_client(address: SocketAddr, client: reqwest::Client) -> Router {
 
 fn app(address: SocketAddr) -> Router {
     app_with_client(address, no_redirect_client())
+}
+
+#[tokio::test]
+async fn caller_ids_cannot_enter_audit_records_or_upstream_headers() {
+    #[derive(Default)]
+    struct SavedAudit(Mutex<Vec<AuditEvent>>);
+    impl AuditSink for SavedAudit {
+        fn record(&self, event: AuditEvent) {
+            self.0.lock().unwrap_or_else(|_| unreachable!()).push(event);
+        }
+    }
+    let observed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured = Arc::clone(&observed);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|_| unreachable!());
+    let address = listener.local_addr().unwrap_or_else(|_| unreachable!());
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            Router::new().route(
+                "/v1/chat/completions",
+                post(move |headers: HeaderMap| {
+                    let captured = Arc::clone(&captured);
+                    async move {
+                        captured.lock().unwrap_or_else(|_| unreachable!()).push(
+                            headers["x-request-id"]
+                                .to_str()
+                                .unwrap_or_default()
+                                .to_owned(),
+                        );
+                        Json(json!({"model":"deepseek","choices":[]}))
+                    }
+                }),
+            ),
+        )
+        .await;
+    });
+    let audit = Arc::new(SavedAudit::default());
+    let gateway = app_with_audit(address, no_redirect_client(), audit.clone());
+    let private = "PRIVATE_PROMPT_RESPONSE_CREDENTIAL_IN_CLIENT_ID";
+    for route in ["/v1/models", "/v1/chat/completions", "/v1/chat/completions"] {
+        let mut request = Request::builder()
+            .uri(route)
+            .header("x-request-id", private);
+        let body = if route == "/v1/models" {
+            Body::empty()
+        } else {
+            request = request
+                .method("POST")
+                .header(header::AUTHORIZATION, "Bearer accepted")
+                .header(header::CONTENT_TYPE, "application/json");
+            Body::from(r#"{"model":"deepseek","messages":[]}"#)
+        };
+        let response = gateway
+            .clone()
+            .oneshot(request.body(body).unwrap_or_else(|_| unreachable!()))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-request-id"], private);
+    }
+    let events = audit.0.lock().unwrap_or_else(|_| unreachable!());
+    assert_eq!(events.len(), 3);
+    assert!(
+        !serde_json::to_string(&*events)
+            .unwrap_or_default()
+            .contains(private)
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| uuid::Uuid::parse_str(&event.request_id).is_ok())
+    );
+    assert_ne!(events[0].request_id, events[1].request_id);
+    assert_ne!(events[1].request_id, events[2].request_id);
+    assert_eq!(events[1].key_id.as_deref(), Some("key_record_1"));
+    assert_eq!(
+        *observed.lock().unwrap_or_else(|_| unreachable!()),
+        vec![events[1].request_id.clone(), events[2].request_id.clone()]
+    );
+    server.abort();
 }
 
 #[tokio::test]
