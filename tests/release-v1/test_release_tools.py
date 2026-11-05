@@ -607,6 +607,16 @@ class AcceptedFindingTests(unittest.TestCase):
 
 
 class ManifestTests(unittest.TestCase):
+    def test_policy_matches_each_rendered_controller_and_workload_identity(self):
+        for profile in (PRODUCTION, STAGING):
+            policy = MAN.read_allowlist_policy(profile.policy)
+            controllers = GEN.controllers(rendered(profile))
+            with self.subTest(profile=profile.name):
+                self.assertEqual(set(controllers), {item["controller"] for item in policy["workloads"]})
+                for item in policy["workloads"]:
+                    identity = controllers[item["controller"]]["spec"]["template"]["metadata"]["annotations"]["confidential.ai/cw"]
+                    self.assertEqual(item["name"], identity)
+
     def test_signed_beta_version_is_a_valid_release_input(self):
         spec = MAN.read_spec(PRODUCTION)
         for version in ('v0.37.0-beta.1', 'v0.37.0'):
