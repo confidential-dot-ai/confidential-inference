@@ -158,6 +158,12 @@ class CollectorTests(unittest.TestCase):
                     "body": {"stringValue": f"auth Bearer {SECRET} done"},
                     "attributes": [attribute("prompt", SECRET)],
                 }]}]}]})
+                safe = {"schema_version": 1, "component": "gateway", "event": "gateway_response_started",
+                        "route": "/v1/chat/completions", "status": 503}
+                post("/v1/logs", {"resourceLogs": [{"resource": resource, "scopeLogs": [{"logRecords": [{
+                    "body": {"stringValue": json.dumps(safe)}, "severityText": SECRET,
+                    "attributes": [attribute("prompt", SECRET)],
+                }]}]}]})
                 time.sleep(8)
             finally:
                 logs = subprocess.run([RUNTIME, "logs", name], text=True, capture_output=True)
@@ -173,7 +179,7 @@ class CollectorTests(unittest.TestCase):
                                    ("metrics.json", "otelcol_receiver_accepted_metric_points"),
                                    ("metrics.json", '"otel.signal"'),
                                    ("metrics.json", "traces.span.metrics.duration"),
-                                   ("spans.json", "gen_ai.usage.prompt_tokens"), ("logs.json", "Bearer [REDACTED]")):
+                                   ("spans.json", "gen_ai.usage.prompt_tokens"), ("logs.json", "gateway_response_started")):
                 self.assertTrue(expected in outputs[name], f"{expected} missing from {name}")
 
 

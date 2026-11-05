@@ -5,7 +5,7 @@ use axum_server::Handle;
 use clap::Parser;
 use hyper_util::rt::TokioTimer;
 use maintenance_gateway::{ProtectionConfig, app_with_config};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -24,15 +24,31 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_target(false)
-        .compact()
-        .init();
-    let args = Args::parse();
+async fn main() -> std::process::ExitCode {
+    std::panic::set_hook(Box::new(|_| write_event("maintenance_panic")));
+    if run().await.is_ok() {
+        std::process::ExitCode::SUCCESS
+    } else {
+        write_event("maintenance_startup_failed");
+        std::process::ExitCode::FAILURE
+    }
+}
+
+fn write_event(event: &'static str) {
+    if !matches!(
+        event,
+        "maintenance_ready" | "maintenance_startup_failed" | "maintenance_panic"
+    ) {
+        return;
+    }
+    let record = serde_json::json!({"schema_version":1,"component":"maintenance","event":event});
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), format!("{record}\n").as_bytes());
+}
+
+async fn run() -> Result<()> {
+    tracing_subscriber::registry().init();
+    let args =
+        Args::try_parse().map_err(|_| anyhow::anyhow!("invalid maintenance configuration"))?;
     if args.listen.port() != 9443 {
         bail!("the maintenance gateway must listen on port 9443");
     }
@@ -43,7 +59,7 @@ async fn main() -> Result<()> {
             shutdown.graceful_shutdown(Some(Duration::from_secs(10)));
         }
     });
-    tracing::info!(listen = %args.listen, "the maintenance gateway is ready behind c8s TLS-LB");
+    write_event("maintenance_ready");
     let mut server = axum_server::bind(args.listen).handle(handle);
     server
         .http_builder()

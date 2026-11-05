@@ -136,6 +136,8 @@ jobs:
         run: |
           python3 -m pip install --user --break-system-packages --require-hashes \
             --requirement scripts/requirements-release-signing.txt
+          python3 -m pip install --user --break-system-packages --require-hashes \
+            --requirement tests/logging/requirements.lock
 
       - name: install helm
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
@@ -154,7 +156,7 @@ jobs:
         run: |
           failed=0
           run() { echo "::group::$*"; "$@" || { echo "::error::failed: $*"; failed=1; }; echo "::endgroup::"; }
-          for suite in api image-workflow images/gateway images/sglang images/sglang-router network-v0 release-v1; do
+          for suite in api image-workflow images/gateway images/sglang images/sglang-router logging telemetry network-v0 release-v1; do
             run python3 -m unittest discover -s "tests/$suite" -p 'test_*.py'
           done
           run python3 -m unittest discover -s tests/release-v0 -p test_release_signature.py

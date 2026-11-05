@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Run the PD router with an allowlist of error fields on container stdout."""
-from datetime import datetime, timezone
 import json
 import os
 import resource
@@ -9,8 +8,10 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 
-from private_log_sink import LogSink, NonblockingStdout
+from private_log_sink import LogSink, NonblockingStdout, consume_child_output
+from safe_events import envelope
 
 LOG_SINK = None
 LOG_STDOUT = None
@@ -47,11 +48,11 @@ def reviewed_event(record):
 
 
 def emit(event, **fields):
-    own = {"router_config_rejected", "router_exit", "router_failed", "diagnostic_delivery_failed"}
+    own = {"router_config_rejected", "router_exit", "router_failed", "router_diagnostic_delivery_failed", "router_started", "router_log_records_rejected"}
     if type(event) is not str:
         raise ValueError("invalid diagnostic event")
     if event in own:
-        if fields.get("role") != "router" or fields.keys() - {"role", "code", "exported", "dropped", "pending", "failures"}:
+        if fields.get("role") != "router" or fields.keys() - {"role", "code", "count", "exported", "dropped", "pending", "failures"}:
             raise ValueError("invalid diagnostic fields")
         if any(type(value) is not int or not -(2**63) < value < 2**63 for key, value in fields.items() if key != "role"):
             raise ValueError("invalid diagnostic fields")
@@ -60,14 +61,23 @@ def emit(event, **fields):
         value = reviewed_event({"ci_event": event, **fields})
         if value is None:
             raise ValueError("invalid diagnostic fields")
-    record = {"timestamp": datetime.now(timezone.utc).isoformat(),
-              "source_revision": SOURCE_REVISION, **value}
-    if LOG_STDOUT is None:
-        print(json.dumps(record, separators=(",", ":")), flush=True)
-    else:
-        LOG_STDOUT.write(record)
+    record = envelope({"timestamp_ns": time.time_ns(),
+                       "source_revision": SOURCE_REVISION, **value})
+    if record is None:
+        raise ValueError("invalid diagnostic record")
+    try:
+        if LOG_STDOUT is None:
+            print(json.dumps(record, separators=(",", ":")), flush=True)
+        else:
+            LOG_STDOUT.write(record)
+    except Exception:
+        pass  # Never report an exception from a failed log sink.
     if LOG_SINK is not None:
-        LOG_SINK.submit(record)
+        try:
+            LOG_SINK.submit(record)
+        except Exception:
+            pass  # No raw fallback from delivery errors.
+
 
 
 def main():
@@ -90,6 +100,7 @@ def main():
     child = subprocess.Popen(command, env=environment, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              start_new_session=True)
+    emit("router_started", role="router")
     timer = None
 
     def kill_group():
@@ -112,22 +123,15 @@ def main():
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT):
         signal.signal(sig, stop)
     try:
-        assert child.stdout is not None
-        while True:
-            line = child.stdout.readline(8193)
-            if not line:
-                break
-            if len(line) > 8192:
-                while line and not line.endswith(b"\n"):
-                    line = child.stdout.readline(8193)
-                continue
-            try:
-                value = reviewed_event(json.loads(line))
-            except (ValueError, UnicodeError):
-                continue
-            if value is not None:
-                emit(**value)
-        code = child.wait()
+        def accept(raw):
+            value = reviewed_event(json.loads(raw))
+            if value is None:
+                return False
+            emit(**value)
+            return True
+        code, rejected = consume_child_output(child, accept)
+        if rejected:
+            emit("router_log_records_rejected", role="router", count=rejected)
         if code != 0:
             emit("router_exit", role="router", code=code)
         return code if code >= 0 else 128 - code
@@ -139,7 +143,7 @@ def main():
             delivery = LOG_SINK.close(timeout=1)
             LOG_SINK = None
             if delivery["dropped"] or delivery["pending"] or delivery["failures"]:
-                emit("diagnostic_delivery_failed", role="router", **delivery)
+                emit("router_diagnostic_delivery_failed", role="router", **delivery)
 
 
 if __name__ == "__main__":

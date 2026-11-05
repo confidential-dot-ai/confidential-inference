@@ -163,8 +163,23 @@ struct Args {
 }
 
 #[tokio::main]
+async fn main() -> std::process::ExitCode {
+    std::panic::set_hook(Box::new(|_| {
+        let _ = std::io::Write::write_all(
+            &mut std::io::stderr(),
+            b"{\"schema_version\":1,\"component\":\"gateway\",\"event\":\"gateway_panic\"}\n",
+        );
+    }));
+    if run().await.is_ok() {
+        std::process::ExitCode::SUCCESS
+    } else {
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), b"{\"schema_version\":1,\"component\":\"gateway\",\"event\":\"gateway_startup_failed\"}\n");
+        std::process::ExitCode::FAILURE
+    }
+}
+
 #[allow(clippy::too_many_lines)]
-async fn main() -> Result<()> {
+async fn run() -> Result<()> {
     let log_export = std::env::var("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
         .ok()
         .map(otlp_log_export)
@@ -172,15 +187,14 @@ async fn main() -> Result<()> {
     {
         use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
         tracing_subscriber::registry()
-            .with(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "info".into()),
-            )
-            .with(tracing_subscriber::fmt::layer())
-            .with(log_export.as_ref().map(otlp_log_layer))
+            .with(confidential_gateway::safe_logging::SafeLayer::new(
+                log_export.as_ref(),
+                Box::new(std::io::stdout()),
+            ))
             .init();
     }
-    let mut args = Args::parse();
+    let mut args =
+        Args::try_parse().map_err(|_| anyhow::anyhow!("invalid gateway configuration"))?;
     // The HTTP/2 stream limit keeps the startup argument; the settings do not
     // change it.
     let limits = HttpLimits::from_args(&args)?;
@@ -194,7 +208,10 @@ async fn main() -> Result<()> {
         inference_model_ids = settings.inference_model_ids;
     }
     validate_args(&args)?;
-    tracing::info!("gateway configuration validated");
+    confidential_gateway::safe_logging::emit(
+        "gateway_configuration_validated",
+        serde_json::json!({}),
+    );
 
     let secret_wait = Duration::from_secs(args.secret_wait_seconds);
     let metrics = Arc::new(GatewayMetrics::new(args.environment.clone()));
@@ -273,7 +290,10 @@ async fn main() -> Result<()> {
             .map_err(anyhow::Error::msg)
             .context("parse the admin API key hashes")?;
     } else {
-        tracing::info!("no admin API key file; admin requests need the v1 signature");
+        confidential_gateway::safe_logging::emit(
+            "gateway_admin_signature_required",
+            serde_json::json!({}),
+        );
     }
     let admin_routes = admin_router(keys).layer(middleware::from_fn_with_state(
         admin_verifier,
@@ -286,26 +306,29 @@ async fn main() -> Result<()> {
         .context("bind the private metrics listener")?;
     let private = metrics_router(metrics);
     tokio::spawn(async move {
-        if let Err(error) = axum::serve(metrics_listener, private).await {
-            tracing::error!(%error, "the metrics listener stopped");
+        if axum::serve(metrics_listener, private).await.is_err() {
+            confidential_gateway::safe_logging::emit(
+                "gateway_metrics_listener_failed",
+                serde_json::json!({}),
+            );
         }
     });
 
-    tracing::info!(listen = %args.listen, environment = %args.environment, "the gateway is ready");
+    confidential_gateway::safe_logging::emit("gateway_ready", serde_json::json!({}));
     let shutdown_handle = axum_server::Handle::new();
     let signal_handle = shutdown_handle.clone();
     let shutdown_grace = Duration::from_secs(args.shutdown_grace_seconds);
     let endpoint_drain = Duration::from_secs(args.endpoint_drain_seconds);
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;
-        tracing::info!(
-            drain_seconds = endpoint_drain.as_secs(),
-            "the gateway started endpoint drain"
+        confidential_gateway::safe_logging::emit(
+            "gateway_endpoint_drain",
+            serde_json::json!({"drain_seconds": endpoint_drain.as_secs()}),
         );
         tokio::time::sleep(endpoint_drain).await;
-        tracing::info!(
-            grace_seconds = shutdown_grace.as_secs(),
-            "the gateway started graceful shutdown"
+        confidential_gateway::safe_logging::emit(
+            "gateway_shutdown",
+            serde_json::json!({"grace_seconds": shutdown_grace.as_secs()}),
         );
         signal_handle.graceful_shutdown(Some(shutdown_grace));
     });
@@ -338,25 +361,12 @@ fn otlp_log_export(endpoint: String) -> Result<opentelemetry_sdk::logs::SdkLogge
         .context("build the OTLP log exporter")?;
     Ok(opentelemetry_sdk::logs::SdkLoggerProvider::builder()
         .with_batch_exporter(exporter)
+        .with_resource(
+            opentelemetry_sdk::Resource::builder_empty()
+                .with_service_name("gateway")
+                .build(),
+        )
         .build())
-}
-
-/// The layer that hands gateway log events to the OTLP provider. The
-/// exporter's own HTTP stack stays out, so an export never logs itself.
-fn otlp_log_layer<S>(
-    provider: &opentelemetry_sdk::logs::SdkLoggerProvider,
-) -> impl tracing_subscriber::Layer<S>
-where
-    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
-{
-    use tracing_subscriber::Layer;
-    opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(provider).with_filter(
-        tracing_subscriber::filter::filter_fn(|metadata| {
-            !["opentelemetry", "reqwest", "hyper", "h2", "tower"]
-                .iter()
-                .any(|target| metadata.target().starts_with(target))
-        }),
-    )
 }
 
 /// HTTP limits of the public listener.
@@ -990,16 +1000,21 @@ mod otlp_log_tests {
         let endpoint = format!("http://{}/v1/logs", listener.local_addr()?);
         let server = std::thread::spawn(move || receive_one(&listener));
         let provider = super::otlp_log_export(endpoint)?;
-        let subscriber = tracing_subscriber::registry().with(super::otlp_log_layer(&provider));
+        let subscriber = tracing_subscriber::registry().with(
+            confidential_gateway::safe_logging::SafeLayer::new(
+                Some(&provider),
+                Box::new(std::io::sink()),
+            ),
+        );
         tracing::subscriber::with_default(subscriber, || {
-            tracing::info!("gateway otlp test line");
+            confidential_gateway::safe_logging::emit("gateway_ready", serde_json::json!({}));
         });
         tokio::task::spawn_blocking(move || provider.shutdown()).await??;
         let (path, body) = server
             .join()
             .map_err(|_| anyhow!("the OTLP test server panicked"))??;
         assert_eq!(path, "/v1/logs");
-        let needle = b"gateway otlp test line";
+        let needle = b"gateway_ready";
         assert!(body.windows(needle.len()).any(|window| window == needle));
         Ok(())
     }
@@ -1011,7 +1026,12 @@ mod otlp_log_tests {
         let endpoint = format!("http://{}/v1/logs", listener.local_addr()?);
         let server = std::thread::spawn(move || receive_one(&listener));
         let provider = super::otlp_log_export(endpoint)?;
-        let subscriber = tracing_subscriber::registry().with(super::otlp_log_layer(&provider));
+        let subscriber = tracing_subscriber::registry().with(
+            confidential_gateway::safe_logging::SafeLayer::new(
+                Some(&provider),
+                Box::new(std::io::sink()),
+            ),
+        );
         tracing::subscriber::with_default(subscriber, || {
             TracingAuditSink.record(AuditEvent {
                 request_id: "c0ffee00-cafe-4000-8000-deadbeef0002".to_owned(),
@@ -1024,16 +1044,21 @@ mod otlp_log_tests {
         let (_, body) = server
             .join()
             .map_err(|_| anyhow!("the OTLP test server panicked"))??;
+        for field in ["gateway_response_started", "503"] {
+            assert!(
+                body.windows(field.len())
+                    .any(|window| window == field.as_bytes())
+            );
+        }
         for field in [
-            "gateway_request_completed",
             "c0ffee00-cafe-4000-8000-deadbeef0002",
             "nonsecret_key_record",
             "request_id",
             "key_id",
-            "503",
         ] {
             assert!(
-                body.windows(field.len())
+                !body
+                    .windows(field.len())
                     .any(|window| window == field.as_bytes())
             );
         }

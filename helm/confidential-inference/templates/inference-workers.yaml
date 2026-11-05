@@ -42,6 +42,7 @@ data:
   manifest.json: {{ $cache.manifest | quote }}
 {{- end }}
 {{- range $index := until (int .Values.inference.replicas) }}
+{{- $name := printf "inference-worker-%d" $index }}
 {{- $simulatorMode := eq $.Values.inference.mode "simulator" }}
 {{- $modelMount := or (not $simulatorMode) $.Values.inference.simulator.validateModelMount }}
 {{- $volumeName := "" }}
@@ -105,7 +106,7 @@ spec:
         - name: fetch-model
           image: {{ $.Values.images.sglangWorker }}
           imagePullPolicy: IfNotPresent
-          command: ["/usr/local/bin/fetch-model"]
+          command: ["python3", "/usr/local/bin/ci-private-process", "/usr/local/bin/fetch-model"]
           args:
             - --endpoint={{ $cache.endpoint }}
             - fetch
@@ -114,6 +115,14 @@ spec:
             - --manifest-sha256={{ sha256sum $cache.manifest }}
             - --revision-metadata={{ $.Values.inference.model.mountVerification.revisionMetadata }}
           env:
+            - name: CI_PROCESS_SHUTDOWN_SECONDS
+              value: {{ $.Values.inference.terminationGracePeriodSeconds | quote }}
+            {{- if $.Values.telemetry.enabled }}
+            - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+              value: {{ printf "http://telemetry-collector.%s.svc.cluster.local:%v/v1/logs" $.Release.Namespace $.Values.telemetry.otlpHttpPort | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ $name | quote }}
+            {{- end }}
             - name: HOME
               value: /tmp
           securityContext:
@@ -138,9 +147,9 @@ spec:
           image: {{ $.Values.images.sglangWorker }}
           imagePullPolicy: IfNotPresent
           {{- if and $simulatorMode (not $modelMount) }}
-          command: ["python3"]
+          command: ["python3", "/usr/local/bin/ci-private-process", "python3"]
           {{- else }}
-          command: ["/usr/local/bin/wait-for-model"]
+          command: ["python3", "/usr/local/bin/ci-private-process", "/usr/local/bin/wait-for-model"]
           {{- end }}
           args:
             {{- if and $simulatorMode $modelMount }}
@@ -224,6 +233,14 @@ spec:
             - --port={{ $.Values.inference.port }}
             {{- end }}
           env:
+            - name: CI_PROCESS_SHUTDOWN_SECONDS
+              value: {{ $.Values.inference.terminationGracePeriodSeconds | quote }}
+            {{- if $.Values.telemetry.enabled }}
+            - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+              value: {{ printf "http://telemetry-collector.%s.svc.cluster.local:%v/v1/logs" $.Release.Namespace $.Values.telemetry.otlpHttpPort | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ $name | quote }}
+            {{- end }}
             - name: HOME
               value: /tmp
             {{- if and $modelMount $cache.enabled }}

@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from pair_diagnostics import SNAPSHOT_SECONDS, StackSnapshots
 from private_log_sink import LogSink, NonblockingStdout
+from safe_events import envelope
 
 
 ROLES = {"prefill", "decode"}
@@ -107,7 +108,7 @@ def reviewed_event(value: object) -> dict | None:
             return None
     if "line" in value and not 1 <= value["line"] <= 1000000:
         return None
-    return value
+    return value if envelope(value) is not None else None
 
 
 def emit(event: str, role: str = "pair", **fields) -> None:
@@ -115,15 +116,24 @@ def emit(event: str, role: str = "pair", **fields) -> None:
     if value is None:
         raise ValueError("invalid diagnostic record")
     # A generated timestamp is the only field added outside the fixed schema.
-    record = {"timestamp_ns": time.time_ns(), "run_id": RUN_ID,
-              "source_revision": SOURCE_REVISION, **value}
+    record = envelope({"timestamp_ns": time.time_ns(), "run_id": RUN_ID,
+                       "source_revision": SOURCE_REVISION, **value})
+    if record is None:
+        raise ValueError("invalid diagnostic record")
     with LOG_LOCK:
-        if LOG_STDOUT is None:
-            print(json.dumps(record, separators=(",", ":")), flush=True)
-        else:
-            LOG_STDOUT.write(record)
+        try:
+            if LOG_STDOUT is None:
+                print(json.dumps(record, separators=(",", ":")), flush=True)
+            else:
+                LOG_STDOUT.write(record)
+        except Exception:
+            pass  # Never report an exception from a failed log sink.
         if LOG_SINK is not None:
-            LOG_SINK.submit(record)
+            try:
+                LOG_SINK.submit(record)
+            except Exception:
+                pass  # No raw fallback from delivery errors.
+
 
 
 class PrivateStatusServer(ThreadingHTTPServer):

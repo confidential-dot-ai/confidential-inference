@@ -177,11 +177,11 @@ impl KeyStore {
                         .set_key_registry_pepper_mismatch_rows(u64::try_from(skipped).unwrap_or(0));
                 }
                 *guard = Some(snapshot);
-                tracing::info!(
-                    revision = push.revision,
-                    accepted,
-                    skipped_pepper_mismatch = skipped,
-                    "applied a key registry snapshot"
+                crate::safe_logging::emit(
+                    "gateway_snapshot_applied",
+                    serde_json::json!({
+                        "revision": push.revision, "accepted": accepted, "skipped_pepper_mismatch": skipped
+                    }),
                 );
                 Ok(SnapshotPushResult {
                     revision: push.revision,
@@ -249,11 +249,7 @@ impl KeyStore {
         if matches {
             return Ok(());
         }
-        tracing::error!(
-            expected = fingerprint_prefix(&self.pepper_fingerprint),
-            received = fingerprint_prefix(&push.pepper_fingerprint),
-            "refused a key registry snapshot: the pepper does not match"
-        );
+        crate::safe_logging::emit("gateway_pepper_mismatch", serde_json::json!({}));
         Err(SnapshotError::PepperMismatch {
             expected: self.pepper_fingerprint.clone(),
             received: push.pepper_fingerprint.clone(),

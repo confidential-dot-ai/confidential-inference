@@ -959,7 +959,7 @@ class ManifestTests(unittest.TestCase):
         for worker in workers:
             pod = worker["spec"]["template"]
             container = pod["spec"]["containers"][0]
-            self.assertEqual(container["command"], ["/usr/local/bin/wait-for-model"])
+            self.assertEqual(container["command"], ["python3", "/usr/local/bin/ci-private-process", "/usr/local/bin/wait-for-model"])
             self.assertIn("python3", container["args"])
             self.assertIn("sglang_simulator.simulation.sglang.launch_server", container["args"])
             self.assertIn("confidential.ai/c8s-volumes", pod["metadata"]["annotations"])
@@ -969,10 +969,10 @@ class ManifestTests(unittest.TestCase):
         zero_digest = "sha256:" + "0" * 64
         for name in ("inference-worker-0", "inference-worker-1"):
             guarded = [item for item in allowlist["workloads"][name]["containers"]
-                       if item["command"].get("argv") == ["/usr/local/bin/wait-for-model"]]
+                       if item["command"].get("argv") == ["python3", "/usr/local/bin/ci-private-process", "/usr/local/bin/wait-for-model"]]
             self.assertEqual(len(guarded), 1)
             policy = guarded[0]
-            self.assertEqual(policy["command"]["argv"], ["/usr/local/bin/wait-for-model"])
+            self.assertEqual(policy["command"]["argv"], ["python3", "/usr/local/bin/ci-private-process", "/usr/local/bin/wait-for-model"])
             self.assertIn("sglang_simulator.simulation.sglang.launch_server", policy["args"]["argv"])
         self.assertNotIn(zero_digest, STAGING_ALLOWLIST.read_text())
 

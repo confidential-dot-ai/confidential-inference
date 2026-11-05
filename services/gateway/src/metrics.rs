@@ -522,10 +522,16 @@ fn canonical_finish_reason(value: &str) -> Option<&'static str> {
 
 impl MetricsSource for GatewayMetrics {
     fn render_prometheus(&self) -> String {
+        use std::fmt::Write as _;
         let mut output = String::new();
         // Encoding into a String fails only for invalid metric families,
         // which the registry has already rejected at registration.
         let _ = TextEncoder::new().encode_utf8(&self.registry.gather(), &mut output);
+        let (stdout, rejected) = crate::safe_logging::discarded_records();
+        let _ = writeln!(
+            output,
+            "# TYPE gateway_log_records_discarded_total counter\ngateway_log_records_discarded_total{{reason=\"stdout_unavailable\"}} {stdout}\ngateway_log_records_discarded_total{{reason=\"contract_rejected\"}} {rejected}"
+        );
         output
     }
 }

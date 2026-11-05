@@ -16,6 +16,7 @@ sys.path.insert(0,str(ROOT/'images/sglang'))
 sys.path.insert(0,str(ROOT/'images/sglang-router'))
 import pair_supervisor as pair
 from private_log_sink import LogSink, NonblockingStdout
+from safe_events import envelope
 
 
 class DeliveryTests(unittest.TestCase):
@@ -52,8 +53,8 @@ assert pair.LOG_SINK.count == 20000
         try:
             writer=NonblockingStdout(write_fd)
             self.assertFalse(writer.write({'event':'x'*4096}))
-            self.assertTrue(writer.write({'event':'router_failed'}))
-            self.assertEqual({'event':'router_failed'},json.loads(os.read(read_fd,4096)))
+            self.assertTrue(writer.write(envelope({'event':'router_failed','role':'router'})))
+            self.assertEqual('router_failed',json.loads(os.read(read_fd,4096))['event'])
         finally:
             os.close(read_fd);os.close(write_fd)
 
@@ -98,7 +99,7 @@ assert pair.LOG_SINK.count == 20000
         sink=LogSink(f'http://127.0.0.1:{server.server_port}/v1/logs','sglang-router')
         output,errors=io.StringIO(),io.StringIO()
         with contextlib.redirect_stdout(output),contextlib.redirect_stderr(errors):
-            sink.submit({'event':'router_failed','role':'router'})
+            sink.submit(envelope({'event':'router_failed','role':'router'}))
             result=sink.close(timeout=2)
         self.assertEqual(0,result['exported']);self.assertEqual(1,result['dropped'])
         self.assertEqual(2,result['failures'])
@@ -107,7 +108,7 @@ assert pair.LOG_SINK.count == 20000
     def test_queue_and_shutdown_are_bounded(self):
         sink=LogSink('http://127.0.0.1:1/v1/logs','sglang-router',timeout=0.02,capacity=2)
         started=time.monotonic()
-        for _ in range(10000):sink.submit({'event':'router_failed','role':'router'})
+        for _ in range(10000):sink.submit(envelope({'event':'router_failed','role':'router'}))
         result=sink.close(timeout=0.5)
         self.assertLess(time.monotonic()-started,2)
         self.assertGreater(result['dropped'],0)

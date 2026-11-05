@@ -74,6 +74,7 @@ RUN python3 -m pip install --no-cache-dir --disable-pip-version-check --no-compi
     && python3 -B -c 'import sglang_router.sglang_router_rs'
 COPY private_router.py /usr/local/bin/ci-sglang-router
 COPY private_log_sink.py /usr/local/bin/private_log_sink.py
+COPY safe_events.py safe_events.json /usr/local/bin/
 USER 1001:1001
 EXPOSE 30000 29000
 ENTRYPOINT ["python3", "/usr/local/bin/ci-sglang-router"]

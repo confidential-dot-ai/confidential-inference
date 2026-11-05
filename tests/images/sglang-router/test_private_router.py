@@ -48,10 +48,10 @@ sys.exit(7)
             self.assertEqual("", result.stderr)
             self.assertNotIn(CANARY, result.stdout)
             rows = [json.loads(line) for line in result.stdout.splitlines()]
-            self.assertEqual(["worker_http_error", "worker_request_failed", "router_exit"],
+            self.assertEqual(["router_started", "worker_http_error", "worker_request_failed", "router_log_records_rejected", "router_exit"],
                              [row["event"] for row in rows])
             for row in rows:
-                self.assertLessEqual(set(row), {"timestamp", "source_revision", "event", "role", "status", "code"})
+                self.assertLessEqual(set(row), {"schema_version", "component", "timestamp_ns", "source_revision", "event", "role", "status", "code", "count"})
 
     def test_trace_and_file_flags_are_rejected_including_abbreviations(self):
         for flag in ("--log-dir", "--log-d", "--enable-trace", "--enable-tra",
@@ -73,6 +73,7 @@ while True:time.sleep(1)
             process = subprocess.Popen([sys.executable, str(PROGRAM)], env=environment,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
+                self.assertEqual("router_started", json.loads(process.stdout.readline())["event"])
                 self.assertEqual("worker_request_failed", json.loads(process.stdout.readline())["event"])
                 process.send_signal(signal.SIGTERM)
                 stdout, stderr = process.communicate(timeout=5)
