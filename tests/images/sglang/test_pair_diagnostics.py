@@ -20,8 +20,10 @@ from pair_diagnostics import StackSnapshots
 PUBLIC_FILE = '/opt/sglang/python/sglang/srt/layers/public_fixture.py'
 PUBLIC_LABEL = 'sglang/srt/layers/public_fixture.py'
 CHILD = r'''
-import importlib.util, os, sys, time
+import importlib.util, os, signal, sys, time
 from pathlib import Path
+delayed = sys.argv[4] == 'delay'
+if delayed: signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR2})
 spec=importlib.util.spec_from_file_location('progress',sys.argv[1])
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 os.environ['SGLANG_PAIR_ROLE']='decode'
@@ -31,15 +33,15 @@ secret_prompt='PRIVATE_PROMPT_TEXT'
 secret_response='PRIVATE_RESPONSE_TEXT'
 credential='PRIVATE_API_CREDENTIAL'
 request_id='PRIVATE_CLIENT_REQUEST_ID'
-source='def PRIVATE_FUNCTION_NAME():\n local_value="PRIVATE_LOCAL_VALUE"\n ready.write_text("ready")\n while True: time.sleep(0.01)\n'
-namespace={'time':time,'ready':Path(sys.argv[2])/'fixture.ready'}
+source='def PRIVATE_FUNCTION_NAME():\n local_value="PRIVATE_LOCAL_VALUE"\n ready.write_text("ready")\n if delayed:\n  time.sleep(1)\n  signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGUSR2})\n while True: time.sleep(0.01)\n'
+namespace={'time':time,'ready':Path(sys.argv[2])/'fixture.ready','delayed':delayed,'signal':signal}
 exec(compile(source,sys.argv[3],'exec'),namespace)
 exec(compile('PRIVATE_FUNCTION_NAME()', '/PRIVATE_FILENAME_SECRET.py', 'exec'),namespace)
 '''
 
 
 class SnapshotPrivacyTests(unittest.TestCase):
-    def check_snapshot(self, stopped=False):
+    def check_snapshot(self, stopped=False, delayed=False):
         fork = Path(os.environ.get('SGLANG_FORK_ROOT', '/var/lib/user-data/sglang-recovery/worker-clean'))
         progress = fork / 'python/sglang/srt/utils/pair_progress.py'
         self.assertTrue(progress.is_file(), 'set SGLANG_FORK_ROOT to the tested fork')
@@ -49,7 +51,8 @@ class SnapshotPrivacyTests(unittest.TestCase):
             with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
                 snapshots = StackSnapshots(directory, [('decode', 0)], pair.emit,
                                            catalog={PUBLIC_FILE: PUBLIC_LABEL})
-                child = subprocess.Popen([sys.executable, '-c', CHILD, str(progress), directory, PUBLIC_FILE],
+                child = subprocess.Popen([sys.executable, '-c', CHILD, str(progress), directory, PUBLIC_FILE,
+                                          'delay' if delayed else 'normal'],
                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 try:
                     deadline = time.monotonic() + 5
@@ -84,7 +87,7 @@ class SnapshotPrivacyTests(unittest.TestCase):
     def test_real_faulthandler_exports_only_reviewed_locations(self):
         rows = self.check_snapshot()
         frames = [row for row in rows if row['event'] == 'stack_frame']
-        self.assertTrue(frames)
+        self.assertTrue(frames, json.dumps(rows))
         self.assertTrue(all(row['location'] == PUBLIC_LABEL for row in frames))
         self.assertTrue(all(set(row) == {'timestamp_ns','run_id','source_revision','event','role','rank','thread','frame','location','line'} for row in frames))
         summary = next(row for row in rows if row['event'] == 'stack_dump_complete')
@@ -95,6 +98,10 @@ class SnapshotPrivacyTests(unittest.TestCase):
         rows = self.check_snapshot(stopped=True)
         self.assertLess(time.monotonic() - started, 4)
         self.assertTrue(any(row['event'] == 'stack_dump_unavailable' for row in rows))
+
+    def test_delayed_signal_still_provides_code_frames_within_capture_budget(self):
+        rows = self.check_snapshot(delayed=True)
+        self.assertTrue(any(row['event'] == 'stack_frame' for row in rows), json.dumps(rows))
 
     def test_unapproved_location_cannot_enter_log_schema(self):
         record={'event':'stack_frame','role':'decode','rank':0,'location':'PRIVATE_PROMPT_TEXT','line':1}

@@ -3,8 +3,8 @@
   "source": {
     "repository": "https://github.com/confidential-dot-ai/Sglang-public",
     "branch": "fix/worker-recovery-20261104",
-    "commit": "190c329f86e8ef8297f00aa0b4982bf848ad1a29",
-    "commitDate": "2026-11-05T00:04:43Z",
+    "commit": "7f5f60cc0447eed344442ec753c2786228af267c",
+    "commitDate": "2026-11-05T00:48:30Z",
     "upstream": {
       "repository": "https://github.com/sgl-project/sglang",
       "commit": "a7fd2e1158c389c33077bae67fb797efa8dd09bd",

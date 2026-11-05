@@ -23,6 +23,7 @@ ROOTS = (("/opt/sglang/python/sglang", "sglang"),
          ("/usr/lib/python3.12", "python"))
 FRAME = re.compile(r'  File "([^"\r\n]+)", line ([0-9]+) in [^\r\n]*')
 HEADER = re.compile(r'(Current thread|Thread) 0x[0-9a-fA-F]+.*:')
+SNAPSHOT_SECONDS = 1.5
 
 
 def code_catalog():
@@ -212,7 +213,7 @@ class StackSnapshots:
 
     def _finish(self):
         # Do not make shutdown depend on a worker or on CUDA/NCCL cleanup.
-        time.sleep(0.8)
+        time.sleep(SNAPSHOT_SECONDS)
         with self.lock:
             self.active = False
             frames = {key: list(value) for key, value in self.frames.items()}

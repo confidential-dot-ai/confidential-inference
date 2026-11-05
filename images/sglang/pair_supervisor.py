@@ -29,7 +29,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from pair_diagnostics import StackSnapshots
+from pair_diagnostics import SNAPSHOT_SECONDS, StackSnapshots
 from private_log_sink import LogSink
 
 
@@ -464,7 +464,7 @@ class Supervisor:
                 self.snapshot = ("failed", time.monotonic())
                 if self.diagnostics is not None:
                     self.diagnostics.request(self.rank_pids)
-                    time.sleep(1.0)
+                    time.sleep(SNAPSHOT_SECONDS + 0.2)
                 self.stop.set()
         self.snapshot = ("failed", time.monotonic())
         return 1 if self.failed else 0
