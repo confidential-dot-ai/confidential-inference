@@ -151,6 +151,13 @@ model mount path. This changes disk storage, not the transport within a pair.
 
 ### Gateway admission and routing
 
+PD routing uses the ordinary worker profile's two-second health interval and
+connection timeout, two-failure circuit breaker and ten-second breaker reset.
+The health timeout remains five seconds, with three failed checks required.
+These settings shorten failed-pair withdrawal without changing generation
+timeouts or the existing retry budget. A health check can consume its full
+timeout, so the interval is not a strict bound on withdrawal time.
+
 The gateway admits at most `gateway.protection.inferenceConcurrency`
 inference requests, holds up to `gateway.protection.inferenceQueue` more for
 `queueTimeoutSeconds`, and answers the rest with 503 at once. The chart

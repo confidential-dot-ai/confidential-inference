@@ -237,7 +237,9 @@ def check_render(values: dict) -> None:
     # launcher starts it, so it waits out their whole startup.
     expected += ["--worker-startup-timeout-secs=86400"]
     expected += router_args(PLAN["router"]["command"])
-    expected += ["--health-check-timeout-secs=5", "--health-failure-threshold=3"]
+    expected += ["--health-check-timeout-secs=5", "--health-failure-threshold=3",
+                 "--health-check-interval-secs=2", "--cb-failure-threshold=2",
+                 "--cb-timeout-duration-secs=10", "--connect-timeout-secs=2"]
     expected += ["--host=0.0.0.0", "--port=30000", "--prometheus-host=0.0.0.0", "--prometheus-port=29000"]
     assert router["args"] == expected, router["args"]
     for flag in ("--reject-video", "--max-concurrent-requests", "--max-images-per-request", "--max-inflight-images"):
@@ -458,6 +460,9 @@ def check_pair_render(values: dict) -> None:
     router = by_name(documents, "Deployment", "sglang-router")["spec"]["template"]["spec"]["containers"][0]
     env = {item["name"]: item["value"] for item in router["env"]}
     assert router["command"] == ["python3", "/usr/local/bin/ci-sglang-router"]
+    for flag in ("--health-check-interval-secs=2", "--cb-failure-threshold=2",
+                 "--cb-timeout-duration-secs=10", "--connect-timeout-secs=2"):
+        assert router["args"].count(flag) == 1
     assert json.loads(env["CI_ROUTER_PD_PAIRS"]) == routes
     assert admission["refusals"](documents) == []
     observed = copy.deepcopy(values)
