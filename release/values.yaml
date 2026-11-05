@@ -62,7 +62,7 @@ inference:
       enabled: true
       transport: nvlink
       pairs:
-      - {name: a, prefill: prefill0, decode: decode0}
+      - {name: a, prefill: prefill0, decode: decode0, modelVolumeName: dsv41-a}
       - {name: b, prefill: prefill1, decode: decode1}
     engramHolder:
       mlock: false

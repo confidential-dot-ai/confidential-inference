@@ -510,6 +510,30 @@ def check_pair_render(values: dict) -> None:
                     assert env["SGLANG_MOONCAKE_CUSTOM_MEM_POOL"] == "INTRA_NODE_NVLINK"
 
 
+def check_pair_model_disks(values: dict) -> None:
+    pairs = copy.deepcopy(yaml.safe_load((FIXTURES / "pd-pairs-values.yaml").read_text())
+                          ["inference"]["pd"]["paired"]["pairs"])
+    pairs[0]["modelVolumeName"] = "dsv41-a"
+    documents = render(values, "--values", str(FIXTURES / "pd-pairs-values.yaml"),
+                       "--set-json", "inference.pd.paired.pairs=" + json.dumps(pairs))
+    for name, volume in (("a", "dsv41-a"), ("b", "dsv41")):
+        pod = by_name(documents, "StatefulSet", "inference-pd-" + name)["spec"]["template"]
+        assert pod["metadata"]["annotations"]["confidential.ai/c8s-volumes"] == (
+            volume + "=" + values["inference"]["model"]["c8sVolumeSource"])
+        app = pod["spec"]["containers"][0]
+        config = json.loads(app["args"][1])
+        path = "/mnt/c8s-data/models/" + volume
+        assert "--path=" + path in config["modelGate"]
+        for worker in config["workers"]:
+            assert flag_values(worker["command"])["--model-path"] == path
+        assert app["image"] == values["images"]["sglangWorker"]
+    assert admission["refusals"](documents) == []
+    pairs[0]["modelVolumeName"] = "../other"
+    error = render(values, "--values", str(FIXTURES / "pd-pairs-values.yaml"),
+                   "--set-json", "inference.pd.paired.pairs=" + json.dumps(pairs), success=False)
+    assert "modelVolumeName" in error
+
+
 def main() -> None:
     values = check_values_file_is_the_plan()
     check_render(values)
@@ -517,6 +541,7 @@ def main() -> None:
     check_off_by_default()
     check_b200_layer()
     check_pair_render(values)
+    check_pair_model_disks(values)
     print("PD layout checks passed")
 
 
