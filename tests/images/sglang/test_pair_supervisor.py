@@ -117,7 +117,7 @@ class RankHealthTests(unittest.TestCase):
     def test_failure_details_export_only_reason_and_ages(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "decode-0.json"
-            now = time.monotonic()
+            now = 1000.0  # A new CI VM may have less than 120 seconds of uptime.
             path.write_text(json.dumps({"pid": os.getpid(), "state": "busy", "updated": now,
                                         "completed": 0, "pending_since": now - 120}))
             self.assertEqual({"code": 3, "age_ms": 0, "gpu_pending_ms": 120000},
@@ -164,7 +164,7 @@ class RankHealthTests(unittest.TestCase):
     def test_rank_startup_uses_startup_budget(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "prefill-0.json"
-            now = time.monotonic()
+            now = 1000.0
             path.write_text(json.dumps({"pid": os.getpid(), "state": "starting", "updated": now - 100,
                                        "completed": 0, "pending_since": 0}))
             self.assertEqual("starting", pair.rank_status(path, now, 1, None)[0])
