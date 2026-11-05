@@ -135,6 +135,20 @@ listener, so the collector's NetworkPolicy rule admits it to that port and a
 port rule cannot limit it to `/metrics`. The ordinary workers have the same
 rule.
 
+### Separate model disks for pairs
+
+Each `inference.pd.paired.pairs` entry can set `modelVolumeName`. Without it,
+the pair uses the first `inference.model.volumeNames` entry. With it, the
+chart selects that disk and updates the model gate and both worker paths.
+Other pairs retain their own disk selection. The key source is unchanged,
+so an exact copy of the encrypted image can use the existing key grant.
+
+The normal release selects `dsv41-a` for Pair A and `dsv41` for Pair B.
+Attach both encrypted disks to the inference CVM, with distinct serials
+`c8s-vol-dsv41-a` and `c8s-vol-dsv41`. Each pair can then reopen its disk
+without a shared mapping. The signed release policy must include each exact
+model mount path. This changes disk storage, not the transport within a pair.
+
 ### Gateway admission and routing
 
 The gateway admits at most `gateway.protection.inferenceConcurrency`
