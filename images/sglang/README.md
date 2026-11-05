@@ -190,7 +190,8 @@ prove that KV transfers use NVLink.
 
 For paired pods, `inference.pd.paired.transport` selects `tcp` or `nvlink`.
 The chart sets all required variables and removes conflicting overrides.
-The default is TCP. A production change still needs the signed chart and
+The chart default is TCP. The normal release selects NVLink after GPU validation.
+A production change still needs the signed chart and
 allowlist process. It is not an automatic runtime fallback.
 
 - For local NVLink, set `MC_INTRANODE_NVLINK=1` and

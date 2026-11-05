@@ -60,7 +60,7 @@ inference:
     enabled: true
     paired:
       enabled: true
-      transport: tcp
+      transport: nvlink
       pairs:
       - {name: a, prefill: prefill0, decode: decode0}
       - {name: b, prefill: prefill1, decode: decode1}
