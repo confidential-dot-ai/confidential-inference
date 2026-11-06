@@ -16,6 +16,10 @@ gateway:
         served_model: deepseek-ai/DeepSeek-V4.1-Flash-1017
         model_revision: 1bae0e1088993b9b82de08f59de5be5a34e42170
   protection:
+    maximumBodyBytes: 16777216
+    bodyTimeoutSeconds: 60
+    upstreamTimeoutSeconds: 3600
+    streamIdleTimeoutSeconds: 300
     inferenceConcurrency: 32
     inferenceQueue: 32
     trustedProxyCidrs:
@@ -65,7 +69,7 @@ inference:
   gpuMetricsEnabled: true
   workerExtraArgs:
   - --attention-backend=dsv4
-  - --context-length=131072
+  - --context-length=1048576
   - --max-running-requests=16
   - --flashinfer-allreduce-fusion-backend=trtllm
 telemetry:
