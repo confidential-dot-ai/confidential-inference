@@ -307,6 +307,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plain-cache", action="store_true",
                         help="the path is a read-only plain cache that fetch-model filled, not a c8s dm-verity volume")
     parser.add_argument("--gpu-metrics-port", type=int)
+    parser.add_argument("--private-server-output", action="store_true",
+                        help="discard native server output; export no unreviewed request or exception text")
     parser.add_argument("--mountinfo", type=Path, default=Path("/proc/self/mountinfo"), help=argparse.SUPPRESS)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -365,8 +367,12 @@ def main() -> int:
             # Metrics must not stop inference. Prometheus reports this failure
             # because the worker metrics target stays down.
             print(f"model-mount: GPU metrics did not start: {error}", file=sys.stderr)
-    child = subprocess.Popen(args.command)
-    return supervise(child)
+    output = subprocess.DEVNULL if args.private_server_output else None
+    child = subprocess.Popen(args.command, stdout=output, stderr=output)
+    code = supervise(child)
+    if args.private_server_output:
+        print(json.dumps({"event": "worker_exit", "code": code}), flush=True)
+    return code
 
 
 if __name__ == "__main__":

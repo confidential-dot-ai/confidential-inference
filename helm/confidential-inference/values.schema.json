@@ -107,6 +107,12 @@
         "port": {"type": "integer", "minimum": 1024, "maximum": 65534},
         "metricsPort": {"type": "integer", "minimum": 1024, "maximum": 65534},
         "reasoningParser": {"type": "string"},
+        "toolCallParser": {"type": "string"},
+        "speculativeAlgorithm": {"type": "string"},
+        "moeRunnerBackend": {"type": "string"},
+        "workerExtraArgs": {"type": "array", "items": {"type": "string"}},
+        "privateServerOutput": {"type": "boolean"},
+        "gpuMetricsEnabled": {"type": "boolean"},
         "autoscaling": {
           "type": "object",
           "required": ["enabled", "maxReplicas"],
