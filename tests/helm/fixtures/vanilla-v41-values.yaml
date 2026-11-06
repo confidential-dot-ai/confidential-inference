@@ -1,0 +1,37 @@
+# Synthetic model pins for chart tests. These are not deployment inputs.
+environment: staging
+runtimeConfig:
+  modelRoutes:
+    deepseek-ai/DeepSeek-V4.1-Flash-1017:
+    - deepseek-ai/DeepSeek-V4.1-Flash-1017
+gateway:
+  usage:
+    models:
+      deepseek-ai/DeepSeek-V4.1-Flash-1017:
+        served_model: deepseek-ai/DeepSeek-V4.1-Flash-1017
+        model_revision: 1bae0e1088993b9b82de08f59de5be5a34e42170
+inference:
+  mode: model
+  replicas: 2
+  gpusPerReplica: 4
+  gpuArchitectures: [BLACKWELL]
+  attestedGpuCount: 4
+  pd:
+    enabled: false
+  toolCallParser: deepseekv41
+  reasoningParser: deepseek-v41
+  speculativeAlgorithm: ""
+  moeRunnerBackend: auto
+  privateServerOutput: true
+  workerExtraArgs:
+  - --attention-backend=dsv4
+  - --context-length=131072
+  - --max-running-requests=16
+  - --flashinfer-allreduce-fusion-backend=trtllm
+  model:
+    name: deepseek-ai/DeepSeek-V4.1-Flash-1017
+    revision: 1bae0e1088993b9b82de08f59de5be5a34e42170
+    volumeNames: [dsv41-1017-a, dsv41-1017-b]
+    c8sVolumeSource: /confidential-inference/volumes/dsv41-1017
+scheduling:
+  inferenceNodeNames: [gpu-cvm-a, gpu-cvm-b]

@@ -1,10 +1,9 @@
 {
   "schemaVersion": 1,
   "source": {
-    "repository": "https://github.com/confidential-dot-ai/Sglang-public",
-    "branch": "fix/worker-recovery-20261104",
-    "commit": "2f51fbb3ba2778765962758db6f9fb0e72b85c36",
-    "commitDate": "2026-11-05T01:53:29Z",
+    "repository": "https://github.com/sgl-project/sglang",
+    "commit": "a7fd2e1158c389c33077bae67fb797efa8dd09bd",
+    "commitDate": "2026-10-19T02:08:20Z",
     "upstream": {
       "repository": "https://github.com/sgl-project/sglang",
       "commit": "a7fd2e1158c389c33077bae67fb797efa8dd09bd",
@@ -76,5 +75,12 @@
       "path": "images/sglang/patches/sglang-simulator-prefix-length.patch",
       "sha256": "e819be5b7de85d286a10301b1e719dd40c7feaf49a03a1b43dea3b779810e68e"
     }
+  },
+  "gpuMetrics": {
+    "reference": "nvcr.io/nvidia/k8s/dcgm-exporter",
+    "digest": "sha256:148b0c025e5f2850256816fa33754fbf4733b7a086697a95613fc0ba3db5b003",
+    "version": "4.8.4",
+    "dcgmVersion": "4.6.1",
+    "countersSha256": "adf12881c7b2b63507f31924630529d0337b20a0c420a13284d66cb1b8329aef"
   }
 }

@@ -156,7 +156,12 @@ spec:
             {{- range $file := include "confidential-inference.expectedFiles" $ | fromJsonArray }}
             - --expected-file={{ $file }}
             {{- end }}
+            {{- if $.Values.inference.gpuMetricsEnabled }}
             - --gpu-metrics-port={{ $.Values.inference.metricsPort }}
+            {{- end }}
+            {{- if $.Values.inference.privateServerOutput }}
+            - --private-server-output
+            {{- end }}
             - --
             {{- end }}
             {{- if $simulatorMode }}
@@ -195,7 +200,12 @@ spec:
             {{- range $file := include "confidential-inference.expectedFiles" $ | fromJsonArray }}
             - --expected-file={{ $file }}
             {{- end }}
+            {{- if $.Values.inference.gpuMetricsEnabled }}
             - --gpu-metrics-port={{ $.Values.inference.metricsPort }}
+            {{- end }}
+            {{- if $.Values.inference.privateServerOutput }}
+            - --private-server-output
+            {{- end }}
             - --
             - python3
             - -m
@@ -203,13 +213,18 @@ spec:
             - --model-path={{ $modelPath }}
             - --served-model-name={{ $.Values.inference.model.name }}
             - --revision={{ $.Values.inference.model.revision }}
-            - --tool-call-parser=deepseekv4
+            - --tool-call-parser={{ $.Values.inference.toolCallParser }}
             {{- if $.Values.inference.reasoningParser }}
             - --reasoning-parser={{ $.Values.inference.reasoningParser }}
             {{- end }}
             - --tp={{ $.Values.inference.gpusPerReplica }}
-            - --moe-runner-backend=flashinfer_mxfp4
-            - --speculative-algorithm=DSPARK
+            - --moe-runner-backend={{ $.Values.inference.moeRunnerBackend }}
+            {{- if $.Values.inference.speculativeAlgorithm }}
+            - --speculative-algorithm={{ $.Values.inference.speculativeAlgorithm }}
+            {{- end }}
+            {{- range $.Values.inference.workerExtraArgs }}
+            - {{ . | quote }}
+            {{- end }}
             - --mem-fraction-static=0.90
             - --chunked-prefill-size=4096
             - --swa-full-tokens-ratio=0.1
@@ -279,7 +294,7 @@ spec:
             timeoutSeconds: 5
           livenessProbe:
             httpGet:
-              path: /v1/models
+              path: /health
               port: inference
             periodSeconds: 30
             timeoutSeconds: 5

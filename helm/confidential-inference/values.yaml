@@ -221,6 +221,12 @@ inference:
   # target environment's release bundle carries the matching source.lock
   # argv and allowlist.
   reasoningParser: ""
+  toolCallParser: deepseekv4
+  speculativeAlgorithm: DSPARK
+  moeRunnerBackend: flashinfer_mxfp4
+  workerExtraArgs: []
+  privateServerOutput: false
+  gpuMetricsEnabled: true
   # On SIGTERM SGLang answers /health with 503 and finishes its in-flight
   # requests; Kubernetes kills the pod after this many seconds.
   terminationGracePeriodSeconds: 600
