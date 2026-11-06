@@ -330,23 +330,25 @@ def main() -> None:
         '/mnt/c8s-data/admin-auth', '/mnt/c8s-data/admin-api-key', '/run/confidential-gateway', '/tmp'}
     assert not any(name.startswith(('GATEWAY_C8S_', 'GATEWAY_RELEASE_')) for name in gateway_environment)
     production_settings = json.loads(gateway_environment['GATEWAY_RUNTIME_CONFIG'])
-    assert production_settings['maximumBodyBytes'] == 8388608
+    assert production_settings['maximumBodyBytes'] == 2097152
     # Refuse a chart value that the published gateway cannot start with.
     too_large = subprocess.run(['helm', 'template', 'body-limit-test', str(CHART),
         '--set', 'inference.mode=simulator',
         '--set', 'gateway.protection.maximumBodyBytes=8388609'],
         capture_output=True, text=True)
     assert too_large.returncode != 0 and 'maximumBodyBytes' in too_large.stderr
-    assert production_settings['bodyTimeoutSeconds'] == 60
-    assert production_settings['upstreamTimeoutSeconds'] == 3600
-    assert production_settings['streamIdleTimeoutSeconds'] == 300
+    assert production_settings['bodyTimeoutSeconds'] == 10
+    assert production_settings['upstreamTimeoutSeconds'] == 900
+    assert production_settings['streamIdleTimeoutSeconds'] == 60
     production_workers = [item for item in production if item['kind'] == 'StatefulSet'
                           and item['metadata']['name'].startswith('inference-worker-')]
     assert len(production_workers) == 2
     for worker in production_workers:
         container = worker['spec']['template']['spec']['containers'][0]
         context_args = [arg for arg in container['args'] if arg.startswith('--context-length')]
-        assert context_args == ['--context-length=1048576'], context_args
+        assert context_args == ['--context-length=131072'], context_args
+        sampling_args = [arg for arg in container['args'] if arg.startswith('--sampling-backend')]
+        assert sampling_args == ['--sampling-backend=pytorch'], sampling_args
     model = 'deepseek-ai/DeepSeek-V4.1-Flash-1017'
     public_models = [model]
     assert production_settings['catalogModelIds'] == public_models

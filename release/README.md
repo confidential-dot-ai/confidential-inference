@@ -38,17 +38,21 @@ disabled. No custom CPU Engram staging, CED handoff, HiCache, or bounded
 replay settings are enabled. Model files come from the verified encrypted
 mount, with Hugging Face network access disabled.
 
-The context limit is 1,048,576 tokens for input and output together. This is
-the native limit in the pinned model configuration. The gateway accepts up
-to 8 MiB per request body, with 60 seconds to read the body and 3,600
-seconds for the upstream request. A stream must produce data within 300
-seconds. These are the largest limits the current gateway image supports.
-A token limit does not guarantee that every input fits the byte limit.
+The configured context limit is 131,072 tokens for input and output together.
+The larger native model limit is deferred. Keep the gateway defaults: 2 MiB
+per request body, 10 seconds to read the body, 900 seconds for the upstream
+request, and 60 seconds without stream data. A gateway limit does not prove
+the front door accepts the same request size; record the tested end-to-end
+limit in the deployment receipt.
+
+Select the upstream PyTorch sampling backend explicitly. A filtered sampling
+request caused a worker health failure with the prior FlashInfer path. The
+cause remains unknown. This configuration is a mitigation to test; it does
+not establish a kernel defect or a performance improvement. Require single
+bounded-top-k and mixed greedy/default inference to pass before acceptance.
 
 Keep the limit at 16 active requests per worker and 32 across the gateway.
-Long requests share the available KV cache. Test actual long-context
-inference on the four-GPU workers before release acceptance. The configured
-limit alone does not prove capacity or latency at that length.
+Test both workers and record actual latency, throughput, and memory headroom.
 
 Native worker output is discarded to protect prompt and response text.
 Metrics and fixed numeric process-exit events remain available. Detailed
