@@ -9,6 +9,10 @@ compile into FLASHINFER_WORKSPACE_BASE, which the workers share.
 
 The program uses synthetic tensors only. It prints nothing; the exit status is
 the result: 0 when every call returned, 1 when any call failed.
+
+flashinfer.top_k (the DSpark draft head) is not warmed here: every decode
+step uses it whatever the request's sampling, so the server's own startup
+warmup already compiles it.
 """
 import sys
 
@@ -21,7 +25,6 @@ TOP_K_ALL = 1 << 30
 
 def warm() -> None:
     import torch
-    import flashinfer
     import flashinfer.sampling as sampling
 
     device = torch.device("cuda", 0)
@@ -36,7 +39,6 @@ def warm() -> None:
     sampling.top_p_renorm_probs(probs, top_ps)
     sampling.top_k_top_p_sampling_from_probs(probs, top_ks, top_ps, filter_apply_order="joint")
     sampling.min_p_sampling_from_probs(probs, min_ps)
-    flashinfer.top_k(logits, 8)
     torch.cuda.synchronize(device)
 
 
