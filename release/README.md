@@ -26,6 +26,23 @@ The repository holds no digest of an image that it builds. The release build
 takes each one from signed evidence, so a release needs no commit that pins
 image digests. The release commit is the image source commit.
 
+## Plain V4.1 worker profile
+
+The next normal release serves `deepseek-ai/DeepSeek-V4.1-Flash-1017` at
+revision `1bae0e1088993b9b82de08f59de5be5a34e42170`. It uses two complete
+TP=4 workers. Each worker requires its own four-GPU CVM and encrypted model
+disk. The private deployment selects the CVM names.
+
+The worker uses the pinned upstream source. Speculative decoding and PD are
+disabled. No custom CPU Engram staging, CED handoff, HiCache, or bounded
+replay settings are enabled. Model files come from the verified encrypted
+mount, with Hugging Face network access disabled.
+
+Native worker output is discarded to protect prompt and response text.
+Metrics and fixed numeric process-exit events remain available. Detailed
+Python stack dumps, NCCL flight-recorder dumps, and native CUDA error text
+are not available through this output path. These are diagnostic gaps.
+
 ## Files
 
 | File | Written by | Contents |

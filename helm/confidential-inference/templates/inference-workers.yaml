@@ -241,7 +241,7 @@ spec:
           env:
             - name: HOME
               value: /tmp
-            {{- if and $modelMount $cache.enabled }}
+            {{- if $modelMount }}
             - name: HF_HUB_OFFLINE
               value: "1"
             {{- end }}

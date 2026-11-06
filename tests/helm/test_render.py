@@ -330,19 +330,18 @@ def main() -> None:
         '/mnt/c8s-data/admin-auth', '/mnt/c8s-data/admin-api-key', '/run/confidential-gateway', '/tmp'}
     assert not any(name.startswith(('GATEWAY_C8S_', 'GATEWAY_RELEASE_')) for name in gateway_environment)
     production_settings = json.loads(gateway_environment['GATEWAY_RUNTIME_CONFIG'])
-    model = 'deepseek-ai/DeepSeek-V4.1-Flash'
-    legacy_model = 'deepseek-ai/DeepSeek-V4-Flash-0731'
-    public_models = sorted([legacy_model, model])
+    model = 'deepseek-ai/DeepSeek-V4.1-Flash-1017'
+    public_models = [model]
     assert production_settings['catalogModelIds'] == public_models
     assert production_settings['inferenceModelIds'] == public_models
     production_values = yaml.safe_load((ROOT / 'release/values.yaml').read_text())
     assert production_values['runtimeConfig']['modelRoutes'] == {
-        legacy_model: [model], model: [model]}
+        model: [model]}
     bindings = production_values['gateway']['usage']['models']
     assert set(bindings) == set(public_models)
-    assert bindings[legacy_model] == bindings[model] == {
+    assert bindings[model] == {
         'served_model': model,
-        'model_revision': '5254448103b6254fc646dacbca1cbbf20e9216c1'}
+        'model_revision': '1bae0e1088993b9b82de08f59de5be5a34e42170'}
     # Values that bin/deploy sets per deployment do not reach the pod.
     deployed = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
         '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
@@ -369,7 +368,7 @@ def main() -> None:
                             if c['name'] == 'sglang-router')
     router_env = {item['name']: item['value'] for item in router_container['env']}
     assert json.loads(router_env['CI_ROUTER_MODEL_ROUTES']) == {
-        'schemaVersion': 1, 'routes': {legacy_model: [model], model: [model]}}
+        'schemaVersion': 1, 'routes': {model: [model]}}
     assert router['spec']['selector']['matchLabels'] == {'app.kubernetes.io/part-of': 'confidential-inference',
                                                          'app.kubernetes.io/component': 'sglang-router'}
     assert router['spec']['strategy']['rollingUpdate'] == {'maxUnavailable': 0, 'maxSurge': 1}
