@@ -36,6 +36,7 @@ class VanillaV41Tests(unittest.TestCase):
             self.assertEqual('/health', c['livenessProbe']['httpGet']['path'])
             self.assertLessEqual(c['livenessProbe']['timeoutSeconds'], 5)
             self.assertEqual(4, int(c['resources']['limits']['nvidia.com/gpu']))
+            self.assertIn({'name': 'HF_HUB_OFFLINE', 'value': '1'}, c['env'])
         self.assertEqual(2, len(nodes))
         gateway = next(d for d in docs if d['kind'] == 'Deployment'
                        and d['metadata']['name'] == 'gateway')
