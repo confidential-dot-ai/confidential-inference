@@ -38,6 +38,18 @@ disabled. No custom CPU Engram staging, CED handoff, HiCache, or bounded
 replay settings are enabled. Model files come from the verified encrypted
 mount, with Hugging Face network access disabled.
 
+The context limit is 1,048,576 tokens for input and output together. This is
+the native limit in the pinned model configuration. The gateway accepts up
+to 16 MiB per request body, with 60 seconds to read the body and 3,600
+seconds for the upstream request. A stream must produce data within 300
+seconds. These are the largest limits the current gateway image supports.
+A token limit does not guarantee that every input fits the byte limit.
+
+Keep the limit at 16 active requests per worker and 32 across the gateway.
+Long requests share the available KV cache. Test actual long-context
+inference on the four-GPU workers before release acceptance. The configured
+limit alone does not prove capacity or latency at that length.
+
 Native worker output is discarded to protect prompt and response text.
 Metrics and fixed numeric process-exit events remain available. Detailed
 Python stack dumps, NCCL flight-recorder dumps, and native CUDA error text

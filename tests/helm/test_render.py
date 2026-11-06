@@ -330,6 +330,17 @@ def main() -> None:
         '/mnt/c8s-data/admin-auth', '/mnt/c8s-data/admin-api-key', '/run/confidential-gateway', '/tmp'}
     assert not any(name.startswith(('GATEWAY_C8S_', 'GATEWAY_RELEASE_')) for name in gateway_environment)
     production_settings = json.loads(gateway_environment['GATEWAY_RUNTIME_CONFIG'])
+    assert production_settings['maximumBodyBytes'] == 16777216
+    assert production_settings['bodyTimeoutSeconds'] == 60
+    assert production_settings['upstreamTimeoutSeconds'] == 3600
+    assert production_settings['streamIdleTimeoutSeconds'] == 300
+    production_workers = [item for item in production if item['kind'] == 'StatefulSet'
+                          and item['metadata']['name'].startswith('inference-worker-')]
+    assert len(production_workers) == 2
+    for worker in production_workers:
+        container = worker['spec']['template']['spec']['containers'][0]
+        context_args = [arg for arg in container['args'] if arg.startswith('--context-length')]
+        assert context_args == ['--context-length=1048576'], context_args
     model = 'deepseek-ai/DeepSeek-V4.1-Flash-1017'
     public_models = [model]
     assert production_settings['catalogModelIds'] == public_models
