@@ -22,7 +22,7 @@ gateway:
     - 10.52.0.0/16
     - 10.42.0.0/16
 attestationReceipts:
-  evidenceBaseUrl: https://candidate.api.confidential.ai
+  evidenceBaseUrl: https://api.confidential.ai
   evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
   cds:
     url: https://10.45.250.26:30808
