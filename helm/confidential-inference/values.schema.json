@@ -381,7 +381,7 @@
             "maximumHeaders": {"type": "integer", "minimum": 1, "maximum": 256},
             "maximumHeaderBytes": {"type": "integer", "minimum": 8192, "maximum": 131072},
             "maximumUriBytes": {"type": "integer", "minimum": 256, "maximum": 8192},
-            "maximumBodyBytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+            "maximumBodyBytes": {"type": "integer", "minimum": 1, "maximum": 8388608},
             "headerTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 30},
             "bodyTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 60},
             "upstreamTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},

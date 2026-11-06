@@ -16,7 +16,7 @@ gateway:
         served_model: deepseek-ai/DeepSeek-V4.1-Flash-1017
         model_revision: 1bae0e1088993b9b82de08f59de5be5a34e42170
   protection:
-    maximumBodyBytes: 16777216
+    maximumBodyBytes: 8388608
     bodyTimeoutSeconds: 60
     upstreamTimeoutSeconds: 3600
     streamIdleTimeoutSeconds: 300

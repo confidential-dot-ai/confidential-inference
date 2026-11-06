@@ -40,7 +40,7 @@ mount, with Hugging Face network access disabled.
 
 The context limit is 1,048,576 tokens for input and output together. This is
 the native limit in the pinned model configuration. The gateway accepts up
-to 16 MiB per request body, with 60 seconds to read the body and 3,600
+to 8 MiB per request body, with 60 seconds to read the body and 3,600
 seconds for the upstream request. A stream must produce data within 300
 seconds. These are the largest limits the current gateway image supports.
 A token limit does not guarantee that every input fits the byte limit.

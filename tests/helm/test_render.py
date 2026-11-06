@@ -330,7 +330,13 @@ def main() -> None:
         '/mnt/c8s-data/admin-auth', '/mnt/c8s-data/admin-api-key', '/run/confidential-gateway', '/tmp'}
     assert not any(name.startswith(('GATEWAY_C8S_', 'GATEWAY_RELEASE_')) for name in gateway_environment)
     production_settings = json.loads(gateway_environment['GATEWAY_RUNTIME_CONFIG'])
-    assert production_settings['maximumBodyBytes'] == 16777216
+    assert production_settings['maximumBodyBytes'] == 8388608
+    # Refuse a chart value that the published gateway cannot start with.
+    too_large = subprocess.run(['helm', 'template', 'body-limit-test', str(CHART),
+        '--set', 'inference.mode=simulator',
+        '--set', 'gateway.protection.maximumBodyBytes=8388609'],
+        capture_output=True, text=True)
+    assert too_large.returncode != 0 and 'maximumBodyBytes' in too_large.stderr
     assert production_settings['bodyTimeoutSeconds'] == 60
     assert production_settings['upstreamTimeoutSeconds'] == 3600
     assert production_settings['streamIdleTimeoutSeconds'] == 300
