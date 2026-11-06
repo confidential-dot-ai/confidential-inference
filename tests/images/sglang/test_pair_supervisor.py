@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -26,6 +27,8 @@ sys.path.insert(0, str(ROOT / "images/sglang-router"))
 spec = importlib.util.spec_from_file_location("pair_supervisor", ROOT / "images/sglang/pair_supervisor.py")
 pair = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pair)
+# Supervisor tests run without a GPU; PrewarmTests cover the prewarm step itself.
+pair.PREWARM_COMMAND = [sys.executable, "-c", "pass"]
 
 
 def unused_port():
@@ -282,6 +285,79 @@ class ProcessAcceptanceTests(unittest.TestCase):
 
     def test_clean_frontend_cannot_hide_exited_worker(self):
         self.exercise_failure("exit")
+
+
+class PrewarmTests(unittest.TestCase):
+    """FlashInfer sampling kernels compile before any worker starts, inside the startup budget."""
+
+    def run_start(self, command, startup_timeout=5):
+        directory = tempfile.mkdtemp()
+        cache = Path(directory) / "flashinfer"
+        cfg = config()
+        cfg["startupTimeoutSeconds"] = startup_timeout
+        for worker in cfg["workers"]:
+            worker["command"] = [sys.executable, str(Path(__file__).with_name("pair_fake_worker.py")),
+                                 "--port", str(worker["port"])]
+            worker["env"] = {"PAIR_TEST_CONTROL": str(Path(directory) / worker["role"]),
+                             "FLASHINFER_WORKSPACE_BASE": str(cache), "PRIVATE_WORKER_ONLY": "1"}
+        previous = pair.PREWARM_COMMAND
+        pair.PREWARM_COMMAND = command
+        supervisor = pair.Supervisor(cfg, Path(directory) / "run", ["GPU-fake-a", "GPU-fake-b"])
+        output = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(output):
+                try:
+                    supervisor.start()
+                    roles = {role for role in ("prefill", "decode") if role in supervisor.children}
+                    failed = supervisor.failed
+                finally:
+                    supervisor.shutdown()
+        finally:
+            pair.PREWARM_COMMAND = previous
+        records = [json.loads(line) for line in output.getvalue().splitlines()]
+        for record in records:
+            self.assertIsNotNone(pair.reviewed_event({k: v for k, v in record.items()
+                                                      if k not in {"timestamp_ns", "run_id", "source_revision"}}))
+        return cache, roles, failed, records, supervisor
+
+    def test_prewarm_finishes_before_workers_with_worker_cache_and_first_gpu(self):
+        record = ("import json,os,pathlib; p=pathlib.Path(os.environ['FLASHINFER_WORKSPACE_BASE']);"
+                  "p.mkdir(parents=True); (p/'warm').write_text(json.dumps(dict(os.environ)))")
+        cache, roles, failed, records, _ = self.run_start([sys.executable, "-c", record])
+        self.assertFalse(failed)
+        self.assertEqual({"prefill", "decode"}, roles)
+        env = json.loads((cache / "warm").read_text())
+        self.assertEqual("GPU-fake-a", env["CUDA_VISIBLE_DEVICES"])
+        self.assertNotIn("PRIVATE_WORKER_ONLY", env)
+        self.assertNotIn("PAIR_TEST_CONTROL", env)
+        events = [r["event"] for r in records]
+        self.assertIn("flashinfer_prewarm_finished", events)
+        self.assertNotIn("flashinfer_prewarm_failed", events)
+
+    def test_prewarm_failure_fails_startup_before_any_worker(self):
+        _, roles, failed, records, _ = self.run_start([sys.executable, "-c", "raise SystemExit(3)"])
+        self.assertTrue(failed)
+        self.assertEqual(set(), roles)
+        failure = [r for r in records if r["event"] == "flashinfer_prewarm_failed"]
+        self.assertEqual(1, len(failure))
+        self.assertEqual(3, failure[0]["code"])
+
+    def test_prewarm_counts_against_the_startup_budget(self):
+        _, roles, failed, records, supervisor = self.run_start(
+            [sys.executable, "-c", "import time; time.sleep(60)"], startup_timeout=1)
+        self.assertTrue(failed)
+        self.assertEqual(set(), roles)
+        self.assertIn("startup_timeout", [r["event"] for r in records])
+        self.assertTrue(all(child.poll() is not None for child in supervisor.children.values()))
+
+    def test_prewarm_program_reports_only_an_exit_status(self):
+        # Without torch or a GPU the program fails closed and prints nothing.
+        result = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "images/sglang/prewarm_flashinfer.py")],
+                                capture_output=True, timeout=120)
+        if result.returncode == 0:
+            self.skipTest("a GPU with FlashInfer is available")
+        self.assertEqual(1, result.returncode)
+        self.assertEqual(b"", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

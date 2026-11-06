@@ -47,6 +47,7 @@ EVENTS = {
     "scheduler_snapshot", "scheduler_snapshot_unavailable",
     "gpu_event_query_failed",
     "diagnostic_delivery_failed",
+    "flashinfer_prewarm_finished", "flashinfer_prewarm_failed",
 }
 NUMBER_FIELDS = {"rank", "code", "count", "bytes", "queue_depth", "sequence", "duration_ms",
                  "age_ms", "gpu_pending_ms", "thread", "frame", "line", "rejected",
@@ -66,6 +67,10 @@ LOG_LOCK = threading.Lock()
 INHERITED_ENV = {"PATH", "LD_LIBRARY_PATH", "HOME", "LANG", "LC_ALL", "TZ", "VIRTUAL_ENV",
                  "PYTHONDONTWRITEBYTECODE", "NVIDIA_VISIBLE_DEVICES", "NVIDIA_DRIVER_CAPABILITIES",
                  "NVIDIA_REQUIRE_CUDA"}
+# Worker settings that decide where and for what the FlashInfer JIT compiles.
+PREWARM_ENV = {"FLASHINFER_WORKSPACE_BASE", "FLASHINFER_CUDA_ARCH_LIST", "CUDA_CACHE_PATH",
+               "TORCH_CUDA_ARCH_LIST", "CUDA_HOME", "PATH", "LD_LIBRARY_PATH", "HOME", "TMPDIR"}
+PREWARM_COMMAND = [sys.executable, "-I", "-B", "/usr/local/bin/prewarm-flashinfer"]
 
 
 def new_generation(directory: Path) -> Path:
@@ -353,6 +358,10 @@ class Supervisor:
                 self.failed = True
                 self.stop.set()
                 return
+        if not self.prewarm_flashinfer():
+            self.failed = True
+            self.stop.set()
+            return
         offset = 0
         for worker in sorted(self.config["workers"], key=lambda w: w["role"] != "prefill"):
             if self.stop.is_set():
@@ -401,6 +410,34 @@ class Supervisor:
                     break
             if self.stop.is_set():
                 break
+
+    def prewarm_flashinfer(self) -> bool:
+        """Compile FlashInfer sampling kernels into each worker cache before any worker starts."""
+        caches = {}
+        for worker in self.config["workers"]:
+            env = {k: v for k, v in os.environ.items() if k in INHERITED_ENV}
+            env.update({k: v for k, v in worker["env"].items() if k in PREWARM_ENV})
+            caches.setdefault(env.get("FLASHINFER_WORKSPACE_BASE"), env)
+        for env in caches.values():
+            env.update(CUDA_VISIBLE_DEVICES=self.devices[0])
+            started = time.monotonic()
+            child = subprocess.Popen(PREWARM_COMMAND, env=env, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     start_new_session=True)
+            self.children["prewarm"] = child
+            while child.poll() is None:
+                if self.stop.wait(0.2):
+                    return False
+                if time.monotonic() - self.started > self.config["startupTimeoutSeconds"]:
+                    emit("startup_timeout")
+                    return False
+            del self.children["prewarm"]
+            duration_ms = int((time.monotonic() - started) * 1000)
+            if child.returncode:
+                emit("flashinfer_prewarm_failed", code=child.returncode, duration_ms=duration_ms)
+                return False
+            emit("flashinfer_prewarm_finished", duration_ms=duration_ms)
+        return True
 
     def worker_state(self, worker: dict) -> str:
         role = worker["role"]

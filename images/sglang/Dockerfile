@@ -104,6 +104,7 @@ RUN --mount=type=bind,source=images/sglang/harden_http.py,target=/run-src/harden
     --mount=type=bind,source=images/sglang/wait_for_model.py,target=/run-src/wait-for-model,readonly \
     --mount=type=bind,source=images/sglang/pair_supervisor.py,target=/run-src/sglang-pair,readonly \
     --mount=type=bind,source=images/sglang/pair_diagnostics.py,target=/run-src/pair_diagnostics.py,readonly \
+    --mount=type=bind,source=images/sglang/prewarm_flashinfer.py,target=/run-src/prewarm-flashinfer,readonly \
     --mount=type=bind,source=images/sglang-router/private_log_sink.py,target=/run-src/private_log_sink.py,readonly \
     SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 SGLANG_BUILD_RUST_EXTS=none \
         uv pip install --no-deps --no-build-isolation -e /opt/sglang/python \
@@ -115,6 +116,7 @@ RUN --mount=type=bind,source=images/sglang/harden_http.py,target=/run-src/harden
     && install -D -m 0555 /run-src/wait-for-model /usr/local/bin/wait-for-model \
     && install -D -m 0555 /run-src/sglang-pair /usr/local/bin/sglang-pair \
     && install -D -m 0444 /run-src/pair_diagnostics.py /usr/local/bin/pair_diagnostics.py \
+    && install -D -m 0555 /run-src/prewarm-flashinfer /usr/local/bin/prewarm-flashinfer \
     && install -D -m 0444 /run-src/private_log_sink.py /usr/local/bin/private_log_sink.py \
     && python -I -B /usr/local/bin/pair_diagnostics.py \
     && python -I -B -c 'import importlib.util as u; assert u.find_spec("sglang") and u.find_spec("mooncake")'
