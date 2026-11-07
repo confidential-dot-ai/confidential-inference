@@ -18,8 +18,8 @@ One file for each NVIDIA driver version: `nvidia-<driver>.json`.
 generator refuses a record that does not list the node image of the profile.
 
 `driverInputs.confosFetchGpuSha256` is the SHA-256 of `bin/confos-fetch-gpu` in
-confidential-os-builder at the ref that c8s pins in `.github/build-pins.json`.
-That script pins the NVIDIA driver and the container toolkit. When a c8s
+confidential-os-builder at the ref that C8s pins in `.github/build-pins.json`.
+That script pins the NVIDIA driver and the container toolkit. When a C8s
 release keeps the same ref, or a ref whose script has the same SHA-256,
 `scripts/bump-c8s.py` adds the new node image to `nodeImages`. Otherwise it
 stops, and a person derives the record again.

@@ -16,7 +16,7 @@ and pin the exact active bytes separately.
 ## Gateway APIs
 
 - `gateway-inference.openapi.json`: public inference, model catalog, health,
-  and native c8s routes served by TLS-LB.
+  and native C8s routes served by TLS-LB.
 - `gateway-admin.openapi.json`: the key registry snapshot. The gateway pulls
   it from the admin (`GET /api/gateway/key-snapshot`); the admin may also
   push it to the gateway's signed admin API.
@@ -38,10 +38,10 @@ the pepper or a plaintext API key.
 
 The network port and observability references moved to
 [docs/network-ports.yaml](../docs/network-ports.yaml) and
-[docs/observability-metrics.yaml](../docs/observability-metrics.yaml). The c8s
-source lock (pinned c8s commits and source hashes) moved to
+[docs/observability-metrics.yaml](../docs/observability-metrics.yaml). The C8s
+source lock (pinned C8s commits and source hashes) moved to
 [release/inputs/c8s-source-lock.json](../release/inputs/c8s-source-lock.json),
-and the c8s attestation protocol captures to
+and the C8s attestation protocol captures to
 [release/inputs/c8s-attestation-protocols](../release/inputs/c8s-attestation-protocols).
 The signed release still records the lock path and digest; releases before
 the move name `contracts/c8s-admission-source-lock.json`.
