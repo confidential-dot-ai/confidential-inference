@@ -107,6 +107,12 @@
         "port": {"type": "integer", "minimum": 1024, "maximum": 65534},
         "metricsPort": {"type": "integer", "minimum": 1024, "maximum": 65534},
         "reasoningParser": {"type": "string"},
+        "toolCallParser": {"type": "string"},
+        "speculativeAlgorithm": {"type": "string"},
+        "moeRunnerBackend": {"type": "string"},
+        "workerExtraArgs": {"type": "array", "items": {"type": "string"}},
+        "privateServerOutput": {"type": "boolean"},
+        "gpuMetricsEnabled": {"type": "boolean"},
         "autoscaling": {
           "type": "object",
           "required": ["enabled", "maxReplicas"],
@@ -230,6 +236,10 @@
                       },
                       "decode": {
                         "type": "string"
+                      },
+                      "modelVolumeName": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
                       }
                     }
                   }
@@ -371,7 +381,7 @@
             "maximumHeaders": {"type": "integer", "minimum": 1, "maximum": 256},
             "maximumHeaderBytes": {"type": "integer", "minimum": 8192, "maximum": 131072},
             "maximumUriBytes": {"type": "integer", "minimum": 256, "maximum": 8192},
-            "maximumBodyBytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+            "maximumBodyBytes": {"type": "integer", "minimum": 1, "maximum": 8388608},
             "headerTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 30},
             "bodyTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 60},
             "upstreamTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},

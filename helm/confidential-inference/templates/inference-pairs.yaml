@@ -39,11 +39,29 @@
 {{- range $pair := $pd.paired.pairs -}}
 {{- if hasKey $seen $pair.name }}{{ fail "duplicate pair name" }}{{ end -}}
 {{- $_ := set $seen $pair.name true -}}
-{{- $prefill := required "pair prefill worker is missing" (get $all $pair.prefill) -}}
-{{- $decode := required "pair decode worker is missing" (get $all $pair.decode) -}}
+{{- $prefill := deepCopy (required "pair prefill worker is missing" (get $all $pair.prefill)) -}}
+{{- $decode := deepCopy (required "pair decode worker is missing" (get $all $pair.decode)) -}}
 {{- if or (ne $prefill.role "prefill") (ne $decode.role "decode") }}{{ fail "invalid worker role in pair" }}{{ end -}}
 {{- $name := printf "inference-pd-%s" $pair.name -}}
 {{- $copy := deepCopy $root -}}
+{{- with $pair.modelVolumeName -}}
+{{- $oldPath := printf "%s/%s" $root.Values.inference.model.volumeDirectory (index $root.Values.inference.model.volumeNames 0) -}}
+{{- $newPath := printf "%s/%s" $root.Values.inference.model.volumeDirectory . -}}
+{{- $_ := set $copy.Values.inference.model "volumeNames" (list .) -}}
+{{- range $worker := list $prefill $decode -}}
+{{- $args := list -}}
+{{- range $arg := $worker.args -}}
+{{- if eq $arg $oldPath -}}
+{{- $args = append $args $newPath -}}
+{{- else if eq $arg (printf "--model-path=%s" $oldPath) -}}
+{{- $args = append $args (printf "--model-path=%s" $newPath) -}}
+{{- else -}}
+{{- $args = append $args $arg -}}
+{{- end -}}
+{{- end -}}
+{{- $_ := set $worker "args" $args -}}
+{{- end -}}
+{{- end -}}
 {{- $_ := set $copy.Values.inference.pd "workers" (list $prefill $decode) -}}
 {{- $_ := set $copy.Values.inference.pd "attestedWorkload" (printf "%s-0" $name) -}}
 {{- $body := include "confidential-inference.source.inference-pd" $copy -}}

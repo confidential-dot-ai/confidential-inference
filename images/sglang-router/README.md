@@ -70,7 +70,7 @@ and recovery. It does not replace the candidate live rehearsal.
 ## Model routes
 
 Set `CI_ROUTER_MODEL_ROUTES` to the routes JSON. It is environment, so the
-exact c8s allowlist pins it; a route change changes the pod and rolls the
+exact C8s allowlist pins it; a route change changes the pod and rolls the
 router. The router reads it once at start and rejects an invalid document.
 Without it, aliases are absent.
 

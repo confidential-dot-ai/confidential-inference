@@ -93,7 +93,8 @@ class ModelMountGateTests(unittest.TestCase):
             f"44 33 0:77 / {self.model.resolve()} {mount_options},relatime - {filesystem} {source} {super_options}\n"
         )
 
-    def run_gate(self, digests: dict[str, str], timeout: int = 1) -> subprocess.CompletedProcess[str]:
+    def run_gate(self, digests: dict[str, str], timeout: int = 1,
+                 private: bool = False, child_code: str = "print('server-started')") -> subprocess.CompletedProcess[str]:
         command = [
             "python3", str(SCRIPT), "--path", str(self.model),
             "--timeout-seconds", str(timeout), "--poll-seconds", "0.05",
@@ -104,8 +105,20 @@ class ModelMountGateTests(unittest.TestCase):
         ]
         for name in sorted(digests):
             command.extend(["--expected-file", f"{name}={digests[name]}"])
-        command.extend(["--", "python3", "-c", "print('server-started')"])
+        if private:
+            command.append("--private-server-output")
+        command.extend(["--", "python3", "-c", child_code])
         return subprocess.run(command, text=True, capture_output=True, timeout=timeout + 2)
+
+    def test_private_output_discards_child_stdout_stderr_and_exception_text(self) -> None:
+        digests = self.create_model()
+        self.set_mount()
+        marker = "PRIVATE_PROMPT_RESPONSE_CREDENTIAL_CANARY"
+        code = f"import sys; print('{marker}'); print('{marker}', file=sys.stderr); raise RuntimeError('{marker}')"
+        result = self.run_gate(digests, private=True, child_code=code)
+        self.assertEqual(1, result.returncode)
+        self.assertNotIn(marker, result.stdout + result.stderr)
+        self.assertEqual({"event": "worker_exit", "code": 1}, json.loads(result.stdout))
 
     def test_verified_mount_starts_the_server_command(self) -> None:
         digests = self.create_model()

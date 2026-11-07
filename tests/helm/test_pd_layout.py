@@ -237,7 +237,9 @@ def check_render(values: dict) -> None:
     # launcher starts it, so it waits out their whole startup.
     expected += ["--worker-startup-timeout-secs=86400"]
     expected += router_args(PLAN["router"]["command"])
-    expected += ["--health-check-timeout-secs=5", "--health-failure-threshold=3"]
+    expected += ["--health-check-timeout-secs=5", "--health-failure-threshold=3",
+                 "--health-check-interval-secs=2", "--cb-failure-threshold=2",
+                 "--cb-timeout-duration-secs=10", "--connect-timeout-secs=2"]
     expected += ["--host=0.0.0.0", "--port=30000", "--prometheus-host=0.0.0.0", "--prometheus-port=29000"]
     assert router["args"] == expected, router["args"]
     for flag in ("--reject-video", "--max-concurrent-requests", "--max-images-per-request", "--max-inflight-images"):
@@ -458,6 +460,9 @@ def check_pair_render(values: dict) -> None:
     router = by_name(documents, "Deployment", "sglang-router")["spec"]["template"]["spec"]["containers"][0]
     env = {item["name"]: item["value"] for item in router["env"]}
     assert router["command"] == ["python3", "/usr/local/bin/ci-sglang-router"]
+    for flag in ("--health-check-interval-secs=2", "--cb-failure-threshold=2",
+                 "--cb-timeout-duration-secs=10", "--connect-timeout-secs=2"):
+        assert router["args"].count(flag) == 1
     assert json.loads(env["CI_ROUTER_PD_PAIRS"]) == routes
     assert admission["refusals"](documents) == []
     observed = copy.deepcopy(values)
@@ -510,6 +515,30 @@ def check_pair_render(values: dict) -> None:
                     assert env["SGLANG_MOONCAKE_CUSTOM_MEM_POOL"] == "INTRA_NODE_NVLINK"
 
 
+def check_pair_model_disks(values: dict) -> None:
+    pairs = copy.deepcopy(yaml.safe_load((FIXTURES / "pd-pairs-values.yaml").read_text())
+                          ["inference"]["pd"]["paired"]["pairs"])
+    pairs[0]["modelVolumeName"] = "dsv41-a"
+    documents = render(values, "--values", str(FIXTURES / "pd-pairs-values.yaml"),
+                       "--set-json", "inference.pd.paired.pairs=" + json.dumps(pairs))
+    for name, volume in (("a", "dsv41-a"), ("b", "dsv41")):
+        pod = by_name(documents, "StatefulSet", "inference-pd-" + name)["spec"]["template"]
+        assert pod["metadata"]["annotations"]["confidential.ai/c8s-volumes"] == (
+            volume + "=" + values["inference"]["model"]["c8sVolumeSource"])
+        app = pod["spec"]["containers"][0]
+        config = json.loads(app["args"][1])
+        path = "/mnt/c8s-data/models/" + volume
+        assert "--path=" + path in config["modelGate"]
+        for worker in config["workers"]:
+            assert flag_values(worker["command"])["--model-path"] == path
+        assert app["image"] == values["images"]["sglangWorker"]
+    assert admission["refusals"](documents) == []
+    pairs[0]["modelVolumeName"] = "../other"
+    error = render(values, "--values", str(FIXTURES / "pd-pairs-values.yaml"),
+                   "--set-json", "inference.pd.paired.pairs=" + json.dumps(pairs), success=False)
+    assert "modelVolumeName" in error
+
+
 def main() -> None:
     values = check_values_file_is_the_plan()
     check_render(values)
@@ -517,6 +546,7 @@ def main() -> None:
     check_off_by_default()
     check_b200_layer()
     check_pair_render(values)
+    check_pair_model_disks(values)
     print("PD layout checks passed")
 
 

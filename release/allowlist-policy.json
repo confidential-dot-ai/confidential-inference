@@ -25,12 +25,12 @@
       ]
     },
     {
-      "name": "inference-pd-a-0",
-      "controller": "StatefulSet/inference-pd-a"
+      "name": "inference-worker-0",
+      "controller": "StatefulSet/inference-worker-0"
     },
     {
-      "name": "inference-pd-b-0",
-      "controller": "StatefulSet/inference-pd-b"
+      "name": "inference-worker-1",
+      "controller": "StatefulSet/inference-worker-1"
     },
     {
       "name": "telemetry-collector",

@@ -1,7 +1,7 @@
 # Confidential Inference chart
 
 This chart installs the gateway, router, inference workers, and optional
-metrics components in a c8s Kubernetes cluster.
+metrics components in a C8s Kubernetes cluster.
 
 The default values form a small GPU-free simulator deployment. An operator
 must supply an external values file for a real environment. The file must pin
@@ -21,9 +21,9 @@ the signed release manifest (`chart.archiveSha256`), together with the
 profile values files as release assets (`release/README.md`, "The release
 build"). An installer that verifies those digests needs no checkout.
 
-The gateway uses one internal HTTP service behind c8s TLS-LB. Public inference
+The gateway uses one internal HTTP service behind C8s TLS-LB. Public inference
 requests and signed admin requests use that same entry path. The gateway reads
-its API-key pepper and its admin client configuration from c8s
+its API-key pepper and its admin client configuration from C8s
 application-secret memory. It keeps no state on disk: it pulls the API keys
 from the admin (`gateway.admin` is its egress), is Ready only once it holds
 them, and sends usage events back to the admin (`gateway.usage.enabled`).
@@ -54,7 +54,7 @@ settings does not roll the gateway.
 
 The inference workers use `updateStrategy: OnDelete`. Helm updates their
 StatefulSets, but a worker keeps its old pod until you delete it. Each worker
-is its own StatefulSet with its own c8s workload and model volume, so neither
+is its own StatefulSet with its own C8s workload and model volume, so neither
 a StatefulSet `RollingUpdate` nor a PodDisruptionBudget keeps one worker
 serving: both StatefulSets would roll at once, and a PodDisruptionBudget does
 not apply to controller updates. Roll them one at a time:
@@ -87,12 +87,12 @@ depend on each other the way processes on one host do:
   handles (Mooncake intra-node NVLink). Containers of one pod share an IPC
   namespace; separate pods do not.
 - The holder locks the checkpoint's Engram shards in the page cache, and
-  every worker reads those pages. The pod's c8s model volume is one mount,
+  every worker reads those pages. The pod's C8s model volume is one mount,
   so the cache is shared. Separate pods would each open their own volume.
 - `/dev/shm` is one Memory emptyDir for the pod.
 
 Each worker's `args` are the launcher's exact argv. The chart checks that the
-argv sets `--model-path` to the c8s volume path, `--host 0.0.0.0` (the router
+argv sets `--model-path` to the C8s volume path, `--host 0.0.0.0` (the router
 is another pod), `--port`, `--served-model-name` (`inference.model.name`),
 `--disaggregation-mode`, and a prefill worker's
 `--disaggregation-bootstrap-port`. A worker must not set
@@ -106,7 +106,7 @@ holder first runs `wait-for-model`, so no worker starts before the model
 files match the release.
 
 Every container runs as uid 1001, with no capability and no privilege
-escalation. The pod sets no host namespace. The c8s webhook refuses
+escalation. The pod sets no host namespace. The C8s webhook refuses
 `shareProcessNamespace`, so the chart does not set it. The layout needs these
 things from the node, which the chart cannot grant:
 
@@ -135,7 +135,28 @@ listener, so the collector's NetworkPolicy rule admits it to that port and a
 port rule cannot limit it to `/metrics`. The ordinary workers have the same
 rule.
 
+### Separate model disks for pairs
+
+Each `inference.pd.paired.pairs` entry can set `modelVolumeName`. Without it,
+the pair uses the first `inference.model.volumeNames` entry. With it, the
+chart selects that disk and updates the model gate and both worker paths.
+Other pairs retain their own disk selection. The key source is unchanged,
+so an exact copy of the encrypted image can use the existing key grant.
+
+The normal release selects `dsv41-a` for Pair A and `dsv41` for Pair B.
+Attach both encrypted disks to the inference CVM, with distinct serials
+`c8s-vol-dsv41-a` and `c8s-vol-dsv41`. Each pair can then reopen its disk
+without a shared mapping. The signed release policy must include each exact
+model mount path. This changes disk storage, not the transport within a pair.
+
 ### Gateway admission and routing
+
+PD routing uses the ordinary worker profile's two-second health interval and
+connection timeout, two-failure circuit breaker and ten-second breaker reset.
+The health timeout remains five seconds, with three failed checks required.
+These settings shorten failed-pair withdrawal without changing generation
+timeouts or the existing retry budget. A health check can consume its full
+timeout, so the interval is not a strict bound on withdrawal time.
 
 The gateway admits at most `gateway.protection.inferenceConcurrency`
 inference requests, holds up to `gateway.protection.inferenceQueue` more for
