@@ -2,7 +2,7 @@
   "schema": "confidential.ai/release-allowlist-policy/v2",
   "chart": {
     "release": "confidential-inference",
-    "namespace": "confidential-inference-staging",
+    "namespace": "confidential-inference",
     "kubeVersion": "1.32.0"
   },
   "kubernetes": {
@@ -25,8 +25,12 @@
       ]
     },
     {
-      "name": "inference-pd-0",
-      "controller": "StatefulSet/inference-pd"
+      "name": "inference-worker-0",
+      "controller": "StatefulSet/inference-worker-0"
+    },
+    {
+      "name": "inference-worker-1",
+      "controller": "StatefulSet/inference-worker-1"
     },
     {
       "name": "telemetry-collector",

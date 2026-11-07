@@ -27,7 +27,7 @@ policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
 PINS = {
     "ordinary": ("sgl-project/sglang", "71de97b264b04dcd514cf904003028aefe9775c8"),
-    "pd": ("confidential-dot-ai/Sglang-public", "c2425f9b0a274a9f5c3bf91c7af363e94bdbf548"),
+    "pd": ("sgl-project/sglang", "a7fd2e1158c389c33077bae67fb797efa8dd09bd"),
 }
 # Routes declared in http_server.py that stay after hardening. Outside this
 # file, /v1/loads (v1_loads_router) and /metrics (--enable-metrics) also stay.

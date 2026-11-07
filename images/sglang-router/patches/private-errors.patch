@@ -1,0 +1,362 @@
+diff --git a/sgl-model-gateway/src/routers/http/pd_router.rs b/sgl-model-gateway/src/routers/http/pd_router.rs
+--- a/sgl-model-gateway/src/routers/http/pd_router.rs
++++ b/sgl-model-gateway/src/routers/http/pd_router.rs
+@@ -12,8 +12,8 @@
+     body::Body,
+     extract::Request,
+     http::{
++        header::{CONTENT_LENGTH, CONTENT_TYPE},
+         HeaderMap, HeaderValue, StatusCode,
+-        header::{CONTENT_LENGTH, CONTENT_TYPE},
+     },
+     response::{IntoResponse, Response},
+ };
+@@ -21,7 +21,7 @@
+ use memchr::memmem;
+ use reqwest::Client;
+ use serde::Serialize;
+-use serde_json::{Value, json};
++use serde_json::{json, Value};
+ use tokio_stream::wrappers::UnboundedReceiverStream;
+ use tracing::{debug, error, warn};
+ 
+@@ -29,12 +29,12 @@
+ use crate::{
+     config::types::RetryConfig,
+     core::{
+-        HashRing, RetryExecutor, UNKNOWN_MODEL_ID, Worker, WorkerLoadGuard, WorkerRegistry,
+-        WorkerType, is_retryable_status,
++        is_retryable_status, HashRing, RetryExecutor, Worker, WorkerLoadGuard, WorkerRegistry,
++        WorkerType, UNKNOWN_MODEL_ID,
+     },
+     observability::{
+         events::{self, Event},
+-        metrics::{Metrics, bool_to_static_str, metrics_labels},
++        metrics::{bool_to_static_str, metrics_labels, Metrics},
+         otel_trace::inject_trace_context_http,
+     },
+     policies::{LoadBalancingPolicy, PolicyRegistry, SelectWorkerInfo},
+@@ -49,10 +49,11 @@
+         responses::ResponsesRequest,
+     },
+     routers::{
+-        RouterTrait, error,
++        error,
+         grpc::utils::{error_type_from_status, route_to_endpoint},
+         header_utils,
+         streaming_utils::BreakerTrackedStream,
++        RouterTrait,
+     },
+ };
+ 
+@@ -198,7 +199,10 @@
+                         response
+                     }
+                     Err(e) => {
+-                        error!("Failed to read response body: {}", e);
++                        error!(
++                            ci_event = "worker_response_read_failed",
++                            "Worker response read failed"
++                        );
+                         error::internal_error(
+                             "read_response_body_failed",
+                             format!("Failed to read response body: {}", e),
+@@ -238,7 +242,7 @@
+                 }
+             }
+             Err(e) => {
+-                error!("Failed to proxy request server: {}", e);
++                error!(ci_event = "worker_proxy_failed", "Worker proxy failed");
+                 error::internal_error(
+                     "proxy_request_failed",
+                     format!("Failed to proxy request: {}", e),
+@@ -259,15 +263,21 @@
+     }
+ 
+     fn handle_server_selection_error(error: String) -> Response {
+-        error!("Failed to select PD pair error={}", error);
++        error!(
++            ci_event = "pair_selection_failed",
++            "PD pair selection failed"
++        );
+         error::service_unavailable(
+             "server_selection_failed",
+             format!("No available servers: {}", error),
+         )
+     }
+ 
+-    fn handle_serialization_error(error: impl std::fmt::Display) -> Response {
+-        error!("Failed to serialize request error={}", error);
++    fn handle_serialization_error(_error: impl std::fmt::Display) -> Response {
++        error!(
++            ci_event = "request_serialization_failed",
++            "Request serialization failed"
++        );
+         error::internal_error("serialization_failed", "Failed to serialize request")
+     }
+ 
+@@ -636,16 +646,13 @@
+                     Ok(error_json) => {
+                         json!({ "message": error_json, "status": status.as_u16() })
+                     }
+-                    Err(parse_err) => {
++                    Err(_) => {
+                         let body_text = String::from_utf8_lossy(&error_body).to_string();
+-                        let preview: String = body_text.chars().take(256).collect();
+                         tracing::warn!(
+-                            "Failed to parse decode error body as JSON from {}: {} \
+-                             (status={}, body preview: {:?})",
+-                            decode.url(),
+-                            parse_err,
+-                            status.as_u16(),
+-                            preview
++                            ci_event = "worker_error_body_invalid_json",
++                            role = "decode",
++                            status = status.as_u16(),
++                            "Worker error body is not JSON"
+                         );
+                         json!({ "message": body_text, "status": status.as_u16() })
+                     }
+@@ -769,7 +776,10 @@
+         {
+             Ok(requests) => requests,
+             Err(e) => {
+-                error!("Failed to prepare PD worker requests: {}", e);
++                error!(
++                    ci_event = "worker_request_prepare_failed",
++                    "PD worker request preparation failed"
++                );
+                 return error::internal_error("pd_request_preparation_failed", e);
+             }
+         };
+@@ -899,9 +909,9 @@
+ 
+         if prefill_failed {
+             warn!(
+-                "Prefill failed, aborting paired decode request decode_url={} prefill_url={}",
+-                decode.url(),
+-                prefill.url()
++                ci_event = "paired_decode_cancelled",
++                role = "prefill",
++                "Prefill failed; paired decode cancelled"
+             );
+ 
+             // Tick prefill by its real status (4xx = client fault). Don't record
+@@ -1026,8 +1036,12 @@
+                                 *response.headers_mut() = response_headers;
+                                 response
+                             }
+-                            Err(e) => {
+-                                error!("Failed to read decode response: {}", e);
++                            Err(_) => {
++                                error!(
++                                    ci_event = "worker_response_read_failed",
++                                    role = "decode",
++                                    "Worker response read failed"
++                                );
+                                 error::internal_error(
+                                     "read_response_failed",
+                                     "Failed to read response",
+@@ -1068,9 +1082,10 @@
+             Ok(res) => {
+                 let status = res.status();
+                 error!(
+-                    "Decode server returned error status decode_url={} status={}",
+-                    decode.url(),
+-                    status
++                    ci_event = "worker_http_error",
++                    role = "decode",
++                    status = status.as_u16(),
++                    "Worker returned an error status"
+                 );
+                 // Streaming errors are ticked on drop by the `BreakerTrackedStream`
+                 // that `handle_decode_error_response` wraps them in.
+@@ -1082,8 +1097,8 @@
+             }
+             Err(e) => {
+                 error!(
+-                    decode_url = %decode.url(),
+-                    error = %e,
++                    ci_event = "worker_request_failed",
++                    role = "decode",
+                     "Decode request failed"
+                 );
+                 decode.record_outcome(false);
+@@ -1116,7 +1131,11 @@
+         // current message, tool content) and is the same routing text the regular
+         // (non-PD) router uses, keeping cache-aware routing consistent across both.
+         let text = body.extract_text_for_routing();
+-        if text.is_empty() { None } else { Some(text) }
++        if text.is_empty() {
++            None
++        } else {
++            Some(text)
++        }
+     }
+ 
+     async fn select_pd_pair(
+@@ -1310,7 +1329,6 @@
+         if !(status.is_success() || status.is_client_error()) {
+             tracked.mark_errored();
+         }
+-        let decode_for_log = decode.clone();
+         let prefill_for_outcome = prefill.clone();
+         // Set only when decode is relayed before prefill finished; `pending()`
+         // keeps the select arm below inert otherwise.
+@@ -1385,8 +1403,8 @@
+                     }
+                     _ = tx.closed() => {
+                         tracing::info!(
+-                            "Client disconnected, cancelling upstream PD stream from {}",
+-                            decode_for_log.url()
++                            ci_event = "client_disconnected", role = "decode",
++                            "Client disconnected; upstream PD stream cancelled"
+                         );
+                         client_gone = true;
+                         break;
+@@ -1431,7 +1449,7 @@
+         pending: Pin<
+             Box<impl Future<Output = Result<reqwest::Response, reqwest::Error>> + Send + 'static>,
+         >,
+-        prefill_url: String,
++        _prefill_url: String,
+     ) -> PrefillCompletion {
+         Box::pin(async move {
+             let result = match resolved {
+@@ -1440,8 +1458,9 @@
+             };
+             let response = result.map_err(|e| {
+                 error!(
+-                    "Prefill server failed prefill_url={} error={} after decode started streaming",
+-                    prefill_url, e
++                    ci_event = "worker_request_failed",
++                    role = "prefill",
++                    "Prefill request failed after decode started streaming"
+                 );
+                 PrefillStreamFailure {
+                     status: StatusCode::BAD_GATEWAY,
+@@ -1457,8 +1476,10 @@
+                     .await
+                     .unwrap_or_else(|_| "Unknown prefill error".to_string());
+                 error!(
+-                    "Prefill server returned error status prefill_url={} status={} body={}",
+-                    prefill_url, status, body
++                    ci_event = "worker_http_error",
++                    role = "prefill",
++                    status = status.as_u16(),
++                    "Worker returned an error status"
+                 );
+                 return Err(PrefillStreamFailure {
+                     status,
+@@ -1468,8 +1489,9 @@
+             }
+             response.bytes().await.map(|_| ()).map_err(|e| {
+                 warn!(
+-                    "Error consuming prefill response prefill_url={} error={}",
+-                    prefill_url, e
++                    ci_event = "worker_response_read_failed",
++                    role = "prefill",
++                    "Worker response read failed"
+                 );
+                 PrefillStreamFailure {
+                     status: StatusCode::BAD_GATEWAY,
+@@ -1491,8 +1513,12 @@
+         let response = res.bytes().await;
+         let decode_body = match response {
+             Ok(decode_body) => decode_body,
+-            Err(e) => {
+-                error!("Failed to read decode response: {}", e);
++            Err(_) => {
++                error!(
++                    ci_event = "worker_response_read_failed",
++                    role = "decode",
++                    "Worker response read failed"
++                );
+                 return error::internal_error("read_response_failed", "Failed to read response");
+             }
+         };
+@@ -1519,8 +1545,11 @@
+         // Return merged response
+         match serde_json::to_vec(&decode_json) {
+             Ok(body) => (status, body).into_response(),
+-            Err(e) => {
+-                error!("Failed to serialize merged response: {}", e);
++            Err(_) => {
++                error!(
++                    ci_event = "response_serialization_failed",
++                    "Response serialization failed"
++                );
+                 (status, decode_body).into_response()
+             }
+         }
+@@ -1530,7 +1559,7 @@
+     async fn process_prefill_response(
+         &self,
+         prefill_result: Result<reqwest::Response, reqwest::Error>,
+-        prefill_url: &str,
++        _prefill_url: &str,
+         return_logprob: bool,
+     ) -> Result<(StatusCode, Option<bytes::Bytes>), Response> {
+         // Check prefill result first - it's critical for disaggregated mode
+@@ -1538,8 +1567,9 @@
+             Ok(response) => response,
+             Err(e) => {
+                 error!(
+-                    "Prefill server failed (CRITICAL) prefill_url={} error={}. Decode will timeout without prefill KV cache.",
+-                    prefill_url, e
++                    ci_event = "worker_request_failed",
++                    role = "prefill",
++                    "Prefill request failed"
+                 );
+ 
+                 // Return error immediately - don't wait for decode to timeout
+@@ -1565,8 +1595,10 @@
+                 .unwrap_or_else(|_| "Unknown prefill error".to_string());
+ 
+             error!(
+-                "Prefill server returned error status prefill_url={} status={} body={}",
+-                prefill_url, prefill_status, error_msg
++                ci_event = "worker_http_error",
++                role = "prefill",
++                status = prefill_status.as_u16(),
++                "Worker returned an error status"
+             );
+ 
+             // Map prefill_status to appropriate error function
+@@ -1603,8 +1635,12 @@
+         let prefill_body = if return_logprob {
+             match prefill_response.bytes().await {
+                 Ok(body) => Some(body),
+-                Err(e) => {
+-                    warn!("Failed to read prefill response body for logprobs: {}", e);
++                Err(_) => {
++                    warn!(
++                        ci_event = "worker_response_read_failed",
++                        role = "prefill",
++                        "Worker response read failed"
++                    );
+                     None
+                 }
+             }
+@@ -1613,7 +1649,11 @@
+             debug!("Consuming prefill response body (non-logprob request)");
+             match prefill_response.bytes().await {
+                 Ok(_) => debug!("Prefill response consumed successfully"),
+-                Err(e) => warn!("Error consuming prefill response: {}", e),
++                Err(_) => warn!(
++                    ci_event = "worker_response_read_failed",
++                    role = "prefill",
++                    "Worker response read failed"
++                ),
+             }
+             None
+         };
+@@ -2270,7 +2310,7 @@
+     #[tokio::test]
+     async fn test_streaming_load_tracking() {
+         use futures_util::StreamExt;
+-        use tokio::time::{Duration, sleep};
++        use tokio::time::{sleep, Duration};
+ 
+         let router = create_test_pd_router();
+ 

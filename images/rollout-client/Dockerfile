@@ -1,4 +1,4 @@
-FROM docker.io/library/python@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+FROM docker.io/library/python@sha256:e6dae589c1c05976188fd3bd019afd091445fc533ed2ea29001beddc7368a9c8
 
 ARG SOURCE_REVISION
 ARG SOURCE_DATE_EPOCH
@@ -9,5 +9,5 @@ LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 LABEL org.opencontainers.image.version="sha-${SOURCE_REVISION}"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.base.name="docker.io/library/python"
-LABEL org.opencontainers.image.base.digest="sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4"
+LABEL org.opencontainers.image.base.digest="sha256:e6dae589c1c05976188fd3bd019afd091445fc533ed2ea29001beddc7368a9c8"
 LABEL ai.confidential.build.source-date-epoch="${SOURCE_DATE_EPOCH}"

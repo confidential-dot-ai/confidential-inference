@@ -52,8 +52,8 @@ receivers:
             - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.router)) | quote }}}
         {{- if and .Values.inference.enabled .Values.inference.pd.enabled }}
         {{- /* One job per PD worker; each serves /metrics on its port with --enable-metrics. */}}
-        {{- $host := printf "inference-pd-0.inference-pd.%s.svc.cluster.local" $ns }}
         {{- range .Values.inference.pd.workers }}
+        {{- $host := printf "%s.%s.svc.cluster.local" (include "confidential-inference.pdWorkerHost" (dict "root" $ "worker" .)) $ns }}
         - job_name: {{ printf "inference-pd-%s" .name }}
           static_configs:
             - targets: [{{ printf "%s:%v" $host .port | quote }}]

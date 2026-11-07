@@ -26,6 +26,39 @@ The repository holds no digest of an image that it builds. The release build
 takes each one from signed evidence, so a release needs no commit that pins
 image digests. The release commit is the image source commit.
 
+## Plain V4.1 worker profile
+
+The next normal release serves `deepseek-ai/DeepSeek-V4.1-Flash-1017` at
+revision `1bae0e1088993b9b82de08f59de5be5a34e42170`. It uses two complete
+TP=4 workers. Each worker requires its own four-GPU CVM and encrypted model
+disk. The private deployment selects the CVM names.
+
+The worker uses the pinned upstream source. Speculative decoding and PD are
+disabled. No custom CPU Engram staging, CED handoff, HiCache, or bounded
+replay settings are enabled. Model files come from the verified encrypted
+mount, with Hugging Face network access disabled.
+
+The configured context limit is 131,072 tokens for input and output together.
+The larger native model limit is deferred. Keep the gateway defaults: 2 MiB
+per request body, 10 seconds to read the body, 900 seconds for the upstream
+request, and 60 seconds without stream data. A gateway limit does not prove
+the front door accepts the same request size; record the tested end-to-end
+limit in the deployment receipt.
+
+Select the upstream PyTorch sampling backend explicitly. A filtered sampling
+request caused a worker health failure with the prior FlashInfer path. The
+cause remains unknown. This configuration is a mitigation to test; it does
+not establish a kernel defect or a performance improvement. Require single
+bounded-top-k and mixed greedy/default inference to pass before acceptance.
+
+Keep the limit at 16 active requests per worker and 32 across the gateway.
+Test both workers and record actual latency, throughput, and memory headroom.
+
+Native worker output is discarded to protect prompt and response text.
+Metrics and fixed numeric process-exit events remain available. Detailed
+Python stack dumps, NCCL flight-recorder dumps, and native CUDA error text
+are not available through this output path. These are diagnostic gaps.
+
 ## Files
 
 | File | Written by | Contents |

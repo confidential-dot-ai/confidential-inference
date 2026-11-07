@@ -252,12 +252,15 @@ def require_model_files(spec: dict[str, Any], documents: list[dict[str, Any]]) -
     """
     workers = [item for item in documents if item.get("kind") == "StatefulSet"
                and (item.get("metadata", {}).get("name", "").startswith("inference-worker-")
-                    or item.get("metadata", {}).get("name") == "inference-pd")]
+                    or item.get("metadata", {}).get("name", "").startswith("inference-pd"))]
     require(bool(workers), "the chart renders no inference worker")
     for worker in workers:
         container = next(item for item in worker["spec"]["template"]["spec"]["containers"]
-                         if item["name"] in ("sglang", "engram-holder"))
+                         if item["name"] in ("sglang", "engram-holder", "sglang-pair"))
         args = container.get("args", [])
+        if container["name"] == "sglang-pair":
+            require(len(args) == 2 and args[0] == "--config-json", "invalid pair configuration command")
+            args = json.loads(args[1])["modelGate"]
         metadata = [arg.removeprefix("--revision-metadata=") for arg in args
                     if arg.startswith("--revision-metadata=")]
         require(len(metadata) == 1, "a worker has no single revision metadata file")

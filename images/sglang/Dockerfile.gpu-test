@@ -1,0 +1,22 @@
+# Isolated GPU tests only. The final release uses Dockerfile and its complete
+# source lock, clean rebuild audit, publication evidence and signatures.
+# Build from the repository root with a named sglang-source context pointing
+# to the reviewed fork checkout. No model or credential enters this image.
+FROM ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:37b511ca7331f67cb85bbde91b4187aa22e8f81fcb38539a183b88ce0df39efe
+ARG SOURCE_REVISION
+ARG SGLANG_SOURCE_REVISION
+LABEL ai.confidential.test-only="true"
+LABEL ai.confidential.test.product-revision="${SOURCE_REVISION}"
+LABEL ai.confidential.test.sglang-revision="${SGLANG_SOURCE_REVISION}"
+USER 0:0
+COPY --from=sglang-source /python/ /opt/sglang/python/
+COPY images/sglang/pair_supervisor.py /usr/local/bin/sglang-pair
+COPY images/sglang/pair_diagnostics.py /usr/local/bin/pair_diagnostics.py
+COPY images/sglang-router/private_log_sink.py /usr/local/bin/private_log_sink.py
+COPY images/sglang/harden_http.py /tmp/harden-http.py
+RUN python /tmp/harden-http.py --root /opt/sglang/python/sglang --variant pd \
+    && chmod -R go-w /opt/sglang/python \
+    && python -I -B /usr/local/bin/pair_diagnostics.py \
+    && chmod 0555 /usr/local/bin/sglang-pair \
+    && rm /tmp/harden-http.py
+USER 1001:1001

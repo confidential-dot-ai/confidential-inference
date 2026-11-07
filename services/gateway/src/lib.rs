@@ -71,13 +71,16 @@ pub struct TracingAuditSink;
 
 impl AuditSink for TracingAuditSink {
     fn record(&self, event: AuditEvent) {
-        tracing::info!(
-            request_id = %event.request_id,
-            route = event.route,
-            status = event.status,
-            key_id = ?event.key_id,
-            "gateway request completed"
-        );
+        // The collector clears log attributes. Put only the reviewed audit
+        // fields in the body so the safe correlation metadata reaches it.
+        let record = json!({
+            "event": "gateway_request_completed",
+            "request_id": event.request_id,
+            "route": event.route,
+            "status": event.status,
+            "key_id": event.key_id,
+        });
+        tracing::info!("{record}");
     }
 }
 
@@ -166,6 +169,7 @@ pub fn router_with_usage(
             CorsLayer::new()
                 .allow_origin(Any)
                 .allow_methods([http::Method::GET, http::Method::POST])
+                .expose_headers([http::HeaderName::from_static("x-ci-request-id")])
                 .allow_headers(AllowHeaders::list([
                     header::AUTHORIZATION,
                     header::CONTENT_TYPE,
@@ -177,16 +181,25 @@ pub fn router_with_usage(
 }
 
 async fn request_id(mut request: Request, next: Next) -> Response<Body> {
-    let request_id = request
+    let response_id = request
         .headers()
         .get("x-request-id")
         .and_then(|value| value.to_str().ok())
         .filter(|value| valid_request_id(value))
         .map_or_else(|| Uuid::new_v4().to_string(), ToOwned::to_owned);
+    // Caller IDs can contain customer text. Preserve the response contract,
+    // but mint a separate ID for audit records and internal worker requests.
+    let request_id = Uuid::new_v4().to_string();
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        request.headers_mut().insert("x-request-id", value);
+    }
     request.extensions_mut().insert(request_id.clone());
     let mut response = next.run(request).await;
-    if let Ok(value) = HeaderValue::from_str(&request_id) {
+    if let Ok(value) = HeaderValue::from_str(&response_id) {
         response.headers_mut().insert("x-request-id", value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert("x-ci-request-id", value);
     }
     response
 }

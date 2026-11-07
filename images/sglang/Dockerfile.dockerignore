@@ -3,9 +3,13 @@
 !images/sglang/Dockerfile
 !images/sglang/source.lock
 !images/sglang/requirements.lock
+!images/sglang/dcgm-counters.csv
 !images/sglang/fetch_source.py
 !images/sglang/wait_for_model.py
 !images/sglang/harden_http.py
 !images/sglang/fetch_model.py
 !images/sglang/simulator-upstream/**
 !images/sglang/patches/sglang-simulator-*.patch
+!images/sglang/pair_supervisor.py
+!images/sglang/pair_diagnostics.py
+!images/sglang-router/private_log_sink.py
