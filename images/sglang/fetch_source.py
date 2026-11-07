@@ -2,8 +2,8 @@
 """Fetch the locked SGLang source for the DeepSeek-V4.1 image.
 
 The image build runs this in its `source` stage. The source is an explicit,
-pinned build input: one commit of the Sglang-public fork, from source.lock.
-Nothing else from the network reaches the source tree. The fork is public,
+pinned build input: one official upstream commit, from source.lock.
+Nothing else from the network reaches the source tree. The repository is public,
 so the fetch needs no credentials.
 """
 

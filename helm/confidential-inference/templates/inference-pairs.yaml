@@ -1,0 +1,143 @@
+{{- define "confidential-inference.pdWorkerHost" -}}
+{{- $name := "inference-pd" -}}
+{{- if .root.Values.inference.pd.paired.enabled -}}
+{{- $found := false -}}
+{{- range .root.Values.inference.pd.paired.pairs -}}
+{{- if or (eq $.worker.name .prefill) (eq $.worker.name .decode) -}}
+{{- if $found }}{{ fail "a worker belongs to more than one pair" }}{{ end -}}
+{{- $name = printf "inference-pd-%s" .name -}}
+{{- $found = true -}}
+{{- end -}}
+{{- end -}}
+{{- if not $found }}{{ fail "every worker must belong to one pair" }}{{ end -}}
+{{- end -}}
+{{- printf "%s-0.%s" $name $name -}}
+{{- end -}}
+
+{{- define "confidential-inference.pdPairRoutes" -}}
+{{- $routes := dict -}}
+{{- range .Values.inference.pd.paired.pairs -}}
+{{- $pair := . -}}
+{{- $workers := dict -}}
+{{- range $.Values.inference.pd.workers -}}
+{{- $_ := set $workers .name . -}}
+{{- end -}}
+{{- $p := required "pair prefill worker is missing" (get $workers $pair.prefill) -}}
+{{- $d := required "pair decode worker is missing" (get $workers $pair.decode) -}}
+{{- if or (ne $p.role "prefill") (ne $d.role "decode") }}{{ fail "invalid worker role in pair" }}{{ end -}}
+{{- $_ := set $routes (include "confidential-inference.pdWorkerUrl" (dict "root" $ "worker" $p)) (include "confidential-inference.pdWorkerUrl" (dict "root" $ "worker" $d)) -}}
+{{- end -}}
+{{- toJson $routes -}}
+{{- end -}}
+
+{{- if and .Values.inference.enabled .Values.inference.pd.enabled .Values.inference.pd.paired.enabled -}}
+{{- $root := . -}}
+{{- $pd := .Values.inference.pd -}}
+{{- $seen := dict -}}
+{{- $all := dict -}}
+{{- range $pd.workers }}{{ $_ := set $all .name . }}{{ end -}}
+{{- range $pair := $pd.paired.pairs -}}
+{{- if hasKey $seen $pair.name }}{{ fail "duplicate pair name" }}{{ end -}}
+{{- $_ := set $seen $pair.name true -}}
+{{- $prefill := deepCopy (required "pair prefill worker is missing" (get $all $pair.prefill)) -}}
+{{- $decode := deepCopy (required "pair decode worker is missing" (get $all $pair.decode)) -}}
+{{- if or (ne $prefill.role "prefill") (ne $decode.role "decode") }}{{ fail "invalid worker role in pair" }}{{ end -}}
+{{- $name := printf "inference-pd-%s" $pair.name -}}
+{{- $copy := deepCopy $root -}}
+{{- with $pair.modelVolumeName -}}
+{{- $oldPath := printf "%s/%s" $root.Values.inference.model.volumeDirectory (index $root.Values.inference.model.volumeNames 0) -}}
+{{- $newPath := printf "%s/%s" $root.Values.inference.model.volumeDirectory . -}}
+{{- $_ := set $copy.Values.inference.model "volumeNames" (list .) -}}
+{{- range $worker := list $prefill $decode -}}
+{{- $args := list -}}
+{{- range $arg := $worker.args -}}
+{{- if eq $arg $oldPath -}}
+{{- $args = append $args $newPath -}}
+{{- else if eq $arg (printf "--model-path=%s" $oldPath) -}}
+{{- $args = append $args (printf "--model-path=%s" $newPath) -}}
+{{- else -}}
+{{- $args = append $args $arg -}}
+{{- end -}}
+{{- end -}}
+{{- $_ := set $worker "args" $args -}}
+{{- end -}}
+{{- end -}}
+{{- $_ := set $copy.Values.inference.pd "workers" (list $prefill $decode) -}}
+{{- $_ := set $copy.Values.inference.pd "attestedWorkload" (printf "%s-0" $name) -}}
+{{- $body := include "confidential-inference.source.inference-pd" $copy -}}
+{{- range $part := splitList "\n---\n" $body -}}
+{{- $doc := fromYaml $part -}}
+{{- if not $doc.kind }}{{ fail "pair source did not render a resource" }}{{ end -}}
+{{- $_ := set $doc.metadata "name" $name -}}
+{{- if eq $doc.kind "Service" -}}
+{{- $_ := set $doc.spec.selector "app.kubernetes.io/instance" $name -}}
+{{- $_ := set $doc.spec "ports" (append $doc.spec.ports (dict "name" "pair-status" "port" $pd.paired.statusPort "targetPort" $pd.paired.statusPort)) -}}
+{{- else if eq $doc.kind "StatefulSet" -}}
+{{- $_ := set $doc.spec "serviceName" $name -}}
+{{- $_ := set $doc.spec.selector.matchLabels "app.kubernetes.io/instance" $name -}}
+{{- $_ := set $doc.spec.template.metadata.labels "app.kubernetes.io/instance" $name -}}
+{{- $_ := set $doc.spec.template.metadata.labels "confidential.ai/pd-pair" $pair.name -}}
+{{- $spec := $doc.spec.template.spec -}}
+{{- $holder := index $spec.containers 0 -}}
+{{- $workers := list -}}
+{{- if not (regexMatch "^[0-9]+$" (toString $pd.engramHolder.resources.cpu)) }}{{ fail "paired holder CPU requests must be whole cores" }}{{ end -}}
+{{- if not (regexMatch "^[0-9]+Gi$" $pd.engramHolder.resources.memory) }}{{ fail "paired holder memory requests must be whole GiB" }}{{ end -}}
+{{- $cpu := int $pd.engramHolder.resources.cpu -}}
+{{- $memory := int (trimSuffix "Gi" $pd.engramHolder.resources.memory) -}}
+{{- $gpus := 0 -}}
+{{- range $w := list $prefill $decode -}}
+{{- $flags := include "confidential-inference.pdFlags" $w.args | fromJson -}}
+{{- $tp := default "1" (get $flags "--tp-size") | atoi -}}
+{{- $pp := default "1" (get $flags "--pp-size") | atoi -}}
+{{- if ne (int $w.gpus) (int (mul $tp $pp)) }}{{ fail "pair requires one GPU per TP/PP rank" }}{{ end -}}
+{{- if ne (default "1" (get $flags "--dp-size")) "1" }}{{ fail "pair requires DP size one" }}{{ end -}}
+{{- if eq (int $w.port) (int $pd.paired.statusPort) }}{{ fail "pair status port conflicts with a worker" }}{{ end -}}
+{{- if and $w.bootstrapPort (eq (int $w.bootstrapPort) (int $pd.paired.statusPort)) }}{{ fail "pair status port conflicts with bootstrap" }}{{ end -}}
+{{- if not (regexMatch "^[0-9]+$" (toString $w.resources.cpu)) }}{{ fail "paired CPU requests must be whole cores" }}{{ end -}}
+{{- if not (regexMatch "^[0-9]+Gi$" $w.resources.memory) }}{{ fail "paired memory requests must be whole GiB" }}{{ end -}}
+{{- $cpu = add $cpu (int $w.resources.cpu) -}}
+{{- $memory = add $memory (int (trimSuffix "Gi" $w.resources.memory)) -}}
+{{- $gpus = add $gpus $w.gpus -}}
+{{- $env := deepCopy $w.env -}}
+{{- range $key := list "MC_FORCE_TCP" "MC_INTRANODE_NVLINK" "SGLANG_MOONCAKE_CUSTOM_MEM_POOL" }}{{ $_ := unset $env $key }}{{ end -}}
+{{- $_ := set $env "MOONCAKE_PROTOCOL" "tcp" -}}
+{{- if eq $pd.paired.transport "nvlink" -}}
+{{- $_ := set $env "MC_INTRANODE_NVLINK" "1" -}}
+{{- $_ := set $env "SGLANG_MOONCAKE_CUSTOM_MEM_POOL" "INTRA_NODE_NVLINK" -}}
+{{- else -}}
+{{- $_ := set $env "MC_FORCE_TCP" "1" -}}
+{{- end -}}
+{{- $workers = append $workers (dict "role" $w.role "gpus" $w.gpus "ranks" (mul $tp $pp) "port" $w.port "command" (concat (list $pd.python "-m" "sglang.launch_server") $w.args) "env" $env) -}}
+{{- end -}}
+{{- $config := dict "workers" $workers "modelGate" (concat $holder.command $holder.args) "statusPort" $pd.paired.statusPort "progressTimeoutSeconds" $pd.paired.progressTimeoutSeconds "startupTimeoutSeconds" $pd.paired.startupTimeoutSeconds "shutdownTimeoutSeconds" $pd.paired.shutdownTimeoutSeconds -}}
+{{- $app := deepCopy (index $spec.containers 1) -}}
+{{- $_ := set $app "name" "sglang-pair" -}}
+{{- $_ := set $app "command" (list $pd.python "/usr/local/bin/sglang-pair") -}}
+{{- $_ := set $app "args" (list "--config-json" (toJson $config)) -}}
+{{- $appEnv := list (dict "name" "HOME" "value" (printf "%s/home" $pd.cacheDirectory)) -}}
+{{- if $root.Values.telemetry.enabled -}}
+{{- $appEnv = append $appEnv (dict "name" "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT" "value" (printf "http://telemetry-collector.%s.svc.cluster.local:%v/v1/logs" $root.Release.Namespace $root.Values.telemetry.otlpHttpPort)) -}}
+{{- $appEnv = append $appEnv (dict "name" "OTEL_SERVICE_NAME" "value" $name) -}}
+{{- end -}}
+{{- $_ := set $app "env" $appEnv -}}
+{{- $ports := list (dict "name" "prefill" "containerPort" $prefill.port) (dict "name" "decode" "containerPort" $decode.port) (dict "name" "pair-status" "containerPort" $pd.paired.statusPort) -}}
+{{- range $w := list $prefill $decode -}}
+{{- if $w.bootstrapPort }}{{ $ports = append $ports (dict "name" (printf "%s-boot" $w.role) "containerPort" $w.bootstrapPort) }}{{ end -}}
+{{- end -}}
+{{- $_ := set $app "ports" $ports -}}
+{{- $_ := set $app "resources" (dict "requests" (dict "cpu" (toString $cpu) "memory" (printf "%dGi" $memory) "nvidia.com/gpu" $gpus) "limits" (dict "nvidia.com/gpu" $gpus)) -}}
+{{- range $mount := $app.volumeMounts }}{{ if eq $mount.name "run" }}{{ $_ := unset $mount "readOnly" }}{{ end }}{{ end -}}
+{{- $failedProbeGrace := int (add $pd.paired.shutdownTimeoutSeconds 15) -}}
+{{- $_ := set $app "startupProbe" (dict "httpGet" (dict "path" "/startupz" "port" $pd.paired.statusPort) "periodSeconds" 15 "timeoutSeconds" 5 "failureThreshold" (int (div (add $pd.paired.startupTimeoutSeconds 14) 15)) "terminationGracePeriodSeconds" $failedProbeGrace) -}}
+{{- $_ := set $app "readinessProbe" (dict "httpGet" (dict "path" "/readyz" "port" $pd.paired.statusPort) "periodSeconds" 5 "timeoutSeconds" 5 "failureThreshold" 1) -}}
+{{- $_ := set $app "livenessProbe" (dict "httpGet" (dict "path" "/livez" "port" $pd.paired.statusPort) "periodSeconds" 10 "timeoutSeconds" 5 "failureThreshold" 3 "terminationGracePeriodSeconds" $failedProbeGrace) -}}
+{{- $_ := set $spec "containers" (list $app) -}}
+{{- $_ := set $spec "terminationGracePeriodSeconds" (max (int $spec.terminationGracePeriodSeconds) (int (add $pd.paired.shutdownTimeoutSeconds 15))) -}}
+{{- end }}
+---
+{{ toYaml $doc }}
+{{- end -}}
+{{- end -}}
+{{- /* Validate coverage, including workers no pair selected. */ -}}
+{{- range $pd.workers }}{{ $_ := include "confidential-inference.pdWorkerHost" (dict "root" $root "worker" .) }}{{ end -}}
+{{- end -}}

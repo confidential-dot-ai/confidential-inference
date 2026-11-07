@@ -1,0 +1,43 @@
+name: Cargo audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - "services/*/Cargo.toml"
+      - .github/workflows/cargo-audit.yml
+  pull_request:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - "services/*/Cargo.toml"
+      - .github/workflows/cargo-audit.yml
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: install rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-04
+        with:
+          toolchain: stable
+
+      - name: install cargo-audit
+        working-directory: ${{ runner.temp }}
+        run: cargo +stable install cargo-audit --locked --version 0.22.2
+
+      - name: audit workspace
+        run: cargo audit
+

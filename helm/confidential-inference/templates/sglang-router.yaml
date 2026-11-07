@@ -89,7 +89,11 @@ spec:
             runAsGroup: 1001
             capabilities:
               drop: ["ALL"]
+          {{- if $pd }}
+          command: ["python3", "/usr/local/bin/ci-sglang-router"]
+          {{- else }}
           command: ["python3", "-m", "sglang_router.launch_router"]
+          {{- end }}
           args:
             {{- if $pd }}
             # Prefill/decode mode (inference.pd): each prefill URL and its
@@ -98,14 +102,14 @@ spec:
             {{- range $w := .Values.inference.pd.workers }}
             {{- if eq $w.role "prefill" }}
             - --prefill
-            - {{ include "confidential-inference.pdWorkerUrl" $w }}
+            - {{ include "confidential-inference.pdWorkerUrl" (dict "root" $ "worker" $w) }}
             - {{ $w.bootstrapPort | quote }}
             {{- end }}
             {{- end }}
             {{- range $w := .Values.inference.pd.workers }}
             {{- if eq $w.role "decode" }}
             - --decode
-            - {{ include "confidential-inference.pdWorkerUrl" $w }}
+            - {{ include "confidential-inference.pdWorkerUrl" (dict "root" $ "worker" $w) }}
             {{- end }}
             {{- end }}
             # The router starts with the pod and registers each worker once:
@@ -116,10 +120,15 @@ spec:
             {{- range .Values.inference.pd.routerArgs }}
             - {{ toJson . }}
             {{- end }}
-            # The aggregated router's health tolerance: 3 consecutive
-            # failures, 5 s each (see the regular branch below).
+            # Keep the regular worker branch's health tolerance and fast
+            # withdrawal settings. PD must not inherit a 60 s interval,
+            # ten-failure circuit breaker or 10 s connection timeout.
             - --health-check-timeout-secs=5
             - --health-failure-threshold=3
+            - --health-check-interval-secs=2
+            - --cb-failure-threshold=2
+            - --cb-timeout-duration-secs=10
+            - --connect-timeout-secs=2
             - --host=0.0.0.0
             - --port={{ .Values.router.port }}
             - --prometheus-host=0.0.0.0
@@ -165,9 +174,19 @@ spec:
             - --prometheus-port={{ .Values.router.metricsPort }}
             {{- end }}
           env:
+            {{- if and $pd .Values.telemetry.enabled }}
+            - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+              value: {{ printf "http://telemetry-collector.%s.svc.cluster.local:%v/v1/logs" .Release.Namespace .Values.telemetry.otlpHttpPort | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: sglang-router
+            {{- end }}
             # Environment, so the exact allowlist pins the routes.
             - name: CI_ROUTER_MODEL_ROUTES
               value: {{ include "confidential-inference.routerRoutes" . | quote }}
+            {{- if and $pd .Values.inference.pd.paired.enabled }}
+            - name: CI_ROUTER_PD_PAIRS
+              value: {{ include "confidential-inference.pdPairRoutes" . | quote }}
+            {{- end }}
           ports:
             - name: openai
               containerPort: {{ .Values.router.port }}

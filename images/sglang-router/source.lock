@@ -22,10 +22,18 @@
     {
       "path": "patches/http-no-tokenizer.patch",
       "sha256": "85e982bf2bf2e21da3c27615819c3880f3a30da08495893de27ffbe9c30ba1c4"
+    },
+    {
+      "path": "patches/pd-pairs.patch",
+      "sha256": "3d6c2f8e9a337e5dec42157b93437a7d9ab5fb6ab2b723ce603a0023c8273eab"
+    },
+    {
+      "path": "patches/private-errors.patch",
+      "sha256": "645f17a966d2476663052cf7be423eba06d55571abfbf47726217ca7494f6aa8"
     }
   ],
   "deploymentImage": {
     "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang-router"
   },
-  "cargoLockSha256": "2a8bf58b2be1babdb06145ece924ae0c62919ecc3ee9a9a3ee3a9c6a12d6a5b6"
+  "cargoLockSha256": "4a20619832eeabce83651c4cd7eb9cf4d9038ffafca81bf3ee64b9032a4ce880"
 }
