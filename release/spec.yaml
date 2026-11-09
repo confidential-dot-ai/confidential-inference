@@ -17,9 +17,9 @@ c8s:
     digest: sha256:1eb606af70dd4db9fc9f6c20399dd0e8822714b3f9ce7f66359de0f189b1f389
     manifestJson: sha256:722aecaf42c8838f4e5a8f7e88f39a1417573a328d6101233762095f9de8b8ec
 model:
-  repository: deepseek-ai/DeepSeek-V4.1-Flash
-  revision: 5254448103b6254fc646dacbca1cbbf20e9216c1
-  byteManifestSha256: a0d3a3c29654399bcddf018c3a00de4528238399182d400427287d790798f41b
+  repository: deepseek-ai/DeepSeek-V4.1-Flash-1017
+  revision: 1bae0e1088993b9b82de08f59de5be5a34e42170
+  byteManifestSha256: eb73a3749d5c99994b018a6063068c2ca28871900415fc364fbbfe1b07300629
 publicHostnames:
 - api.confidential.ai
 - candidate.api.confidential.ai
@@ -186,8 +186,8 @@ transition:
             KUBERNETES_SERVICE_PORT_HTTPS: '443'
             LANG: C.UTF-8
             PATH: /usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-            PYTHON_SHA256: c2c4321961fab0fb999d66e0cecf521c2ab3994c7992873ea99e306c1094fd5a
-            PYTHON_VERSION: 3.12.15
+            PYTHON_SHA256: b5796915dc45ff745cfb4e990a7e7c93d6f546328a102ce31448d69ebc37575c
+            PYTHON_VERSION: 3.12.16
             UPDATE_HOSTS: '["gateway-update-old.confidential-inference.svc.cluster.local",
               "gateway.confidential-inference.svc.cluster.local"]'
             UPDATE_NAMESPACE: confidential-inference

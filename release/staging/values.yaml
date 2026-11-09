@@ -57,6 +57,7 @@ inference:
     chatTemplate: chatml
   pd:
     enabled: false
+  gpuMetricsEnabled: false
 telemetry:
   enabled: true
   deployment: staging-20260926

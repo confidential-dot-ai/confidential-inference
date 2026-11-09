@@ -1,8 +1,8 @@
 # Confidential Inference
 
 This repository contains the public confidential-inference product. It is the
-source for the OCI workloads, Kubernetes chart, c8s policy tools, and release
-inputs. Current releases pin a c8s TDX node image.
+source for the OCI workloads, Kubernetes chart, C8s policy tools, and release
+inputs. Current releases pin a C8s TDX node image.
 
 Before you contribute or create a release, read the
 [developer workflow](docs/runbooks/developer-workflow.md).
@@ -98,10 +98,10 @@ are available in Git history. Published assets remain on GitHub Releases.
 - Put reusable behavior in this repository.
 - Put non-secret live settings in a private environment overlay.
 - Put secret values in a secret manager. Pass only secret names here.
-- Deliver confidential application secrets through c8s CDS.
+- Deliver confidential application secrets through C8s CDS.
 - Do not use Kubernetes Secrets for values that CDS must protect.
 
-See the [c8s documentation](https://confidential.ai/docs/c8s) for the trust
+See the [C8s documentation](https://confidential.ai/docs/c8s) for the trust
 model and application-secret flow.
 
 ## Continuous integration

@@ -221,6 +221,12 @@ inference:
   # target environment's release bundle carries the matching source.lock
   # argv and allowlist.
   reasoningParser: ""
+  toolCallParser: deepseekv4
+  speculativeAlgorithm: DSPARK
+  moeRunnerBackend: flashinfer_mxfp4
+  workerExtraArgs: []
+  privateServerOutput: false
+  gpuMetricsEnabled: true
   # On SIGTERM SGLang answers /health with 503 and finishes its in-flight
   # requests; Kubernetes kills the pod after this many seconds.
   terminationGracePeriodSeconds: 600
@@ -246,6 +252,16 @@ inference:
     enabled: false
     # The pod's c8s workload (confidential.ai/cw).
     attestedWorkload: inference-pd-0
+    # Two independent pairs. Each pair runs both workers in one application
+    # container; C8s support containers keep their own process namespaces.
+    paired:
+      enabled: false
+      transport: tcp
+      pairs: []
+      statusPort: 8050
+      progressTimeoutSeconds: 90
+      startupTimeoutSeconds: 7200
+      shutdownTimeoutSeconds: 30
     # The interpreter of images.sglangWorker that runs every PD container.
     python: /opt/dsv41/bin/python
     # The workers, in start order. A worker starts after the previous one

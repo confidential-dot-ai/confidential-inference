@@ -1,0 +1,8 @@
+# Layer this over the PD fixture or the production release values.
+inference:
+  pd:
+    paired:
+      enabled: true
+      pairs:
+        - {name: a, prefill: prefill0, decode: decode0}
+        - {name: b, prefill: prefill1, decode: decode1}

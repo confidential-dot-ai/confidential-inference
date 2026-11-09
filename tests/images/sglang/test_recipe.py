@@ -36,11 +36,20 @@ def labels() -> dict[str, str]:
 
 
 class RecipeTests(unittest.TestCase):
+    def test_gpu_metrics_uses_pinned_image_and_counters(self) -> None:
+        metrics = LOCK['gpuMetrics']
+        self.assertIn(metrics['reference'] + '@' + metrics['digest'], DOCKERFILE)
+        self.assertEqual(metrics['countersSha256'], hashlib.sha256(
+            (RECIPE / 'dcgm-counters.csv').read_bytes()).hexdigest())
+        self.assertIn('!images/sglang/dcgm-counters.csv',
+                      (RECIPE / 'Dockerfile.dockerignore').read_text())
+
     def test_base_images_are_the_locked_amd64_digests(self) -> None:
         from_lines = [line for line in instructions() if line.startswith("FROM ")]
         self.assertEqual(
             [
                 f"FROM {LOCK['uv']['reference']}@{LOCK['uv']['digest']} AS uv",
+                f"FROM {LOCK['gpuMetrics']['reference']}@{LOCK['gpuMetrics']['digest']} AS dcgm-exporter",
                 f"FROM {LOCK['image']['reference']}@{LOCK['image']['digest']} AS base",
                 "FROM base AS source",
                 "FROM base",
@@ -72,10 +81,11 @@ class RecipeTests(unittest.TestCase):
         self.assertRegex(LOCK["ubuntuSnapshot"], r"^\d{8}T\d{6}Z$")
         self.assertIn(f"https://snapshot.ubuntu.com/ubuntu/{LOCK['ubuntuSnapshot']} %s main universe", DOCKERFILE)
         commands = re.findall(r"apt-get[^&]*", " ".join(instructions()))
-        self.assertEqual(2, len(commands))
+        self.assertEqual(3, len(commands))
         for command in commands:
             self.assertIn("-o Dir::Etc::SourceList=/tmp/snapshot.list -o Dir::Etc::SourceParts=/dev/null", command)
-        install = commands[1].split("--no-install-recommends", 1)[1].split()
+        self.assertIn(" upgrade -y ", commands[1])
+        install = commands[2].split("--no-install-recommends", 1)[1].split()
         self.assertEqual(LOCK["aptPackages"], install)
 
     def test_python_environment_is_installed_by_hash(self) -> None:
@@ -96,13 +106,11 @@ class RecipeTests(unittest.TestCase):
         used = {line.split(maxsplit=1)[0] for line in lines}
         self.assertTrue({"ADD", "CMD", "ENTRYPOINT"}.isdisjoint(used))
         self.assertEqual("USER 1001:1001", lines[-1])
-        # Only the uv binary, the fork's source and the holder script are copied in.
+        # The plain worker uses official source and no separate Engram holder.
         self.assertEqual(
             [
                 "COPY --from=uv /uv /usr/local/bin/uv",
                 "COPY --from=source /src/python /opt/sglang/python",
-                "COPY --from=source /src/recipes/deepseek-v41/launcher/hold_engram_cache.py "
-                "/opt/sglang/recipes/deepseek-v41/launcher/hold_engram_cache.py",
                 "COPY --from=source /src/SOURCE_RECORD.json /opt/sglang/SOURCE_RECORD.json",
             ],
             [line for line in lines if line.startswith("COPY")],
@@ -110,9 +118,9 @@ class RecipeTests(unittest.TestCase):
         self.assertIn("UV_NO_CACHE=1", DOCKERFILE)
         self.assertNotIn("type=cache", DOCKERFILE)
 
-    def test_source_is_one_pinned_commit_of_the_fork(self) -> None:
+    def test_source_is_one_pinned_official_upstream_commit(self) -> None:
         source = LOCK["source"]
-        self.assertEqual("https://github.com/confidential-dot-ai/Sglang-public", source["repository"])
+        self.assertEqual("https://github.com/sgl-project/sglang", source["repository"])
         self.assertRegex(source["commit"], r"^[0-9a-f]{40}$")
         self.assertRegex(source["upstream"]["commit"], r"^[0-9a-f]{40}$")
         self.assertNotIn("patches", source)
@@ -158,6 +166,12 @@ class RecipeTests(unittest.TestCase):
         self.assertIn("source=images/sglang/wait_for_model.py,target=/run-src/wait-for-model", DOCKERFILE)
         ignore = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
         self.assertIn("!images/sglang/wait_for_model.py", ignore)
+
+    def test_plain_image_has_no_pair_supervisor_or_custom_rank_hooks(self) -> None:
+        self.assertIn('chmod -R go-w /opt/sglang/python', DOCKERFILE)
+        self.assertNotIn('/usr/local/bin/sglang-pair', DOCKERFILE)
+        self.assertNotIn('/usr/local/bin/pair_diagnostics.py', DOCKERFILE)
+        self.assertEqual(LOCK['source']['commit'], LOCK['source']['upstream']['commit'])
 
     def test_build_removes_non_serving_http_routes(self) -> None:
         self.assertIn("source=images/sglang/harden_http.py,target=/run-src/harden-http.py", DOCKERFILE)

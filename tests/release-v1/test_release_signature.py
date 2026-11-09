@@ -218,6 +218,42 @@ class ReleaseSignatureTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_policy(release)
 
+    def test_both_release_schemas_accept_only_the_known_policy_paths(self) -> None:
+        for fixture in (MANIFEST, ROOT / "tests/api/fixtures/release-bundle.valid.json"):
+            for reference in (
+                "release/trust/release-signing-policy.json",
+                "releases/trust/release-signing-policy.json",
+                "tests/policy.json",
+                "release/trust/../trust/release-signing-policy.json",
+            ):
+                with self.subTest(fixture=fixture.name, reference=reference):
+                    release = json.loads(fixture.read_text())
+                    release["releaseTrust"] = {
+                        "policyPath": reference,
+                        "policySha256": "sha256:" + hashlib.sha256(POLICY.read_bytes()).hexdigest(),
+                        "signatureType": "sigstore-keyless",
+                    }
+                    if reference.startswith(("release/trust/../", "tests/")):
+                        with self.assertRaises(ValueError):
+                            SIGNATURE_MODULE["validate_release_schema"](release)
+                    else:
+                        SIGNATURE_MODULE["validate_release_schema"](release)
+
+    def test_both_root_references_resolve_to_the_moved_file(self) -> None:
+        for reference in (
+            "release/trust/sigstore-public-good-trusted-root.json",
+            "releases/trust/sigstore-public-good-trusted-root.json",
+        ):
+            with self.subTest(reference=reference), tempfile.TemporaryDirectory() as temporary:
+                policy = json.loads(POLICY.read_text())
+                policy["trustedRoot"]["path"] = reference
+                path = Path(temporary) / "policy.json"
+                path.write_text(json.dumps(policy))
+                release = json.loads(MANIFEST.read_text())
+                release["releaseTrust"]["policySha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                with mock.patch.dict(validate_policy.__globals__, {"POLICY_PATH": path}):
+                    self.assertEqual(validate_policy(release)[2], TRUSTED_ROOT)
+
     def test_policy_cannot_select_another_root_or_ignore_its_digest(self) -> None:
         for change in (
             {"path": "tests/root.json"},
