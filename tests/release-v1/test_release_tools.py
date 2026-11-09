@@ -726,6 +726,11 @@ class ManifestTests(unittest.TestCase):
         files = build_staging(publication(published_release_images()))
         manifest = json.loads(files["release-bundle.json"])
         self.assertEqual(manifest["release"], {"name": "v0.14.2-staging", "environment": "staging"})
+        self.assertEqual(manifest["releaseTrust"], {
+            "policyPath": "release/trust/release-signing-policy.json",
+            "policySha256": MAN.sha256((ROOT / "release/trust/release-signing-policy.json").read_bytes()),
+            "signatureType": "sigstore-keyless",
+        })
         self.assertEqual(manifest["allowlist"], {
             "path": "release/staging/allowlist.json",
             "sha256": MAN.sha256(STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")),
@@ -798,6 +803,11 @@ class ManifestTests(unittest.TestCase):
             files = build_production(publication(published_release_images()), download)
         manifest = json.loads(files["release-bundle.json"])
         self.assertEqual(manifest["release"], {"name": "v0.14.2", "environment": "production"})
+        self.assertEqual(manifest["releaseTrust"], {
+            "policyPath": "release/trust/release-signing-policy.json",
+            "policySha256": MAN.sha256((ROOT / "release/trust/release-signing-policy.json").read_bytes()),
+            "signatureType": "sigstore-keyless",
+        })
         self.assertEqual(manifest["chart"]["archiveSha256"], staging["chart"]["archiveSha256"])
         self.assertEqual(manifest["chart"]["reference"], staging["chart"]["reference"])
         self.assertEqual([entry["path"] for entry in manifest["profileValues"]], ["release/values.yaml"])

@@ -20,7 +20,11 @@ import release_profiles
 
 
 ROOT = Path(__file__).resolve().parents[1]
-POLICY_PATH = ROOT / "releases/trust/release-signing-policy.json"
+POLICY_REFERENCE = "release/trust/release-signing-policy.json"
+LEGACY_POLICY_REFERENCE = "releases/trust/release-signing-policy.json"
+POLICY_PATH = ROOT / POLICY_REFERENCE
+TRUSTED_ROOT_REFERENCE = "release/trust/sigstore-public-good-trusted-root.json"
+LEGACY_TRUSTED_ROOT_REFERENCE = "releases/trust/sigstore-public-good-trusted-root.json"
 RELEASE_SCHEMA_PATH = ROOT / "api/release-bundle.schema.json"
 # v0.14.0 and later sign a release manifest built from release/. The signed
 # file names its own schema; each schema has one contract file.
@@ -88,16 +92,12 @@ def required_text(value: Any, label: str) -> str:
     return value
 
 
-def resolve_repository_file(value: Any, label: str) -> Path:
-    relative = Path(required_text(value, label))
-    if relative.is_absolute():
-        raise ReleaseSignatureError(f"the {label} must be relative to the repository")
-    path = (ROOT / relative).resolve()
-    try:
-        path.relative_to(ROOT.resolve())
-    except ValueError as error:
-        raise ReleaseSignatureError(f"the {label} leaves the repository") from error
-    return path
+def resolve_trusted_root(value: Any) -> Path:
+    # Published manifests bind the original policy bytes, which name the old
+    # root path. Both known references select the same local trust file.
+    if value not in (TRUSTED_ROOT_REFERENCE, LEGACY_TRUSTED_ROOT_REFERENCE):
+        raise ReleaseSignatureError("the trusted-root path is invalid")
+    return ROOT / TRUSTED_ROOT_REFERENCE
 
 
 def validate_policy(
@@ -106,7 +106,7 @@ def validate_policy(
     trust = release.get("releaseTrust")
     if not isinstance(trust, dict):
         raise ReleaseSignatureError("the release has no signing policy reference")
-    if trust.get("policyPath") != "releases/trust/release-signing-policy.json":
+    if trust.get("policyPath") not in (POLICY_REFERENCE, LEGACY_POLICY_REFERENCE):
         raise ReleaseSignatureError("the release signing policy path is invalid")
     policy_bytes, policy = read_object(POLICY_PATH, "release signing policy")
     if sha256(policy_bytes) != trust.get("policySha256"):
@@ -116,15 +116,24 @@ def validate_policy(
     required = {
         "schema": "confidential-inference.release-trust/v1",
         "signatureType": "sigstore-keyless",
-        "repository": "https://github.com/confidential-dot-ai/confidential-inference",
-        "certificateOidcIssuer": "https://token.actions.githubusercontent.com",
-        "certificateIdentityTemplate": (
-            "https://github.com/confidential-dot-ai/confidential-inference/"
-            ".github/workflows/release-bundle.yml@refs/tags/{release}"
-        ),
     }
     if any(policy.get(name) != value for name, value in required.items()):
         raise ReleaseSignatureError("the release signing policy has an unexpected trust value")
+    # The checked-in policy is the authority for the accepted publisher.
+    # Check its shape and internal agreement without repeating that publisher
+    # in Python. The downloaded release cannot supply a different policy file.
+    repository = required_text(policy.get("repository"), "policy repository")
+    required_text(policy.get("certificateOidcIssuer"), "certificate issuer")
+    workflow = policy.get("githubWorkflow")
+    if not isinstance(workflow, dict):
+        raise ReleaseSignatureError("the GitHub workflow trust policy is invalid")
+    for field in ("name", "path", "repository", "refTemplate", "trigger"):
+        required_text(workflow.get(field), f"workflow {field}")
+    if (repository != f"https://github.com/{workflow['repository']}"
+            or workflow["refTemplate"] != "refs/tags/{release}"
+            or policy.get("certificateIdentityTemplate")
+            != f"{repository}/{workflow['path']}@{workflow['refTemplate']}"):
+        raise ReleaseSignatureError("the GitHub workflow trust policy is inconsistent")
     source = release.get("source")
     if not isinstance(source, dict) or source.get("repository") != policy["repository"]:
         raise ReleaseSignatureError("the release source repository differs from the signing policy")
@@ -135,19 +144,10 @@ def validate_policy(
     expected_environment = environment_for_tag(release_name)
     if release_metadata.get("environment") != expected_environment:
         raise ReleaseSignatureError("the release environment does not match its protected tag")
-    workflow = policy.get("githubWorkflow")
-    if not isinstance(workflow, dict) or workflow != {
-        "name": "Signed release bundle",
-        "path": ".github/workflows/release-bundle.yml",
-        "repository": "confidential-dot-ai/confidential-inference",
-        "refTemplate": "refs/tags/{release}",
-        "trigger": "push",
-    }:
-        raise ReleaseSignatureError("the GitHub workflow trust policy is invalid")
     trusted_root = policy.get("trustedRoot")
     if not isinstance(trusted_root, dict):
         raise ReleaseSignatureError("the Sigstore trusted-root policy is invalid")
-    trusted_root_path = resolve_repository_file(trusted_root.get("path"), "trusted-root path")
+    trusted_root_path = resolve_trusted_root(trusted_root.get("path"))
     trusted_root_bytes = read_regular_file(trusted_root_path, "Sigstore trusted root")
     if sha256(trusted_root_bytes) != trusted_root.get("sha256"):
         raise ReleaseSignatureError("the Sigstore trusted-root digest differs from the policy")

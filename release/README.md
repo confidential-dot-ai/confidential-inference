@@ -1,8 +1,8 @@
 # Release
 
-This directory is the one source of truth for the next production release. It
-replaces the per-target files in `releases/` and `c8s/`. Those files stay
-until the release tools no longer read them.
+This directory is the one source of truth for the next production release.
+It holds the release inputs and signing trust files. Generated assets are
+published on GitHub Releases. Historical snapshots remain in Git history.
 
 The release contains no target, placement, operator key, or mesh CA. The
 private deployment repository holds the targets.
@@ -104,7 +104,7 @@ The build takes the image digests from two signed sources:
    and downloads `release-bundle.json` and `release-bundle.sigstore.json` of
    that GitHub release itself; the caller does not give them. The
    build verifies the base signature with the trust policy in
-   `releases/trust/`, requires that the base manifest names the base tag and
+   `release/trust/`, requires that the base manifest names the base tag and
    commit of the evidence, and requires that no build input of such an image
    changed since the base commit. A base release from the other profile is
    valid: the images do not depend on the profile. After a change to the

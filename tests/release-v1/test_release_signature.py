@@ -8,18 +8,20 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
 VERIFY = ROOT / "scripts/verify-release-bundle-signature.py"
-PRODUCTION = ROOT / "releases/production/release-bundle.json"
-POLICY = ROOT / "releases/trust/release-signing-policy.json"
-TRUSTED_ROOT = ROOT / "releases/trust/sigstore-public-good-trusted-root.json"
+MANIFEST = ROOT / "tests/release-v1/fixtures/v0.15.15-release-manifest.json"
+POLICY = ROOT / "release/trust/release-signing-policy.json"
+TRUSTED_ROOT = ROOT / "release/trust/sigstore-public-good-trusted-root.json"
 WORKFLOW = ROOT / ".github/workflows/release-bundle.yml"
 RELEASE_SIGNATURE = ROOT / "scripts/release_signature.py"
 LOCK = ROOT / "scripts/requirements-release-signing.txt"
 SIGNATURE_MODULE = runpy.run_path(str(RELEASE_SIGNATURE))
 environment_for_tag = SIGNATURE_MODULE["environment_for_tag"]
+validate_policy = SIGNATURE_MODULE["validate_policy"]
 
 
 class ReleaseSignatureTests(unittest.TestCase):
@@ -43,7 +45,7 @@ class ReleaseSignatureTests(unittest.TestCase):
         policy_bytes = POLICY.read_bytes()
         policy = json.loads(policy_bytes)
         trusted_root_bytes = TRUSTED_ROOT.read_bytes()
-        production = json.loads(PRODUCTION.read_text())
+        production = json.loads(MANIFEST.read_text())
 
         self.assertEqual(
             production["releaseTrust"]["policySha256"],
@@ -61,15 +63,14 @@ class ReleaseSignatureTests(unittest.TestCase):
         self.assertIn("release-bundle.yml@refs/tags/{release}", policy["certificateIdentityTemplate"])
 
     def test_shared_policy_rejects_a_tag_environment_mismatch(self) -> None:
-        release = json.loads(PRODUCTION.read_text())
+        release = json.loads(MANIFEST.read_text())
         release["release"]["environment"] = "staging"
-        validate_policy = runpy.run_path(str(RELEASE_SIGNATURE))["validate_policy"]
         with self.assertRaisesRegex(ValueError, "environment does not match"):
             validate_policy(release)
 
     def test_verifier_rejects_an_incomplete_release(self) -> None:
-        release = json.loads(PRODUCTION.read_text())
-        release.pop("workloads")
+        release = json.loads(MANIFEST.read_text())
+        release.pop("images")
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             source = directory / "release.json"
@@ -177,7 +178,7 @@ class ReleaseSignatureTests(unittest.TestCase):
             result = subprocess.run(
                 [
                     "python3", str(VERIFY),
-                    "--bundle", str(PRODUCTION),
+                    "--bundle", str(MANIFEST),
                     "--signature-bundle", str(signature),
                     "--cosign", str(cosign_link),
                 ],
@@ -189,13 +190,104 @@ class ReleaseSignatureTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Cosign verifier is not a file", result.stderr)
 
-    def test_checked_in_releases_have_no_placeholder_signature(self) -> None:
-        signatures = list((ROOT / "releases").glob("**/*.sigstore.json"))
-        self.assertEqual(signatures, [])
-        self.assertIn(
-            "unsigned development artifacts",
-            (ROOT / "releases/README.md").read_text(),
+    def test_new_and_published_policy_references_use_the_same_trust(self) -> None:
+        release = json.loads(MANIFEST.read_text())
+        for reference in (
+            "release/trust/release-signing-policy.json",
+            "releases/trust/release-signing-policy.json",
+        ):
+            with self.subTest(reference=reference):
+                release["releaseTrust"]["policyPath"] = reference
+                SIGNATURE_MODULE["validate_release_schema"](release)
+                _, _, root_path, _, identity = validate_policy(release)
+                self.assertEqual(root_path, TRUSTED_ROOT)
+                self.assertTrue(identity.endswith("@refs/tags/v0.15.15"))
+
+    def test_release_cannot_select_another_policy_or_publisher(self) -> None:
+        changes = (
+            ("releaseTrust", "policyPath", "tests/policy.json"),
+            ("releaseTrust", "policyPath", str(POLICY)),
+            ("releaseTrust", "policyPath", "release/trust/../trust/release-signing-policy.json"),
+            ("releaseTrust", "policySha256", "sha256:" + "0" * 64),
+            ("source", "repository", "https://github.com/other/publisher"),
         )
+        for section, key, value in changes:
+            with self.subTest(section=section, key=key, value=value):
+                release = json.loads(MANIFEST.read_text())
+                release[section][key] = value
+                with self.assertRaises(ValueError):
+                    validate_policy(release)
+
+    def test_both_release_schemas_accept_only_the_known_policy_paths(self) -> None:
+        for fixture in (MANIFEST, ROOT / "tests/api/fixtures/release-bundle.valid.json"):
+            for reference in (
+                "release/trust/release-signing-policy.json",
+                "releases/trust/release-signing-policy.json",
+                "tests/policy.json",
+                "release/trust/../trust/release-signing-policy.json",
+            ):
+                with self.subTest(fixture=fixture.name, reference=reference):
+                    release = json.loads(fixture.read_text())
+                    release["releaseTrust"] = {
+                        "policyPath": reference,
+                        "policySha256": "sha256:" + hashlib.sha256(POLICY.read_bytes()).hexdigest(),
+                        "signatureType": "sigstore-keyless",
+                    }
+                    if reference.startswith(("release/trust/../", "tests/")):
+                        with self.assertRaises(ValueError):
+                            SIGNATURE_MODULE["validate_release_schema"](release)
+                    else:
+                        SIGNATURE_MODULE["validate_release_schema"](release)
+
+    def test_both_root_references_resolve_to_the_moved_file(self) -> None:
+        for reference in (
+            "release/trust/sigstore-public-good-trusted-root.json",
+            "releases/trust/sigstore-public-good-trusted-root.json",
+        ):
+            with self.subTest(reference=reference), tempfile.TemporaryDirectory() as temporary:
+                policy = json.loads(POLICY.read_text())
+                policy["trustedRoot"]["path"] = reference
+                path = Path(temporary) / "policy.json"
+                path.write_text(json.dumps(policy))
+                release = json.loads(MANIFEST.read_text())
+                release["releaseTrust"]["policySha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                with mock.patch.dict(validate_policy.__globals__, {"POLICY_PATH": path}):
+                    self.assertEqual(validate_policy(release)[2], TRUSTED_ROOT)
+
+    def test_policy_cannot_select_another_root_or_ignore_its_digest(self) -> None:
+        for change in (
+            {"path": "tests/root.json"},
+            {"path": str(TRUSTED_ROOT)},
+            {"sha256": "sha256:" + "0" * 64},
+        ):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                policy = json.loads(POLICY.read_text())
+                policy["trustedRoot"].update(change)
+                path = Path(temporary) / "policy.json"
+                path.write_text(json.dumps(policy))
+                release = json.loads(MANIFEST.read_text())
+                release["releaseTrust"]["policySha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                with mock.patch.dict(validate_policy.__globals__, {"POLICY_PATH": path}):
+                    with self.assertRaises(ValueError):
+                        validate_policy(release)
+
+    def test_accepted_publisher_comes_from_the_local_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            policy = json.loads(POLICY.read_text())
+            policy["repository"] = "https://github.com/example/approved"
+            policy["githubWorkflow"]["repository"] = "example/approved"
+            policy["certificateIdentityTemplate"] = (
+                "https://github.com/example/approved/"
+                ".github/workflows/release-bundle.yml@refs/tags/{release}"
+            )
+            path = Path(temporary) / "policy.json"
+            path.write_text(json.dumps(policy))
+            release = json.loads(MANIFEST.read_text())
+            release["source"]["repository"] = policy["repository"]
+            release["releaseTrust"]["policySha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+            with mock.patch.dict(validate_policy.__globals__, {"POLICY_PATH": path}):
+                identity = validate_policy(release)[-1]
+            self.assertEqual(identity, policy["certificateIdentityTemplate"].replace("{release}", "v0.15.15"))
 
     def test_standalone_verifier_requires_all_inputs(self) -> None:
         result = subprocess.run(

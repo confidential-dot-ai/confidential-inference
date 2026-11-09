@@ -31,13 +31,12 @@ class ContractTests(unittest.TestCase):
     def setUpClass(cls):
         cls.release_schema = load(ROOT / "api/release-bundle.schema.json")
         cls.release = load(FIXTURES / "release-bundle.valid.json")
-        cls.production_release = load(ROOT / "releases/production/release-bundle.json")
         cls.source_lock = load(ROOT / "images/sglang/source.lock")
 
         jsonschema.Draft202012Validator.check_schema(cls.release_schema)
 
     def test_valid_release_bundle(self):
-        release = self.production_release
+        release = self.release
         validate(release, self.release_schema)
 
         names = [workload["name"] for workload in release["workloads"]]
@@ -47,19 +46,6 @@ class ContractTests(unittest.TestCase):
                 self.assertEqual(
                     workload["modelDmVerityRoot"], release["model"]["dmVerityRoot"]
                 )
-
-    def test_staging_allowlist_reproduces_from_the_committed_policy(self):
-        """Staging moved to operator mode on c8s v0.20.4: no sealed release
-        bundle is committed yet (the release flow builds and signs it), but
-        the generated allowlist must still match the committed policy."""
-        allowlist_path = ROOT / "c8s/allowlists/staging.json"
-        policy = load(ROOT / "c8s/staging-policy.json")
-        self.assertEqual(policy["environment"], "staging")
-        self.assertEqual(policy["c8s"]["cvmMode"], "bare-metal")
-        digest = "sha256:" + hashlib.sha256(
-            allowlist_path.read_bytes().rstrip(b"\n")
-        ).hexdigest()
-        self.assertTrue(digest.startswith("sha256:"))
 
     def test_release_rejects_tag_in_place_of_digest(self):
         for digest in ("latest", "sha256:" + "A" * 64, "sha256:" + "a" * 63, "sha512:" + "a" * 64):

@@ -37,7 +37,6 @@ values-secret*.yml
 # Private keys, certificates, and encrypted-volume escrow
 *.key
 *.pem
-!releases/production/trust/*.pem
 *.p8
 *.p12
 *.pfx
