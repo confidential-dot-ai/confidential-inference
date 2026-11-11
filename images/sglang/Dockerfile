@@ -3,7 +3,8 @@
 # images by linux/amd64 digest, Ubuntu packages by one snapshot timestamp,
 # Python wheels by SHA-256, and the SGLang source by one commit of the
 # official upstream repository with no inference source patches.
-# images/sglang/harden_http.py then removes the non-serving HTTP routes.
+# images/sglang/harden_http.py then removes the non-serving HTTP routes, and
+# images/sglang/harden_dist.py keeps internal distributed listeners on loopback.
 # The image bakes no JIT cache: FlashInfer, Triton and the SGLang JIT kernels
 # compile at run time into the pod's emptyDir. FlashInfer's precompiled
 # TRT-LLM-gen cubins come from the flashinfer-cubin wheel (requirements.lock):
@@ -113,11 +114,13 @@ COPY --from=source /src/SOURCE_RECORD.json /opt/sglang/SOURCE_RECORD.json
 # it leaves the dist-info and its RECORD line. The import check runs with -B:
 # -I ignores PYTHONDONTWRITEBYTECODE.
 RUN --mount=type=bind,source=images/sglang/harden_http.py,target=/run-src/harden-http.py,readonly \
+    --mount=type=bind,source=images/sglang/harden_dist.py,target=/run-src/harden-dist.py,readonly \
     --mount=type=bind,source=images/sglang/wait_for_model.py,target=/run-src/wait-for-model,readonly \
     --mount=type=bind,source=images/sglang-router/private_log_sink.py,target=/run-src/private_log_sink.py,readonly \
     SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 SGLANG_BUILD_RUST_EXTS=none \
         uv pip install --no-deps --no-build-isolation -e /opt/sglang/python \
     && python /run-src/harden-http.py --root /opt/sglang/python/sglang --variant pd \
+    && python /run-src/harden-dist.py --root /opt/sglang/python/sglang \
     && chmod -R go-w /opt/sglang/python \
     && dist=/opt/dsv41/lib/python3.12/site-packages/sglang-0.0.0.dev0.dist-info \
     && rm "$dist/uv_cache.json" \
