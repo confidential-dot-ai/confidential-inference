@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import json
 import shutil
@@ -461,36 +460,6 @@ class BetaCompatibilityTests(unittest.TestCase):
         self.assertEqual(release.signer('v0.37.0-beta.1', True), 'https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/beta')
         with self.assertRaises(ValueError):
             release.signer('v0.37.0-beta.1')
-
-    def test_allowlist_seed_is_the_asset_the_signed_statement_lists(self):
-        tag, commit = 'v0.74.0', 'a' * 40
-        release = BUMP.c8s_release
-        seed = b'{"schema":"c8s.allowlist/v1","workloads":{}}'
-        statement = {'repository': 'confidential-dot-ai/C8s', 'tag': tag, 'commit': commit, 'allowlistSeeds': {
-            'tdx': {'asset': 'allowlist-seed-tdx.json', 'sha256': hashlib.sha256(seed).hexdigest()}}}
-        asset = {'bytes': seed}
-
-        def run(argv, **kwargs):
-            import subprocess
-            if argv[0] == 'cosign':
-                self.assertEqual(argv[argv.index('--certificate-identity') + 1], release.signer(tag))
-                self.assertTrue(argv[-1].endswith(release.C8S_STATEMENT))
-            else:
-                self.assertEqual(argv[:3], ['gh', 'release', 'download'])
-                directory = Path(argv[argv.index('--dir') + 1])
-                (directory / release.C8S_STATEMENT).write_text(json.dumps(statement))
-                (directory / release.C8S_BUNDLE).write_text('{}')
-                (directory / argv[-1]).write_bytes(asset['bytes'])
-            return subprocess.CompletedProcess(argv, 0, '', '')
-
-        self.assertEqual(release.allowlist_seed(tag, commit, 'tdx', run=run, cosign='cosign'), json.loads(seed))
-        with self.assertRaisesRegex(release.ReleaseError, 'does not name commit'):
-            release.allowlist_seed(tag, 'b' * 40, 'tdx', run=run, cosign='cosign')
-        with self.assertRaisesRegex(release.ReleaseError, 'not the seed the signed release statement lists'):
-            release.allowlist_seed(tag, commit, 'snp', run=run, cosign='cosign')
-        asset['bytes'] = seed + b' '
-        with self.assertRaisesRegex(release.ReleaseError, 'not the seed the signed release statement lists'):
-            release.allowlist_seed(tag, commit, 'tdx', run=run, cosign='cosign')
 
     def test_signed_beta_requires_branch_prerelease_and_exact_statement(self):
         tag, commit = 'v0.37.0-beta.1', 'a' * 40

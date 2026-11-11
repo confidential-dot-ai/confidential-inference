@@ -24,7 +24,6 @@ def signer(tag, allow_beta=False):
     branch = channel(tag, allow_beta)
     return f"https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/{branch}"
 
-import hashlib
 import json
 import shutil
 import subprocess
@@ -117,14 +116,14 @@ def verify_c8s_tag(tag: str, run: Callable[..., subprocess.CompletedProcess[str]
 
 
 def signed_statement(tag: str, directory: Path, run: Callable[..., subprocess.CompletedProcess[str]],
-                     cosign: str | None, allow_beta: bool, *assets: str) -> dict[str, Any]:
-    """Download the release statement, its bundle and `assets` of the c8s tag
-    into `directory`; return the statement after cosign verifies it against
+                     cosign: str | None, allow_beta: bool) -> dict[str, Any]:
+    """Download the release statement and its bundle of the c8s tag into
+    `directory`; return the statement after cosign verifies it against
     the exact release workflow identity and it names this repository and tag."""
     cosign = cosign or shutil.which("cosign")
     if not cosign:
         raise ReleaseError(f"the c8s {tag} release is signed, but cosign is not installed")
-    patterns = [arg for name in (C8S_STATEMENT, C8S_BUNDLE, *assets) for arg in ("--pattern", name)]
+    patterns = [arg for name in (C8S_STATEMENT, C8S_BUNDLE) for arg in ("--pattern", name)]
     download = run(["gh", "release", "download", tag, "--repo", C8S_REPOSITORY, "--dir", str(directory), *patterns],
                    text=True, capture_output=True, check=False)
     if download.returncode:
@@ -149,20 +148,3 @@ def signed_statement(tag: str, directory: Path, run: Callable[..., subprocess.Co
         raise ReleaseError(f"the signed c8s {tag} statement names no digest-pinned C8s chart: {signed['chart']}")
     return signed
 
-
-def allowlist_seed(tag: str, commit: str, platform: str,
-                   run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-                   cosign: str | None = None) -> dict[str, Any]:
-    """The allowlist seed that the node images of a c8s release bake for
-    `platform` (tdx or snp): the release asset allowlist-seed-<platform>.json,
-    whose sha256 the signed release statement of `commit` lists (C8s #975)."""
-    asset = f"allowlist-seed-{platform}.json"
-    with tempfile.TemporaryDirectory() as directory:
-        signed = signed_statement(tag, Path(directory), run, cosign, "-beta." in tag, asset)
-        data = (Path(directory) / asset).read_bytes()
-    if signed["commit"] != commit:
-        raise ReleaseError(f"the signed c8s {tag} statement does not name commit {commit}")
-    listed = signed.get("allowlistSeeds", {}).get(platform)
-    if listed != {"asset": asset, "sha256": hashlib.sha256(data).hexdigest()}:
-        raise ReleaseError(f"the c8s {tag} {asset} is not the seed the signed release statement lists: {listed}")
-    return json.loads(data)
