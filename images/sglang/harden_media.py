@@ -79,7 +79,10 @@ def inline_media_bytes(media: Union[str, bytes]) -> bytes:
         return pybase64.b64decode(encoded, validate=True)
     if _URL_SCHEME.match(media):
         raise ValueError({INLINE_ONLY!r})
-    return pybase64.b64decode(media, validate=True)
+    try:
+        return pybase64.b64decode(media, validate=True)
+    except ValueError as error:
+        raise ValueError(f"{INLINE_ONLY}: {{error}}") from error
 
 
 def get_image_bytes(image_file: Union[str, bytes]) -> bytes:

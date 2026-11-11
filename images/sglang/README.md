@@ -21,6 +21,14 @@ routes. The model gate verifies the pinned repository, revision, metadata,
 and model bytes before it starts the worker. These are serving and trust
 controls, not changes to inference computation.
 
+The media policy (`harden_media.py`) accepts request images, video and audio
+only as inline data: bytes, a `data:` URL or raw base64. The worker never
+fetches a media URL or opens a file named in a request. A URL, a `file://`
+URL or a path returns a 400 error. Images decode only as JPEG, PNG, WEBP or
+GIF. The upstream `--allowed-media-domains` and
+`--media-url-max-file-size-mb` flags have no effect in this image, so the
+launcher does not refuse them.
+
 For the plain deployment, `--private-server-output` discards native server
 stdout and stderr. It exports only a fixed worker-exit event with a numeric
 code. This prevents request text and arbitrary exception text from entering
