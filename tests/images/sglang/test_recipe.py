@@ -184,9 +184,6 @@ class RecipeTests(unittest.TestCase):
         self.assertIn("source=images/sglang/harden_media.py,target=/run-src/harden-media.py", DOCKERFILE)
         self.assertIn("python /run-src/harden-media.py --root /opt/sglang/python/sglang", DOCKERFILE)
         self.assertIn("!images/sglang/harden_media.py", (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8"))
-        gpu_test = (RECIPE / "Dockerfile.gpu-test").read_text(encoding="utf-8")
-        self.assertIn("python /tmp/harden-media.py --root /opt/sglang/python/sglang", gpu_test)
-        self.assertIn("!images/sglang/harden_media.py", (RECIPE / "Dockerfile.gpu-test.dockerignore").read_text(encoding="utf-8"))
 
 
 class FetchSourceLockTests(unittest.TestCase):

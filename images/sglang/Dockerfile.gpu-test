@@ -14,11 +14,9 @@ COPY images/sglang/pair_supervisor.py /usr/local/bin/sglang-pair
 COPY images/sglang/pair_diagnostics.py /usr/local/bin/pair_diagnostics.py
 COPY images/sglang-router/private_log_sink.py /usr/local/bin/private_log_sink.py
 COPY images/sglang/harden_http.py /tmp/harden-http.py
-COPY images/sglang/harden_media.py /tmp/harden-media.py
 RUN python /tmp/harden-http.py --root /opt/sglang/python/sglang --variant pd \
-    && python /tmp/harden-media.py --root /opt/sglang/python/sglang \
     && chmod -R go-w /opt/sglang/python \
     && python -I -B /usr/local/bin/pair_diagnostics.py \
     && chmod 0555 /usr/local/bin/sglang-pair \
-    && rm /tmp/harden-http.py /tmp/harden-media.py
+    && rm /tmp/harden-http.py
 USER 1001:1001
