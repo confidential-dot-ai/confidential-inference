@@ -25,9 +25,8 @@ LEGACY_POLICY_REFERENCE = "releases/trust/release-signing-policy.json"
 POLICY_PATH = ROOT / POLICY_REFERENCE
 TRUSTED_ROOT_REFERENCE = "release/trust/sigstore-public-good-trusted-root.json"
 LEGACY_TRUSTED_ROOT_REFERENCE = "releases/trust/sigstore-public-good-trusted-root.json"
-RELEASE_SCHEMA_PATH = ROOT / "api/release-bundle.schema.json"
 # v0.14.0 and later sign a release manifest built from release/. The signed
-# file names its own schema; each schema has one contract file.
+# file names its schema. Earlier release formats are not supported.
 RELEASE_MANIFEST_SCHEMA = "confidential.ai/release-manifest/v1"
 RELEASE_MANIFEST_SCHEMA_PATH = ROOT / "api/release-manifest.schema.json"
 MAX_RELEASE_BUNDLE_BYTES = 2 * 1024 * 1024
@@ -157,11 +156,11 @@ def validate_policy(
 
 def validate_release_schema(release: dict[str, Any], schema_path: Path | None = None) -> None:
     if schema_path is None:
-        schema_path = (
-            RELEASE_MANIFEST_SCHEMA_PATH
-            if release.get("schema") == RELEASE_MANIFEST_SCHEMA
-            else RELEASE_SCHEMA_PATH
-        )
+        if release.get("schema") != RELEASE_MANIFEST_SCHEMA:
+            raise ReleaseSignatureError(
+                f"the release does not use the {RELEASE_MANIFEST_SCHEMA} format"
+            )
+        schema_path = RELEASE_MANIFEST_SCHEMA_PATH
     _, schema = read_object(schema_path, "release schema", 512 * 1024)
     try:
         jsonschema.Draft202012Validator(
@@ -206,8 +205,7 @@ def verify_release_signature(
     inclusion proof, and the signature over the exact release bytes.
 
     `schema_path` selects the release document schema. It defaults to the
-    release-bundle schema; a v0.14.0 or later release passes the
-    release-manifest schema. Both carry the same signing fields.
+    release-manifest schema, which v0.14.0 and later releases use.
     """
     if not cosign.is_file() or cosign.is_symlink():
         raise ReleaseSignatureError("the required Cosign verifier is not a file")
