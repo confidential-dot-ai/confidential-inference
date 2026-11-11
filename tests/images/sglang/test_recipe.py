@@ -136,7 +136,8 @@ class RecipeTests(unittest.TestCase):
         for path in ("images/sglang/Dockerfile", "images/sglang/source.lock",
                      "images/sglang/requirements.lock", "images/sglang/fetch_source.py",
                      "images/sglang/simulator-upstream/src/usercustomize.py",
-                     "images/sglang/harden_http.py", "images/sglang/wait_for_model.py"):
+                     "images/sglang/harden_http.py", "images/sglang/harden_media.py",
+                     "images/sglang/wait_for_model.py"):
             self.assertIn("sglang", {i.image for i in affected["affected_images"]([path])})
 
     def test_staging_simulator_source_and_patches_are_pinned(self) -> None:
@@ -178,6 +179,11 @@ class RecipeTests(unittest.TestCase):
         self.assertIn("python /run-src/harden-http.py --root /opt/sglang/python/sglang --variant pd", DOCKERFILE)
         ignore = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
         self.assertIn("!images/sglang/harden_http.py", ignore)
+
+    def test_build_restricts_media_inputs(self) -> None:
+        self.assertIn("source=images/sglang/harden_media.py,target=/run-src/harden-media.py", DOCKERFILE)
+        self.assertIn("python /run-src/harden-media.py --root /opt/sglang/python/sglang", DOCKERFILE)
+        self.assertIn("!images/sglang/harden_media.py", (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8"))
 
 
 class FetchSourceLockTests(unittest.TestCase):
