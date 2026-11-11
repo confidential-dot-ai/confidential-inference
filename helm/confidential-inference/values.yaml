@@ -45,10 +45,6 @@ c8s:
 attestationReceipts:
   evidenceBaseUrl: https://api.example.invalid
   evidenceConnectHost: ""
-  # c8s serves GET /operator-keys on CDS, not on the public front door. Leave
-  # this empty to read the operator key set from evidenceBaseUrl, which is the
-  # behaviour every environment had before this value existed. Set it to the
-  # CDS base URL to read the key set from CDS itself.
   # Permit only the public c8s front-door addresses that evidenceBaseUrl can
   # use. Keep this empty until an environment supplies its reviewed CIDRs.
   evidenceEgressCidrs: []
@@ -57,8 +53,6 @@ attestationReceipts:
   # `operator` uses a signed mutable allowlist. `static` uses the allowlist
   # sealed into the measured c8s node image and disables policy writes.
   policyMode: operator
-  expectedOperatorPublicKeySha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  expectedOperatorKeySetSha256: sha256:0000000000000000000000000000000000000000000000000000000000000000
   cds:
     url: ""
     imagePolicy: ""

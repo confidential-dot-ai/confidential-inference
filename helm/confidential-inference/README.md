@@ -35,6 +35,11 @@ except `releaseId` and `attestationApiPort`, `runtimeConfig.releaseBundle`). It
 still accepts them, because `bin/deploy` sets them for every release it
 deploys; they go once production runs a release built from this chart.
 
+Operator-key hashes have no defaults and are not required. The schema accepts
+`expectedOperatorPublicKeySha256` and `expectedOperatorKeySetSha256` only for
+older deployment overlays. They have no effect on rendered workloads or client
+verification. Clients pin the reviewed policy and route digest instead.
+
 The gateway's settings are one environment variable, `GATEWAY_RUNTIME_CONFIG`,
 so the exact allowlist pins them. The gateway mounts only the admin signer
 certificate and the admin API key hashes, which differ per deployment.

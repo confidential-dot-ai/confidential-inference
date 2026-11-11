@@ -62,8 +62,8 @@
         "releaseId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
         "releaseBundleSha256": {"$ref": "#/definitions/sha256Digest"},
         "policyMode": {"enum": ["operator", "static"]},
-        "expectedOperatorPublicKeySha256": {"$ref": "#/definitions/sha256Digest"},
-        "expectedOperatorKeySetSha256": {"$ref": "#/definitions/sha256Digest"},
+        "expectedOperatorPublicKeySha256": {"$ref": "#/definitions/sha256Digest", "deprecated": true, "description": "Ignored. Accepted only for older deployment overlays; not a client verification input."},
+        "expectedOperatorKeySetSha256": {"$ref": "#/definitions/sha256Digest", "deprecated": true, "description": "Ignored. Accepted only for older deployment overlays; not a client verification input."},
         "cds": {
           "type": "object",
           "additionalProperties": false,
@@ -75,15 +75,7 @@
           }
         },
         "attestationApiPort": {"const": 8400}
-      },
-      "allOf": [
-        {
-          "if": {"properties": {"policyMode": {"const": "operator"}}},
-          "then": {
-            "required": ["expectedOperatorPublicKeySha256", "expectedOperatorKeySetSha256"]
-          }
-        }
-      ]
+      }
     },
     "inference": {
       "type": "object",

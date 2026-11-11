@@ -83,17 +83,23 @@ does not stop approved application code from deliberately exposing data.
 TLS and the internal mesh protect transport; peer selection and application
 egress policy remain security-sensitive configuration.
 
-## Operator keys and client policy
+## Operator authority and client policy
 
-`c8s.operatorKeys` reports actual CDS public update keys. It is not a proof of
-exclusive private-key custody. The gateway obtains the list through verified
-CDS access. An independently accessible direct CDS check is a separate
-integration; do not treat the gateway's public `/operator-keys` route as CDS.
+C8s uses operator keys to authorize policy updates and credential release.
+Client verification does not use those keys as trust anchors. It checks a
+signed release, an exact reviewed allowlist, and an approved route digest.
+The gateway does not serve an operator-key verification API.
 
-A release-signing key, CDS policy-update key, mesh CA, and Kubernetes client CA
-have different roles. Do not use the old production PEM files as new release
-anchors. New manifests do not require one fixed deployment mesh CA or operator
-key. A client can choose additional pins and must understand their scope.
+A route digest must come from a reviewed deployment configuration through a
+channel the client already trusts. A live endpoint's own digest is not an
+independent approval. A release signature does not approve a deployment's
+routes. The deployment repository must supply the reviewed route digest.
+
+This procedure does not pin the operator-key seed in RTMR3 or check operator
+signatures on route manifests. It does not verify the complete policy history
+since boot. It checks the policy recorded in the serving workload certificate.
+Route changes require explicit approval of a new digest. This does not provide
+the revision tracking of the operator-signature verification mode.
 
 ## Restricted Kubernetes credentials
 

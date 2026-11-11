@@ -448,8 +448,10 @@ def main() -> None:
         "--set", "attestationReceipts.evidenceBaseUrl=https://api.example.test",
         "--set", "attestationReceipts.evidenceConnectHost=c8s-router.c8s-system.svc.cluster.local",
         "--set", "attestationReceipts.cds.url=https://c8s-cds.c8s-system.svc:8443",
+        "--set", "attestationReceipts.expectedOperatorPublicKeySha256=sha256:" + "a" * 64,
+        "--set", "attestationReceipts.expectedOperatorKeySetSha256=sha256:" + "b" * 64,
     )
-    assert Gateway(local_documents).deployment == Gateway(render()).deployment
+    assert local_documents == render()
     assert gateway.container["readinessProbe"]["httpGet"]["path"] == "/ready"
     assert gateway.container["livenessProbe"]["httpGet"]["path"] == "/health"
     assert gateway.deployment["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 960
