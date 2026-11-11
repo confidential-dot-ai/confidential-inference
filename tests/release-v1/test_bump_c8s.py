@@ -376,6 +376,22 @@ class BumpTests(unittest.TestCase):
         with self.assertRaisesRegex(BUMP.BumpError, "pkg/ratls/tls.go are gone"):
             self.source_lock_bump(lambda repo: (repo / "pkg/ratls/tls.go").unlink())
 
+    def test_a_deleted_pinned_file_with_a_successor_moves_its_pin_and_new_sources_join(self):
+        def replace(repo: Path) -> None:
+            (repo / "pkg/ratls/tls.go").unlink()
+            (repo / "pkg/cdsconfig").mkdir()
+            (repo / "pkg/cdsconfig/pin.go").write_text("package cdsconfig\n")
+            (repo / "pkg/cdsconfig/cdsconfig.go").write_text("package cdsconfig // config\n")
+        with mock.patch.dict(BUMP.SOURCE_SUCCESSORS, {"pkg/ratls/tls.go": "pkg/cdsconfig/cdsconfig.go"}), \
+                mock.patch.object(BUMP, "ADDED_SOURCES", ("pkg/cdsconfig/cdsconfig.go", "pkg/cdsconfig/pin.go",
+                                                          "pkg/absent.go")):
+            added = self.source_lock_bump(replace)
+        self.assertEqual(added["files"], {
+            "pkg/cdsconfig/cdsconfig.go": BUMP.sha256_bytes(b"package cdsconfig // config\n"),
+            "cmd/cds/main.go": BUMP.sha256_bytes(b"package main\n"),
+            "pkg/cdsconfig/pin.go": BUMP.sha256_bytes(b"package cdsconfig\n"),
+        })
+
     def test_the_staging_fixture_moves_only_with_the_staging_profile(self):
         production, staging = BUMP.release_profiles.load()
         with mock.patch.object(BUMP.runpy, "run_path") as run_path:
