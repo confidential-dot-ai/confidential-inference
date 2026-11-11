@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Fetch the node image manifest.json named by a release profile.
+"""Fetch the node and CDS guest image manifest.json files named by a release profile.
 
-c8s publishes a measurement artifact beside each node image. The artifact
+c8s publishes a measurement artifact beside each guest image. The artifact
 holds manifest.json, which records the TDX measurements MRTD, RTMR1, and
-RTMR2 of the node image. This script downloads that file through the digest
+RTMR2 of the image. This script downloads that file through the digest
 chain that the profile specification pins, checks every digest, checks the
-measurements, and writes the exact bytes to node-manifest.json in the layer
-that sets `c8s` (release/node-manifest.json unless a profile overrides c8s).
+measurements, and writes the exact bytes to node-manifest.json, and for a
+pinned CDS guest image to cds-manifest.json, in the layer that sets `c8s`
+(release/ unless a profile overrides c8s).
 
-Anyone can repeat the check: the SHA-256 of node-manifest.json must equal the
+Anyone can repeat the check: the SHA-256 of each file must equal the
 manifest.json layer digest of the pinned artifact.
 """
 
@@ -50,17 +51,25 @@ def sha256(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+# The pinned guest images: the image key and its measurement artifact key in `c8s`.
+NODE = ("nodeImage", "nodeManifestArtifact")
+CDS = ("cdsImage", "cdsManifestArtifact")
+
+
 def read_spec(spec: Any) -> dict[str, Any]:
     try:
         c8s = spec["c8s"]
-        reference = c8s["nodeImage"]["reference"]
-        artifact = c8s["nodeManifestArtifact"]["digest"]
+        c8s["nodeImage"]["reference"], c8s["nodeManifestArtifact"]["digest"]
     except (KeyError, TypeError) as error:
         raise FetchError("the release specification has no c8s node manifest artifact") from error
-    if not isinstance(reference, str) or "@" in reference or ":" in reference.rsplit("/", 1)[-1]:
-        raise FetchError("c8s.nodeImage.reference must be a repository without tag or digest")
-    if not isinstance(artifact, str) or not DIGEST.fullmatch(artifact):
-        raise FetchError("c8s.nodeManifestArtifact.digest is not a SHA-256 digest")
+    for image, artifact in (NODE, CDS):
+        if image not in c8s and artifact not in c8s:
+            continue
+        reference = c8s.get(image, {}).get("reference")
+        if not isinstance(reference, str) or "@" in reference or ":" in reference.rsplit("/", 1)[-1]:
+            raise FetchError(f"c8s.{image}.reference must be a repository without tag or digest")
+        if not DIGEST.fullmatch(str(c8s.get(artifact, {}).get("digest"))):
+            raise FetchError(f"c8s.{artifact}.digest is not a SHA-256 digest")
     return spec
 
 
@@ -93,13 +102,14 @@ def manifest_json_digest(reference: str, artifact: str) -> str:
     return manifest_layer(json.loads(raw_manifest))
 
 
-def fetch(spec: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
-    reference = spec["c8s"]["nodeImage"]["reference"]
-    artifact = spec["c8s"]["nodeManifestArtifact"]["digest"]
+def fetch(spec: dict[str, Any], keys: tuple[str, str] = NODE) -> tuple[bytes, dict[str, Any]]:
+    image, artifact_key = keys
+    reference = spec["c8s"][image]["reference"]
+    artifact = spec["c8s"][artifact_key]["digest"]
     layer = manifest_json_digest(reference, artifact)
-    pinned = spec["c8s"]["nodeManifestArtifact"].get("manifestJson")
+    pinned = spec["c8s"][artifact_key].get("manifestJson")
     if pinned is not None and pinned != layer:
-        raise FetchError("the artifact manifest.json layer differs from c8s.nodeManifestArtifact.manifestJson")
+        raise FetchError(f"the artifact manifest.json layer differs from c8s.{artifact_key}.manifestJson")
     data = run(["crane", "blob", f"{reference}@{layer}"])
     if sha256(data) != layer:
         raise FetchError("the registry returned a manifest.json with a different digest")
@@ -112,6 +122,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", type=Path, default=ROOT / "release", help="the profile directory")
     parser.add_argument("--output", type=Path, help="default: node-manifest.json in the layer that sets c8s")
+    parser.add_argument("--cds-output", type=Path, help="default: cds-manifest.json in the layer that sets c8s")
     parser.add_argument(
         "--check", action="store_true",
         help="fail when the committed file differs from the registry bytes",
@@ -119,13 +130,18 @@ def main() -> int:
     args = parser.parse_args()
     try:
         profile = release_profiles.for_directory(args.release)
-        data, record = fetch(read_spec(release_profiles.read_spec(profile)))
-        args.output = args.output or release_profiles.node_manifest(profile)
-        if args.check:
-            if args.output.read_bytes() != data:
-                raise FetchError(f"{args.output} differs from the pinned artifact")
-        else:
-            args.output.write_bytes(data)
+        spec = read_spec(release_profiles.read_spec(profile))
+        data, record = fetch(spec)
+        files = [(args.output or release_profiles.node_manifest(profile), data)]
+        if CDS[0] in spec["c8s"]:
+            cds_data, record["cds"] = fetch(spec, CDS)
+            files.append((args.cds_output or release_profiles.cds_manifest(profile), cds_data))
+        for path, content in files:
+            if args.check:
+                if path.read_bytes() != content:
+                    raise FetchError(f"{path} differs from the pinned artifact")
+            else:
+                path.write_bytes(content)
     except (OSError, FetchError, release_profiles.ProfileError, json.JSONDecodeError, yaml.YAMLError) as error:
         print(f"fetch-node-manifest: {error}", file=sys.stderr)
         return 1

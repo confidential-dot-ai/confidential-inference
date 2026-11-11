@@ -126,6 +126,16 @@
         "manifestSha256": {"$ref": "#/$defs/sha256Digest"}
       }
     },
+    "cdsImage": {
+      "description": "The CDS guest image of the C8s release and the SHA-256 of its manifest.json. A deployment's cds-pin.json binds a launch digest from that manifest.json.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "manifestSha256"],
+      "properties": {
+        "reference": {"$ref": "#/$defs/imageReference"},
+        "manifestSha256": {"$ref": "#/$defs/sha256Digest"}
+      }
+    },
     "mrtd": {"$ref": "#/$defs/sha384Hex"},
     "rtmr1": {"$ref": "#/$defs/sha384Hex"},
     "rtmr2": {"$ref": "#/$defs/sha384Hex"},

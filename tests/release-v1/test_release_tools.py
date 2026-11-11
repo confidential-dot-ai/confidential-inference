@@ -625,6 +625,20 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(MAN.ManifestError, 'c8s.release'):
                 MAN.validate_spec({**spec, 'c8s': {**spec['c8s'], 'release': version}})
 
+    def test_the_cds_guest_image_pin_needs_its_manifest_artifact(self):
+        spec = copy.deepcopy(MAN.read_spec(PRODUCTION))
+        cds = {"reference": "ghcr.io/confidential-dot-ai/guests/cds", "tag": "v0.99.29-kubevirt", "digest": "sha256:" + "1" * 64}
+        artifact = {"tag": "v0.99.29", "digest": "sha256:" + "2" * 64, "manifestJson": "sha256:" + "3" * 64}
+        spec["c8s"].update(cdsImage=cds, cdsManifestArtifact=artifact)
+        MAN.validate_spec(spec)
+        for key in ("cdsImage", "cdsManifestArtifact"):
+            with self.subTest(missing=key), self.assertRaisesRegex(MAN.ManifestError, "go together"):
+                MAN.validate_spec({**spec, "c8s": {k: v for k, v in spec["c8s"].items() if k != key}})
+        with self.assertRaisesRegex(MAN.ManifestError, "cdsManifestArtifact needs"):
+            MAN.validate_spec({**spec, "c8s": {**spec["c8s"], "cdsManifestArtifact": {**artifact, "manifestJson": "x"}}})
+        with self.assertRaisesRegex(MAN.ManifestError, "cdsImage needs"):
+            MAN.validate_spec({**spec, "c8s": {**spec["c8s"], "cdsImage": {**cds, "digest": "latest"}}})
+
     def test_the_committed_spec_is_valid(self):
         MAN.read_spec(PRODUCTION)
         MAN.read_spec(STAGING)

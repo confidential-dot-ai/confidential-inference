@@ -210,6 +210,11 @@ def node_manifest(profile: Profile) -> Path:
     return spec_layer(profile, "c8s") / "node-manifest.json"
 
 
+def cds_manifest(profile: Profile) -> Path:
+    """The CDS guest image manifest, beside the node manifest."""
+    return spec_layer(profile, "c8s") / "cds-manifest.json"
+
+
 def merge_values(base: Any, layer: Any) -> Any:
     """Merge Helm values: maps merge by key, any other value replaces."""
     if isinstance(base, dict) and isinstance(layer, dict):

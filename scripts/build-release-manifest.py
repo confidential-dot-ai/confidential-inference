@@ -177,6 +177,17 @@ def validate_spec(spec: Any) -> dict[str, Any]:
             "c8s.nodeManifestArtifact.digest must be a SHA-256 digest")
     require(DIGEST.fullmatch(str(c8s["nodeManifestArtifact"].get("manifestJson"))) is not None,
             "c8s.nodeManifestArtifact.manifestJson must be a SHA-256 digest")
+    cds_keys = {"cdsImage", "cdsManifestArtifact"} & set(c8s)
+    require(len(cds_keys) != 1, "c8s.cdsImage and c8s.cdsManifestArtifact go together")
+    if cds_keys:
+        cds = c8s["cdsImage"]
+        require(isinstance(cds, dict) and isinstance(cds.get("reference"), str)
+                and DIGEST.fullmatch(str(cds.get("digest"))) is not None,
+                "c8s.cdsImage needs a reference and a digest")
+        artifact = c8s["cdsManifestArtifact"]
+        require(isinstance(artifact, dict) and DIGEST.fullmatch(str(artifact.get("digest"))) is not None
+                and DIGEST.fullmatch(str(artifact.get("manifestJson"))) is not None,
+                "c8s.cdsManifestArtifact needs a digest and a manifestJson SHA-256 digest")
     core_images = c8s.get("coreImages")
     require(isinstance(core_images, list) and core_images
             and len(set(core_images)) == len(core_images)
@@ -448,6 +459,17 @@ def node_measurements(path: Path, spec: dict[str, Any]) -> dict[str, Any]:
         "manifestJsonSha256": sha256(data),
         "tdx": values,
     }
+
+
+def cds_image(path: Path, spec: dict[str, Any]) -> dict[str, str] | None:
+    """The pinned CDS guest image and the SHA-256 of its manifest.json, which the CDS pin of a deployment binds."""
+    if "cdsImage" not in spec["c8s"]:
+        return None
+    data = path.read_bytes()
+    require(sha256(data) == spec["c8s"]["cdsManifestArtifact"]["manifestJson"],
+            f"{path.name} differs from c8s.cdsManifestArtifact.manifestJson")
+    image = spec["c8s"]["cdsImage"]
+    return {"reference": f"{image['reference']}@{image['digest']}", "manifestSha256": sha256(data)}
 
 
 def image_names(values: dict[str, Any], images: list[str]) -> dict[str, str]:
@@ -839,6 +861,7 @@ def build(
                                    required_images=required_images)
     policy = read_allowlist_policy(profile.policy, tag)
     node = node_measurements(release_profiles.node_manifest(profile), spec)
+    cds = cds_image(release_profiles.cds_manifest(profile), spec)
     overlay = {
         "images": release_images(values, publication, base),
         "attestationReceipts": {"releaseId": release_profiles.workload_release(tag)},
@@ -932,6 +955,7 @@ def build(
         "mrtd": node["tdx"]["mrtd"],
         "rtmr1": node["tdx"]["rtmr1"],
         "rtmr2": node["tdx"]["rtmr2"],
+        **({"cdsImage": cds} if cds else {}),
         "sourceLock": {
             "path": lock_path.relative_to(ROOT).as_posix() if ROOT in lock_path.resolve().parents else str(lock_path),
             "sha256": sha256(lock_path.read_bytes()),
