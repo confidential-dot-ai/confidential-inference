@@ -74,7 +74,7 @@ c8s:
   frontDoorPodLabelName: router
   frontDoorNamespace: c8s-router
 images:
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:38e2c52da58dc80e1e7591373b0881672c4412098394147bb44c0619b8552b75
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2
 workloadOverridesEnabled: false
 scheduling:
   inferenceNodeNames:

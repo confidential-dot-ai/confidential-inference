@@ -1,21 +1,28 @@
 c8s:
-  release: v0.80.10
-  sourceCommit: cd68ff62791ffc792ecf45583151a278e7291512
+  release: v0.99.29
+  sourceCommit: e0e4fd3c37361a6984069f9ebb6d8258026d7d66
   nodeImage:
-    reference: ghcr.io/confidential-dot-ai/node-guest-base
-    tag: rke2-tdx-cdi-v0.80.10
-    digest: sha256:4b400d258b55c94d292c7768ace29ee7c8d724d79670d1dbce83adf1fef6a500
+    reference: ghcr.io/confidential-dot-ai/guests/worker
+    tag: v0.99.29-tdx-kubevirt
+    digest: sha256:b275edc77db7b42a2492081513e77ed749d3a84327803f16d024e29d7862ab64
   coreImages:
-  - ghcr.io/confidential-dot-ai/c8s-operator@sha256:38e2c52da58dc80e1e7591373b0881672c4412098394147bb44c0619b8552b75
-  - ghcr.io/confidential-dot-ai/cds@sha256:5c7337b189ad7b95b69382ab103d2058d1cf9c30eab07283d59865621e73db2a
-  - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:7d136dc13d675a17ba8f50c25eabdb3c16bad0180910e9be362b2960b777d17e
-  - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:6b30a4cd196b8db217f8787665f2c006dd07b1f22567fa845938f9d8673d3376
-  - ghcr.io/confidential-dot-ai/volumed@sha256:98fc6d348290de3810499b283f35a9137057873f7e3666f5e338d7cd1ebe1a33
+  - ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2
+  - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:864c7a3874cd327f3bf64bd6804c6ed711e2b71b2cd8340c60a3fefa8151e7f0
+  - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:93e541fa1dd14f8f19c3f40a95dd2c49633eb9eb716d60410abde046ee9a4f81
+  - ghcr.io/confidential-dot-ai/volumed@sha256:f0065eb836a09c9c5afff38371271540150715e40f08929f2080c69f61403c2b
   - nginxinc/nginx-unprivileged@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6
   nodeManifestArtifact:
-    tag: rke2-tdx-v0.80.10
-    digest: sha256:1eb606af70dd4db9fc9f6c20399dd0e8822714b3f9ce7f66359de0f189b1f389
-    manifestJson: sha256:722aecaf42c8838f4e5a8f7e88f39a1417573a328d6101233762095f9de8b8ec
+    tag: v0.99.29-tdx
+    digest: sha256:6d2e8963b85c2044d65895071a860a44e0faaa0fc308f71ac0117dd0efdb7ffb
+    manifestJson: sha256:3e5dd4547762bd7a9d57febbef7070f9c857ad645825f13c6981e831d2928839
+  cdsImage:
+    reference: ghcr.io/confidential-dot-ai/guests/cds
+    tag: v0.99.29-kubevirt
+    digest: sha256:509f16c3d200bf70e9a132c0657f649820a500f98a01c1b8a9f5ef1e3b33ce02
+  cdsManifestArtifact:
+    tag: v0.99.29
+    digest: sha256:b0386110b8121466d5c00611e6db59f2394d69f57dc85384eea9b96fb66c2d03
+    manifestJson: sha256:88bdbb2d06e58230fbc158155041e595cb45a5a592f34ff6bdbc30f0cf33487c
 model:
   repository: deepseek-ai/DeepSeek-V4.1-Flash-1017
   revision: 1bae0e1088993b9b82de08f59de5be5a34e42170
