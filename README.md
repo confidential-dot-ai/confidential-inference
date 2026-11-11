@@ -63,10 +63,9 @@ forwards sensitive data. Online Intel collateral checks are a separate,
 explicit client setting. Direct HTTPS with periodic checks is also possible,
 but does not enforce those pins on each inference connection.
 
-Production uses an operator-managed policy. Current release manifests do not
-pin one deployment's operator key or mesh CA. Clients can make those additional
-acceptance decisions. Do not use historical static-mode instructions for a
-new release.
+Production uses an operator-managed policy. Release manifests do not pin a
+deployment's mesh CA. Clients can add that pin. Do not use historical
+static-mode instructions for a new release.
 
 See [the threat model](docs/threat-model.md) for enforcement, update authority,
 and verification limits.
@@ -84,9 +83,7 @@ The release bundle is an independently verified release artifact. The active
 allowlist is the exact policy that the client reviews and pins. In an operator
 managed deployment, that policy can differ from the signed initial policy.
 
-The C8s operator key holds CDS update authority. The release-signing policy is
-a separate Sigstore policy under `release/trust/`; it is not the C8s operator
-key.
+The release-signing policy is a Sigstore policy under `release/trust/`.
 
 Use [release/README.md](release/README.md) for source and publication
 evidence. Release signing rules and the Sigstore trusted root are under

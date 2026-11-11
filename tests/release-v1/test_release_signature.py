@@ -218,26 +218,31 @@ class ReleaseSignatureTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_policy(release)
 
-    def test_both_release_schemas_accept_only_the_known_policy_paths(self) -> None:
-        for fixture in (MANIFEST, ROOT / "tests/api/fixtures/release-bundle.valid.json"):
-            for reference in (
-                "release/trust/release-signing-policy.json",
-                "releases/trust/release-signing-policy.json",
-                "tests/policy.json",
-                "release/trust/../trust/release-signing-policy.json",
-            ):
-                with self.subTest(fixture=fixture.name, reference=reference):
-                    release = json.loads(fixture.read_text())
-                    release["releaseTrust"] = {
-                        "policyPath": reference,
-                        "policySha256": "sha256:" + hashlib.sha256(POLICY.read_bytes()).hexdigest(),
-                        "signatureType": "sigstore-keyless",
-                    }
-                    if reference.startswith(("release/trust/../", "tests/")):
-                        with self.assertRaises(ValueError):
-                            SIGNATURE_MODULE["validate_release_schema"](release)
-                    else:
+    def test_the_release_schema_accepts_only_the_known_policy_paths(self) -> None:
+        for reference in (
+            "release/trust/release-signing-policy.json",
+            "releases/trust/release-signing-policy.json",
+            "tests/policy.json",
+            "release/trust/../trust/release-signing-policy.json",
+        ):
+            with self.subTest(reference=reference):
+                release = json.loads(MANIFEST.read_text())
+                release["releaseTrust"] = {
+                    "policyPath": reference,
+                    "policySha256": "sha256:" + hashlib.sha256(POLICY.read_bytes()).hexdigest(),
+                    "signatureType": "sigstore-keyless",
+                }
+                if reference.startswith(("release/trust/../", "tests/")):
+                    with self.assertRaises(ValueError):
                         SIGNATURE_MODULE["validate_release_schema"](release)
+                else:
+                    SIGNATURE_MODULE["validate_release_schema"](release)
+
+    def test_a_release_in_another_format_is_refused(self) -> None:
+        release = json.loads(MANIFEST.read_text())
+        release.pop("schema")
+        with self.assertRaises(ValueError):
+            SIGNATURE_MODULE["validate_release_schema"](release)
 
     def test_both_root_references_resolve_to_the_moved_file(self) -> None:
         for reference in (

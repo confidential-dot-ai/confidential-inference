@@ -1,58 +1,5 @@
 # Verify Confidential Inference
 
-## v0.16.2 verification profile
-
-This profile verifies `https://candidate.api.confidential.ai/` with release
-`v0.16.2`, C8s `v0.80.10`, and TEErminator `v0.0.4`. The operator key identifies
-this deployment. The signed release bundle identifies its software. Use this
-profile for `api.confidential.ai` only when that endpoint serves this same
-release and operator key.
-
-Install TEErminator as shown below. Use [Cosign v3](https://github.com/sigstore/cosign)
-for the signature check. Download and verify the release pins:
-
-```sh
-curl -fsSL --remote-name-all https://github.com/confidential-dot-ai/confidential-inference/releases/download/v0.16.2/{release-bundle.json,release-bundle.sigstore.json,allowlist.json}
-cosign verify-blob --bundle release-bundle.sigstore.json \
-  --certificate-identity https://github.com/confidential-dot-ai/confidential-inference/.github/workflows/release-bundle.yml@refs/tags/v0.16.2 \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com release-bundle.json
-curl -fsSL -o operator-key-b200.pem https://raw.githubusercontent.com/confidential-dot-ai/confidential-inference/main/docs/operator-keys/cea9208dbb615c4e.pem
-openssl pkey -pubin -in operator-key-b200.pem -outform DER | sha256sum
-sha256sum allowlist.json
-```
-
-Require `Verified OK` from Cosign. The operator key's SPKI SHA-256 must be
-`cea9208dbb615c4ea6f136572a3bc80087d9fb597bfa683ee97c88bd249ceb02`.
-Review the signed release and policy before connecting. The allowlist SHA-256
-must be
-`65306c56f036fdb98ec6d32610dc5ff820891baebf908b3dd3315899d703058b`.
-
-Configure the image, operator, and Intel status pins. Then fetch and pin the
-live allowlist:
-
-```sh
-./teerminator remote add 127.0.0.1:8080 https://candidate.api.confidential.ai/ \
-  --mode attest-lb --image-manifest release-bundle.json \
-  --workload c8s-router-7210bdeb078b \
-  --route-operator-key operator-key-b200.pem \
-  --expected-rtmr3 256e9368dbd9aff2e28044988a756d4554c1ec5880fa4ea829cd5bc854f62842b61ab7c25c55327d048fa5c9e1666ba8 \
-  --tdx-tcb-status UpToDate
-./teerminator allowlist fetch 127.0.0.1:8080 --output allowlist-live.json --pin
-cmp allowlist.json allowlist-live.json
-./teerminator status
-```
-
-The RTMR3 value pins the operator-key seed for this deployment. Stop if `cmp`
-reports a difference. Require `Verified`, `tdx tcb status UpToDate`, and an
-`operator-signed` route. The status command can exit with 0 after a failed
-check, so read its output. Only then start the proxy and send requests as in
-step 4 below.
-
-## v0.15.15 example
-
-The following example retains the release and operator key used for
-`v0.15.15`. Select the profile that matches the endpoint you intend to trust.
-
 ## What verification proves
 
 TEErminator checks the server before your request leaves your machine. It
@@ -61,7 +8,9 @@ and published, inside an Intel TDX confidential VM with current Intel security
 updates. It checks that the server only allows the workloads in that release's
 policy. If a check fails, TEErminator blocks the request.
 
-This guide covers release `v0.15.15` (C8s `v0.59.1`) with TEErminator `v0.0.4`.
+This guide covers `https://candidate.api.confidential.ai/` with release
+`v0.16.2`, C8s `v0.80.10`, and TEErminator `v0.0.4`. Use it for
+`api.confidential.ai` only when that endpoint serves this same release.
 
 ## 1. Install TEErminator
 
@@ -84,46 +33,45 @@ sha256sum -c --ignore-missing checksums.txt && tar -xzf teerminator_0.0.4_linux_
 The checksum line must print `OK`. `checksums.txt` is not signed, so it only
 catches a damaged download.
 
-## 2. Get the pins for the release
+## 2. Get and check the release pins
 
 The signed release publishes the node image measurements (in
-`release-bundle.json`) and the workload policy (`allowlist.json`):
+`release-bundle.json`) and the workload policy (`allowlist.json`). Use
+[Cosign v3](https://github.com/sigstore/cosign) for the signature check:
 
 ```sh
-curl -fsSL --remote-name-all https://github.com/confidential-dot-ai/confidential-inference/releases/download/v0.15.15/{release-bundle.json,allowlist.json}
-curl -fsSL -o operator-key.pem https://raw.githubusercontent.com/confidential-dot-ai/confidential-inference/main/docs/operator-key.pem
-openssl pkey -pubin -in operator-key.pem -outform DER | sha256sum
+curl -fsSL --remote-name-all https://github.com/confidential-dot-ai/confidential-inference/releases/download/v0.16.2/{release-bundle.json,release-bundle.sigstore.json,allowlist.json}
+cosign verify-blob --bundle release-bundle.sigstore.json \
+  --certificate-identity https://github.com/confidential-dot-ai/confidential-inference/.github/workflows/release-bundle.yml@refs/tags/v0.16.2 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com release-bundle.json
+sha256sum allowlist.json
 ```
 
-The second command saves the production operator's public key
-([docs/operator-key.pem](operator-key.pem)). The operator signs the routing
-table with this key. The last command must print
-`4309bd32ed573f3c8b1d5fa01bd335d7efa466b40033be992c857c4b0dbdc128`. This key
-is published in this repository, not in the signed release.
+Require `Verified OK` from Cosign. The allowlist SHA-256 must be
+`65306c56f036fdb98ec6d32610dc5ff820891baebf908b3dd3315899d703058b`.
+Review the signed release and policy before connecting. The bundle names the
+source commits and image digests to review; start with
+[release/README.md](../release/README.md).
 
 ## 3. Verify the endpoint
 
+Configure the image, launch, and Intel status pins. Then fetch and pin the live
+allowlist:
+
 ```sh
-./teerminator remote add 127.0.0.1:8080 https://api.confidential.ai/ \
-  --mode attest-lb --image-manifest release-bundle.json --allowlist allowlist.json \
-  --workload c8s-router-fb21f5cac23c --route-operator-key operator-key.pem \
+./teerminator remote add 127.0.0.1:8080 https://candidate.api.confidential.ai/ \
+  --mode attest-lb --image-manifest release-bundle.json \
+  --workload c8s-router-7210bdeb078b \
+  --expected-rtmr3 256e9368dbd9aff2e28044988a756d4554c1ec5880fa4ea829cd5bc854f62842b61ab7c25c55327d048fa5c9e1666ba8 \
   --tdx-tcb-status UpToDate
+./teerminator allowlist fetch 127.0.0.1:8080 --output allowlist-live.json --pin
+cmp allowlist.json allowlist-live.json
 ./teerminator status
 ```
 
-`c8s-router-fb21f5cac23c` is the public front door in the `v0.15.15` policy.
-A passing result looks like this:
-
-```text
-Local           Remote                        Auth  Mode       Status
-127.0.0.1:8080  https://api.confidential.ai/  None  attest-lb  Verified
-
-127.0.0.1:8080: measurement 9309eaae..., workload c8s-router-fb21f5cac23c, ..., allowlist version 3 ...,
-rtmrs pinned 1:0e2febd1... 2:f452ccd1..., tdx tcb status UpToDate,
-route digest ead545cf... (operator-signed, revision ...)
-```
-
-Require `Verified`, `tdx tcb status UpToDate`, and `operator-signed`.
+`c8s-router-7210bdeb078b` is the public front door in the `v0.16.2` policy.
+The RTMR3 value pins the launch configuration of this deployment. Stop if
+`cmp` reports a difference. Require `Verified` and `tdx tcb status UpToDate`.
 `teerminator status` exits with 0 even when a check fails, so read the output.
 Do not drop a pin or accept more TCB statuses just to get `Verified`. If the
 endpoint serves another release, or its live policy differs from the signed
@@ -155,29 +103,12 @@ client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key=YOUR_API_KEY)
 TEErminator checks the server again for new connections and blocks requests
 that fail.
 
-## 5. Optional: check the release signature
-
-The release workflow signs `release-bundle.json` with Sigstore. To check that
-the pins came from this repository's workflow for this tag, use
-[Cosign](https://github.com/sigstore/cosign) v3:
-
-```sh
-curl -fsSLO https://github.com/confidential-dot-ai/confidential-inference/releases/download/v0.15.15/release-bundle.sigstore.json
-cosign verify-blob --bundle release-bundle.sigstore.json \
-  --certificate-identity https://github.com/confidential-dot-ai/confidential-inference/.github/workflows/release-bundle.yml@refs/tags/v0.15.15 \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com release-bundle.json
-```
-
-You should see `Verified OK`. The bundle's `allowlist.sha256` must equal the
-SHA-256 of `allowlist.json`. The bundle also names the source commits and
-image digests to review; start with [release/README.md](../release/README.md).
-
 ## What TEErminator checks
 
 TEErminator obtains fresh nonce-bound C8s evidence and binds it to the exact
 public TLS certificate. It verifies the node image measurements (MRTD, RTMR1,
-RTMR2), that the front door runs the named workload under the pinned policy,
-and the operator-signed route table. With `--tdx-tcb-status`, it also fetches
+RTMR2) and RTMR3, and that the front door runs the named workload under the
+pinned policy. With `--tdx-tcb-status`, it also fetches
 Intel's TCB information, QE identity, and revocation lists, and rejects
 revoked credentials and statuses that you did not accept.
 
