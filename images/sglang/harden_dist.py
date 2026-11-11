@@ -2,8 +2,9 @@
 """Build-time loopback-only distributed runtime for the pinned SGLang worker.
 
 The torch.distributed store, gloo and NCCL bootstrap listen on loopback only,
-whatever --host, --dist-init-addr or the environment say. The launcher refuses
-multi-node and other settings that open further internal listeners.
+whatever --host, --dist-init-addr or the environment say. Components that bind
+or advertise the local IP get 127.0.0.1. The launcher refuses multi-node and
+other settings that open further internal listeners.
 """
 import argparse
 import ast
@@ -13,8 +14,10 @@ from pathlib import Path
 SOURCE_HASHES = {
     "bootstrap": "fc31071a2e6d56b865f8e15b416f3261016583bcd7e55c483f6731215c39a676",
     "engine": "059c29dabd318a2766024ae8cd62d82e4f4c95bd67ebd9aa346ee8ddd6ad5423",
+    "network": "335811df5b7125ffa02dd12a206c3f42977b35091fe83618db4b511ad1ad1968",
 }
-PATHS = {"bootstrap": "srt/distributed/bootstrap.py", "engine": "srt/entrypoints/engine.py"}
+PATHS = {"bootstrap": "srt/distributed/bootstrap.py", "engine": "srt/entrypoints/engine.py",
+         "network": "srt/utils/network.py"}
 
 RESOLVE = '    return NetworkAddress("127.0.0.1", dist_port).to_tcp()\n'
 PIN_CALL = "    _pin_listeners_to_loopback(dist_port)\n"
@@ -28,6 +31,7 @@ def _pin_listeners_to_loopback(dist_port: int) -> None:
     os.environ["GLOO_SOCKET_IFNAME"] = "lo"
     os.environ["NCCL_SOCKET_IFNAME"] = "lo"
     os.environ.pop("NCCL_COMM_ID", None)
+    os.environ["NCCL_RAS_ENABLE"] = "0"
     parallel = get_parallel()
     if parallel.tp_rank or parallel.pp_rank:
         return
@@ -55,9 +59,13 @@ def _refuse_non_local_listeners(cfg) -> None:
             or envs.SGLANG_DISTRIBUTED_INIT_METHOD_OVERRIDE.get()
             or cfg.gated_launch_port or cfg.elastic_ep_backend
             or cfg.moe_a2a_backend == "nixl" or cfg.weight_cache_mode == "daemon"
-            or cfg.remote_instance_weight_loader_start_seed_via_transfer_engine):
+            or cfg.remote_instance_weight_loader_start_seed_via_transfer_engine
+            or cfg.kv_events_config or cfg.forward_pass_metrics_ipc_name):
         raise RuntimeError("This image supports only a single-node worker with loopback internal listeners")
 '''
+
+LOCAL_IP = '    return "127.0.0.1"\n'
+BIND_PORT = '    return try_bind_socket("127.0.0.1", port, listen=True)\n'
 
 
 def function(tree, name):
@@ -72,6 +80,15 @@ def statement_line(node, text):
     if len(lines) != 1:
         raise ValueError(f"unsupported source: {text}")
     return lines[0]
+
+
+def body(node):
+    """Line span of a function body after its docstring."""
+    doc = node.body[0]
+    if not (isinstance(doc, ast.Expr) and isinstance(doc.value, ast.Constant)
+            and len(node.body) > 1 and doc.lineno > node.lineno):
+        raise ValueError(f"unsupported source: {node.name}")
+    return doc.end_lineno + 1, node.end_lineno
 
 
 def splice(source, start, end, replacement):
@@ -104,13 +121,25 @@ def harden_engine(source):
     return result
 
 
+def harden_network(source):
+    tree = ast.parse(source)
+    spans = sorted(((*body(function(tree, name)), text)
+                    for name, text in (("get_local_ip_auto", LOCAL_IP), ("bind_port", BIND_PORT))),
+                   reverse=True)
+    for start, end, text in spans:
+        source = splice(source, start, end, text)
+    compile(source, "hardened_network", "exec")
+    return source
+
+
 def patch(root):
     paths = {key: root / path for key, path in PATHS.items()}
     sources = {key: path.read_text() for key, path in paths.items()}
     for key, source in sources.items():
         if hashlib.sha256(source.encode()).hexdigest() != SOURCE_HASHES[key]:
             raise ValueError(f"unsupported {key} source; review the listener policy before building")
-    results = {"bootstrap": harden_bootstrap(sources["bootstrap"]), "engine": harden_engine(sources["engine"])}
+    results = {"bootstrap": harden_bootstrap(sources["bootstrap"]), "engine": harden_engine(sources["engine"]),
+               "network": harden_network(sources["network"])}
     for key, result in results.items():
         paths[key].write_text(result)
 

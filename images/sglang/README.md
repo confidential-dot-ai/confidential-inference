@@ -22,15 +22,25 @@ and model bytes before it starts the worker. These are serving and trust
 controls, not changes to inference computation.
 
 The listener policy (`harden_dist.py`) keeps the worker's internal
-distributed listeners on loopback. The `torch.distributed` store, the gloo
-process groups, and NCCL bootstrap bind `127.0.0.1` regardless of `--host`
-or the pod environment. Tensor-parallel ranks on one node rendezvous
-there. The launcher refuses multi-node runs, `--dist-init-addr`,
-`SGLANG_DISTRIBUTED_INIT_METHOD_OVERRIDE`, `--gated-launch-port`, elastic
-EP, the NIXL all-to-all backend, weight cache daemons, and transfer-engine
-weight seeding. Each of these opens another rendezvous or control listener.
-The policy does not cover the prefill/decode KV transfer listeners
-(the disaggregation bootstrap port and the Mooncake transfer engine).
+listeners on loopback for single-node runs:
+
+- The `torch.distributed` store binds `127.0.0.1`, and the distributed
+  init address is `127.0.0.1` whatever `--host`, `--dist-init-addr` or
+  `SGLANG_DISTRIBUTED_INIT_METHOD_OVERRIDE` say.
+- The worker sets `GLOO_SOCKET_IFNAME=lo`, `NCCL_SOCKET_IFNAME=lo` and
+  `NCCL_RAS_ENABLE=0`, and removes `NCCL_COMM_ID`, overriding the pod
+  environment.
+- The local IP that SGLang components bind or advertise is `127.0.0.1`,
+  whatever `SGLANG_HOST_IP` or `HOST_IP` say. Data-parallel port
+  reservations bind `127.0.0.1`.
+- The launcher refuses multi-node runs, `--dist-init-addr`,
+  `SGLANG_DISTRIBUTED_INIT_METHOD_OVERRIDE`, `--gated-launch-port`, elastic
+  EP, the NIXL all-to-all backend, weight cache daemons, transfer-engine
+  weight seeding, `--kv-events-config` and
+  `--forward-pass-metrics-ipc-name`. Each of these opens another
+  rendezvous, control or publisher listener.
+
+`Dockerfile.gpu-test` applies the same policy.
 
 For the plain deployment, `--private-server-output` discards native server
 stdout and stderr. It exports only a fixed worker-exit event with a numeric

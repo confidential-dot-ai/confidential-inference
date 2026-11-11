@@ -1,5 +1,6 @@
 # Build context: the repository root (Dockerfile.dockerignore keeps only this
-# recipe, images/sglang/wait_for_model.py and images/sglang/harden_http.py). Every input is pinned: base
+# recipe, images/sglang/wait_for_model.py, images/sglang/harden_http.py and
+# images/sglang/harden_dist.py). Every input is pinned: base
 # images by linux/amd64 digest, Ubuntu packages by one snapshot timestamp,
 # Python wheels by SHA-256, and the SGLang source by one commit of the
 # official upstream repository with no inference source patches.

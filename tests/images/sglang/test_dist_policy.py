@@ -59,6 +59,7 @@ class DistPolicyTests(unittest.TestCase):
                 cls.sources[key] = response.read().decode()
         cls.bootstrap = policy.harden_bootstrap(cls.sources["bootstrap"])
         cls.engine = policy.harden_engine(cls.sources["engine"])
+        cls.network = policy.harden_network(cls.sources["network"])
 
     def test_pinned_source_patches_and_fails_closed_on_drift(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -69,6 +70,7 @@ class DistPolicyTests(unittest.TestCase):
             policy.patch(root)
             self.assertEqual(self.bootstrap, (root / policy.PATHS["bootstrap"]).read_text())
             self.assertEqual(self.engine, (root / policy.PATHS["engine"]).read_text())
+            self.assertEqual(self.network, (root / policy.PATHS["network"]).read_text())
             with self.assertRaisesRegex(ValueError, "unsupported"):
                 policy.patch(root)
 
@@ -102,7 +104,8 @@ class DistPolicyTests(unittest.TestCase):
                 listener.close()
 
         torch = SimpleNamespace(distributed=SimpleNamespace(TCPStore=TCPStore))
-        polluted = {"GLOO_SOCKET_IFNAME": "eth0", "NCCL_SOCKET_IFNAME": "eth0", "NCCL_COMM_ID": "0.0.0.0:1"}
+        polluted = {"GLOO_SOCKET_IFNAME": "eth0", "NCCL_SOCKET_IFNAME": "eth0", "NCCL_COMM_ID": "0.0.0.0:1",
+                    "NCCL_RAS_ENABLE": "1"}
         for tp_rank, pp_rank in ((1, 0), (0, 1), (0, 0)):
             port = free_port()
             ns = functions(self.bootstrap, "_pin_listeners_to_loopback", os=os,
@@ -113,6 +116,7 @@ class DistPolicyTests(unittest.TestCase):
                 self.assertEqual("lo", os.environ["GLOO_SOCKET_IFNAME"])
                 self.assertEqual("lo", os.environ["NCCL_SOCKET_IFNAME"])
                 self.assertNotIn("NCCL_COMM_ID", os.environ)
+                self.assertEqual("0", os.environ["NCCL_RAS_ENABLE"])
         self.assertEqual(1, len(stores))
         host, store_port, bound, listening, kwargs = stores[0]
         self.assertEqual(("127.0.0.1", ("127.0.0.1", port), 1), (host, bound, listening))
@@ -123,10 +127,12 @@ class DistPolicyTests(unittest.TestCase):
     def test_launcher_refuses_other_listeners(self):
         safe = dict(nnodes=1, node_rank=0, dist_init_addr=None, gated_launch_port=None,
                     elastic_ep_backend=None, moe_a2a_backend="none", weight_cache_mode="off",
-                    remote_instance_weight_loader_start_seed_via_transfer_engine=False)
+                    remote_instance_weight_loader_start_seed_via_transfer_engine=False,
+                    kv_events_config=None, forward_pass_metrics_ipc_name=None)
         unsafe = dict(nnodes=2, node_rank=1, dist_init_addr="10.0.0.5:5000", gated_launch_port=31000,
                       elastic_ep_backend="mooncake", moe_a2a_backend="nixl", weight_cache_mode="daemon",
-                      remote_instance_weight_loader_start_seed_via_transfer_engine=True)
+                      remote_instance_weight_loader_start_seed_via_transfer_engine=True,
+                      kv_events_config='{"publisher": "zmq"}', forward_pass_metrics_ipc_name="tcp://0.0.0.0:1")
         for override in (None, "tcp://0.0.0.0:1"):
             envs = SimpleNamespace(SGLANG_DISTRIBUTED_INIT_METHOD_OVERRIDE=SimpleNamespace(get=lambda o=override: o))
             refuse = functions(self.engine, "_refuse_non_local_listeners", envs=envs)["_refuse_non_local_listeners"]
@@ -142,6 +148,19 @@ class DistPolicyTests(unittest.TestCase):
                 refuse(SimpleNamespace(**{**safe, field: value}))
         with self.assertRaisesRegex(RuntimeError, "single-node"):
             refuse(SimpleNamespace(**{**safe, "dist_init_addr": "127.0.0.1:5000"}))
+
+    def test_local_ip_and_port_reservations_are_loopback(self):
+        ns = functions(self.network, "get_local_ip_auto", "bind_port", "try_bind_socket", "_get_addrinfos_for_bind",
+                       socket=socket, os=os, logger=SimpleNamespace(debug=print, warning=print))
+        with patch.dict(os.environ, {"SGLANG_HOST_IP": "10.0.0.5", "HOST_IP": "10.0.0.5"}):
+            self.assertEqual("127.0.0.1", ns["get_local_ip_auto"]())
+            self.assertEqual("127.0.0.1", ns["get_local_ip_auto"]("0.0.0.0"))
+        port = free_port()
+        with ns["bind_port"](port) as reserved:
+            self.assertEqual(("127.0.0.1", port), reserved.getsockname())
+            self.assertEqual(1, reserved.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN))
+            with socket.socket() as wildcard, self.assertRaises(OSError):
+                wildcard.bind(("0.0.0.0", port))
 
 
 if __name__ == "__main__":
