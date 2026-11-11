@@ -856,7 +856,8 @@ def build(
                                    required_images=required_images)
     policy = read_allowlist_policy(profile.policy, tag)
     node = node_measurements(release_profiles.node_manifest(profile), spec)
-    cds = cds_image(release_profiles.cds_manifest(profile), spec)
+    cds_manifest = release_profiles.cds_manifest(profile)
+    cds = cds_image(cds_manifest, spec)
     overlay = {
         "images": release_images(values, publication, base),
         "attestationReceipts": {"releaseId": release_profiles.workload_release(tag)},
@@ -975,6 +976,8 @@ def build(
         "release-bundle.json": encode(manifest),
         "allowlist.json": allowlist_bytes,
         "release-values.yaml": overlay_bytes,
+        # A verifier needs the CDS measurements that cdsImage.manifestSha256 binds.
+        "cds-manifest.json": cds_manifest.read_bytes(),
         **files,
     }
 

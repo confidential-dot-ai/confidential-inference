@@ -40,11 +40,11 @@ c8s:
   frontDoorNamespace: c8s-system
   # The CDS the injected credential clients dial. It runs as its own VM
   # outside the cluster, on 8443 unless it was started on another port. The
-  # CDS address is a deployment value: set it here as a /32. Empty cidrs
-  # opens the port to every address.
+  # CDS address is a deployment value: set it here as a /32. The default is a
+  # documentation address (RFC 5737) that reaches no CDS.
   cds:
     port: 8443
-    cidrs: []
+    cidrs: [192.0.2.1/32]
 
 # The chart renders only releaseId (release values) and evidenceEgressCidrs.
 # bin/deploy still sets the other values for older releases, so the schema

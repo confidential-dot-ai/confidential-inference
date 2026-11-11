@@ -60,21 +60,29 @@ another CDS passes.
 To pin the launch file of a deployment:
 
 1. Get the deployment's `worker.yaml` and `cds-config.yaml` from its operator.
-2. Review `worker.yaml`. Each `cds.measurements` entry must carry the MRTD,
-   RTMR1, and RTMR2 of the release's `cds-manifest.json`, and bind the exact
-   bytes of `cds-config.yaml` (`launch_file`, or its digest as
-   `launch_file_digest`).
-3. Review the operator keys and node ranges in `cds-config.yaml`.
-4. Compute the worker's RTMR[3] seed, `SHA-384(0x00 * 48 ‖ SHA-384(worker.yaml))`:
+2. Download the release's `cds-manifest.json` asset. Its SHA-256 must equal
+   `cdsImage.manifestSha256` of the release manifest you verified:
+
+   ```sh
+   test "$(sha256sum < cds-manifest.json | cut -d' ' -f1)" = "$(jq -r .cdsImage.manifestSha256 release-bundle.json)"
+   ```
+
+3. Review `worker.yaml`. Each `cds.measurements` entry must carry the MRTD,
+   RTMR1, and RTMR2 of that `cds-manifest.json`, and embed the exact bytes of
+   `cds-config.yaml` as `launch_file`. A worker refuses an entry that carries
+   only `launch_file_digest`; that form binds the worker documents in a
+   `node-images` decree, not the CDS pin.
+4. Review the operator keys and node ranges in `cds-config.yaml`.
+5. Compute the worker's RTMR[3] seed, `SHA-384(0x00 * 48 ‖ SHA-384(worker.yaml))`:
 
    ```sh
    python3 -c 'import hashlib, sys; print(hashlib.sha384(bytes(48) + hashlib.sha384(open(sys.argv[1], "rb").read()).digest()).hexdigest())' worker.yaml
    ```
 
-5. Pass the seed as `--expected-rtmr3`, beside `--image-manifest
+6. Pass the seed as `--expected-rtmr3`, beside `--image-manifest
    release-bundle.json`, in place of the operator-key seed of the v0.16.2
    profile.
-6. Repeat the check with the seed of a `worker.yaml` that differs by one byte.
+7. Repeat the check with the seed of a `worker.yaml` that differs by one byte.
    It must fail.
 
 The worker extends RTMR[3] from this seed with each allowlist policy it

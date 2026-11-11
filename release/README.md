@@ -73,7 +73,7 @@ are not available through this output path. These are diagnostic gaps.
 | `inputs/c8s-attestation-protocols/<commit>.json` | `bump-c8s.py` | The attestation protocol of each C8s commit |
 | `inputs/c8s-seeds/<commit>.json` | `bump-c8s.py` | The allowlist seed of a pinned C8s commit and the inputs it was rendered with |
 | `node-manifest.json` | `fetch-node-manifest.py` | The C8s `manifest.json` of the node image. It holds MRTD, RTMR1, and RTMR2 |
-| `cds-manifest.json` | `fetch-node-manifest.py` | The C8s `manifest.json` of the CDS guest image. The release manifest binds its SHA-256 as `cdsImage.manifestSha256`; a deployment's `cds-pin.json` takes its launch digest from it |
+| `cds-manifest.json` | `fetch-node-manifest.py` | The C8s `manifest.json` of the CDS guest image. The release manifest binds its SHA-256 as `cdsImage.manifestSha256`, and the release publishes it as an asset; a deployment's `cds-pin.json` takes its launch digest from it |
 | `accepted-lint-findings.json` | A reviewer | Optional, per profile. The `c8s allowlist lint --strict` findings that the profile accepts, each with its reason and issue |
 
 ## The release build
@@ -88,6 +88,7 @@ profile values files:
 | `release-bundle.json` | The release manifest. The workflow signs it. It must match `api/release-manifest.schema.json` |
 | `allowlist.json` | The exact C8s allowlist of the release, in canonical bytes. The manifest binds its SHA-256 as `allowlist.sha256`; `allowlist.path` names the profile, for example `release/staging/allowlist.json` |
 | `release-values.yaml` | The repository image digests and `attestationReceipts.releaseId` (the tag) as a Helm values file. Apply it after the profile values files. The manifest binds its SHA-256 as `releaseValues.sha256`; `releaseValues.path` names the profile, for example `release/staging/release-values.yaml`. Each image in it is also in the manifest `images` |
+| `cds-manifest.json` | The C8s `manifest.json` of the pinned CDS guest image, copied from the profile. The manifest binds its SHA-256 as `cdsImage.manifestSha256` |
 | `confidential-inference-X.Y.Z.tgz` | The chart package of the source commit, written by the staging release build at version X.Y.Z (the tag without `v` and `-staging`). The manifest binds its SHA-256 as `chart.archiveSha256` and the registry reference the publish job pushes it to as `chart.reference` (`ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference:X.Y.Z`); the SHA-256 is the digest of the chart layer there. A production release of the same commit builds no package: its manifest binds the staging package, so production promotes the chart staging verified. `chart.sha256` stays the tree hash of `helm/confidential-inference` at the tag |
 | `profile-values-<path>.yaml` | Each profile values file, named by its repository path with `/` as `-` (`profile-values-release-values.yaml`, then `profile-values-release-staging-values.yaml` for staging). The manifest lists them in layer order as `profileValues`, each with its digest and asset name. Apply them before `release-values.yaml` |
 
@@ -205,10 +206,37 @@ keeps its secrets in process memory, starts empty, and mints a new mesh CA
 (C8s `docs/secrets.md`, `docs/cds-ha.md`). Keep the old cluster, its CDS and
 its release serving until the new deployment passes every acceptance check.
 
+The deployment has two kinds of input. Launch files never change while a VM
+lives: `cds-config.yaml` for the CDS and `worker.yaml` for each worker, which
+embeds the CDS pin and so the exact bytes of `cds-config.yaml`. The worker
+documents the CDS admits are not in either file: operator-signed decrees in
+the CDS log carry them, and a later `node-images` decree replaces the set
+(C8s `docs/cds-ha.md`, `docs/launch-configuration.md`). Bring a deployment
+of workers up in this order:
+
+1. Write `cds-config.yaml` with `c8s cds config new --replica CDS_HOST
+   --voters 1` and no `--node-pins`, so the launch file names no nodes.
+   `CDS_HOST` is the CDS VM's DNS name or IPv4 address; name each replica
+   for more than one VM, with an odd `--voters`. A CDS without `--replica`
+   needs `--node-pins`, which cannot bind a worker document that embeds the
+   configuration itself.
+2. Boot the CDS VM from the release's `cdsImage` and that file.
+3. Write `worker.yaml` with `c8s worker new` against the deployment's
+   `cds-pin.json`.
+4. Sign the Genesis decree as C8s `docs/cds-ha-runbooks.md` runbook 1
+   describes, with `--image-manifest cds-manifest.json` from the release and
+   `--worker-document worker.yaml --worker-image worker-image.json`, where
+   `worker-image.json` holds the measurements of the release's node image
+   (`c8s cds ha decree genesis`).
+5. Admit every later or changed `worker.yaml` with a `node-images` decree on
+   the set in force.
+
 Hand traffic over only when all of these hold:
 
 - The CDS VM runs the `cdsImage` that the release manifest pins, and its
-  `cds-pin.json` launch digest comes from the release's `cds-manifest.json`.
+  `cds-pin.json` launch digest comes from the release's `cds-manifest.json`
+  asset, whose SHA-256 equals `cdsImage.manifestSha256` of the verified
+  release manifest.
 - Every client that verifies the deployment pins the worker's launch file
   besides the release's node image, as
   [verification.md](../docs/verification.md#releases-on-c8s-v09929) describes.
@@ -231,8 +259,10 @@ Accept the new deployment only after these checks pass on it:
    the release allowlist.
 3. A credential client whose `cds-pin.json` names another CDS launch digest
    is refused.
-4. A worker launched with a launch file that the CDS configuration does not
-   pin is refused admission and gets no credentials.
+4. A worker launched with a `worker.yaml` that no entry of the decree in
+   force binds is refused admission and gets no credentials. Read the set in
+   force with `c8s cds ha decrees --config cds-config.yaml --cds-pin
+   cds-pin.json --json` (its `node_pins`), not from `cds-config.yaml`.
 5. The public attestation route verifies against the new release manifest
    and the RTMR[3] seed of the deployment's `worker.yaml`.
 6. The same check with the seed of another `worker.yaml`, for example one

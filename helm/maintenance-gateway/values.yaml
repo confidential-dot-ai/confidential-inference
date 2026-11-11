@@ -9,10 +9,11 @@ service:
 trustedProxyCidrs: [10.52.0.0/16]
 # The CDS the injected credential client dials, on 8443 unless the CDS VM was
 # started on another port. The CDS address is a deployment value: set it here
-# as a /32. Empty cidrs opens the port to every address.
+# as a /32. The default is a documentation address (RFC 5737) that reaches no
+# CDS.
 cds:
   port: 8443
-  cidrs: []
+  cidrs: [192.0.2.1/32]
 resources:
   requests:
     cpu: 50m

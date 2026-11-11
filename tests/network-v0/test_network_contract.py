@@ -177,7 +177,7 @@ class NetworkContractTests(unittest.TestCase):
     def test_the_maintenance_gateway_reaches_only_the_configured_cds(self) -> None:
         cds_port = self.port("c8s-credential-release")["cvmPort"]
         for values, peers in ((("--set", "cds.cidrs={198.51.100.4/32}"), [{"ipBlock": {"cidr": "198.51.100.4/32"}}]),
-                              ((), None)):
+                              ((), [{"ipBlock": {"cidr": "192.0.2.1/32"}}])):
             output = subprocess.run(["helm", "template", "example", str(ROOT / "helm/maintenance-gateway"), *values],
                                     cwd=ROOT, check=True, text=True, capture_output=True).stdout
             rules = [rule for item in yaml.safe_load_all(output) if item and item["kind"] == "NetworkPolicy"
@@ -185,11 +185,21 @@ class NetworkContractTests(unittest.TestCase):
                      if any(port.get("port") == cds_port for port in rule.get("ports", []))]
             self.assertEqual([rule.get("to") for rule in rules], [peers], values)
 
-    def test_without_a_cds_address_the_cds_rule_names_no_peer(self) -> None:
+    def test_without_a_cds_address_the_cds_rule_reaches_no_cds(self) -> None:
         # The CDS address is a deployment value; release profiles leave it unset.
         for name, rules in self.cds_rules(self.documents).items():
             self.assertTrue(rules, name)
-            self.assertTrue(all("to" not in rule for rule in rules), name)
+            for rule in rules:
+                self.assertEqual(rule.get("to"), [{"ipBlock": {"cidr": "192.0.2.1/32"}}], name)
+
+    def test_an_empty_cds_address_list_is_refused(self) -> None:
+        for chart, values in ((CHART, (*NEUTRAL_MODE, "--set-json", "c8s.cds.cidrs=[]")),
+                              (ROOT / "helm/maintenance-gateway", ("--set-json", "cds.cidrs=[]"))):
+            with self.subTest(chart=chart.name):
+                result = subprocess.run(["helm", "template", "example", str(chart), *values],
+                                        cwd=ROOT, text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("cidrs: Array must have at least 1 items", result.stderr)
 
     def test_each_confidential_workload_can_reach_the_mesh(self) -> None:
         # ratls-mesh DNATs every connection between confidential workloads to

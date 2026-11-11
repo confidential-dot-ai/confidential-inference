@@ -177,7 +177,11 @@ def check_c8s_admission() -> None:
         "container overrides pod root": (pod(user, {"securityContext": {"runAsUser": 0}}), []),
         "no user": (pod({}), ["sets no runAsUser"]),
         "reserved gid": (pod({"securityContext": {"runAsUser": 1001, "runAsGroup": 1338}}), ["runAsGroup 1338"]),
-        "reserved fsGroup": (pod(user, {"securityContext": {"fsGroup": 1337}}), ["fsGroup 1337"]),
+        "reserved pod uid": (pod({}, {"securityContext": {"runAsUser": 1337}}), ["runAsUser 1337"]),
+        "container overrides reserved pod ids": (
+            pod({"securityContext": {"runAsUser": 1001, "runAsGroup": 1001}},
+                {"securityContext": {"runAsUser": 1337, "runAsGroup": 1338}}), []),
+        "reserved fsGroup":(pod(user, {"securityContext": {"fsGroup": 1337}}), ["fsGroup 1337"]),
         "exec probe": (pod({**user, "readinessProbe": {"exec": {"command": ["true"]}}}), ["exec probes"]),
         "exec hook": (pod({**user, "lifecycle": {"preStop": {"exec": {"command": ["true"]}}}}), ["exec lifecycle hook"]),
         "terminal": (pod({**user, "tty": True}), ["tty: true"]),
@@ -230,7 +234,8 @@ def check_telemetry_collector() -> None:
     pods = {item["metadata"]["name"]: item["spec"]["template"]["spec"] for item in documents
             if item["kind"] in {"Deployment", "StatefulSet"}}
     # The collector and (stateless, #223) the gateway are the only pods with
-    # an exit; each exit is a hostAliases address and its one ipBlock.
+    # an exit; each exit is a hostAliases address and its one ipBlock. The
+    # CDS rule on TCP 8443 is the only other ipBlock.
     exits = {name for name, pod in pods.items() if pod.get("hostAliases")}
     assert "telemetry-collector" in exits and exits <= {"telemetry-collector", "gateway"}, exits
     collector = pods["telemetry-collector"]
@@ -247,7 +252,8 @@ def check_telemetry_collector() -> None:
                        for container in pod["containers"] for mount in container.get("volumeMounts", []))
     policies = {item["metadata"]["name"]: item for item in documents if item["kind"] == "NetworkPolicy"}
     blocks = [peer["ipBlock"]["cidr"] for policy in policies.values()
-              for rule in policy["spec"].get("egress", []) for peer in rule.get("to", []) if "ipBlock" in peer]
+              for rule in policy["spec"].get("egress", []) if {"protocol": "TCP", "port": 8443} not in rule.get("ports", [])
+              for peer in rule.get("to", []) if "ipBlock" in peer]
     addresses = {alias["ip"] + "/32" for name in exits for alias in pods[name]["hostAliases"]}
     assert sorted(blocks) == sorted(addresses) and "203.0.113.7/32" in blocks, blocks
 

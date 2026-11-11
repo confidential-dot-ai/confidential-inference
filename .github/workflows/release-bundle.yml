@@ -272,6 +272,7 @@ jobs:
             dist/image-publication-manifest.json
             dist/allowlist.json
             dist/release-values.yaml
+            dist/cds-manifest.json
             dist/profile-values-*.yaml
             dist/*.tgz
           if-no-files-found: error
@@ -382,6 +383,7 @@ jobs:
             "dist/image-publication-manifest.json#Image publication evidence" \
             "dist/allowlist.json#c8s allowlist" \
             "dist/release-values.yaml#Release image values" \
+            "dist/cds-manifest.json#CDS image manifest" \
             "${extra_assets[@]}"
 
       # The target.env pins of an unsigned build (internal docs/runbooks/deploy.md).

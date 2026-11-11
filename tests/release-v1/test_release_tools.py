@@ -805,6 +805,11 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(staging_allowlist(Path("/tmp/c8s")), STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n"))
         self.assertEqual(calls, [Path("/tmp/c8s")])
 
+    def test_the_release_carries_the_cds_manifest_it_binds(self):
+        files = build_staging(publication(published_release_images()))
+        manifest = json.loads(files["release-bundle.json"])
+        self.assertEqual(MAN.sha256(files["cds-manifest.json"]), manifest["cdsImage"]["manifestSha256"])
+
     def test_staging_manifest_uses_the_staging_profile(self):
         files = build_staging(publication(published_release_images()))
         manifest = json.loads(files["release-bundle.json"])

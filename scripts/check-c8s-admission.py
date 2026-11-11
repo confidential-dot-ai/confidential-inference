@@ -158,33 +158,36 @@ def privilege_problems(spec: dict, container: dict) -> list[str]:
     for capability in (security.get("capabilities") or {}).get("add", []):
         if capability.upper() in UNDECLARABLE_CAPABILITIES:
             found.append(f"adds capability {capability}, which no allowlist entry may declare")
-    if run_as_user(spec, container) == 0:
+    if effective(spec, container, "runAsUser") == 0:
         found.append("has runAsUser: 0; a C8s worker refuses a root container")
     return found
 
 
-def run_as_user(spec: dict, container: dict) -> int | None:
-    user = (container.get("securityContext") or {}).get("runAsUser")
-    return user if user is not None else (spec.get("securityContext") or {}).get("runAsUser")
+def effective(spec: dict, container: dict, key: str) -> int | None:
+    """The container's value of a securityContext id field, which overrides the pod's."""
+    value = (container.get("securityContext") or {}).get(key)
+    return value if value is not None else (spec.get("securityContext") or {}).get(key)
 
 
 def runtime_refusals(name: str, spec: dict) -> list[str]:
-    """What the worker's runtime wrapper refuses that a pod spec states."""
+    """What the worker's runtime wrapper refuses that a pod spec states.
+
+    The wrapper checks each container's effective uid and gid, so a pod-level
+    runAsUser or runAsGroup counts only where a container does not override it.
+    """
     pod_security = spec.get("securityContext") or {}
-    found = [f"{name}: {key} {value} is reserved for a C8s platform role"
-             for key in ("runAsUser", "runAsGroup", "fsGroup")
-             if (value := pod_security.get(key)) in RESERVED_IDS]
+    found = [f"{name}: fsGroup {value} is reserved for a C8s platform role"
+             for value in [pod_security.get("fsGroup")] if value in RESERVED_IDS]
     found += [f"{name}: supplemental group {group} is reserved for a C8s platform role"
               for group in pod_security.get("supplementalGroups", []) if group in RESERVED_IDS]
     for container in spec.get("initContainers", []) + spec.get("containers", []):
         if container["name"] in INJECTED:
             continue
         where = f"{name} container {container['name']}"
-        security = container.get("securityContext") or {}
-        if run_as_user(spec, container) is None:
+        if effective(spec, container, "runAsUser") is None:
             found.append(f"{where}: sets no runAsUser; a C8s worker refuses a root container, so set a nonzero uid")
         found += [f"{where}: {key} {value} is reserved for a C8s platform role"
-                  for key in ("runAsUser", "runAsGroup") if (value := security.get(key)) in RESERVED_IDS]
+                  for key in ("runAsUser", "runAsGroup") if (value := effective(spec, container, key)) in RESERVED_IDS]
         for hook in ("postStart", "preStop"):
             if "exec" in container.get("lifecycle", {}).get(hook, {}):
                 found.append(f"{where}: exec lifecycle hook {hook} cannot run; a C8s worker starts no process in a running container")

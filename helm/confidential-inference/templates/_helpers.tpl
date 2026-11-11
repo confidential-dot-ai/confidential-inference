@@ -113,15 +113,14 @@ Recreate override drops the chart's rollingUpdate. */ -}}
 {{/* Egress to the CDS, which runs as its own VM outside the cluster. The C8s
 v0.99.29 pod ruleset admits this port only to C8s's own platform roles, such
 as the injected credential clients, but on any address outside the cluster
-ranges, and the clients attest the CDS they reach. c8s.cds.cidrs is the only
-rule that names the CDS address: without it this rule names no peer. */}}
+ranges, and the clients attest the CDS they reach. c8s.cds.cidrs names the
+CDS address; the schema refuses an empty list, which would open the port to
+every address. */}}
 {{- define "confidential-inference.cdsEgress" -}}
 - ports:
     - {protocol: TCP, port: {{ .Values.c8s.cds.port }}}
-  {{- with .Values.c8s.cds.cidrs }}
   to:
-    {{- range . }}
+    {{- range .Values.c8s.cds.cidrs }}
     - ipBlock: {cidr: {{ . | quote }}}
     {{- end }}
-  {{- end }}
 {{- end }}

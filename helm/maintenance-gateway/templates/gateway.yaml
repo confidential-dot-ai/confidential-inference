@@ -105,14 +105,13 @@ spec:
     # The injected credential client reaches the CDS, which runs as its own VM
     # outside the cluster. The C8s v0.99.29 pod ruleset admits this port only to
     # C8s's platform roles, but on any address outside the cluster ranges, and
-    # the client attests the CDS it reaches. cds.cidrs is the only rule that
-    # names the CDS address: without it this rule names no peer.
+    # the client attests the CDS it reaches. cds.cidrs names the CDS address;
+    # the schema refuses an empty list, which would open the port to every
+    # address.
     - ports:
         - protocol: TCP
           port: {{ .Values.cds.port }}
-      {{- with .Values.cds.cidrs }}
       to:
-        {{- range . }}
+        {{- range .Values.cds.cidrs }}
         - ipBlock: {cidr: {{ . | quote }}}
         {{- end }}
-      {{- end }}
