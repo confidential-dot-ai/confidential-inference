@@ -23,6 +23,33 @@ artifacts and behavior checks. Do not describe the old build path as unused.
 | `scripts/` and `.github/workflows/` | Run shared validation and publication logic. Consume engine publication evidence instead of rebuilding engine source after migration. |
 | `tests/` | API behavior, render validation, engine integration, confidentiality, and failure handling. Preserve tests of required behavior when builds move. |
 
+## Workload configuration supplied by a deployment
+
+The deployment repository supplies its installation values. It does not copy the
+worker/router implementation or bypass the framework chart with an unrelated
+C8s launch. Use the chart's existing configuration surface:
+
+| Existing chart input | Deployment selects | Framework supplies or checks |
+| --- | --- | --- |
+| `images.sglangWorker`, `images.sglangRouter` | Approved published engine/router digests | Release evidence, image configuration, startup compatibility, and policy binding. `images.sglang` is an existing fallback; do not invent a third component for it. |
+| `inference.model` | Model identity/revision, volume references, and required byte-verification inputs | Model loading and verification integration. |
+| `inference`, including `inference.pd` | Supported recipe, worker counts/roles, resources, GPU settings, and allowed engine arguments | Worker resources, connections, probes, and topology validation. |
+| `scheduling`, `router` | Placement and supported router settings | Router workloads, Services, and worker routing configuration. |
+| `telemetry` | Approved destination, credential references, and installation identity | Separate scrape targets and required privacy restrictions. |
+
+These are existing input groups, not evidence that every externally built image
+already fits them. The engine publisher must document commands, ports, mounts,
+probes, metrics, dependencies, and supported topology so the integration can be
+implemented against a fixed expectation. C8s executes admitted containers; it
+does not replace framework release verification or application integration tests.
+
+Container publication and GitHub Releases are separate mechanisms. A registry
+artifact can exist without a GitHub Release. Start artifact selection from
+publication and deployment records, trace each digest to its actual source and
+build evidence, and distinguish registry availability, observed deployment, and
+framework acceptance. None establishes the others by itself. The interface can
+be agreed before a compatible replacement artifact is selected.
+
 ## Current orchestration: preserve the dependencies before changing it
 
 The chart already orchestrates containers. Moving image builds must not create
