@@ -8,6 +8,7 @@
 !images/sglang/wait_for_model.py
 !images/sglang/harden_http.py
 !images/sglang/harden_media.py
+!images/sglang/harden_dist.py
 !images/sglang/fetch_model.py
 !images/sglang/simulator-upstream/**
 !images/sglang/patches/sglang-simulator-*.patch
