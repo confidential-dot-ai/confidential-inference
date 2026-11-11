@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Check rendered pod templates against the c8s admission webhook, offline.
+"""Check rendered pod templates against C8s worker admission, offline.
 
-    helm template ... | scripts/check-c8s-admission.py -
+    helm template ... | scripts/check-c8s-admission.py [--cds-port PORT] -
 
-The node's c8s webhook (C8s internal/webhook, pod_mutator.go and
-pod_probes.go at the pinned c8s release) refuses a pod of an injected
-namespace that
+A C8s worker's webhook (internal/webhook pod_mutator.go and pod_floor.go,
+internal/podmesh probes.go and floor.go, at the pinned C8s release) refuses a
+pod that
 
 - sets hostNetwork, hostPID, hostIPC or shareProcessNamespace;
 - names a container like an injected one (c8s-cert, c8s-mesh, ...);
@@ -14,18 +14,35 @@ namespace that
 - sets a credential path annotation the injector fixes;
 - has a probe the per-pod mesh cannot forward: tcpSocket or grpc, HTTP
   headers, HTTPS, a timeout over 5 s, a mesh port, a named port no port of
-  the container declares, a path that is not clean, or an HTTP lifecycle hook.
+  the container declares, a path that is not clean, or an HTTP lifecycle hook;
+- runs a container privileged, with allowPrivilegeEscalation: true, with an
+  added capability no allowlist entry may declare (ALL, NET_ADMIN, NET_RAW,
+  SETUID, SETGID), or with an explicit runAsUser: 0.
+
+The webhook's confidential-node selector check is left out: a measured worker
+configures no selector.
+
+The worker's runtime wrapper (internal/cmds/c8srunc, docs/node-exec-mode.md)
+then refuses what the webhook cannot see, and this script checks the parts a
+pod spec states:
+
+- an exec probe or an exec lifecycle hook, since no exec reaches a member pod;
+- a container whose user is not an explicit nonzero runAsUser, since root is
+  refused and the image's own user is not visible here;
+- a uid or gid reserved for a platform role (1337 to 1341).
 
 c8s has no offline command for these checks yet, so this script copies
 them. It also checks one deployment rule: a c8s workload (confidential.ai/cw)
-whose egress a NetworkPolicy restricts must be allowed TCP 8443, the port of
-the CDS VM outside the cluster, with no peer or an ipBlock peer.
+whose egress a NetworkPolicy restricts must be allowed TCP to the CDS port
+(8443 unless --cds-port says otherwise), with no peer or an ipBlock peer: the
+CDS runs as its own VM outside the cluster.
 
 It prints one line per refusal and exits 1 when there is any.
 """
 
 from __future__ import annotations
 
+import argparse
 import posixpath
 import re
 import sys
@@ -42,6 +59,8 @@ MESH_PORTS = {15001, 15006, 15021}
 MESH_PROBE_TIMEOUT = 5
 PROBE_PATH = re.compile(r"^(/[A-Za-z0-9\-._~]*)+$")
 CDS_PORT = 8443
+UNDECLARABLE_CAPABILITIES = {"ALL", "NET_ADMIN", "NET_RAW", "SETUID", "SETGID"}
+RESERVED_IDS = range(1337, 1342)
 POD_TEMPLATE_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job"}
 
 
@@ -120,6 +139,54 @@ def webhook_refusals(name: str, metadata: dict, spec: dict) -> list[str]:
         for kind in ("startupProbe", "readinessProbe", "livenessProbe"):
             if kind in container and (problem := probe_problem(container, container[kind])):
                 found.append(f"{where} {kind}: {problem}")
+        found += [f"{where}: {problem}" for problem in privilege_problems(spec, container)]
+    return found
+
+
+def privilege_problems(spec: dict, container: dict) -> list[str]:
+    """The webhook's privilege floor (podmesh.RefusePrivilegesAboveFloor, rejectRootContainers)."""
+    security = container.get("securityContext") or {}
+    found = []
+    if security.get("privileged"):
+        found.append("sets privileged: true")
+    if security.get("allowPrivilegeEscalation"):
+        found.append("sets allowPrivilegeEscalation: true")
+    for capability in (security.get("capabilities") or {}).get("add", []):
+        if capability.upper() in UNDECLARABLE_CAPABILITIES:
+            found.append(f"adds capability {capability}, which no allowlist entry may declare")
+    if run_as_user(spec, container) == 0:
+        found.append("has runAsUser: 0; a C8s worker refuses a root container")
+    return found
+
+
+def run_as_user(spec: dict, container: dict) -> int | None:
+    user = (container.get("securityContext") or {}).get("runAsUser")
+    return user if user is not None else (spec.get("securityContext") or {}).get("runAsUser")
+
+
+def runtime_refusals(name: str, spec: dict) -> list[str]:
+    """What the worker's runtime wrapper refuses that a pod spec states."""
+    pod_security = spec.get("securityContext") or {}
+    found = [f"{name}: {key} {value} is reserved for a C8s platform role"
+             for key in ("runAsUser", "runAsGroup", "fsGroup")
+             if (value := pod_security.get(key)) in RESERVED_IDS]
+    found += [f"{name}: supplemental group {group} is reserved for a C8s platform role"
+              for group in pod_security.get("supplementalGroups", []) if group in RESERVED_IDS]
+    for container in spec.get("initContainers", []) + spec.get("containers", []):
+        if container["name"] in INJECTED:
+            continue
+        where = f"{name} container {container['name']}"
+        security = container.get("securityContext") or {}
+        if run_as_user(spec, container) is None:
+            found.append(f"{where}: sets no runAsUser; a C8s worker refuses a root container, so set a nonzero uid")
+        found += [f"{where}: {key} {value} is reserved for a C8s platform role"
+                  for key in ("runAsUser", "runAsGroup") if (value := security.get(key)) in RESERVED_IDS]
+        for hook in ("postStart", "preStop"):
+            if "exec" in container.get("lifecycle", {}).get(hook, {}):
+                found.append(f"{where}: exec lifecycle hook {hook} cannot run; a C8s worker starts no process in a running container")
+        for kind in ("startupProbe", "readinessProbe", "livenessProbe"):
+            if "exec" in container.get(kind, {}):
+                found.append(f"{where} {kind}: exec probes cannot run; a C8s worker starts no process in a running container")
     return found
 
 
@@ -135,15 +202,15 @@ def selects(selector: dict, labels: dict) -> bool:
             and all(operators[e["operator"]](e) for e in selector.get("matchExpressions", [])))
 
 
-def allows_cds(rule: dict) -> bool:
+def allows_cds(rule: dict, cds_port: int) -> bool:
     ports = rule.get("ports")
-    port_ok = not ports or any(p.get("protocol", "TCP") == "TCP" and p.get("port") in (CDS_PORT, None)
+    port_ok = not ports or any(p.get("protocol", "TCP") == "TCP" and p.get("port") in (cds_port, None)
                                for p in ports)
     peers = rule.get("to")
     return port_ok and (not peers or any("ipBlock" in peer for peer in peers))
 
 
-def cds_egress_refusals(documents: list[dict]) -> list[str]:
+def cds_egress_refusals(documents: list[dict], cds_port: int) -> list[str]:
     policies = [d for d in documents if d.get("kind") == "NetworkPolicy"
                 and "Egress" in d["spec"].get("policyTypes", ["Egress"] if "egress" in d["spec"] else [])]
     found = []
@@ -151,23 +218,26 @@ def cds_egress_refusals(documents: list[dict]) -> list[str]:
         if "confidential.ai/cw" not in metadata.get("annotations", {}):
             continue
         selecting = [p for p in policies if selects(p["spec"].get("podSelector", {}), metadata.get("labels", {}))]
-        if selecting and not any(allows_cds(rule) for p in selecting for rule in p["spec"].get("egress", [])):
-            found.append(f"{name}: no NetworkPolicy allows egress to the CDS on TCP {CDS_PORT} "
+        if selecting and not any(allows_cds(rule, cds_port) for p in selecting for rule in p["spec"].get("egress", [])):
+            found.append(f"{name}: no NetworkPolicy allows egress to the CDS on TCP {cds_port} "
                          f"(egress restricted by {', '.join(p['metadata']['name'] for p in selecting)})")
     return found
 
 
-def refusals(documents: list[dict]) -> list[str]:
-    found = [line for name, metadata, spec in pods(documents) for line in webhook_refusals(name, metadata, spec)]
-    return found + cds_egress_refusals(documents)
+def refusals(documents: list[dict], cds_port: int = CDS_PORT) -> list[str]:
+    found = []
+    for name, metadata, spec in pods(documents):
+        found += webhook_refusals(name, metadata, spec) + runtime_refusals(name, spec)
+    return found + cds_egress_refusals(documents, cds_port)
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: check-c8s-admission.py <rendered.yaml|->", file=sys.stderr)
-        return 2
-    text = sys.stdin.read() if sys.argv[1] == "-" else Path(sys.argv[1]).read_text()
-    found = refusals([d for d in yaml.safe_load_all(text) if d])
+    parser = argparse.ArgumentParser(description="Check rendered pod templates against C8s worker admission.")
+    parser.add_argument("--cds-port", type=int, default=CDS_PORT, help="the port the CDS serves on (default %(default)s)")
+    parser.add_argument("rendered", help="rendered manifests, or - for standard input")
+    args = parser.parse_args()
+    text = sys.stdin.read() if args.rendered == "-" else Path(args.rendered).read_text()
+    found = refusals([d for d in yaml.safe_load_all(text) if d], args.cds_port)
     for line in found:
         print(line)
     return 1 if found else 0

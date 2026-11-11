@@ -170,28 +170,67 @@ def check_front_door_namespace() -> None:
 
 
 def check_c8s_admission() -> None:
-    """Every profile renders pods the c8s webhook admits (scripts/check-c8s-admission.py)."""
+    """Every profile renders pods C8s worker admission accepts (scripts/check-c8s-admission.py)."""
     admission = runpy.run_path(str(ROOT / "scripts/check-c8s-admission.py"))
     release = ("--namespace", "confidential-inference", "-f", "release/values.yaml",
                "-f", "tests/release-v1/fixtures/release-values.yaml",
                "--set", "attestationReceipts.releaseId=v0.14.18-staging")
-    for profile in ((), release, (*release, "-f", "release/staging/values.yaml"),
-                    ("--values", "tests/api/values-sglang.yaml")):
-        found = admission["refusals"](render(*profile))
-        assert found == [], (profile, found)
-    # The refusals of 2026-10-22 staging: a tcpSocket probe, the credential
-    # directory in an app container, a probe over the 5 s budget, no CDS egress.
-    pod = {"kind": "Pod", "metadata": {"name": "p", "annotations": {"confidential.ai/cw": "p"}, "labels": {"a": "b"}},
-           "spec": {"containers": [{"name": "app", "readinessProbe": {"tcpSocket": {"port": 1}},
-                                    "livenessProbe": {"httpGet": {"port": 8080, "path": "/health"}, "timeoutSeconds": 10},
-                                    "volumeMounts": [{"name": "certs", "mountPath": "/etc/c8s/certs"}]}]}}
+    manifest = '{"files":[]}\n'
+    pin = hashlib.sha256(manifest.encode()).hexdigest()
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml") as cache:
+        yaml.safe_dump({"inference": {"simulator": {"validateModelMount": True}, "model": {
+            "mountVerification": {"expectedFiles": {".model-lock-local-manifest.json": pin}},
+            "cache": {"enabled": True, "manifest": manifest}}}}, cache)
+        cache.flush()
+        for profile in ((), release, (*release, "-f", "release/staging/values.yaml"),
+                        ("--values", "tests/api/values-sglang.yaml"),
+                        ("--values", cache.name, "--set", "dcgmExporter.enabled=true",
+                         "--set", "nodeExporter.enabled=true", "--set", "c8s.cds.cidrs={198.51.100.4/32}")):
+            found = admission["refusals"](render(*profile))
+            assert found == [], (profile, found)
+
+    def pod(container: dict, spec: dict | None = None) -> dict:
+        return {"kind": "Pod", "metadata": {"name": "p", "annotations": {"confidential.ai/cw": "p"}},
+                "spec": {**(spec or {}), "containers": [{"name": "app", **container}]}}
+
+    user = {"securityContext": {"runAsUser": 1001}}
+    tests = {
+        # The refusals of 2026-10-22 staging.
+        "tcpSocket probe": (pod({**user, "readinessProbe": {"tcpSocket": {"port": 1}}}), ["tcpSocket"]),
+        "slow probe": (pod({**user, "livenessProbe": {"httpGet": {"port": 8080, "path": "/health"},
+                                                     "timeoutSeconds": 10}}), ["timeoutSeconds 10"]),
+        "credential mount": (pod({**user, "volumeMounts": [{"name": "certs", "mountPath": "/etc/c8s/certs"}]}),
+                             ["/etc/c8s/certs"]),
+        "privileged": (pod({"securityContext": {"runAsUser": 1001, "privileged": True}}), ["privileged: true"]),
+        "privilege escalation": (pod({"securityContext": {"runAsUser": 1001, "allowPrivilegeEscalation": True}}),
+                                 ["allowPrivilegeEscalation: true"]),
+        "undeclarable capability": (pod({"securityContext": {"runAsUser": 1001, "capabilities": {"add": ["net_raw"]}}}),
+                                    ["capability net_raw"]),
+        "declarable capability": (pod({"securityContext": {"runAsUser": 1001, "capabilities": {"add": ["SYS_ADMIN"]}}}),
+                                  []),
+        "container root": (pod({"securityContext": {"runAsUser": 0}}), ["runAsUser: 0"]),
+        "pod root": (pod({}, {"securityContext": {"runAsUser": 0}}), ["runAsUser: 0"]),
+        "container overrides pod root": (pod(user, {"securityContext": {"runAsUser": 0}}), []),
+        "no user": (pod({}), ["sets no runAsUser"]),
+        "reserved gid": (pod({"securityContext": {"runAsUser": 1001, "runAsGroup": 1338}}), ["runAsGroup 1338"]),
+        "reserved fsGroup": (pod(user, {"securityContext": {"fsGroup": 1337}}), ["fsGroup 1337"]),
+        "exec probe": (pod({**user, "readinessProbe": {"exec": {"command": ["true"]}}}), ["exec probes"]),
+        "exec hook": (pod({**user, "lifecycle": {"preStop": {"exec": {"command": ["true"]}}}}), ["exec lifecycle hook"]),
+    }
+    for name, (document, expected) in tests.items():
+        found = admission["refusals"]([document])
+        assert len(found) == len(expected) and all(want in line for want, line in zip(expected, found)), (name, found)
+
     deny = {"kind": "NetworkPolicy", "metadata": {"name": "deny"},
             "spec": {"podSelector": {}, "policyTypes": ["Egress"], "egress": [{"ports": [{"port": 443}]}]}}
-    found = admission["refusals"]([pod, deny])
-    assert len(found) == 4, found
-    for expected, line in zip(("/etc/c8s/certs", "tcpSocket", "timeoutSeconds 10", "TCP 8443"), found):
-        assert expected in line, (expected, line)
-
+    cds = {"kind": "NetworkPolicy", "metadata": {"name": "cds"},
+           "spec": {"podSelector": {}, "policyTypes": ["Egress"], "egress": [
+               {"to": [{"ipBlock": {"cidr": "198.51.100.4/32"}}], "ports": [{"protocol": "TCP", "port": 8443}]}]}}
+    restricted = pod(user)
+    found = admission["refusals"]([restricted, deny])
+    assert len(found) == 1 and "CDS on TCP 8443" in found[0], found
+    assert admission["refusals"]([restricted, deny, cds]) == []
+    assert len(admission["refusals"]([restricted, deny, cds], 9443)) == 1
 
 TELEMETRY = (
     "--set", "telemetry.enabled=true",
