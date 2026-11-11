@@ -6,7 +6,7 @@ holds manifest.json, which records the TDX measurements MRTD, RTMR1, and
 RTMR2 of the image. This script downloads that file through the digest
 chain that the profile specification pins, checks every digest, checks the
 measurements, and writes the exact bytes to node-manifest.json, and for a
-pinned CDS guest image to cds-manifest.json, in the layer that sets `c8s`
+CDS guest image to cds-manifest.json, in the layer that sets `c8s`
 (release/ unless a profile overrides c8s).
 
 Anyone can repeat the check: the SHA-256 of each file must equal the
@@ -57,16 +57,14 @@ CDS = ("cdsImage", "cdsManifestArtifact")
 
 
 def read_spec(spec: Any) -> dict[str, Any]:
-    """Check the pinned guest images: the node image always, the CDS guest image when the spec pins it."""
+    """Check the pinned node and CDS guest images."""
     c8s = spec.get("c8s") if isinstance(spec, dict) else None
     if not isinstance(c8s, dict) or not all(key in c8s for key in NODE):
         raise FetchError("the release specification has no c8s node image and manifest artifact")
     for image, artifact in (NODE, CDS):
-        if image not in c8s and artifact not in c8s:
-            continue
         pins = [c8s.get(key) for key in (image, artifact)]
         if not all(isinstance(pin, dict) for pin in pins):
-            raise FetchError(f"c8s pins {image} and {artifact} only together")
+            raise FetchError(f"the release specification pins {image} and {artifact}")
         reference = pins[0].get("reference")
         if not isinstance(reference, str) or "@" in reference or ":" in reference.rsplit("/", 1)[-1]:
             raise FetchError(f"c8s.{image}.reference must be a repository without tag or digest")
@@ -134,10 +132,9 @@ def main() -> int:
         profile = release_profiles.for_directory(args.release)
         spec = read_spec(release_profiles.read_spec(profile))
         data, record = fetch(spec)
-        files = [(args.output or release_profiles.node_manifest(profile), data)]
-        if CDS[0] in spec["c8s"]:
-            cds_data, record["cds"] = fetch(spec, CDS)
-            files.append((args.cds_output or release_profiles.cds_manifest(profile), cds_data))
+        cds_data, record["cds"] = fetch(spec, CDS)
+        files = [(args.output or release_profiles.node_manifest(profile), data),
+                 (args.cds_output or release_profiles.cds_manifest(profile), cds_data)]
         for path, content in files:
             if args.check:
                 if path.read_bytes() != content:

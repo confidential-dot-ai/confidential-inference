@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 import runpy
 import subprocess
@@ -116,18 +115,16 @@ def g7_violations(documents: list[dict], secret_reads: dict[str, list[str]]) -> 
 
 def check_model_cache() -> None:
     """The C8s v0.99.29 worker mounts the plain models disk read-only, so the chart refuses the plain cache."""
-    manifest = '{"files":[]}\n'
-    pin = hashlib.sha256(manifest.encode()).hexdigest()
-    with tempfile.NamedTemporaryFile("w", suffix=".yaml") as values:
-        yaml.safe_dump({"inference": {"simulator": {"validateModelMount": True}, "model": {
-            "mountVerification": {"expectedFiles": {".model-lock-local-manifest.json": pin}},
-            "cache": {"enabled": True, "manifest": manifest}}}}, values)
-        values.flush()
-        result = subprocess.run(["helm", "template", "example", str(CHART), *NEUTRAL_MODE, "--values", values.name],
+    for name, cache, error in (
+            ("enabled", {"enabled": True}, "inference.model.cache is unsupported"),
+            ("old cache setting", {"enabled": False, "hostPath": "/var/lib/models/model"}, "hostPath")):
+        result = subprocess.run(["helm", "template", "example", str(CHART), *NEUTRAL_MODE,
+                                 "--set-json", f"inference.model.cache={json.dumps(cache)}"],
                                 cwd=ROOT, text=True, capture_output=True, check=False)
-    assert result.returncode != 0 and "inference.model.cache is unsupported" in result.stderr, result.stderr
-    default = render()
-    assert not any(item["metadata"]["name"] in {"model-manifest", "inference-worker-model-download"} for item in default)
+        assert result.returncode != 0 and error in result.stderr, (name, result.stderr)
+    templates = "".join(path.read_text() for path in (CHART / "templates").glob("*.yaml"))
+    for stale in ("fetch-model", "model-manifest", "model-download", "plain-cache", "cache.hostPath"):
+        assert stale not in templates, stale
 
 
 def check_front_door_namespace() -> None:
@@ -183,6 +180,11 @@ def check_c8s_admission() -> None:
         "reserved fsGroup": (pod(user, {"securityContext": {"fsGroup": 1337}}), ["fsGroup 1337"]),
         "exec probe": (pod({**user, "readinessProbe": {"exec": {"command": ["true"]}}}), ["exec probes"]),
         "exec hook": (pod({**user, "lifecycle": {"preStop": {"exec": {"command": ["true"]}}}}), ["exec lifecycle hook"]),
+        "terminal": (pod({**user, "tty": True}), ["tty: true"]),
+        "stdin": (pod({**user, "stdin": True, "stdinOnce": True}), ["stdin: true"]),
+        "init container stdin": (pod(user, {"initContainers": [{"name": "init", **user, "stdin": True}]}),
+                                 ["container init: sets stdin: true"]),
+        "terminal and stdin off": (pod({**user, "tty": False, "stdin": False}), []),
     }
     for name, (document, expected) in tests.items():
         found = admission["refusals"]([document])

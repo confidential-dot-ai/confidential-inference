@@ -27,6 +27,8 @@ then refuses what the webhook cannot see, and this script checks the parts a
 pod spec states:
 
 - an exec probe or an exec lifecycle hook, since no exec reaches a member pod;
+- a container with tty or stdin, since the wrapper refuses a terminal and a
+  container stdin;
 - a container whose user is not an explicit nonzero runAsUser, since root is
   refused and the image's own user is not visible here;
 - a uid or gid reserved for a platform role (1337 to 1341).
@@ -133,6 +135,8 @@ def webhook_refusals(name: str, metadata: dict, spec: dict) -> list[str]:
             path = mount.get("mountPath", "")
             if mount["name"] == CERT_VOLUME or path == CERT_DIR or path.startswith(CERT_DIR + "/"):
                 found.append(f"{where}: mounts {mount['name']} at {path}; the pod's credentials are for c8s only")
+        found += [f"{where}: sets {key}: true; a C8s worker refuses a terminal and container stdin"
+                  for key in ("tty", "stdin") if container.get(key)]
         for hook in ("postStart", "preStop"):
             if "httpGet" in container.get("lifecycle", {}).get(hook, {}):
                 found.append(f"{where}: HTTP lifecycle hook {hook} cannot be forwarded")

@@ -209,6 +209,11 @@ Hand traffic over only when all of these hold:
 
 - The CDS VM runs the `cdsImage` that the release manifest pins, and its
   `cds-pin.json` launch digest comes from the release's `cds-manifest.json`.
+- Every client that verifies the deployment pins the worker's launch file
+  besides the release's node image, as
+  [verification.md](../docs/verification.md#releases-on-c8s-v09929) describes.
+  Worker admission alone does not show that clients enforce the CDS image and
+  configuration.
 - The operator keys in its `cds-config.yaml` are the deployment's operator
   keys.
 - Every application secret is written to the new CDS.
@@ -228,7 +233,17 @@ Accept the new deployment only after these checks pass on it:
    is refused.
 4. A worker launched with a launch file that the CDS configuration does not
    pin is refused admission and gets no credentials.
-5. The public attestation route verifies against the new release manifest.
+5. The public attestation route verifies against the new release manifest
+   and the RTMR[3] seed of the deployment's `worker.yaml`.
+6. The same check with the seed of another `worker.yaml`, for example one
+   that names another CDS configuration, fails.
+
+Releases on C8s v0.99.0 and later carry `cdsImage`, which the release
+manifest schema of earlier source commits refuses. Verify such a release with
+`scripts/verify-release-bundle-signature.py` and
+`api/release-manifest.schema.json` from its own source commit or a later one.
+Move every verifier, including deployment readiness checks, to that source
+before you publish the release.
 
 Roll back to the previous release and cluster when any check fails before
 handover. After handover, rolling back needs the old CDS still running with

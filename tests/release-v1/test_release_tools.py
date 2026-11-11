@@ -694,14 +694,14 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(MAN.ManifestError, 'c8s.release'):
                 MAN.validate_spec({**spec, 'c8s': {**spec['c8s'], 'release': version}})
 
-    def test_the_cds_guest_image_pin_needs_its_manifest_artifact(self):
+    def test_the_spec_pins_the_cds_guest_image_and_its_manifest_artifact(self):
         spec = copy.deepcopy(MAN.read_spec(PRODUCTION))
         cds = {"reference": "ghcr.io/confidential-dot-ai/guests/cds", "tag": "v0.99.29-kubevirt", "digest": "sha256:" + "1" * 64}
         artifact = {"tag": "v0.99.29", "digest": "sha256:" + "2" * 64, "manifestJson": "sha256:" + "3" * 64}
         spec["c8s"].update(cdsImage=cds, cdsManifestArtifact=artifact)
         MAN.validate_spec(spec)
         for key in ("cdsImage", "cdsManifestArtifact"):
-            with self.subTest(missing=key), self.assertRaisesRegex(MAN.ManifestError, "go together"):
+            with self.subTest(missing=key), self.assertRaisesRegex(MAN.ManifestError, f"c8s.{key} needs"):
                 MAN.validate_spec({**spec, "c8s": {k: v for k, v in spec["c8s"].items() if k != key}})
         with self.assertRaisesRegex(MAN.ManifestError, "cdsManifestArtifact needs"):
             MAN.validate_spec({**spec, "c8s": {**spec["c8s"], "cdsManifestArtifact": {**artifact, "manifestJson": "x"}}})
@@ -1219,15 +1219,16 @@ class ManifestTests(unittest.TestCase):
                 NODE.check_measurements(json.loads(data))
                 self.assertEqual(MAN.cds_image(PROFILES.cds_manifest(profile), spec)["manifestSha256"], MAN.sha256(data))
 
-    def test_fetch_reads_the_cds_pins_only_with_the_node_pins_and_whole(self):
+    def test_fetch_needs_the_node_and_the_cds_pins_whole(self):
         node = {"nodeImage": {"reference": "ghcr.io/example/worker"},
                 "nodeManifestArtifact": {"digest": "sha256:" + "1" * 64}}
         cds = {"cdsImage": {"reference": "ghcr.io/example/cds"}, "cdsManifestArtifact": {"digest": "sha256:" + "2" * 64}}
         cases = {
             "node and CDS": ({**node, **cds}, None),
-            "node only": (node, None),
+            "node only": (node, "pins cdsImage and cdsManifestArtifact"),
             "CDS image only": ({"cdsImage": cds["cdsImage"]}, "no c8s node image"),
-            "node and the CDS image without its artifact": ({**node, "cdsImage": cds["cdsImage"]}, "only together"),
+            "node and the CDS image without its artifact": ({**node, "cdsImage": cds["cdsImage"]},
+                                                            "pins cdsImage and cdsManifestArtifact"),
             "node without its artifact": ({"nodeImage": node["nodeImage"]}, "no c8s node image"),
             "CDS image with a tag": ({**node, **cds, "cdsImage": {"reference": "ghcr.io/example/cds:v1"}},
                                      "cdsImage.reference"),
@@ -1280,6 +1281,23 @@ class ManifestTests(unittest.TestCase):
         moved = copy.deepcopy(signed)
         moved["sourceLock"]["path"] = MAN.SOURCE_LOCK.relative_to(ROOT).as_posix()
         MAN.release_signature.validate_release_schema(moved)
+
+    def test_a_standalone_cds_release_must_name_its_cds_image(self):
+        schema = json.loads((ROOT / "api/release-manifest.schema.json").read_text())
+        rules = {"allOf": [rule for rule in schema["allOf"] if "cdsImage" in json.dumps(rule)]}
+        cds = {"reference": "ghcr.io/confidential-dot-ai/guests/cds@sha256:" + "1" * 64, "manifestSha256": "sha256:" + "2" * 64}
+        for release, required in {
+            "v0.9.0": False, "v0.98.9": False, "v0.98.10-0.20261023005616-90bd65abd955": False, "v0.80.10": False,
+            "v0.99.0": True, "v0.99.29": True, "v0.99.29-beta.1": True, "v0.99.30-0.20261023005616-90bd65abd955": True,
+            "v0.100.0": True, "v1.0.0": True,
+        }.items():
+            with self.subTest(release=release):
+                jsonschema.validate({"c8s": {"release": release}, "cdsImage": cds}, rules)
+                if required:
+                    with self.assertRaises(jsonschema.ValidationError):
+                        jsonschema.validate({"c8s": {"release": release}}, rules)
+                else:
+                    jsonschema.validate({"c8s": {"release": release}}, rules)
 
     def test_a_dev_c8s_build_is_for_staging_only(self):
         schema = json.loads((ROOT / "api/release-manifest.schema.json").read_text())

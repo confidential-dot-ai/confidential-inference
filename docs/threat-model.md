@@ -37,6 +37,10 @@ application data. The internal request path must remain protected by the
 reviewed C8s and application controls. Front-door verification alone is not a
 receipt from every serving worker.
 
+With C8s v0.99.29, the image tuple does not identify the CDS. Pin the RTMR[3]
+seed of the worker's reviewed launch file too: the launch file selects the CDS
+image and configuration that admit workers and issue their identities.
+
 ## Policy and configuration protection
 
 Production retains an operator-managed allowlist and Kubernetes update rights.

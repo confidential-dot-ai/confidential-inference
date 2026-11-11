@@ -48,6 +48,41 @@ reports a difference. Require `Verified`, `tdx tcb status UpToDate`, and an
 check, so read its output. Only then start the proxy and send requests as in
 step 4 below.
 
+## Releases on C8s v0.99.29
+
+No published profile covers a release on C8s v0.99.29 yet, and the v0.16.2
+profile does not apply to one. The release's MRTD, RTMR1, and RTMR2 pin the
+worker image only. The worker's launch file, `worker.yaml`, selects the CDS
+image and configuration, the CDS address, and the Kubernetes API server. Pin
+that file too: without it, an endpoint that runs the pinned worker image under
+another CDS passes.
+
+To pin the launch file of a deployment:
+
+1. Get the deployment's `worker.yaml` and `cds-config.yaml` from its operator.
+2. Review `worker.yaml`. Each `cds.measurements` entry must carry the MRTD,
+   RTMR1, and RTMR2 of the release's `cds-manifest.json`, and bind the exact
+   bytes of `cds-config.yaml` (`launch_file`, or its digest as
+   `launch_file_digest`).
+3. Review the operator keys and node ranges in `cds-config.yaml`.
+4. Compute the worker's RTMR[3] seed, `SHA-384(0x00 * 48 ‖ SHA-384(worker.yaml))`:
+
+   ```sh
+   python3 -c 'import hashlib, sys; print(hashlib.sha384(bytes(48) + hashlib.sha384(open(sys.argv[1], "rb").read()).digest()).hexdigest())' worker.yaml
+   ```
+
+5. Pass the seed as `--expected-rtmr3`, beside `--image-manifest
+   release-bundle.json`, in place of the operator-key seed of the v0.16.2
+   profile.
+6. Repeat the check with the seed of a `worker.yaml` that differs by one byte.
+   It must fail.
+
+The worker extends RTMR[3] from this seed with each allowlist policy it
+applies (C8s `docs/measurements.md`), and TEErminator replays that history as
+before. TEErminator `v0.0.4` has not yet been run against a v0.99.29 endpoint.
+`c8s verify` of the pinned C8s release takes the same pins as
+`--image-manifest` and `--rtmr 3=<SEED>`.
+
 ## v0.15.15 example
 
 The following example retains the release and operator key used for
