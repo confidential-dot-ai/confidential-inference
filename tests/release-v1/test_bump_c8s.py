@@ -440,6 +440,14 @@ class BetaCompatibilityTests(unittest.TestCase):
         statement['allowlistSeeds'] = {}
         self.assertEqual(release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)['releaseSignature'],
                          'verified')
+        del statement['allowlistSeeds']
+        statement['chart'] = 'ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:' + 'c' * 64
+        self.assertEqual(release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)['releaseSignature'],
+                         'verified')
+        statement['chart'] = 'ghcr.io/confidential-dot-ai/charts/c8s-cloud:0.99.29'
+        with self.assertRaisesRegex(release.ReleaseError, 'no digest-pinned C8s chart'):
+            release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)
+        del statement['chart']
         statement['extra'] = True
         with self.assertRaisesRegex(release.ReleaseError, 'does not name'):
             release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)
