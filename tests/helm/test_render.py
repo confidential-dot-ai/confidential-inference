@@ -189,7 +189,7 @@ def check_c8s_admission() -> None:
             "spec": {"podSelector": {}, "policyTypes": ["Egress"], "egress": [{"ports": [{"port": 443}]}]}}
     found = admission["refusals"]([pod, deny])
     assert len(found) == 4, found
-    for expected, line in zip(("/etc/c8s/certs", "tcpSocket", "timeoutSeconds 10", "TCP 30808"), found):
+    for expected, line in zip(("/etc/c8s/certs", "tcpSocket", "timeoutSeconds 10", "TCP 8443"), found):
         assert expected in line, (expected, line)
 
 
@@ -448,7 +448,7 @@ def main() -> None:
     local_documents = render(
         "--set", "attestationReceipts.evidenceBaseUrl=https://api.example.test",
         "--set", "attestationReceipts.evidenceConnectHost=c8s-router.c8s-system.svc.cluster.local",
-        "--set", "attestationReceipts.cds.url=https://c8s-cds.c8s-system.svc:8443",
+        "--set", "attestationReceipts.cds.url=https://198.51.100.4:8443",
     )
     assert Gateway(local_documents).deployment == Gateway(render()).deployment
     assert gateway.container["readinessProbe"]["httpGet"]["path"] == "/ready"

@@ -109,3 +109,17 @@ Recreate override drops the chart's rollingUpdate. */ -}}
 {{ end -}}
 {{ end -}}
 {{- end -}}
+
+{{/* Egress to the CDS, which runs as its own VM outside the cluster. Without
+CIDRs the rule names no peer: the node's pod ruleset admits only the CDS
+address the node was installed with. */}}
+{{- define "confidential-inference.cdsEgress" -}}
+- ports:
+    - {protocol: TCP, port: {{ .Values.c8s.cds.port }}}
+  {{- with .Values.c8s.cds.cidrs }}
+  to:
+    {{- range . }}
+    - ipBlock: {cidr: {{ . | quote }}}
+    {{- end }}
+  {{- end }}
+{{- end }}

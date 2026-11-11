@@ -18,8 +18,8 @@ namespace that
 
 c8s has no offline command for these checks yet, so this script copies
 them. It also checks one deployment rule: a c8s workload (confidential.ai/cw)
-whose egress a NetworkPolicy restricts must be allowed TCP 30808, the node's
-CDS NodePort, to any address.
+whose egress a NetworkPolicy restricts must be allowed TCP 8443, the port of
+the CDS VM outside the cluster, with no peer or an ipBlock peer.
 
 It prints one line per refusal and exits 1 when there is any.
 """
@@ -41,7 +41,7 @@ CREDENTIAL_ANNOTATIONS = tuple(f"confidential.ai/c8s-{name}" for name in (
 MESH_PORTS = {15001, 15006, 15021}
 MESH_PROBE_TIMEOUT = 5
 PROBE_PATH = re.compile(r"^(/[A-Za-z0-9\-._~]*)+$")
-CDS_PORT = 30808
+CDS_PORT = 8443
 POD_TEMPLATE_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job"}
 
 
@@ -152,7 +152,7 @@ def cds_egress_refusals(documents: list[dict]) -> list[str]:
             continue
         selecting = [p for p in policies if selects(p["spec"].get("podSelector", {}), metadata.get("labels", {}))]
         if selecting and not any(allows_cds(rule) for p in selecting for rule in p["spec"].get("egress", [])):
-            found.append(f"{name}: no NetworkPolicy allows egress to the CDS NodePort TCP {CDS_PORT} "
+            found.append(f"{name}: no NetworkPolicy allows egress to the CDS on TCP {CDS_PORT} "
                          f"(egress restricted by {', '.join(p['metadata']['name'] for p in selecting)})")
     return found
 

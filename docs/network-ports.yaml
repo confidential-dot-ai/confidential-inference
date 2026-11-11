@@ -34,25 +34,31 @@ ports:
     protocol: http
     cvmPort: 8400
     direction: inbound
-    access: gateway-and-host-operator
+    access: node-loopback-only
   - name: c8s-mesh-outbound
     scope: c8s-node
     protocol: tcp
     cvmPort: 15001
     direction: inbound
     access: confidential-workloads-on-the-node
-  - name: c8s-credential-release
+  - name: c8s-admission-inventory
     scope: c8s-node
+    protocol: tcp-ratls
+    cvmPort: 1019
+    direction: inbound
+    access: cds-only
+  - name: c8s-credential-release
+    scope: cds-vm
     protocol: tcp-ratls
     cvmPort: 8443
     direction: inbound
-    access: physical-host-operator-only
-  - name: c8s-credential-release-bootstrap
-    scope: control-plane-local
+    access: confidential-nodes-member-pods-and-operator
+  - name: c8s-cds-replication
+    scope: cds-vm
     protocol: tcp-ratls
     cvmPort: 8444
     direction: inbound
-    access: physical-host-operator-only
+    access: cds-replicas-only
   - name: inner-kubernetes-api
     scope: c8s-node
     protocol: tcp-tls
@@ -129,7 +135,10 @@ rules:
   - The c8s front door may also reach the gateway mesh TLS listener on pod port 9444.
   - An external admin service must not open an inbound metrics route to the CVM.
   - The metrics collector must send remote-write data outbound through HTTPS.
-  - Each reported workload receipt sidecar must reach the node attestation service on TCP port 8400.
+  - The node attestation service binds TCP port 8400 on node loopback only. Pods reach it through the node's attestation socket.
+  - The CDS runs as its own VM outside the cluster. Each confidential node and its member pods must reach it on TCP port 8443, or on the port the CDS VM was started on.
+  - The CDS must reach every confidential node at the node's own address on TCP port 1019, without NAT.
+  - CDS replicas reach each other on TCP port 8444 only in a highly available CDS.
   - The outer forwarder must overwrite X-Forwarded-For with one client address.
   - The gateway must trust X-Forwarded-For only from a configured outer proxy CIDR.
   - The gateway must reject Forwarded, X-Real-IP, and untrusted X-Forwarded-For headers.

@@ -24,8 +24,6 @@ gateway:
 attestationReceipts:
   evidenceBaseUrl: https://api.confidential.ai
   evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
-  cds:
-    url: https://10.45.250.26:30808
 kubeStateMetrics:
   enabled: false
 inference:

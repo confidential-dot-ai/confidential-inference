@@ -102,14 +102,15 @@ spec:
       ports:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: c8s-system
-      ports:
-        - protocol: TCP
-          port: 8443
-    # The c8s certificate client verifies the local node through its private API.
+    # The injected credential client reaches the CDS, which runs as its own VM
+    # outside the cluster. Without CIDRs the rule names no peer: the node's pod
+    # ruleset admits only the CDS address the node was installed with.
     - ports:
         - protocol: TCP
-          port: 8400
+          port: {{ .Values.cds.port }}
+      {{- with .Values.cds.cidrs }}
+      to:
+        {{- range . }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      {{- end }}
