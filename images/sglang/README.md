@@ -21,6 +21,18 @@ routes. The model gate verifies the pinned repository, revision, metadata,
 and model bytes before it starts the worker. These are serving and trust
 controls, not changes to inference computation.
 
+The listener policy (`harden_dist.py`) keeps the worker's internal
+distributed listeners on loopback. The `torch.distributed` store, the gloo
+process groups, and NCCL bootstrap bind `127.0.0.1` regardless of `--host`
+or the pod environment. Tensor-parallel ranks on one node rendezvous
+there. The launcher refuses multi-node runs, `--dist-init-addr`,
+`SGLANG_DISTRIBUTED_INIT_METHOD_OVERRIDE`, `--gated-launch-port`, elastic
+EP, the NIXL all-to-all backend, weight cache daemons, and transfer-engine
+weight seeding. Each of these opens another rendezvous or control listener.
+Only the declared ports remain reachable from the pod network: the HTTP
+port, the GPU metrics port, and the prefill bootstrap port in
+prefill/decode mode.
+
 For the plain deployment, `--private-server-output` discards native server
 stdout and stderr. It exports only a fixed worker-exit event with a numeric
 code. This prevents request text and arbitrary exception text from entering
