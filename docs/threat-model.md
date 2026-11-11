@@ -17,8 +17,11 @@ the caller's own key value, or prompt text from it.
 
 Trust the CPU and GPU hardware security mechanisms, their vendor attestation
 chains, the accepted measured node image, and the software and policies that
-you review. Host management and Kubernetes declarations are not proof of
-approved execution. Measured admission and connection controls must enforce
+you review. With C8s v0.99.29, CDS runs as its own confidential VM outside
+the cluster, from the CDS guest image that the release pins. Its launch binds
+the exact bytes of its per-deployment `cds-config.yaml`, and the worker's
+launch file pins that CDS image and configuration. Host management and
+Kubernetes declarations are not proof of approved execution. Measured admission and connection controls must enforce
 those declarations.
 
 Release-signing and policy-update authority remain part of the review.
@@ -67,7 +70,9 @@ verified root filesystem. Pin MRTD, RTMR1, and RTMR2 together; MRTD alone does
 not identify the full TDX guest image.
 
 The accepted GPU node image uses a measured confidential-computing boot gate.
-Every passed-through GPU must satisfy that gate before RKE2 starts. Failure
+Every passed-through GPU must satisfy that gate before the node's Kubernetes
+runtime starts: containerd on the C8s v0.99.29 worker, RKE2 on the node
+images of earlier releases. Failure
 blocks node admission and powers off the node. This is the supported GPU
 verification contract, not a public raw-GPU-evidence collection.
 
@@ -111,6 +116,12 @@ to the guards and cluster-wide permissions. Credential release waits for its
 measured readiness checks before serving credentials. Review these controls
 at the C8s commit in your selected release; group names alone grant no rights.
 
+With C8s v0.99.29, the Kubernetes control plane runs outside every TEE and
+issues the Kubernetes credentials; a measured node releases none. Treat the
+control plane as untrusted. The measured worker's kubelet serves no exec,
+attach, or port-forward handler, and its runtime wrapper `c8s-runc` refuses
+the `exec` verb.
+
 The operator role can read pod logs, Kubernetes Secrets, and ConfigMaps.
 Protect request data and confidential keys from those readable resources.
 The gateway's admin credentials are Kubernetes Secrets: the admin signer
@@ -131,10 +142,15 @@ CDS application secrets are distinct from Kubernetes Secrets. Launch checks
 do not establish that approved application code never writes sensitive data
 to a log or exposes it through an API.
 
-RTMR3 binds launch configuration, including the operator public key. It does
-not define Kubernetes permissions. Those permissions and guards are part of
-the measured node implementation. Retaining a launch-bound operator key does
-not require issuing an unrestricted administrator credential.
+RTMR3 binds launch configuration. It does not define Kubernetes permissions.
+In releases before C8s v0.99.29, the launch configuration includes the
+operator public key, and the permissions and guards are part of the measured
+node implementation. Retaining a launch-bound operator key does not require
+issuing an unrestricted administrator credential. With C8s v0.99.29, RTMR3
+starts from the
+digest of the worker's launch file. A measured worker takes the operator keys
+from the CDS configuration that this file pins, and the guards are the
+measured worker's admission and runtime controls.
 
 ## Verification limits
 

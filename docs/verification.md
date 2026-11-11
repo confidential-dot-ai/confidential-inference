@@ -205,7 +205,9 @@ path. An allowlisted image with a permissive entry deserves separate review.
 ## GPU verification
 
 The pinned node image runs a measured GPU confidential-computing boot gate.
-It verifies the passed-through NVIDIA GPUs before RKE2 can start. A failed
+It verifies the passed-through NVIDIA GPUs before the node's Kubernetes
+runtime can start: containerd on the C8s v0.99.29 worker, RKE2 on the node
+images of earlier releases. A failed
 check prevents node admission and powers off the node. Review the gate,
 systemd dependency, and source lock at the release's C8s commit.
 
