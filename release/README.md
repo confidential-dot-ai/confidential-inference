@@ -218,9 +218,9 @@ generator fails on any other finding, and on a listed finding that no longer
 appears. Production has no such file, so it accepts no finding.
 
 The allowlist pins the `kubernetes` Service address `10.53.0.1`. With C8s
-v0.99.29 the worker's launch file sets the Service range
-(`kubernetes.serviceCIDR`), so every deployment of a release must use
-`10.53.0.0/16`.
+v0.99.29 the control plane runs outside the TEE and the worker's launch file
+sets the Service range (`kubernetes.serviceCIDR`). Both must give the
+`kubernetes` Service `10.53.0.1`; the charts assume `10.53.0.0/16`.
 
 ## Versions
 

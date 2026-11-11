@@ -102,8 +102,8 @@ key. A client can choose additional pins and must understand their scope.
 
 ## Restricted Kubernetes credentials
 
-The C8s operator authentication key authorizes credential release and policy
-updates. The `c8s-operator` workload is a different component. Do not confuse
+The C8s operator authentication key authorizes policy updates and, before
+C8s v0.99.29, credential release. The `c8s-operator` workload is a different component. Do not confuse
 CDS policy-update authority with Kubernetes permissions.
 
 The C8s node image pinned by the `v0.14.29` example issues Kubernetes user
