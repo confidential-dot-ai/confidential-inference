@@ -3,7 +3,10 @@
 
 Media is accepted only as bytes, a data: URL or raw base64. The URL download
 and local-file branches are replaced, not guarded, and Pillow opens only
-IMAGE_FORMATS. Source hashes make upstream changes require another review.
+IMAGE_FORMATS. FFmpeg-backed decoders receive only bytes that start with a
+known binary container and carry no playlist or manifest marker, so FFmpeg
+never selects a demuxer that opens nested URLs or files. Source hashes make
+upstream changes require another review.
 """
 import argparse
 import ast
@@ -22,6 +25,11 @@ SOURCE_HASHES = {
     "srt/multimodal/processors/inkling.py": "d23c1d67fbd643d5be2390c2a1340a1d21bb64d3c3624b061ef8f01fda041fd2",
     "srt/multimodal/inkling/image_processing.py": "bf11425a3eda1180ef585c0fd0b6461063c608ebe93540bac3a73273872af6bf",
     "srt/multimodal/inkling/feature_extraction.py": "d1f14c50d2a0dddbeb2249c00b6fc1c118b05f65477a9000608d24b36939cd2e",
+    "srt/multimodal/audio_from_video.py": "caaad30b5339ea5508a5a0a1ac688520b24a1d989f106a04d66d2b5cbfaebe77",
+    "srt/multimodal/processors/transformers_auto.py": "de0318f23029f1250b70854fab6c4932f1b56bbb031f5fdac77e49d041fb8299",
+    "srt/multimodal/processors/bailing_mm.py": "f3cfb35098e433bbcc1bf5442c768a8c6f2877f8cbc79d415c898e39200a23d6",
+    "srt/multimodal/processors/dots_note_omni_video_core/preprocess.py":
+        "63c70d1cf7ea1e73a1070934c01a07bc59898dcbf1a2c49554b4273747336143",
 }
 
 INLINE_ONLY = "Media URLs and paths are not supported; send media inline as a data: URL or base64"
@@ -85,6 +93,24 @@ def inline_media_bytes(media: Union[str, bytes]) -> bytes:
         raise ValueError(f"{INLINE_ONLY}: {{error}}") from error
 
 
+_MEDIA_CONTAINER = re.compile(
+    rb"RIFF....(?:WAVE|AVI )|....ftyp|\\x1a\\x45\\xdf\\xa3|fLaC|OggS|ID3|\\xff[\\xe0-\\xff]|#!AMR",
+    re.DOTALL,
+)
+# Markers of FFmpeg demuxers that open nested URLs or files; DASH and IMF probe the whole buffer.
+_MEDIA_MANIFEST = re.compile(
+    rb"<mpd|<compositionplaylist|#extm3u|ffconcat version|c=in ip", re.IGNORECASE
+)
+
+
+def inline_media_container(media: Union[str, bytes]) -> bytes:
+    """Decode inline audio or video for FFmpeg; refuse any other container."""
+    data = inline_media_bytes(media)
+    if not _MEDIA_CONTAINER.match(data) or _MEDIA_MANIFEST.search(data):
+        raise ValueError("Unsupported audio or video container")
+    return data
+
+
 def get_image_bytes(image_file: Union[str, bytes]) -> bytes:
     """Normalize an inline image input into raw bytes."""
     return inline_media_bytes(image_file)
@@ -110,6 +136,29 @@ def get_video_bytes(video_file: Union[str, bytes, VideoData]) -> bytes:
     if isinstance(video_file, VideoData):
         video_file = video_file.url
     return inline_media_bytes(video_file)
+''',
+    },
+    "srt/multimodal/processors/bailing_mm.py": {
+        "BailingMMMultimodalProcessor._request_url": f'''\
+    @staticmethod
+    def _request_url(item, decode=inline_media_bytes):
+        if isinstance(item, (ImageData, VideoData)):
+            item = item.url
+        elif isinstance(item, dict):
+            if "url" not in item:
+                raise ValueError("Bailing media dictionaries must contain a url")
+            item = item["url"]
+        if not isinstance(item, str) or not item.startswith("data:"):
+            raise ValueError({INLINE_ONLY!r})
+        decode(item)
+        return item
+''',
+    },
+    "srt/multimodal/processors/moss_vl.py": {
+        "MossVLImageProcessor._normalize_video_string": '''\
+    def _normalize_video_string(self, value: str) -> Tuple[str, Optional[str]]:
+        temp_path = self._write_video_bytes_to_tempfile(inline_media_container(value))
+        return temp_path, temp_path
 ''',
     },
     "srt/multimodal/cache/identity.py": {
@@ -144,7 +193,7 @@ TEXT_EDITS = {
         source = audio_file
     else:
         raise ValueError(f"Invalid audio format: {audio_file}")
-''', "    source = inline_media_bytes(audio_file)\n"),
+''', "    source = inline_media_container(audio_file)\n"),
         ('''\
     if isinstance(source, bytes):
         header = source[:16]
@@ -158,15 +207,18 @@ TEXT_EDITS = {
         self._source = source
         self._num_decode_threads = num_decode_threads
 ''', f'''\
+        from sglang.srt.utils.common import inline_media_container
+
         if not isinstance(source, bytes):
             raise ValueError({INLINE_ONLY!r})
+        source = inline_media_container(source)
         self._source = source
         self._num_decode_threads = num_decode_threads
 '''),
     ],
     "srt/multimodal/processors/mimo_v2.py": [
         ("from sglang.srt.utils.common import download_remote_media\n",
-         "from sglang.srt.utils.common import inline_media_bytes\n"),
+         "from sglang.srt.utils.common import inline_media_bytes, inline_media_container\n"),
         ('''\
         # Never hand a client-supplied URL to ffprobe: its internal HTTP client
         # would bypass the shared domain and redirect policy. Resolve it through
@@ -187,7 +239,7 @@ TEXT_EDITS = {
             source = BytesIO(base64.b64decode(path_or_data.split(";base64,")[1]))
         else:
             source = path_or_data  # local path or file://
-''', "        source = BytesIO(inline_media_bytes(path_or_data))\n"),
+''', "        source = BytesIO(inline_media_container(path_or_data))\n"),
         ('''\
         elif isinstance(image, str):
             if image.startswith("http://") or image.startswith("https://"):
@@ -210,6 +262,13 @@ TEXT_EDITS = {
     ],
     "srt/multimodal/processors/mimo_audio.py": [
         ('''\
+            if isinstance(audio, bytes):
+                file = io.BytesIO(audio)
+            elif isinstance(audio, str):
+                if audio.startswith("data:"):
+                    file = io.BytesIO(
+                        pybase64.b64decode(audio.split(",")[1], validate=True)
+                    )
                 elif audio.startswith("http://") or audio.startswith("https://"):
                     dl_start = time.perf_counter()
                     timeout = int(os.getenv("REQUEST_TIMEOUT", "5"))
@@ -232,26 +291,13 @@ TEXT_EDITS = {
                 else:
                     file = audio
 ''', '''\
-                else:
-                    file = io.BytesIO(common.inline_media_bytes(audio))
+            if isinstance(audio, (bytes, str)):
+                file = io.BytesIO(common.inline_media_container(audio))
 '''),
     ],
     "srt/multimodal/processors/moss_vl.py": [
-        ('''\
-        if value.startswith("file://"):
-            return self._resolve_file_url(value), None
-
-        if os.path.isfile(value):
-            return value, None
-
-        if value.startswith(("http://", "https://")):
-            timeout = int(os.getenv("REQUEST_TIMEOUT", "10"))
-            content = download_remote_media(value, timeout=timeout)
-            suffix = os.path.splitext(urlparse(value).path)[1] or ".mp4"
-            temp_path = self._write_video_bytes_to_tempfile(content, suffix=suffix)
-            return temp_path, temp_path
-
-''', ""),
+        ("from sglang.srt.utils.common import download_remote_media\n",
+         "from sglang.srt.utils.common import inline_media_container\n"),
     ],
     "srt/multimodal/processors/inkling.py": [
         ("from sglang.srt.utils.common import download_remote_media\n",
@@ -268,6 +314,49 @@ TEXT_EDITS = {
         with open(path, "rb") as f:
             return f.read()
 ''', f"        raise ValueError({INLINE_ONLY!r})\n"),
+    ],
+    "srt/multimodal/audio_from_video.py": [
+        ('''\
+    if isinstance(source, bytes) and not source:
+        raise ValueError(_INVALID_AUDIO_CONTAINER_MESSAGE)
+''', '''\
+    from sglang.srt.utils.common import inline_media_container
+
+    source = inline_media_container(source)
+'''),
+    ],
+    "srt/multimodal/processors/dots_note_omni_video_core/preprocess.py": [
+        ('''\
+def _make_video_decoder(video_bytes):
+''', '''\
+def _make_video_decoder(video_bytes):
+    from sglang.srt.utils.common import inline_media_container
+
+    video_bytes = inline_media_container(video_bytes)
+'''),
+        ('''\
+    try:
+        samples = AudioDecoder(
+            video_bytes, sample_rate=sample_rate, num_channels=1
+''', '''\
+    from sglang.srt.utils.common import inline_media_container
+
+    try:
+        samples = AudioDecoder(
+            inline_media_container(video_bytes), sample_rate=sample_rate, num_channels=1
+'''),
+    ],
+    "srt/multimodal/processors/transformers_auto.py": [
+        ("        # TODO: video loading when needed\n",
+         "        if video_data:\n"
+         "            raise ValueError(\"Video input is not supported by the Transformers backend\")\n"),
+    ],
+    "srt/multimodal/processors/bailing_mm.py": [
+        ("from sglang.srt.utils import ImageData, VideoData\n",
+         "from sglang.srt.utils import ImageData, VideoData\n"
+         "from sglang.srt.utils.common import inline_media_bytes, inline_media_container\n"),
+        ('                    "video_url": {"url": self._request_url(item)},\n',
+         '                    "video_url": {"url": self._request_url(item, inline_media_container)},\n'),
     ],
     "srt/multimodal/inkling/feature_extraction.py": [
         ('''\
