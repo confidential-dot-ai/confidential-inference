@@ -41,6 +41,9 @@ The gateway also pins `CI_FRAMEWORK_RELEASE` and
 allowlist names the framework release. Only `scripts/render-allowlist.py`
 sets `frameworkRelease`.
 
+The chart has no operator-key values. Clients pin the reviewed policy and
+route digest instead.
+
 The gateway's settings are one environment variable, `GATEWAY_RUNTIME_CONFIG`,
 so the exact allowlist pins them. The gateway mounts only the admin signer
 certificate and the admin API key hashes, which differ per deployment.

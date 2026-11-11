@@ -77,9 +77,12 @@ forwards sensitive data. Online Intel collateral checks are a separate,
 explicit client setting. Direct HTTPS with periodic checks is also possible,
 but does not enforce those pins on each inference connection.
 
-Production uses an operator-managed policy. Release manifests do not pin a
-deployment's mesh CA. Clients can add that pin. Do not use historical
-static-mode instructions for a new release.
+Production uses an operator-managed policy. Current production and its client
+configuration stay unchanged. A client of a Confidential Cloud deployment
+verifies it with the signed framework release, the exact reviewed allowlist,
+and an approved route digest. It does not require trust in an operator key.
+Release manifests do not pin a deployment's mesh CA. Clients can add that pin.
+Do not use historical static-mode instructions for a new release.
 
 See [the threat model](docs/threat-model.md) for enforcement, update authority,
 and verification limits.

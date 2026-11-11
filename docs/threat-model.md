@@ -1,6 +1,9 @@
 # Threat model
 
-This document describes the current client-verification contract. For exact commands, read [verification.md](verification.md).
+This document describes the client-verification contract for a Confidential
+Cloud deployment. Current production and existing client configurations stay
+unchanged. For exact commands and the link to the current production
+instructions, read [verification.md](verification.md).
 Historical release snapshots in Git history do not describe the current
 serving cluster.
 
@@ -116,6 +119,25 @@ egress policy remain security-sensitive configuration.
 The release-signing identity, the mesh CA, and the Kubernetes client CA have
 different roles. New manifests do not require one fixed deployment mesh CA.
 A client can choose additional pins and must understand their scope.
+
+## Operator authority and client policy
+
+C8s uses operator keys to authorize policy updates and credential release.
+For a Confidential Cloud deployment, the client procedure does not use those
+keys as trust anchors. It checks a signed framework release, an exact
+reviewed allowlist, and an approved route digest. The gateway does not serve
+an operator-key verification API.
+
+A route digest must come from a reviewed deployment configuration through a
+channel the client already trusts. A live endpoint's own digest is not an
+independent approval. A release signature does not approve a deployment's
+routes. The deployment owner must supply the reviewed route digest.
+
+This procedure does not check operator signatures on route manifests. It does
+not verify the complete policy history since boot. It checks the policy
+recorded in the serving workload certificate. Route changes require explicit
+approval of a new digest. This does not provide the revision tracking of the
+operator-signature verification mode.
 
 ## Restricted Kubernetes credentials
 
