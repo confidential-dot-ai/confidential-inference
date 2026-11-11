@@ -55,11 +55,14 @@ spec:
         - name: dcgm-exporter
           image: {{ .Values.images.dcgmExporter }}
           imagePullPolicy: IfNotPresent
+          # A C8s worker refuses a root container, and the image runs as root.
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
-              add: ["SYS_ADMIN"]
               drop: ["ALL"]
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
           ports:
             - name: metrics
               containerPort: {{ .Values.dcgmExporter.port }}
@@ -213,6 +216,9 @@ spec:
               drop: ["ALL"]
             readOnlyRootFilesystem: true
             runAsNonRoot: true
+            # The image's user is `nobody`, which runAsNonRoot cannot verify.
+            runAsUser: 65534
+            runAsGroup: 65534
           ports:
             - name: metrics
               containerPort: {{ .Values.nodeExporter.port }}

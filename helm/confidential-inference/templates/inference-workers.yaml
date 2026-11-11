@@ -101,7 +101,6 @@ spec:
           type: RuntimeDefault
       {{- if and $modelMount $cache.enabled }}
       initContainers:
-        # Root owns the hostPath directory; the container has no capability.
         - name: fetch-model
           image: {{ $.Values.images.sglangWorker }}
           imagePullPolicy: IfNotPresent
@@ -118,8 +117,9 @@ spec:
               value: /tmp
           securityContext:
             allowPrivilegeEscalation: false
-            runAsUser: 0
-            runAsGroup: 0
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
             capabilities:
               drop: ["ALL"]
           resources:

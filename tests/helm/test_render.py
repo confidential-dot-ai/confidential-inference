@@ -132,6 +132,7 @@ def check_model_cache() -> None:
         assert "confidential.ai/c8s-volumes" not in worker["spec"]["template"]["metadata"]["annotations"]
         fetch, = pod["initContainers"]
         assert fetch["command"] == ["/usr/local/bin/fetch-model"]
+        assert fetch["securityContext"]["runAsUser"] == 1001
         assert "--path=/mnt/c8s-data/models/cache" in fetch["args"]
         assert f"--manifest-sha256={pin}" in fetch["args"]
         assert {"name": "model-cache", "mountPath": "/mnt/c8s-data/models/cache"} in fetch["volumeMounts"]

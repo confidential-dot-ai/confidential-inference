@@ -196,11 +196,13 @@ inference:
     # fetch-model init container downloads the pinned revision from Hugging
     # Face into the node's plain models disk (hostPath, public weights the
     # host can read), and wait-for-model --plain-cache checks every file
-    # against the byte manifest on every start. Needs a node image that
-    # formats and mounts that disk read-write (C8s#1006). Allowlist rule G7
-    # refuses a secrets grant on an entry with a host mount: the worker drops
-    # the c8sVolumeSource read, and its workload policy entry must list no
-    # secretReads (tests/helm/test_render.py checks this).
+    # against the byte manifest on every start. fetch-model runs as uid 1001,
+    # since a C8s worker refuses a root container, so it needs a disk that uid
+    # can write; the C8s v0.99 worker mounts /var/lib/models read-only.
+    # Allowlist rule G7 refuses a secrets grant on an entry with a host
+    # mount: the worker drops the c8sVolumeSource read, and its workload
+    # policy entry must list no secretReads (tests/helm/test_render.py checks
+    # this).
     cache:
       enabled: false
       hostPath: /var/lib/models/model
