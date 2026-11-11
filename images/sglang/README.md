@@ -52,7 +52,8 @@ listeners on loopback for single-node runs:
   `--forward-pass-metrics-ipc-name`. Each of these opens another
   rendezvous, control or publisher listener.
 
-`Dockerfile.gpu-test` applies the same policy.
+`Dockerfile.gpu-test` applies the listener policy too. It skips the media
+policy, whose hash pins cover only the release source.
 
 For the plain deployment, `--private-server-output` discards native server
 stdout and stderr. It exports only a fixed worker-exit event with a numeric
