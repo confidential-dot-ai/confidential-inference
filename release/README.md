@@ -17,10 +17,10 @@ directory. Its `spec.yaml` replaces only the model and the public hostnames,
 and Helm applies its `values.yaml` after `release/values.yaml`. Staging uses
 the CPU SGLang simulator and validates the encrypted model mount before the
 simulator starts. It has its own allowlist policy and accepted lint findings.
-It shares the node manifest and the image configuration. To move staging
-ahead of production, set `c8s` in `release/staging/spec.yaml`; the node
-manifest of that C8s release is then written to
-`release/staging/node-manifest.json`.
+It shares the node and CDS manifests and the image configuration. To move
+staging ahead of production, set `c8s` in `release/staging/spec.yaml`; the
+manifests of that C8s release are then written to
+`release/staging/node-manifest.json` and `release/staging/cds-manifest.json`.
 
 The repository holds no digest of an image that it builds. The release build
 takes each one from signed evidence, so a release needs no commit that pins
@@ -63,16 +63,18 @@ are not available through this output path. These are diagnostic gaps.
 
 | File | Written by | Contents |
 | --- | --- | --- |
-| `spec.yaml` | A person, or `bump-c8s.py` for `c8s` | The C8s release with its node image and core images, the model identity, and the public hostnames. It is the one place that pins C8s. It names no version: the tag is the version |
+| `spec.yaml` | A person, or `bump-c8s.py` for `c8s` | The C8s release with its node image, CDS guest image and core images, the model identity, and the public hostnames. It is the one place that pins C8s. It names no version: the tag is the version |
 | `values.yaml` | A person | The chart values of the release. Only release values, no deployment values. It names each repository image without a digest |
 | `allowlist-policy.json` | A person | The workloads and the inputs of the allowlist. The C8s pins come from `spec.yaml` |
 | `profiles.json` | A person | The release profiles and their layers |
 | `inputs/image-config.json` | `generate-release-allowlist.py --refresh-image-config` | The `ENV`, `ENTRYPOINT`, and `CMD` of every image that a profile renders and this repository does not build. All profiles share it. Review the diff by hand |
 | `inputs/cdi/nvidia-<driver>.json` | A person, from a reviewed record | The NVIDIA CDI environment variables and driver mounts of one driver version |
 | `inputs/c8s-source-lock.json` | `bump-c8s.py` | The pinned C8s commits and source hashes. The signed manifest records its path and digest. All profiles share it |
-| `inputs/c8s-attestation-protocols/<commit>.json` | `bump-c8s.py` | The attestation protocol of each C8s commit. `check-c8s-protocol-lockstep.py` compares them with the source lock |
+| `inputs/c8s-attestation-protocols/<commit>.json` | `bump-c8s.py` | The attestation protocol of each C8s commit |
+| `inputs/c8s-seeds/<commit>.json` | `bump-c8s.py` | The allowlist seed of a pinned C8s commit and the inputs it was rendered with |
 | `node-manifest.json` | `fetch-node-manifest.py` | The C8s `manifest.json` of the node image. It holds MRTD, RTMR1, and RTMR2 |
-| `accepted-lint-findings.json` | A reviewer | The `c8s allowlist lint --strict` findings that the release accepts, each with its reason and issue |
+| `cds-manifest.json` | `fetch-node-manifest.py` | The C8s `manifest.json` of the CDS guest image. The release manifest binds its SHA-256 as `cdsImage.manifestSha256`; a deployment's `cds-pin.json` takes its launch digest from it |
+| `accepted-lint-findings.json` | A reviewer | Optional, per profile. The `c8s allowlist lint --strict` findings that the profile accepts, each with its reason and issue |
 
 ## The release build
 
@@ -185,12 +187,15 @@ For a signed beta, select the profile explicitly and use `--allow-beta`.
 Production can use a beta when the deployment calls for it. The signature
 check still requires the exact beta workflow and source commit.
 
-It needs `crane`, Go, and read access to the C8s Go module. It changes the C8s
-pins, the source lock, the node manifests, and the image config, and then
-runs the release checks. The next release build generates the allowlist with
-the new C8s CLI. The script stops when the attestation protocol files or the
-NVIDIA inputs of the node image change. Do those steps by hand. Review the
-full diff before you commit.
+It needs `crane`, Go, read access to the C8s Go module, and first on `PATH`
+the Helm version that the worker image build pins (`HELM_VERSION` in its
+`mkosi.sync`; v3.14.4 at C8s v0.99.29). `--c8s` gives a C8s CLI built from the
+tag; without it the script builds one. It changes the C8s pins, the source
+lock, the seed record, the node and CDS manifests, and the image config, and
+then runs the release checks. The next release build generates the
+allowlist with the new C8s CLI. The script stops when the attestation
+protocol files or the NVIDIA inputs of the node image change. Do those steps
+by hand. Review the full diff before you commit.
 
 ## The allowlist
 
@@ -199,23 +204,23 @@ generator combines five pinned sources: the image configuration, the chart
 pod specification, the `kubernetes` Service variables and `HOSTNAME`, the
 mounts that the C8s webhook adds, and the NVIDIA CDI record for GPU
 containers. `c8s allowlist derive` of the pinned C8s release writes each
-entry. The C8s core entries mirror the node image's bootstrap seed byte for
-byte: CDS serves the uploaded allowlist as it is, so it must carry the seed.
-The seed is the pinned C8s release's asset `allowlist-seed-<platform>.json`
-(C8s #975; the platform of the node image tag, `-cdi` included). The generator
-downloads it, verifies the release statement with cosign against the C8s
-release workflow identity, and requires the asset's sha256 to be the one the
-statement lists. A dev build, or a release from before the asset (C8s
-v0.59.1), has a record in `inputs/c8s-seeds/<source commit>.json` instead. `tools/c8s-allowlist-canonical`, built against the pinned C8s
-module, writes the canonical bytes. `c8s allowlist lint --strict` must pass,
-except for the findings in `accepted-lint-findings.json`. The generator fails
-on any other finding, and on a listed finding that no longer appears. Today
-the file accepts 4 findings: the node image CDI mounts `/usr/bin/nvidia-smi`
-and `/usr/bin/nvidia-persistenced` overlap the worker `PATH`
-(C8s issue #713).
+entry. The C8s core entries mirror the seed byte for byte: CDS serves the
+uploaded allowlist as it is, so it must carry the seed. C8s publishes no seed
+asset from v0.95.0. `bump-c8s.py` renders the seed with
+`c8s node-image render` of the pinned commit, with the kubelet and Helm
+versions of the worker image build, and records it in
+`inputs/c8s-seeds/<source commit>.json`. For a dev build,
+`pin-local-c8s.py` runs the same bump with the build's CLI. The generator
+reads the record of the pinned commit. `tools/c8s-allowlist-canonical`,
+built against the pinned C8s module, writes the canonical bytes. `c8s allowlist lint --strict` must pass,
+except for the findings in the profile's `accepted-lint-findings.json`. The
+generator fails on any other finding, and on a listed finding that no longer
+appears. Production has no such file, so it accepts no finding.
 
-The `kubernetes` Service address is `10.53.0.1`. The node image measures the
-service network `10.53.0.0/16`, so the address is the same on every cluster.
+The allowlist pins the `kubernetes` Service address `10.53.0.1`. With C8s
+v0.99.29 the worker's launch file sets the Service range
+(`kubernetes.serviceCIDR`), so every deployment of a release must use
+`10.53.0.0/16`.
 
 ## Versions
 

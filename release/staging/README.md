@@ -3,8 +3,8 @@
 This profile builds `vX.Y.Z-staging`. It is a layer on top of `release/`
 (`release/profiles.json`). The tag is the version. `spec.yaml` sets the
 public hostnames and the model, and `values.yaml` sets the staging values. Every
-other value, including the image names, the C8s release, and the node
-manifest, comes from `release/`. The release build adds the image digests.
+other value, including the image names, the C8s release, and the node and
+CDS manifests, comes from `release/`. The release build adds the image digests.
 
 Staging mounts a small public model
 (`hf-internal-testing/tiny-random-LlamaForCausalLM`, 14.9 MB), not the
@@ -54,7 +54,7 @@ python3 scripts/build-release-manifest.py \
 ```
 
 To move staging ahead of production, set `c8s` in this `spec.yaml`. Then
-fetch the node manifest into this directory:
+fetch the node and CDS manifests into this directory:
 
 ```sh
 python3 scripts/fetch-node-manifest.py --release release/staging
@@ -76,11 +76,11 @@ mount rules, the gateway pepper secret grant, and encrypted-volume inputs.
 Refresh the image configuration record with the dependency bump. Preserve
 strict policy lint and verify that arbitrary component command overrides fail.
 
-The allowlist mirrors the node image's seed: for a C8s release its signed
-asset `allowlist-seed-tdx.json` (C8s #975), for a dev build the record in
-`release/inputs/c8s-seeds/<source-commit>.json` that `scripts/pin-local-c8s.py`
-writes from the build directory's `allowlist-seed.json`. `bump-c8s.py` deletes
-a record when no profile pins its commit any more.
+The allowlist mirrors the seed recorded in
+`release/inputs/c8s-seeds/<source-commit>.json`. `bump-c8s.py` renders it with
+`c8s node-image render` of the pinned commit; for a dev build,
+`scripts/pin-local-c8s.py` runs that bump with the build's CLI. `bump-c8s.py`
+deletes a record when no profile pins its commit any more.
 
 ## In-cluster validation client
 

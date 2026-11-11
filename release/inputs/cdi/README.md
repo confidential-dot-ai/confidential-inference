@@ -6,7 +6,7 @@ One file for each NVIDIA driver version: `nvidia-<driver>.json`.
 {
   "driverVersion": "595.71.05",
   "toolkitVersion": "1.19.1",
-  "nodeImages": ["ghcr.io/confidential-dot-ai/node-guest-base@sha256:..."],
+  "nodeImages": ["ghcr.io/confidential-dot-ai/guests/worker@sha256:..."],
   "driverInputs": {"confosFetchGpuSha256": "sha256:..."},
   "source": "who captured it, how, and from which node image",
   "env": {"NVIDIA_VISIBLE_DEVICES": "void", "NVIDIA_CTK_LIBCUDA_DIR": "/usr/lib/x86_64-linux-gnu"},
