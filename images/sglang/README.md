@@ -29,9 +29,8 @@ there. The launcher refuses multi-node runs, `--dist-init-addr`,
 `SGLANG_DISTRIBUTED_INIT_METHOD_OVERRIDE`, `--gated-launch-port`, elastic
 EP, the NIXL all-to-all backend, weight cache daemons, and transfer-engine
 weight seeding. Each of these opens another rendezvous or control listener.
-Only the declared ports remain reachable from the pod network: the HTTP
-port, the GPU metrics port, and the prefill bootstrap port in
-prefill/decode mode.
+The policy does not cover the prefill/decode KV transfer listeners
+(the disaggregation bootstrap port and the Mooncake transfer engine).
 
 For the plain deployment, `--private-server-output` discards native server
 stdout and stderr. It exports only a fixed worker-exit event with a numeric
