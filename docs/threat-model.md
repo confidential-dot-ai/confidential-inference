@@ -34,6 +34,12 @@ application data. The internal request path must remain protected by the
 reviewed C8s and application controls. Front-door verification alone is not a
 receipt from every serving worker.
 
+The allowlist states what each workload may run. The route manifest states
+which workload receives the traffic for a host name. The front-door evidence
+binds the SHA-256 of the route manifest in use. A client that pins that digest
+rejects a changed route, for example a route from `api.confidential.ai` to an
+allowlisted workload other than the gateway.
+
 ## Policy and configuration protection
 
 Production retains an operator-managed allowlist and Kubernetes update rights.
