@@ -57,18 +57,20 @@ CDS = ("cdsImage", "cdsManifestArtifact")
 
 
 def read_spec(spec: Any) -> dict[str, Any]:
-    try:
-        c8s = spec["c8s"]
-        c8s["nodeImage"]["reference"], c8s["nodeManifestArtifact"]["digest"]
-    except (KeyError, TypeError) as error:
-        raise FetchError("the release specification has no c8s node manifest artifact") from error
+    """Check the pinned guest images: the node image always, the CDS guest image when the spec pins it."""
+    c8s = spec.get("c8s") if isinstance(spec, dict) else None
+    if not isinstance(c8s, dict) or not all(key in c8s for key in NODE):
+        raise FetchError("the release specification has no c8s node image and manifest artifact")
     for image, artifact in (NODE, CDS):
         if image not in c8s and artifact not in c8s:
             continue
-        reference = c8s.get(image, {}).get("reference")
+        pins = [c8s.get(key) for key in (image, artifact)]
+        if not all(isinstance(pin, dict) for pin in pins):
+            raise FetchError(f"c8s pins {image} and {artifact} only together")
+        reference = pins[0].get("reference")
         if not isinstance(reference, str) or "@" in reference or ":" in reference.rsplit("/", 1)[-1]:
             raise FetchError(f"c8s.{image}.reference must be a repository without tag or digest")
-        if not DIGEST.fullmatch(str(c8s.get(artifact, {}).get("digest"))):
+        if not DIGEST.fullmatch(str(pins[1].get("digest"))):
             raise FetchError(f"c8s.{artifact}.digest is not a SHA-256 digest")
     return spec
 

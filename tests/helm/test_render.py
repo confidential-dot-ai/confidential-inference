@@ -115,7 +115,7 @@ def g7_violations(documents: list[dict], secret_reads: dict[str, list[str]]) -> 
 
 
 def check_model_cache() -> None:
-    """The plain model cache: fetch-model fills a hostPath, the gate reads it read-only."""
+    """The C8s v0.99.29 worker mounts the plain models disk read-only, so the chart refuses the plain cache."""
     manifest = '{"files":[]}\n'
     pin = hashlib.sha256(manifest.encode()).hexdigest()
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as values:
@@ -123,35 +123,9 @@ def check_model_cache() -> None:
             "mountVerification": {"expectedFiles": {".model-lock-local-manifest.json": pin}},
             "cache": {"enabled": True, "manifest": manifest}}}}, values)
         values.flush()
-        documents = render("--values", values.name)
-        maps = {item["metadata"]["name"]: item for item in documents if item["kind"] == "ConfigMap"}
-        assert maps["model-manifest"]["data"]["manifest.json"] == manifest
-        worker = next(item for item in documents if item["kind"] == "StatefulSet"
-                      and item["metadata"]["name"] == "inference-worker-0")
-        pod = worker["spec"]["template"]["spec"]
-        assert "confidential.ai/c8s-volumes" not in worker["spec"]["template"]["metadata"]["annotations"]
-        fetch, = pod["initContainers"]
-        assert fetch["command"] == ["/usr/local/bin/fetch-model"]
-        assert fetch["securityContext"]["runAsUser"] == 1001
-        assert "--path=/mnt/c8s-data/models/cache" in fetch["args"]
-        assert f"--manifest-sha256={pin}" in fetch["args"]
-        assert {"name": "model-cache", "mountPath": "/mnt/c8s-data/models/cache"} in fetch["volumeMounts"]
-        sglang = next(item for item in pod["containers"] if item["name"] == "sglang")
-        assert "--plain-cache" in sglang["args"] and "--path=/mnt/c8s-data/models/cache" in sglang["args"]
-        assert f"--expected-file=.model-lock-local-manifest.json={pin}" in sglang["args"]
-        assert {"name": "model-cache", "mountPath": "/mnt/c8s-data/models/cache", "readOnly": True} in sglang["volumeMounts"]
-        volume = next(item for item in pod["volumes"] if item["name"] == "model-cache")
-        assert volume["hostPath"] == {"path": "/var/lib/models/model", "type": "DirectoryOrCreate"}
-        egress = next(item for item in documents if item["kind"] == "NetworkPolicy"
-                      and item["metadata"]["name"] == "inference-worker-model-download")
-        assert egress["spec"]["egress"][0]["ports"] == [{"protocol": "TCP", "port": 443}]
-        # G7: the cache worker mounts a host path, so it drops the model volume
-        # read, and its workload policy must list no secretReads.
-        assert g7_violations(documents, {}) == []
-        assert g7_violations(documents, {"StatefulSet/inference-worker-0": ["/confidential-inference/volumes/dsv4"]}) == [
-            "StatefulSet/inference-worker-0"]
-        helm("template", "example", str(CHART), *NEUTRAL_MODE, "--values", values.name,
-             "--set", "inference.model.cache.manifest=other", success=False)
+        result = subprocess.run(["helm", "template", "example", str(CHART), *NEUTRAL_MODE, "--values", values.name],
+                                cwd=ROOT, text=True, capture_output=True, check=False)
+    assert result.returncode != 0 and "inference.model.cache is unsupported" in result.stderr, result.stderr
     default = render()
     assert not any(item["metadata"]["name"] in {"model-manifest", "inference-worker-model-download"} for item in default)
 
@@ -175,19 +149,12 @@ def check_c8s_admission() -> None:
     release = ("--namespace", "confidential-inference", "-f", "release/values.yaml",
                "-f", "tests/release-v1/fixtures/release-values.yaml",
                "--set", "attestationReceipts.releaseId=v0.14.18-staging")
-    manifest = '{"files":[]}\n'
-    pin = hashlib.sha256(manifest.encode()).hexdigest()
-    with tempfile.NamedTemporaryFile("w", suffix=".yaml") as cache:
-        yaml.safe_dump({"inference": {"simulator": {"validateModelMount": True}, "model": {
-            "mountVerification": {"expectedFiles": {".model-lock-local-manifest.json": pin}},
-            "cache": {"enabled": True, "manifest": manifest}}}}, cache)
-        cache.flush()
-        for profile in ((), release, (*release, "-f", "release/staging/values.yaml"),
-                        ("--values", "tests/api/values-sglang.yaml"),
-                        ("--values", cache.name, "--set", "dcgmExporter.enabled=true",
-                         "--set", "nodeExporter.enabled=true", "--set", "c8s.cds.cidrs={198.51.100.4/32}")):
-            found = admission["refusals"](render(*profile))
-            assert found == [], (profile, found)
+    for profile in ((), release, (*release, "-f", "release/staging/values.yaml"),
+                    ("--values", "tests/api/values-sglang.yaml"),
+                    ("--set", "dcgmExporter.enabled=true",
+                     "--set", "nodeExporter.enabled=true", "--set", "c8s.cds.cidrs={198.51.100.4/32}")):
+        found = admission["refusals"](render(*profile))
+        assert found == [], (profile, found)
 
     def pod(container: dict, spec: dict | None = None) -> dict:
         return {"kind": "Pod", "metadata": {"name": "p", "annotations": {"confidential.ai/cw": "p"}},

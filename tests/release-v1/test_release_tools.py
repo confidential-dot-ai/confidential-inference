@@ -18,6 +18,7 @@ import functools
 import importlib.util
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -90,8 +91,8 @@ def write_release(directory: Path, manifest: dict) -> None:
 
 
 def build_release(tag: str, evidence: dict, download_dir: Path | None, generate, *patches,
-                  c8s: Path | None = None) -> dict[str, bytes]:
-    """Build a release with crane and the signature check replaced, plus `patches`."""
+                  c8s: Path | None = None, verify_core_seed=lambda *_args: None) -> dict[str, bytes]:
+    """Build a release with crane, the signature check and the seed render replaced, plus `patches`."""
     with tempfile.TemporaryDirectory() as temporary, contextlib.ExitStack() as stack:
         evidence_path = Path(temporary) / "publication.json"
         evidence_path.write_text(json.dumps(evidence))
@@ -102,6 +103,7 @@ def build_release(tag: str, evidence: dict, download_dir: Path | None, generate,
         stack.enter_context(mock.patch.object(MAN.release_signature, "verify_release_signature"))
         stack.enter_context(mock.patch.dict(MAN.ALLOWLIST_GENERATOR, {
             "generate": generate, "image_config": REPOSITORY_CONFIGS.__getitem__,
+            "verify_core_seed": verify_core_seed,
         }))
         return MAN.build(
             tag,
@@ -513,6 +515,103 @@ class ProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(GEN, "ROOT", Path(directory)), \
                 self.assertRaisesRegex(GEN.GenerationError, "no C8s seed record"):
             GEN.core_seed(spec)
+
+    def test_the_seed_record_must_be_the_render_of_the_pinned_cli(self):
+        operator = "ghcr.io/confidential-dot-ai/c8s-operator@sha256:" + "1" * 64
+        mesh = "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:" + "2" * 64
+        seed = {"schema": "c8s.allowlist/v1", "workloads": {"c8s-router": {"containers": [{"digest": "sha256:" + "1" * 64}]}}}
+        spec = {"release": "v0.99.29", "sourceCommit": "a" * 40, "coreImages": [operator, mesh]}
+        record = {"sourceCommit": "a" * 40, "coreImages": [operator, mesh], "hardwarePlatform": "tdx",
+                  "kubeVersion": "v1.36.4", "helmVersion": "v3.14.4", "allowlist": seed}
+        rendered, commands = {}, []
+
+        def run(command, **_kwargs):
+            commands.append(command)
+            if command[0] == "helm":
+                return b"v3.14.4"
+            output = Path(command[command.index("--output-dir") + 1])
+            (output / "allowlist-seed.json").write_text(json.dumps(rendered))
+            return b""
+
+        cases = {
+            "identical render": (seed, record, None),
+            "one argv edited in the record": (
+                seed, {**record, "allowlist": {**seed, "workloads": {"c8s-router": {"containers": [
+                    {"digest": "sha256:" + "1" * 64, "command": {"policy": "exact", "argv": ["/c8s"]}}]}}}},
+                "differs from the render"),
+            "record without its inputs": (seed, {k: v for k, v in record.items() if k != "helmVersion"},
+                                          "names no helmVersion"),
+            "another Helm": (seed, {**record, "helmVersion": "v3.16.3"}, "Helm v3.16.3"),
+        }
+        for name, (render, value, error) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory, \
+                    mock.patch.object(GEN, "ROOT", Path(directory)), mock.patch.object(GEN, "run", side_effect=run), \
+                    mock.patch.object(GEN, "canonicalize", side_effect=lambda document, _tool: json.dumps(document).encode()):
+                rendered.clear()
+                rendered.update(render)
+                path = Path(directory) / "release/inputs/c8s-seeds" / (spec["sourceCommit"] + ".json")
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps(value))
+                if error is None:
+                    GEN.verify_core_seed(Path("c8s"), None, spec)
+                else:
+                    with self.assertRaisesRegex(GEN.GenerationError, error):
+                        GEN.verify_core_seed(Path("c8s"), None, spec)
+        render = next(command for command in reversed(commands) if command[0] == "c8s")
+        for flag, value in (("--hardware-platform", "tdx"), ("--kube-version", "v1.36.4"),
+                            ("--image-digest", "sha256:" + "1" * 64), ("--armtls-mesh-image-digest", "sha256:" + "2" * 64)):
+            self.assertEqual(render[render.index(flag) + 1], value)
+
+    def test_the_release_build_fails_when_the_seed_record_is_not_the_render(self):
+        checked = []
+
+        def verify(c8s, tool, pins):
+            checked.append((c8s, pins["sourceCommit"]))
+            raise MAN.ALLOWLIST_GENERATOR["GenerationError"]("the C8s seed record differs from the render")
+
+        generated = STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")
+        with self.assertRaisesRegex(MAN.ManifestError, "differs from the render"):
+            build_release("v0.14.2-staging", publication(published_release_images()), None,
+                          lambda *_args, **_kwargs: generated, verify_core_seed=verify)
+        self.assertEqual(checked, [(Path("c8s"), PROFILES.read_spec(STAGING)["c8s"]["sourceCommit"])])
+
+    def test_the_c8s_cli_must_be_built_from_the_pinned_commit(self):
+        commit, release = "a" * 40, "v0.99.29"
+        path = f"\tpath\t{GEN.C8S_MODULE}\n"
+
+        def built(*lines):
+            return ("c8s: go1.25.0\n" + path + "".join(f"\t{line}\n" for line in lines)).encode()
+
+        cases = {
+            "checkout at the commit": (built(f"mod\t{GEN.C8S_ROOT_MODULE}\t(devel)\t", f"build\tvcs.revision={commit}",
+                                             "build\tvcs.modified=false"), True),
+            "checkout at another commit": (built(f"mod\t{GEN.C8S_ROOT_MODULE}\t(devel)\t", f"build\tvcs.revision={'b' * 40}",
+                                                 "build\tvcs.modified=false"), False),
+            "modified checkout": (built(f"build\tvcs.revision={commit}", "build\tvcs.modified=true"), False),
+            "no VCS stamp": (built(f"mod\t{GEN.C8S_ROOT_MODULE}\t(devel)\t"), False),
+            "module build of the release": (built(f"mod\t{GEN.C8S_ROOT_MODULE}\t{release}\th1:x="), True),
+            "module build of another tag": (built(f"mod\t{GEN.C8S_ROOT_MODULE}\tv0.99.30\th1:x="), False),
+            "ldflags version only": (built(f"build\t-ldflags=\"-X {GEN.C8S_ROOT_MODULE}/internal/version.Version={commit}\""),
+                                     False),
+        }
+        for name, (info, accepted) in cases.items():
+            with self.subTest(name), mock.patch.object(GEN, "run", return_value=info):
+                if accepted:
+                    GEN.verify_c8s_binary(Path("c8s"), commit, release)
+                else:
+                    with self.assertRaisesRegex(GEN.GenerationError, "not built from the pinned"):
+                        GEN.verify_c8s_binary(Path("c8s"), commit, release)
+        with mock.patch.object(GEN, "run", return_value=b"helm: go1.22\n\tpath\thelm.sh/helm/v3/cmd/helm\n"), \
+                self.assertRaisesRegex(GEN.GenerationError, "not the c8s command"):
+            GEN.verify_c8s_binary(Path("helm"), commit, release)
+
+    def test_the_release_workflow_installs_the_helm_of_every_pinned_seed(self):
+        workflow = (ROOT / ".github/workflows/release-bundle.yml").read_text()
+        installed = set(re.findall(r"get\.helm\.sh/helm-(v[0-9.]+)-linux-amd64\.tar\.gz", workflow))
+        for profile in (PRODUCTION, STAGING):
+            commit = PROFILES.read_spec(profile)["c8s"]["sourceCommit"]
+            record = json.loads((ROOT / "release/inputs/c8s-seeds" / (commit + ".json")).read_text())
+            self.assertEqual(installed, {record["helmVersion"]}, profile.name)
 
     def test_process_contract_accepts_canonical_order_but_refuses_duplicates_and_changes(self):
         main = {"name": "main", "image": IMAGE, "command": ["/entry"], "args": ["--x"]}
@@ -1119,6 +1218,51 @@ class ManifestTests(unittest.TestCase):
                 self.assertEqual(MAN.sha256(data), spec["c8s"]["cdsManifestArtifact"]["manifestJson"])
                 NODE.check_measurements(json.loads(data))
                 self.assertEqual(MAN.cds_image(PROFILES.cds_manifest(profile), spec)["manifestSha256"], MAN.sha256(data))
+
+    def test_fetch_reads_the_cds_pins_only_with_the_node_pins_and_whole(self):
+        node = {"nodeImage": {"reference": "ghcr.io/example/worker"},
+                "nodeManifestArtifact": {"digest": "sha256:" + "1" * 64}}
+        cds = {"cdsImage": {"reference": "ghcr.io/example/cds"}, "cdsManifestArtifact": {"digest": "sha256:" + "2" * 64}}
+        cases = {
+            "node and CDS": ({**node, **cds}, None),
+            "node only": (node, None),
+            "CDS image only": ({"cdsImage": cds["cdsImage"]}, "no c8s node image"),
+            "node and the CDS image without its artifact": ({**node, "cdsImage": cds["cdsImage"]}, "only together"),
+            "node without its artifact": ({"nodeImage": node["nodeImage"]}, "no c8s node image"),
+            "CDS image with a tag": ({**node, **cds, "cdsImage": {"reference": "ghcr.io/example/cds:v1"}},
+                                     "cdsImage.reference"),
+            "no c8s": (None, "no c8s node image"),
+        }
+        for name, (c8s, error) in cases.items():
+            with self.subTest(name):
+                spec = {"c8s": c8s} if c8s is not None else {}
+                if error is None:
+                    self.assertIs(NODE.read_spec(spec), spec)
+                else:
+                    with self.assertRaisesRegex(NODE.FetchError, error):
+                        NODE.read_spec(spec)
+
+    def test_fetch_check_compares_the_node_and_the_cds_manifest(self):
+        node, cds = PROFILES.node_manifest(STAGING).read_bytes(), PROFILES.cds_manifest(STAGING).read_bytes()
+
+        def fetch(_spec, keys=NODE.NODE):
+            return (cds, {}) if keys == NODE.CDS else (node, {})
+
+        for name, (node_file, cds_file, status) in {
+            "both match": (node, cds, 0), "the CDS manifest differs": (node, cds + b" ", 1),
+            "the node manifest differs": (node + b" ", cds, 1),
+        }.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory, \
+                    mock.patch.object(NODE, "fetch", side_effect=fetch), contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()) as stderr:
+                paths = Path(directory) / "node.json", Path(directory) / "cds.json"
+                paths[0].write_bytes(node_file)
+                paths[1].write_bytes(cds_file)
+                argv = ["fetch-node-manifest.py", "--release", str(ROOT / "release/staging"), "--check",
+                        "--output", str(paths[0]), "--cds-output", str(paths[1])]
+                with mock.patch.object(sys, "argv", argv):
+                    self.assertEqual(NODE.main(), status, stderr.getvalue())
+                self.assertEqual((paths[0].read_bytes(), paths[1].read_bytes()), (node_file, cds_file))
 
     def test_the_schema_refuses_deployment_values(self):
         schema = json.loads((ROOT / "api/release-manifest.schema.json").read_text())

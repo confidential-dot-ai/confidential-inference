@@ -886,6 +886,7 @@ def build(
             allowlist_bytes = ALLOWLIST_GENERATOR["generate"](
                 profile, c8s, canonical_tool, overlay=overlay_path, image_env=configs,
             )
+            ALLOWLIST_GENERATOR["verify_core_seed"](c8s, canonical_tool, spec["c8s"])
         except ALLOWLIST_GENERATOR["GenerationError"] as error:
             raise ManifestError(str(error)) from error
     allowlist_path = profile.allowlist

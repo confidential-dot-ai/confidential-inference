@@ -43,9 +43,12 @@ The release build generates the allowlist with a c8s CLI built from the
 pinned commit, so the bump does not write one. The test fixture names the
 c8s core image digests, so it moves with the staging pins.
 
-It stops when a step needs a person: protocol source files changed in more
-than comments (without --protocol-review), changed NVIDIA driver inputs, a pin it cannot edit in place, a deleted pinned source file, or a failed check. Review
-the full diff before you commit. The image config diff is a release input.
+It checks the CLI and renders the seed before it writes a file. It stops when
+a step needs a person: protocol source files changed in more than comments
+(without --protocol-review), changed NVIDIA driver inputs, a pin it cannot
+edit in place, a deleted pinned source file, or a failed check. A step that
+stops before the checks restores every file the bump changed. Review the full
+diff before you commit. The image config diff is a release input.
 """
 
 from __future__ import annotations
@@ -286,12 +289,21 @@ def set_key(document: dict[str, Any], path: tuple[str, ...], value: Any) -> dict
     return result
 
 
+def scalar_nodes(node: yaml.Node, path: tuple[Any, ...] = ()) -> dict[tuple[Any, ...], yaml.ScalarNode]:
+    """The scalar nodes below a composed YAML node, by key path."""
+    if isinstance(node, yaml.MappingNode):
+        return {k: v for key, child in node.value for k, v in scalar_nodes(child, (*path, key.value)).items()}
+    if isinstance(node, yaml.SequenceNode):
+        return {k: v for index, child in enumerate(node.value) for k, v in scalar_nodes(child, (*path, index)).items()}
+    return {path: node}
+
+
 def edit_yaml(path: Path, key_path: tuple[str, ...], value: Any) -> None:
     """Set one key of a commented YAML file and keep every other byte.
 
-    Each changed scalar is replaced where it is the whole value of a line. The
-    file is then parsed again and must equal the old document with only that
-    key changed. A key that the file does not set is appended.
+    Each changed scalar is replaced at its own key path, in its own quoting.
+    The file is then parsed again and must equal the old document with only
+    that key changed. A key that the file does not set is appended.
     """
     text = path.read_text(encoding="utf-8")
     document = yaml.safe_load(text) or {}
@@ -308,14 +320,20 @@ def edit_yaml(path: Path, key_path: tuple[str, ...], value: Any) -> None:
         old_leaves, new_leaves = leaves(current), leaves(value)
         if old_leaves.keys() != new_leaves.keys():
             raise BumpError(f"{path.relative_to(ROOT)} {'.'.join(key_path)} changes shape; edit it by hand")
+        nodes = {leaf[len(key_path):]: node for leaf, node in scalar_nodes(yaml.compose(text)).items()
+                 if leaf[:len(key_path)] == key_path}
+        edits = []
         for leaf, old in old_leaves.items():
             new = new_leaves[leaf]
             if old == new:
                 continue
-            pattern = re.compile(rf"(?m)^(\s*(?:[A-Za-z0-9_]+:|-)\s+)(['\"]?){re.escape(str(old))}\2[ \t]*$")
-            text, count = pattern.subn(lambda match: f"{match.group(1)}{match.group(2)}{new}{match.group(2)}", text)
-            if count == 0:
-                raise BumpError(f"{path.relative_to(ROOT)} has no line for {old}; edit it by hand")
+            node = nodes[leaf]
+            if node.style not in (None, "'", '"'):
+                raise BumpError(f"{path.relative_to(ROOT)} writes {old} as a block scalar; edit it by hand")
+            quote = node.style or ""
+            edits.append((node.start_mark.index, node.end_mark.index, f"{quote}{new}{quote}"))
+        for start, end, replacement in sorted(edits, reverse=True):
+            text = text[:start] + replacement + text[end:]
     if yaml.safe_load(text) != expected:
         raise BumpError(f"{path.relative_to(ROOT)} changed more than {'.'.join(key_path)}; edit it by hand")
     path.write_text(text, encoding="utf-8")
@@ -593,35 +611,34 @@ def sync_setting(sync: str, name: str) -> str:
     return match.group(1)
 
 
-def record_core_seed(binary: Path, c8s_repo: Path, old: dict[str, Any], new: dict[str, Any],
-                     everyone: tuple[release_profiles.Profile, ...]) -> None:
-    """Record the seed the release serves in release/inputs/c8s-seeds/<source commit>.json.
+def render_core_seed(binary: Path, c8s_repo: Path, new: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Render the seed the release serves, before the bump writes anything.
 
     The worker image bakes an empty seed and the release publishes none, so
     the seed is the render of the pinned CLI with the inputs of the worker
     image build: its kubelet version, its Helm version, the operator and mesh
-    images. The old record goes when no profile pins its commit any more.
+    images. Return the record inputs and the rendered seed.
+    """
+    sync = git_show(c8s_repo, new["sourceCommit"], WORKER_SYNC).decode()
+    inputs = {"sourceCommit": new["sourceCommit"], "coreImages": new["coreImages"], "hardwarePlatform": SEED_PLATFORM,
+              "kubeVersion": sync_setting(sync, "KUBERNETES_VERSION"), "helmVersion": sync_setting(sync, "HELM_VERSION")}
+    generator = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
+    try:
+        return inputs, generator["render_seed"](binary, inputs)
+    except generator["GenerationError"] as error:
+        raise BumpError(str(error)) from error
+
+
+def record_core_seed(inputs: dict[str, Any], seed: dict[str, Any], old: dict[str, Any],
+                     everyone: tuple[release_profiles.Profile, ...]) -> None:
+    """Record the seed in release/inputs/c8s-seeds/<source commit>.json.
+
+    The old record goes when no profile pins its commit any more.
     """
     records = ROOT / "release/inputs/c8s-seeds"
-    sync = git_show(c8s_repo, new["sourceCommit"], WORKER_SYNC).decode()
-    kube_version, helm_version = sync_setting(sync, "KUBERNETES_VERSION"), sync_setting(sync, "HELM_VERSION")
-    found = run(["helm", "version", "--template", "{{.Version}}"]).strip()
-    if found != helm_version:
-        raise BumpError(f"the worker image renders its seed with Helm {helm_version}; put it first on PATH, not {found}")
-    operator = operator_image(new).split("@")
-    mesh = next(image for image in new["coreImages"] if image.partition("@")[0] == f"{REGISTRY}armtls-mesh").split("@")
-    with tempfile.TemporaryDirectory(prefix="bump-c8s-seed-") as directory:
-        run([str(binary), "node-image", "render", "--hardware-platform", SEED_PLATFORM, "--kube-version", kube_version,
-             "--image-repository", operator[0], "--image-digest", operator[1],
-             "--armtls-mesh-image-repository", mesh[0], "--armtls-mesh-image-digest", mesh[1],
-             "--output-dir", directory])
-        seed = json.loads((Path(directory) / "allowlist-seed.json").read_text(encoding="utf-8"))
     generator = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
-    write_json(records / (new["sourceCommit"] + ".json"), {
-        "sourceCommit": new["sourceCommit"], "coreImages": new["coreImages"], "hardwarePlatform": SEED_PLATFORM,
-        "kubeVersion": kube_version, "helmVersion": helm_version,
-        "allowlist": json.loads(generator["canonicalize"](seed, None)),
-    })
+    write_json(records / (inputs["sourceCommit"] + ".json"),
+               {**inputs, "allowlist": json.loads(generator["canonicalize"](seed, None))})
     pinned = {release_profiles.read_spec(profile)["c8s"]["sourceCommit"] for profile in everyone}
     stale = records / (old["sourceCommit"] + ".json")
     if old["sourceCommit"] not in pinned and stale.exists():
@@ -640,14 +657,14 @@ def regenerate(moved: list[release_profiles.Profile]) -> None:
     run([sys.executable, "scripts/generate-release-allowlist.py", "--refresh-image-config"], cwd=ROOT)
 
 
-def c8s_cli(binary: Path | None, c8s_repo: Path, commit: str, directory: Path) -> Path:
+def c8s_cli(binary: Path | None, c8s_repo: Path, commit: str, tag: str, directory: Path) -> Path:
     """The c8s CLI of the commit: --c8s, or a build of the checkout into directory."""
     if binary is None:
         binary = directory / "c8s"
         run(["go", "build", "-o", str(binary), "./cmd/c8s"], cwd=c8s_repo, env=go_env())
     generator = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
     try:
-        generator["verify_c8s_binary"](binary, commit)
+        generator["verify_c8s_binary"](binary, commit, tag)
     except generator["GenerationError"] as error:
         raise BumpError(str(error)) from error
     return binary
@@ -669,6 +686,33 @@ def check(c8s_repo: Path, commit: str) -> None:
     run([sys.executable, "scripts/verify-c8s-admission-source.py", "--repository", str(c8s_repo),
          "--commit", commit], cwd=ROOT)
     run([sys.executable, "-m", "unittest", "discover", "-s", "tests/release-v1", "-p", "test_*.py"], cwd=ROOT)
+
+
+def restore_tree() -> None:
+    """Undo a partial bump. The bump starts from a clean tree, so HEAD holds its state."""
+    run(["git", "-C", str(ROOT), "checkout", "-q", "HEAD", "--", "."])
+    run(["git", "-C", str(ROOT), "clean", "-fdq"])
+
+
+def write_bump(args: argparse.Namespace, c8s_repo: Path, commit: str, moved: list[release_profiles.Profile],
+               everyone: tuple[release_profiles.Profile, ...], old: dict[str, Any], new: dict[str, Any]) -> None:
+    """Check the CLI and render the seed, then write every tracked input, or none."""
+    with tempfile.TemporaryDirectory(prefix="bump-c8s-") as directory:
+        binary = c8s_cli(args.c8s.resolve() if args.c8s else None, c8s_repo, commit, args.tag, Path(directory))
+        seed_inputs, seed = render_core_seed(binary, c8s_repo, new)
+        try:
+            pin_profiles(moved, everyone, new)
+            bump_module(old["release"], args.tag)
+            add_source_lock(c8s_repo, old, new)
+            share_protocol_manifest(c8s_repo, old["sourceCommit"], commit, args.tag,
+                                    args.protocol_diff_out.resolve() if args.protocol_review else None)
+            extend_cdi_record(c8s_repo, args.confos_repo.resolve() if args.confos_repo else None, old, new)
+            record_core_seed(seed_inputs, seed, old, release_profiles.load())
+            regenerate(moved)
+            regenerate_staging_fixture(binary, moved)
+        except BaseException:
+            restore_tree()
+            raise
 
 
 def main() -> int:
@@ -721,17 +765,7 @@ def main() -> int:
         old = olds[0]
         new = new_c8s(args.tag, commit, old, c8s_repo)
 
-        with tempfile.TemporaryDirectory(prefix="bump-c8s-") as directory:
-            binary = c8s_cli(args.c8s.resolve() if args.c8s else None, c8s_repo, commit, Path(directory))
-            pin_profiles(moved, everyone, new)
-            bump_module(old["release"], args.tag)
-            add_source_lock(c8s_repo, old, new)
-            share_protocol_manifest(c8s_repo, old["sourceCommit"], commit, args.tag,
-                                    args.protocol_diff_out.resolve() if args.protocol_review else None)
-            extend_cdi_record(c8s_repo, args.confos_repo.resolve() if args.confos_repo else None, old, new)
-            record_core_seed(binary, c8s_repo, old, new, release_profiles.load())
-            regenerate(moved)
-            regenerate_staging_fixture(binary, moved)
+        write_bump(args, c8s_repo, commit, moved, everyone, old, new)
         check(c8s_repo, commit)
     except (BumpError, c8s_release.ReleaseError, release_profiles.ProfileError, NODE["FetchError"]) as error:
         print(f"bump-c8s: {error}", file=sys.stderr)

@@ -65,7 +65,8 @@ LINT_SUMMARY = re.compile(r"^(?P<count>[0-9]+) lint (error|warning)\(s\)( with -
 CHART = ROOT / "helm/confidential-inference"
 CANONICAL_TOOL = ROOT / "tools/c8s-allowlist-canonical"
 OCI = re.compile(r"^([^@\s]+)@(sha256:[0-9a-f]{64})$")
-C8S_MODULE = "github.com/confidential-dot-ai/c8s/cmd/c8s"
+C8S_ROOT_MODULE = "github.com/confidential-dot-ai/c8s"
+C8S_MODULE = C8S_ROOT_MODULE + "/cmd/c8s"
 DATA_ROOT = "/mnt/c8s-data/"
 DEFAULT_CERT_DIR = "/etc/c8s/certs"
 DEFAULT_SECRET_DIR = "/run/c8s/secrets"
@@ -394,12 +395,22 @@ def read_cdi(policy: dict[str, Any], node_image: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
-def verify_c8s_binary(executable: Path, commit: str) -> None:
-    info = run(["go", "version", "-m", str(executable)]).decode()
-    if f"\tpath\t{C8S_MODULE}\n" not in info:
+def verify_c8s_binary(executable: Path, commit: str, release: str) -> None:
+    """Require a c8s CLI built from the pinned commit.
+
+    A build in a checkout records the commit and whether the tree was
+    modified; a module build (`go install …@<release>`) records the release.
+    """
+    lines = run(["go", "version", "-m", str(executable)]).decode().splitlines()
+    fields = [line.strip().split("\t") for line in lines]
+    if ["path", C8S_MODULE] not in fields:
         raise GenerationError("--c8s is not the c8s command binary")
-    if f"vcs.revision={commit}" not in info and f"Version={commit}" not in info and "\tmod\tgithub.com/confidential-dot-ai/c8s\tv" not in info:
-        raise GenerationError("--c8s was not built from the pinned c8s source commit")
+    settings = {field[1].partition("=")[0]: field[1].partition("=")[2] for field in fields
+                if len(field) == 2 and field[0] == "build"}
+    checkout = settings.get("vcs.revision") == commit and settings.get("vcs.modified") == "false"
+    module = any(field[:3] == ["mod", C8S_ROOT_MODULE, release] for field in fields)
+    if not (checkout or module):
+        raise GenerationError(f"--c8s was not built from the pinned c8s source commit {commit} ({release})")
 
 
 def argv0(container: dict[str, Any]) -> str | None:
@@ -475,6 +486,38 @@ def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
     return seed["workloads"]
 
 
+def render_seed(executable: Path, inputs: dict[str, Any]) -> dict[str, Any]:
+    """Render the C8s seed with the inputs of a seed record (`c8s node-image render`).
+
+    The CLI runs Helm, which must be the version the record names.
+    """
+    found = run(["helm", "version", "--template", "{{.Version}}"]).decode().strip()
+    if found != inputs["helmVersion"]:
+        raise GenerationError(f"the C8s seed renders with Helm {inputs['helmVersion']}; put it first on PATH, not {found}")
+    images = {split_image(image)[0].rsplit("/", 1)[-1]: split_image(image) for image in inputs["coreImages"]}
+    if "c8s-operator" not in images or "armtls-mesh" not in images:
+        raise GenerationError("the C8s seed inputs name no c8s-operator or armtls-mesh image")
+    with tempfile.TemporaryDirectory(prefix="c8s-seed-") as directory:
+        run([str(executable), "node-image", "render", "--hardware-platform", inputs["hardwarePlatform"],
+             "--kube-version", inputs["kubeVersion"],
+             "--image-repository", images["c8s-operator"][0], "--image-digest", images["c8s-operator"][1],
+             "--armtls-mesh-image-repository", images["armtls-mesh"][0],
+             "--armtls-mesh-image-digest", images["armtls-mesh"][1],
+             "--output-dir", directory])
+        return read_json(Path(directory) / "allowlist-seed.json")
+
+
+def verify_core_seed(executable: Path, tool: Path | None, c8s: dict[str, Any]) -> None:
+    """Require the seed record of the pinned commit to be the render of the pinned CLI."""
+    record = read_json(ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json"))
+    missing = [key for key in ("hardwarePlatform", "kubeVersion", "helmVersion", "coreImages", "allowlist")
+               if key not in record]
+    if missing:
+        raise GenerationError(f"the C8s seed record names no {', '.join(missing)}, so it cannot be rendered again")
+    if json.loads(canonicalize(render_seed(executable, record), tool)) != record["allowlist"]:
+        raise GenerationError("the C8s seed record differs from the render of the pinned c8s CLI")
+
+
 def core_entries(images: list[str], seed: dict[str, Any]) -> dict[str, Any]:
     """Mirror the chart's seed: every entry as rendered, nothing else.
 
@@ -529,7 +572,7 @@ def generate(
         raise GenerationError(f"{profile.relative(profile.policy)} has the wrong schema")
     # The specification is the one place that pins c8s.
     c8s = release_profiles.read_spec(profile)["c8s"]
-    verify_c8s_binary(executable, c8s["sourceCommit"])
+    verify_c8s_binary(executable, c8s["sourceCommit"], c8s["release"])
     node_image = f"{c8s['nodeImage']['reference']}@{c8s['nodeImage']['digest']}"
     rendered = controllers(render_chart(policy, profile, overlay))
     expected = {item["controller"] for item in policy["workloads"]}

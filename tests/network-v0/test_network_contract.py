@@ -75,7 +75,9 @@ class NetworkContractTests(unittest.TestCase):
         self.assertEqual(self.port("c8s-credential-release")["cvmPort"], 8443)
         self.assertEqual(self.port("c8s-credential-release")["scope"], "cds-vm")
         self.assertEqual(self.port("c8s-admission-inventory")["cvmPort"], 1019)
-        self.assertEqual(self.port("inner-kubernetes-api")["cvmPort"], 6443)
+        self.assertEqual(self.port("inner-kubernetes-api")["releases"], "before-c8s-v0.99.29")
+        api = self.port("control-plane-kubernetes-api")
+        self.assertEqual((api["scope"], api["externalPort"], api["releases"]), ("control-plane", 6443, "c8s-v0.99.29"))
 
     def test_inner_chart_has_no_public_service(self) -> None:
         public = [
@@ -145,21 +147,49 @@ class NetworkContractTests(unittest.TestCase):
             )
         )
 
-    def test_each_confidential_workload_can_reach_the_cds(self) -> None:
+    def cds_rules(self, documents: list[dict]) -> dict[str, list[dict]]:
+        """The egress rules on the CDS port that select each confidential workload."""
         cds_port = self.port("c8s-credential-release")["cvmPort"]
-        policies = [item for item in self.documents if item["kind"] == "NetworkPolicy"]
-        for workload in self.workloads():
-            labels = workload["spec"]["template"]["metadata"]["labels"]
-            allowed = any(
-                selects(policy["spec"]["podSelector"], labels)
-                and any(
-                    all("ipBlock" in peer for peer in rule.get("to", []))
-                    and any(port.get("port") == cds_port for port in rule.get("ports", []))
-                    for rule in policy["spec"].get("egress", [])
-                )
+        policies = [item for item in documents if item["kind"] == "NetworkPolicy"]
+        return {
+            workload["metadata"]["name"]: [
+                rule
                 for policy in policies
-            )
-            self.assertTrue(allowed, workload["metadata"]["name"])
+                if selects(policy["spec"]["podSelector"], workload["spec"]["template"]["metadata"]["labels"])
+                for rule in policy["spec"].get("egress", [])
+                if any(port.get("port") == cds_port for port in rule.get("ports", []))
+            ]
+            for workload in self.workloads()
+        }
+
+    def test_each_confidential_workload_reaches_only_the_configured_cds(self) -> None:
+        output = subprocess.run(
+            ["helm", "template", "example", str(CHART), *NEUTRAL_MODE,
+             "--set", "c8s.cds.cidrs={198.51.100.4/32}"],
+            cwd=ROOT, check=True, text=True, capture_output=True,
+        ).stdout
+        documents = [item for item in yaml.safe_load_all(output) if item]
+        for name, rules in self.cds_rules(documents).items():
+            self.assertTrue(rules, name)
+            for rule in rules:
+                self.assertEqual(rule.get("to"), [{"ipBlock": {"cidr": "198.51.100.4/32"}}], name)
+
+    def test_the_maintenance_gateway_reaches_only_the_configured_cds(self) -> None:
+        cds_port = self.port("c8s-credential-release")["cvmPort"]
+        for values, peers in ((("--set", "cds.cidrs={198.51.100.4/32}"), [{"ipBlock": {"cidr": "198.51.100.4/32"}}]),
+                              ((), None)):
+            output = subprocess.run(["helm", "template", "example", str(ROOT / "helm/maintenance-gateway"), *values],
+                                    cwd=ROOT, check=True, text=True, capture_output=True).stdout
+            rules = [rule for item in yaml.safe_load_all(output) if item and item["kind"] == "NetworkPolicy"
+                     for rule in item["spec"].get("egress", [])
+                     if any(port.get("port") == cds_port for port in rule.get("ports", []))]
+            self.assertEqual([rule.get("to") for rule in rules], [peers], values)
+
+    def test_without_a_cds_address_the_cds_rule_names_no_peer(self) -> None:
+        # The CDS address is a deployment value; release profiles leave it unset.
+        for name, rules in self.cds_rules(self.documents).items():
+            self.assertTrue(rules, name)
+            self.assertTrue(all("to" not in rule for rule in rules), name)
 
     def test_each_confidential_workload_can_reach_the_mesh(self) -> None:
         # ratls-mesh DNATs every connection between confidential workloads to

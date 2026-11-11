@@ -46,6 +46,10 @@ def main() -> int:
     parser.add_argument("--c8s-repo", required=True, type=Path, help="a clean c8s checkout")
     parser.add_argument("--confos-repo", type=Path, help="a confidential-os-builder checkout")
     args = parser.parse_args()
+    # The bump runs from the repository root, so a relative path would name another directory.
+    args.directory, args.c8s_repo = args.directory.resolve(), args.c8s_repo.resolve()
+    if args.confos_repo is not None:
+        args.confos_repo = args.confos_repo.resolve()
     match = VERSION.search(run([str(args.directory / "c8s"), "--version"]))
     if match is None:
         print(f"pin-local-c8s: {args.directory}/c8s reports no c8s release or pseudo-version", file=sys.stderr)

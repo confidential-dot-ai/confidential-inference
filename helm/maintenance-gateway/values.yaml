@@ -8,7 +8,8 @@ service:
 # Add only an outer proxy which overwrites X-Forwarded-For with one address.
 trustedProxyCidrs: [10.52.0.0/16]
 # The CDS the injected credential client dials, on 8443 unless the CDS VM was
-# started on another port. Set its address as a /32 to narrow the rule.
+# started on another port. The CDS address is a deployment value: set it here
+# as a /32. Empty cidrs opens the port to every address.
 cds:
   port: 8443
   cidrs: []

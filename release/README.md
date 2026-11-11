@@ -197,6 +197,44 @@ allowlist with the new C8s CLI. The script stops when the attestation
 protocol files or the NVIDIA inputs of the node image change. Do those steps
 by hand. Review the full diff before you commit.
 
+## Move a deployment to C8s v0.99.29
+
+A release that pins C8s v0.99.29 runs only on v0.99.29 workers with a
+standalone CDS VM. The old cluster's CDS state does not carry over: a new CDS
+keeps its secrets in process memory, starts empty, and mints a new mesh CA
+(C8s `docs/secrets.md`, `docs/cds-ha.md`). Keep the old cluster, its CDS and
+its release serving until the new deployment passes every acceptance check.
+
+Hand traffic over only when all of these hold:
+
+- The CDS VM runs the `cdsImage` that the release manifest pins, and its
+  `cds-pin.json` launch digest comes from the release's `cds-manifest.json`.
+- The operator keys in its `cds-config.yaml` are the deployment's operator
+  keys.
+- Every application secret is written to the new CDS.
+- Every encrypted volume key is written back from its escrow file with
+  `c8s secrets put` (C8s `docs/volumes.md`). A volume without an escrow file
+  cannot move; provision it again.
+- Every client and gateway that pins a mesh CA pins the new CDS's mesh CA.
+  Leaves issued under the old mesh CA are not trusted by the new deployment.
+
+Accept the new deployment only after these checks pass on it:
+
+1. A confidential workload starts, and its injected `c8s-cert` client gets a
+   certificate from the standalone CDS.
+2. The CDS admits each worker over TCP 1019, and the workers' pods start under
+   the release allowlist.
+3. A credential client whose `cds-pin.json` names another CDS launch digest
+   is refused.
+4. A worker launched with a launch file that the CDS configuration does not
+   pin is refused admission and gets no credentials.
+5. The public attestation route verifies against the new release manifest.
+
+Roll back to the previous release and cluster when any check fails before
+handover. After handover, rolling back needs the old CDS still running with
+its secrets: once it stops, its secrets and mesh CA are gone, and a rollback is
+a new deployment of the old release.
+
 ## The allowlist
 
 Every application container gets exact environment and mount rules. The
@@ -211,7 +249,10 @@ asset from v0.95.0. `bump-c8s.py` renders the seed with
 versions of the worker image build, and records it in
 `inputs/c8s-seeds/<source commit>.json`. For a dev build,
 `pin-local-c8s.py` runs the same bump with the build's CLI. The generator
-reads the record of the pinned commit. `tools/c8s-allowlist-canonical`,
+reads the record of the pinned commit. The release build renders the seed
+again with the pinned CLI and the record's inputs, with the record's Helm
+version first on `PATH` (the workflow installs it), and fails unless the
+canonical render equals the record. `tools/c8s-allowlist-canonical`,
 built against the pinned C8s module, writes the canonical bytes. `c8s allowlist lint --strict` must pass,
 except for the findings in the profile's `accepted-lint-findings.json`. The
 generator fails on any other finding, and on a listed finding that no longer

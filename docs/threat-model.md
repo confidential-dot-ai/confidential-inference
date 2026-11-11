@@ -21,8 +21,8 @@ you review. With C8s v0.99.29, CDS runs as its own confidential VM outside
 the cluster, from the CDS guest image that the release pins. Its launch binds
 the exact bytes of its per-deployment `cds-config.yaml`, and the worker's
 launch file pins that CDS image and configuration. Host management and
-Kubernetes declarations are not proof of approved execution. Measured admission and connection controls must enforce
-those declarations.
+Kubernetes declarations are not proof of approved execution. Measured
+admission and connection controls must enforce those declarations.
 
 Release-signing and policy-update authority remain part of the review.
 A signature identifies an authorized release; it does not prove that its code
@@ -103,8 +103,9 @@ key. A client can choose additional pins and must understand their scope.
 ## Restricted Kubernetes credentials
 
 The C8s operator authentication key authorizes policy updates and, before
-C8s v0.99.29, credential release. The `c8s-operator` workload is a different component. Do not confuse
-CDS policy-update authority with Kubernetes permissions.
+C8s v0.99.29, credential release. The `c8s-operator` workload is a different
+component. Do not confuse CDS policy-update authority with Kubernetes
+permissions.
 
 The C8s node image pinned by the `v0.14.29` example issues Kubernetes user
 `operator` in group `c8s:node-operators`, rather than `system:masters`.
@@ -147,10 +148,9 @@ In releases before C8s v0.99.29, the launch configuration includes the
 operator public key, and the permissions and guards are part of the measured
 node implementation. Retaining a launch-bound operator key does not require
 issuing an unrestricted administrator credential. With C8s v0.99.29, RTMR3
-starts from the
-digest of the worker's launch file. A measured worker takes the operator keys
-from the CDS configuration that this file pins, and the guards are the
-measured worker's admission and runtime controls.
+starts from the digest of the worker's launch file. A measured worker takes
+the operator keys from the CDS configuration that this file pins, and the
+guards are the measured worker's admission and runtime controls.
 
 ## Verification limits
 

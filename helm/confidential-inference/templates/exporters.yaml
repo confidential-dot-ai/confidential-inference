@@ -56,6 +56,7 @@ spec:
           image: {{ .Values.images.dcgmExporter }}
           imagePullPolicy: IfNotPresent
           # A C8s worker refuses a root container, and the image runs as root.
+          # Without root and SYS_ADMIN it reports no profiling fields (values.yaml).
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

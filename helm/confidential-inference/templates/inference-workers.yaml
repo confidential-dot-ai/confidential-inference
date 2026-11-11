@@ -22,6 +22,7 @@ spec:
       targetPort: inference
 {{- $cache := .Values.inference.model.cache }}
 {{- if $cache.enabled }}
+{{- fail "inference.model.cache is unsupported on C8s v0.99.29: the worker mounts /var/lib/models read-only, and fetch-model must write it; use the c8s model volume" }}
 {{- $manifestPin := "" }}
 {{- range $file := include "confidential-inference.expectedFiles" . | fromJsonArray }}
 {{- if hasPrefix (printf "%s=" $.Values.inference.model.mountVerification.revisionMetadata) $file }}

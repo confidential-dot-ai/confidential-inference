@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import shutil
@@ -150,38 +151,47 @@ class BumpTests(unittest.TestCase):
         mesh = BUMP.REGISTRY + "armtls-mesh@sha256:" + "2" * 64
         new = {"sourceCommit": "b" * 40, "coreImages": [operator, mesh]}
         seed = {"schema": "c8s.allowlist/v1", "workloads": {"c8s-router-" + "0" * 12: {}}}
-        commands = []
+        rendered = []
 
-        def run(command, **_kwargs):
-            commands.append(command)
-            if command[0] == "helm":
-                return helm_version
-            output = Path(command[command.index("--output-dir") + 1])
-            (output / "allowlist-seed.json").write_text(json.dumps(seed))
-            return ""
+        def render_seed(binary, inputs):
+            rendered.append((binary, inputs))
+            return seed
 
+        generator = {"render_seed": render_seed, "GenerationError": ValueError,
+                     "canonicalize": lambda document, _tool: json.dumps(document).encode()}
         production, staging = BUMP.release_profiles.load()
         with tempfile.TemporaryDirectory() as directory, \
-                mock.patch.object(BUMP, "ROOT", Path(directory)), mock.patch.object(BUMP, "run", side_effect=run), \
+                mock.patch.object(BUMP, "ROOT", Path(directory)), mock.patch.object(BUMP, "run"), \
                 mock.patch.object(BUMP, "git_show", return_value=sync.encode()), \
-                mock.patch.object(BUMP.runpy, "run_path",
-                                  return_value={"canonicalize": lambda document, _tool: json.dumps(document).encode()}):
+                mock.patch.object(BUMP.runpy, "run_path", return_value=generator):
             (Path(directory) / "release/inputs/c8s-seeds").mkdir(parents=True)
-            helm_version = "v3.16.3"
-            with self.assertRaisesRegex(BUMP.BumpError, "Helm v3.14.4"):
-                BUMP.record_core_seed(Path("c8s"), Path("repo"), {"sourceCommit": "a" * 40}, new, (production, staging))
-            helm_version = "v3.14.4"
-            BUMP.record_core_seed(Path("c8s"), Path("repo"), {"sourceCommit": "a" * 40}, new, (production, staging))
+            inputs, value = BUMP.render_core_seed(Path("c8s"), Path("repo"), new)
+            BUMP.record_core_seed(inputs, value, {"sourceCommit": "a" * 40}, (production, staging))
             record = json.loads((Path(directory) / "release/inputs/c8s-seeds" / (new["sourceCommit"] + ".json")).read_text())
-        self.assertEqual(record, {"sourceCommit": "b" * 40, "coreImages": [operator, mesh], "hardwarePlatform": "tdx",
-                                  "kubeVersion": "v1.36.4", "helmVersion": "v3.14.4", "allowlist": seed})
-        render = commands[-1]
-        self.assertEqual(render[:5], ["c8s", "node-image", "render", "--hardware-platform", "tdx"])
-        for flag, value in (("--kube-version", "v1.36.4"), ("--image-repository", BUMP.REGISTRY + "c8s-operator"),
-                            ("--image-digest", "sha256:" + "1" * 64),
-                            ("--armtls-mesh-image-repository", BUMP.REGISTRY + "armtls-mesh"),
-                            ("--armtls-mesh-image-digest", "sha256:" + "2" * 64)):
-            self.assertEqual(render[render.index(flag) + 1], value)
+        expected = {"sourceCommit": "b" * 40, "coreImages": [operator, mesh], "hardwarePlatform": "tdx",
+                    "kubeVersion": "v1.36.4", "helmVersion": "v3.14.4"}
+        self.assertEqual(record, {**expected, "allowlist": seed})
+        self.assertEqual(rendered, [(Path("c8s"), expected)])
+
+    def test_a_failed_prerequisite_writes_nothing_and_a_failed_step_restores_the_tree(self):
+        args = BUMP.argparse.Namespace(c8s=None, tag="v0.99.30", protocol_review=False, confos_repo=None)
+        steps = ("pin_profiles", "bump_module", "add_source_lock", "share_protocol_manifest", "extend_cdi_record",
+                 "record_core_seed", "regenerate", "regenerate_staging_fixture", "restore_tree")
+        with contextlib.ExitStack() as stack:
+            called = {name: stack.enter_context(mock.patch.object(BUMP, name)) for name in steps}
+            stack.enter_context(mock.patch.object(BUMP, "c8s_cli", return_value=Path("c8s")))
+            render = stack.enter_context(mock.patch.object(
+                BUMP, "render_core_seed", side_effect=BUMP.BumpError("the C8s seed renders with Helm v3.14.4")))
+            with self.assertRaisesRegex(BUMP.BumpError, "Helm v3.14.4"):
+                BUMP.write_bump(args, Path("c8s"), "b" * 40, [], (), {}, {})
+            self.assertEqual([name for name, step in called.items() if step.called], [])
+            render.side_effect = None
+            render.return_value = ({}, {})
+            called["share_protocol_manifest"].side_effect = BUMP.BumpError("protocol source files changed")
+            with self.assertRaisesRegex(BUMP.BumpError, "protocol"):
+                BUMP.write_bump(args, Path("c8s"), "b" * 40, [], (), {"release": "v0.99.29", "sourceCommit": "a" * 40}, {})
+            called["restore_tree"].assert_called_once_with()
+            self.assertFalse(called["record_core_seed"].called)
 
     def test_core_inventory_growth_preserves_comments_and_other_pins(self):
         path = self.write(SPEC_TEXT)
@@ -217,11 +227,33 @@ class BumpTests(unittest.TestCase):
                     .replace("1" * 64, "3" * 64))
         self.assertEqual(path.read_text(), expected)
 
-    def test_the_c8s_edit_refuses_to_change_another_key(self):
+    def test_the_c8s_edit_keeps_another_key_with_the_same_value(self):
         path = self.write(SPEC_TEXT + "other: v0.33.4\n")
-        with mock.patch.object(BUMP, "ROOT", path.parent), self.assertRaisesRegex(BUMP.BumpError, "changed more"):
+        with mock.patch.object(BUMP, "ROOT", path.parent):
             BUMP.edit_yaml(path, ("c8s",), self.new_c8s())
-        self.assertIn("release: v0.33.4", path.read_text())
+        self.assertIn("  release: v0.33.7\n", path.read_text())
+        self.assertTrue(path.read_text().endswith("\nother: v0.33.4\n"))
+
+    def test_a_stable_bump_moves_the_committed_pins_whose_tags_repeat_the_release(self):
+        # cdsManifestArtifact.tag repeats c8s.release for a stable release.
+        path = self.write((ROOT / "release/spec.yaml").read_text())
+        old = BUMP.yaml.safe_load(path.read_text())["c8s"]
+        self.assertEqual(old["cdsManifestArtifact"]["tag"], old["release"])
+        new = json.loads(json.dumps(old).replace("v0.99.29", "v0.99.40"))
+        new["sourceCommit"] = "f" * 40
+        for index, image in enumerate(new["coreImages"]):
+            new["coreImages"][index] = image.split("@")[0] + "@sha256:" + "%x" % (index + 1) * 64
+        for key in ("nodeImage", "nodeManifestArtifact", "cdsImage", "cdsManifestArtifact"):
+            new[key]["digest"] = "sha256:" + "a" * 64
+        for key in ("nodeManifestArtifact", "cdsManifestArtifact"):
+            new[key]["manifestJson"] = "sha256:" + "b" * 64
+        before = BUMP.yaml.safe_load(path.read_text())
+        with mock.patch.object(BUMP, "ROOT", path.parent):
+            BUMP.pin_c8s_mapping(path, new)
+        after = BUMP.yaml.safe_load(path.read_text())
+        self.assertEqual(after["c8s"], new)
+        del before["c8s"], after["c8s"]
+        self.assertEqual(after, before)
 
     def test_an_absent_key_is_appended(self):
         path = self.write("version: v0.14.0-staging\n")
@@ -415,17 +447,17 @@ class BumpTests(unittest.TestCase):
 
     def test_without_a_cli_the_bump_builds_one_from_the_checkout_and_checks_its_commit(self):
         checked = []
-        generator = {"verify_c8s_binary": lambda binary, commit: checked.append((binary, commit)),
+        generator = {"verify_c8s_binary": lambda binary, commit, tag: checked.append((binary, commit, tag)),
                      "GenerationError": ValueError}
         with mock.patch.object(BUMP, "run") as run, mock.patch.object(BUMP.runpy, "run_path", return_value=generator):
-            binary = BUMP.c8s_cli(None, Path("c8s"), "a" * 40, Path("build"))
+            binary = BUMP.c8s_cli(None, Path("c8s"), "a" * 40, "v0.99.29", Path("build"))
             self.assertEqual(binary, Path("build/c8s"))
             self.assertEqual(run.call_args.args[0], ["go", "build", "-o", "build/c8s", "./cmd/c8s"])
             self.assertEqual(run.call_args.kwargs["cwd"], Path("c8s"))
             run.reset_mock()
-            self.assertEqual(BUMP.c8s_cli(Path("given"), Path("c8s"), "a" * 40, Path("build")), Path("given"))
+            self.assertEqual(BUMP.c8s_cli(Path("given"), Path("c8s"), "a" * 40, "v0.99.29", Path("build")), Path("given"))
             run.assert_not_called()
-        self.assertEqual(checked, [(Path("build/c8s"), "a" * 40), (Path("given"), "a" * 40)])
+        self.assertEqual(checked, [(Path("build/c8s"), "a" * 40, "v0.99.29"), (Path("given"), "a" * 40, "v0.99.29")])
 
 
 if __name__ == "__main__":
