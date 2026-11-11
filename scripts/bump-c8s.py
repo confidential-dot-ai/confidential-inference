@@ -3,8 +3,8 @@
 
 Usage:
 
-    scripts/bump-c8s.py --tag v0.33.8 --c8s-repo ../c8s [--profile staging]
-        [--seed allowlist-seed.json]
+    scripts/bump-c8s.py --tag v0.99.29 --c8s-repo ../c8s [--profile staging]
+        [--c8s c8s]
         [--confos-repo ../confidential-os-builder]
         [--protocol-review --protocol-diff-out protocol.diff]
 
@@ -13,7 +13,9 @@ moves every profile. With --profile, it moves only the named profiles: a
 profile that takes c8s from a shared layer gets its own c8s pins, so staging
 can move ahead of production. The script:
 
-1. reads the published digests of the tag from the registry with crane;
+1. reads the published digests of the tag from the registry with crane: the
+   core images of the chart component inventory, the worker guest image and
+   the CDS guest image (C8s v0.99.0 and later);
 2. writes the new `c8s` mapping into the spec.yaml layer that holds it, and
    the c8s operator image into the values.yaml layer that holds it. It edits
    only those values, then parses each file again and requires that nothing
@@ -28,14 +30,13 @@ can move ahead of production. The script:
    inputs did not change. The inputs are bin/confos-fetch-gpu at the
    confidential-os-builder ref that c8s pins in .github/build-pins.json. When
    the ref changed, --confos-repo must be a confidential-os-builder checkout;
-5. for a dev build, records --seed, the node image's
-   /usr/lib/c8s/allowlist-seed.json, in release/inputs/c8s-seeds/<source
-   commit>.json, and deletes the old record no profile pins any more. A
-   release tag's seed is its signed release asset allowlist-seed-<platform>.json
-   (C8s #975), which the allowlist generator verifies and mirrors;
-6. fetches each node manifest and refreshes the image config;
-7. when the staging profile moves, builds the c8s CLI from --c8s-repo and
-   regenerates the staging allowlist test fixture with it;
+5. renders the seed with the c8s CLI (`c8s node-image render`, with the
+   kubelet and Helm versions of the worker image build), records it in
+   release/inputs/c8s-seeds/<source commit>.json, and deletes the old record
+   no profile pins any more. Helm must be the version the worker image pins;
+6. fetches each node and CDS manifest and refreshes the image config;
+7. when the staging profile moves, regenerates the staging allowlist test
+   fixture with the c8s CLI (--c8s, or a build of --c8s-repo);
 8. runs the release checks.
 
 The release build generates the allowlist with a c8s CLI built from the
@@ -90,6 +91,16 @@ BUILD_PINS = ".github/build-pins.json"
 GPU_FETCH = "bin/confos-fetch-gpu"
 # The protocol manifest also depends on the whole pkg/types tree.
 PROTOCOL_TREES = ("pkg/types",)
+# The chart component inventory and the chart values its valuePaths name.
+COMPONENTS = "charts/lib/files/components.yaml"
+CHART_VALUES = "charts/cloud/values.yaml"
+# The first C8s release with the worker and CDS guest images (guests/worker,
+# guests/cds) in place of node-guest-base, and without the seed release asset.
+GUEST_IMAGES_SINCE = (0, 99, 0)
+CDS_IMAGE = REGISTRY + "guests/cds"
+# The worker image build: its pinned kubelet and Helm versions render the seed.
+WORKER_SYNC = "images/node-guest/worker/mkosi.sync"
+SEED_PLATFORM = "tdx"
 
 
 class BumpError(RuntimeError):
@@ -156,16 +167,16 @@ def operator_image(c8s: dict[str, Any]) -> str:
     return next(image for image in c8s["coreImages"] if image.partition("@")[0] == f"{REGISTRY}c8s-operator")
 
 
-def modern_core_images(c8s_repo: Path, commit: str, tag: str) -> list[str]:
-    """Use the selected embedded chart inventory, not the previous release set."""
-    values = yaml.safe_load(git_show(c8s_repo, commit, "internal/helmchart/c8s/values.yaml"))
-    components = values.get("c8sComponents")
+def core_images(c8s_repo: Path, commit: str, tag: str) -> list[str]:
+    """The tag-locked images of the chart component inventory, then the router nginx image."""
+    inventory = yaml.safe_load(git_show(c8s_repo, commit, COMPONENTS))
+    values = yaml.safe_load(git_show(c8s_repo, commit, CHART_VALUES))
+    components = (inventory or {}).get("components")
     if not isinstance(components, list) or not components:
         raise BumpError("the selected C8s chart has no component inventory")
     core = []
     for component in components:
-        # Independently pinned attestation API runs on the measured host in
-        # bare-metal mode. It is not a tag-locked pod component there.
+        # A pinnedDigest component (attestation-api) follows another release cadence.
         if component.get("pinnedDigest"):
             continue
         image = values
@@ -175,7 +186,7 @@ def modern_core_images(c8s_repo: Path, commit: str, tag: str) -> list[str]:
         if not repository.startswith(REGISTRY):
             raise BumpError("a tag-locked C8s component has an unexpected repository")
         core.append(f"{repository}@{digest(f'{repository}:{image_tag(tag)}')}")
-    nginx = values["router"]["nginx"]["image"]
+    nginx = inventory["routerNginx"]["image"]
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", nginx.get("digest", "")):
         raise BumpError("the selected C8s chart nginx image has no immutable digest")
     core.append(nginx["repository"] + "@" + nginx["digest"])
@@ -184,26 +195,27 @@ def modern_core_images(c8s_repo: Path, commit: str, tag: str) -> list[str]:
     return core
 
 
-def new_c8s(tag: str, commit: str, old: dict[str, Any], renamed_mesh: bool = False,
-            c8s_repo: Path | None = None) -> dict[str, Any]:
-    """Return the c8s mapping of the tag in the shape of the old one."""
-    old_tag = image_tag(old["release"])
-    node, artifact = old["nodeImage"], old["nodeManifestArtifact"]
-    if node["tag"] != f"rke2-tdx-cdi-{old_tag}" or artifact["tag"] != f"rke2-tdx-{old_tag}":
+def version(tag: str) -> tuple[int, int, int]:
+    return tuple(int(part) for part in TAG.fullmatch(tag).groups()[:3])
+
+
+def node_pins(tag: str) -> tuple[str, str, str]:
+    """The node image repository, its KubeVirt disk tag and its measurement artifact tag."""
+    if version(tag) < GUEST_IMAGES_SINCE:
+        return REGISTRY + "node-guest-base", f"rke2-tdx-cdi-{image_tag(tag)}", f"rke2-tdx-{image_tag(tag)}"
+    return REGISTRY + "guests/worker", f"{image_tag(tag)}-tdx-kubevirt", f"{image_tag(tag)}-tdx"
+
+
+def new_c8s(tag: str, commit: str, old: dict[str, Any], c8s_repo: Path) -> dict[str, Any]:
+    """Return the c8s mapping of the tag: the old one with every pin moved, plus the CDS guest image."""
+    old_node = (old["nodeImage"]["reference"], old["nodeImage"]["tag"], old["nodeManifestArtifact"]["tag"])
+    if old_node != node_pins(old["release"]):
         raise BumpError("the node image tags do not follow the c8s release tag; edit them by hand")
-    reference = node["reference"]
-    artifact_digest = digest(f"{reference}:rke2-tdx-{image_tag(tag)}")
-    if tuple(int(part) for part in TAG.fullmatch(tag).groups()[:3]) >= (0, 44, 0):
-        if c8s_repo is None:
-            raise BumpError("modern C8s core image pins require the selected source checkout")
-        core = modern_core_images(c8s_repo, commit, tag)
-    else:
-        core = []
-        for image in old["coreImages"]:
-            name = image.partition("@")[0]
-            if renamed_mesh and name == REGISTRY + "ratls-mesh":
-                name = REGISTRY + "armtls-mesh"
-            core.append(f"{name}@{digest(f'{name}:{tag}')}" if name.startswith(REGISTRY) else image)
+    if version(tag) < GUEST_IMAGES_SINCE:
+        raise BumpError("the bump supports C8s v0.99.0 and later, which publish the worker and CDS guest images")
+    reference, node_tag, artifact_tag = node_pins(tag)
+    artifact_digest = digest(f"{reference}:{artifact_tag}")
+    cds_artifact = digest(f"{CDS_IMAGE}:{image_tag(tag)}")
     value = copy.deepcopy(old)
     # baseRelease names the release a dev build previews; a release tag has none.
     if not TAG.fullmatch(tag).group(5):
@@ -211,15 +223,21 @@ def new_c8s(tag: str, commit: str, old: dict[str, Any], renamed_mesh: bool = Fal
     value.update({
         "release": tag,
         "sourceCommit": commit,
-        "coreImages": core,
+        "coreImages": core_images(c8s_repo, commit, tag),
     })
-    node_tag = f"rke2-tdx-cdi-{image_tag(tag)}"
-    value["nodeImage"].update({"tag": node_tag, "digest": digest(f"{reference}:{node_tag}")})
+    value["nodeImage"].update({"reference": reference, "tag": node_tag, "digest": digest(f"{reference}:{node_tag}")})
     value["nodeManifestArtifact"].update({
-        "tag": f"rke2-tdx-{image_tag(tag)}",
+        "tag": artifact_tag,
         "digest": artifact_digest,
         "manifestJson": NODE["manifest_json_digest"](reference, artifact_digest),
     })
+    cds_tag = f"{image_tag(tag)}-kubevirt"
+    value["cdsImage"] = {"reference": CDS_IMAGE, "tag": cds_tag, "digest": digest(f"{CDS_IMAGE}:{cds_tag}")}
+    value["cdsManifestArtifact"] = {
+        "tag": image_tag(tag),
+        "digest": cds_artifact,
+        "manifestJson": NODE["manifest_json_digest"](CDS_IMAGE, cds_artifact),
+    }
     return value
 
 
@@ -275,8 +293,26 @@ def edit_yaml(path: Path, key_path: tuple[str, ...], value: Any) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def add_c8s_keys(path: Path, keys: dict[str, Any]) -> None:
+    """Append keys at the end of the top-level c8s mapping and keep every other byte."""
+    lines = path.read_text().splitlines(keepends=True)
+    start = next(index for index, line in enumerate(lines) if re.fullmatch(r"c8s:[ \t]*\n?", line))
+    end = next((index for index in range(start + 1, len(lines))
+                if lines[index].strip() and not lines[index][0].isspace()), len(lines))
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    indentation = re.match(r"[ ]*", next(line for line in lines[start + 1:end] if line.strip())).group(0)
+    block = "".join(indentation + line + "\n" for line in yaml.safe_dump(keys, sort_keys=False).splitlines())
+    text = "".join(lines[:end]) + block + "".join(lines[end:])
+    expected = yaml.safe_load(path.read_text())
+    expected["c8s"].update(keys)
+    if yaml.safe_load(text) != expected:
+        raise BumpError(f"{path.relative_to(ROOT)}: cannot add {', '.join(keys)} to c8s; edit it by hand")
+    path.write_text(text)
+
+
 def pin_c8s_mapping(path: Path, value: dict[str, Any]) -> None:
-    """Permit only the reviewed core inventory list to change its length."""
+    """Permit only the reviewed core inventory list to change its length, and new c8s keys."""
     current = yaml.safe_load(path.read_text())
     if "baseRelease" in current.get("c8s", {}) and "baseRelease" not in value:
         # Drop the dev build's baseRelease line and the comment above it.
@@ -287,6 +323,14 @@ def pin_c8s_mapping(path: Path, value: dict[str, Any]) -> None:
             raise BumpError(f"{path.relative_to(ROOT)}: cannot drop c8s.baseRelease; edit it by hand")
         path.write_text(text)
         current = expected
+    if "c8s" in current:
+        removed = sorted(set(current["c8s"]) - set(value) - {"baseRelease"})
+        if removed:
+            raise BumpError(f"{path.relative_to(ROOT)}: the new c8s pins drop {', '.join(removed)}; edit it by hand")
+        added = {key: value[key] for key in value if key not in current["c8s"]}
+        if added:
+            add_c8s_keys(path, added)
+            current = yaml.safe_load(path.read_text())
     if "c8s" not in current or current["c8s"]["coreImages"] == value["coreImages"]:
         edit_yaml(path, ("c8s",), value)
         return
@@ -508,18 +552,42 @@ def extend_cdi_record(c8s_repo: Path, confos_repo: Path | None, old: dict[str, A
 # ---------------------------------------------------------------------------
 
 
-def move_core_seed(seed: Path | None, old: dict[str, Any], new: dict[str, Any],
-                   everyone: tuple[release_profiles.Profile, ...]) -> None:
-    """Record a dev build's seed (--seed, the node image's
-    /usr/lib/c8s/allowlist-seed.json) in canonical form, and delete the old
-    record when no profile pins its commit any more. A release tag needs no
-    record: the allowlist mirrors its signed seed asset (C8s #975)."""
+def sync_setting(sync: str, name: str) -> str:
+    match = re.search(rf'^{name}="(v[0-9]+\.[0-9]+\.[0-9]+)"$', sync, re.MULTILINE)
+    if match is None:
+        raise BumpError(f"{WORKER_SYNC} pins no {name}")
+    return match.group(1)
+
+
+def record_core_seed(binary: Path, c8s_repo: Path, old: dict[str, Any], new: dict[str, Any],
+                     everyone: tuple[release_profiles.Profile, ...]) -> None:
+    """Record the seed the release serves in release/inputs/c8s-seeds/<source commit>.json.
+
+    The worker image bakes an empty seed and the release publishes none, so
+    the seed is the render of the pinned CLI with the inputs of the worker
+    image build: its kubelet version, its Helm version, the operator and mesh
+    images. The old record goes when no profile pins its commit any more.
+    """
     records = ROOT / "release/inputs/c8s-seeds"
-    if seed is not None:
-        generator = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
-        allowlist = json.loads(generator["canonicalize"](json.loads(seed.read_text()), None))
-        write_json(records / (new["sourceCommit"] + ".json"),
-                   {"sourceCommit": new["sourceCommit"], "coreImages": new["coreImages"], "allowlist": allowlist})
+    sync = git_show(c8s_repo, new["sourceCommit"], WORKER_SYNC).decode()
+    kube_version, helm_version = sync_setting(sync, "KUBERNETES_VERSION"), sync_setting(sync, "HELM_VERSION")
+    found = run(["helm", "version", "--template", "{{.Version}}"]).strip()
+    if found != helm_version:
+        raise BumpError(f"the worker image renders its seed with Helm {helm_version}; put it first on PATH, not {found}")
+    operator = operator_image(new).split("@")
+    mesh = next(image for image in new["coreImages"] if image.partition("@")[0] == f"{REGISTRY}armtls-mesh").split("@")
+    with tempfile.TemporaryDirectory(prefix="bump-c8s-seed-") as directory:
+        run([str(binary), "node-image", "render", "--hardware-platform", SEED_PLATFORM, "--kube-version", kube_version,
+             "--image-repository", operator[0], "--image-digest", operator[1],
+             "--armtls-mesh-image-repository", mesh[0], "--armtls-mesh-image-digest", mesh[1],
+             "--output-dir", directory])
+        seed = json.loads((Path(directory) / "allowlist-seed.json").read_text(encoding="utf-8"))
+    generator = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
+    write_json(records / (new["sourceCommit"] + ".json"), {
+        "sourceCommit": new["sourceCommit"], "coreImages": new["coreImages"], "hardwarePlatform": SEED_PLATFORM,
+        "kubeVersion": kube_version, "helmVersion": helm_version,
+        "allowlist": json.loads(generator["canonicalize"](seed, None)),
+    })
     pinned = {release_profiles.read_spec(profile)["c8s"]["sourceCommit"] for profile in everyone}
     stale = records / (old["sourceCommit"] + ".json")
     if old["sourceCommit"] not in pinned and stale.exists():
@@ -538,18 +606,28 @@ def regenerate(moved: list[release_profiles.Profile]) -> None:
     run([sys.executable, "scripts/generate-release-allowlist.py", "--refresh-image-config"], cwd=ROOT)
 
 
-def regenerate_staging_fixture(c8s_repo: Path, moved: list[release_profiles.Profile]) -> None:
+def c8s_cli(binary: Path | None, c8s_repo: Path, commit: str, directory: Path) -> Path:
+    """The c8s CLI of the commit: --c8s, or a build of the checkout into directory."""
+    if binary is None:
+        binary = directory / "c8s"
+        run(["go", "build", "-o", str(binary), "./cmd/c8s"], cwd=c8s_repo, env=go_env())
+    generator = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
+    try:
+        generator["verify_c8s_binary"](binary, commit)
+    except generator["GenerationError"] as error:
+        raise BumpError(str(error)) from error
+    return binary
+
+
+def regenerate_staging_fixture(binary: Path, moved: list[release_profiles.Profile]) -> None:
     """Generate the staging allowlist test fixture with the c8s CLI of the tag."""
     if not any(profile.directory == STAGING for profile in moved):
         return
     tests = runpy.run_path(str(RELEASE_TESTS))
-    with tempfile.TemporaryDirectory(prefix="bump-c8s-") as directory:
-        binary = Path(directory) / "c8s"
-        run(["go", "build", "-o", str(binary), "./cmd/c8s"], cwd=c8s_repo, env=go_env())
-        try:
-            data = tests["staging_allowlist"](binary)
-        except tests["MAN"].ManifestError as error:
-            raise BumpError(f"cannot generate the staging allowlist fixture: {error}") from error
+    try:
+        data = tests["staging_allowlist"](binary)
+    except tests["MAN"].ManifestError as error:
+        raise BumpError(f"cannot generate the staging allowlist fixture: {error}") from error
     tests["STAGING_ALLOWLIST"].write_bytes(data)
 
 
@@ -565,8 +643,8 @@ def main() -> int:
     parser.add_argument("--tag", required=True,
                         help="the c8s release tag, for example v0.33.8, or the Go pseudo-version of a dev build")
     parser.add_argument("--c8s-repo", required=True, type=Path, help="a clean c8s checkout at the tag")
-    parser.add_argument("--seed", type=Path,
-                        help="a dev build's node image allowlist seed (/usr/lib/c8s/allowlist-seed.json)")
+    parser.add_argument("--c8s", type=Path,
+                        help="the c8s CLI built from the tag (default: go build ./cmd/c8s in --c8s-repo)")
     parser.add_argument("--profile", action="append", help="a profile to move (default: every profile)")
     parser.add_argument("--confos-repo", type=Path, help="a confidential-os-builder checkout")
     parser.add_argument("--protocol-review", action="store_true",
@@ -582,8 +660,6 @@ def main() -> int:
             raise BumpError("beta requires --allow-beta and --profile staging")
         if dev and args.profile != ["staging"]:
             raise BumpError("an unsigned dev c8s build moves only --profile staging")
-        if bool(dev) != (args.seed is not None):
-            raise BumpError("--seed is for a dev build, and a dev build needs it: a release tag's seed is its signed release asset")
         if args.protocol_review != (args.protocol_diff_out is not None):
             raise BumpError("--protocol-review and --protocol-diff-out go together")
         verified = c8s_release.verify_c8s_tag(args.tag, allow_beta=True) if "-beta." in args.tag else None
@@ -609,19 +685,19 @@ def main() -> int:
         if any(value != olds[0] for value in olds):
             raise BumpError("the moved profiles pin different c8s releases; move them one at a time")
         old = olds[0]
-        renamed = "armtls-mesh-image" in git(c8s_repo, "grep", "-e", "armtls-mesh-image", "-e", "ratls-mesh-image", ref, "--", "cmd", "internal")
-        new = new_c8s(args.tag, commit, old, renamed_mesh=renamed, c8s_repo=c8s_repo)
+        new = new_c8s(args.tag, commit, old, c8s_repo)
 
-        pin_profiles(moved, everyone, new)
-        bump_module(old["release"], args.tag)
-        add_source_lock(c8s_repo, old, new)
-        share_protocol_manifest(c8s_repo, old["sourceCommit"], commit, args.tag,
-                                args.protocol_diff_out.resolve() if args.protocol_review else None)
-        extend_cdi_record(c8s_repo, args.confos_repo.resolve() if args.confos_repo else None, old, new)
-
-        move_core_seed(args.seed.resolve() if args.seed else None, old, new, release_profiles.load())
-        regenerate(moved)
-        regenerate_staging_fixture(c8s_repo, moved)
+        with tempfile.TemporaryDirectory(prefix="bump-c8s-") as directory:
+            binary = c8s_cli(args.c8s.resolve() if args.c8s else None, c8s_repo, commit, Path(directory))
+            pin_profiles(moved, everyone, new)
+            bump_module(old["release"], args.tag)
+            add_source_lock(c8s_repo, old, new)
+            share_protocol_manifest(c8s_repo, old["sourceCommit"], commit, args.tag,
+                                    args.protocol_diff_out.resolve() if args.protocol_review else None)
+            extend_cdi_record(c8s_repo, args.confos_repo.resolve() if args.confos_repo else None, old, new)
+            record_core_seed(binary, c8s_repo, old, new, release_profiles.load())
+            regenerate(moved)
+            regenerate_staging_fixture(binary, moved)
         check(c8s_repo, commit)
     except (BumpError, c8s_release.ReleaseError, release_profiles.ProfileError, NODE["FetchError"]) as error:
         print(f"bump-c8s: {error}", file=sys.stderr)
