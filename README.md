@@ -63,10 +63,12 @@ forwards sensitive data. Online Intel collateral checks are a separate,
 explicit client setting. Direct HTTPS with periodic checks is also possible,
 but does not enforce those pins on each inference connection.
 
-Production uses an operator-managed policy. Current release manifests do not
-pin one deployment's operator key or mesh CA. Clients can make those additional
-acceptance decisions. Do not use historical static-mode instructions for a
-new release.
+Production uses an operator-managed policy. Current production and its client
+configuration stay unchanged. The proposed procedure for a future Confidential
+Cloud deployment uses a signed release, an exact reviewed allowlist, and an
+approved route digest without operator-key trust. Current release manifests
+do not pin one deployment's operator key or mesh CA. Do not use historical
+static-mode instructions for a new release.
 
 See [the threat model](docs/threat-model.md) for enforcement, update authority,
 and verification limits.
