@@ -2,7 +2,7 @@
 
 This repository contains the public confidential-inference product. It is the
 source for the OCI workloads, Kubernetes chart, C8s policy tools, and release
-inputs. Current releases pin a C8s TDX node image.
+inputs. Current releases pin a C8s TDX node image and a C8s CDS guest image.
 
 Before you contribute or create a release, read the
 [developer workflow](docs/runbooks/developer-workflow.md).

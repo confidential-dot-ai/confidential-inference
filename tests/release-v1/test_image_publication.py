@@ -96,6 +96,8 @@ class ImagePublicationTests(unittest.TestCase):
         self.assertIn("dist/image-publication-manifest.json#Image publication evidence", bundle)
         self.assertIn("dist/allowlist.json#c8s allowlist", bundle)
         self.assertIn("dist/release-values.yaml#Release image values", bundle)
+        self.assertIn("dist/cds-manifest.json#CDS image manifest", bundle)
+        self.assertIn("            dist/cds-manifest.json\n", bundle)
         self.assertNotIn("--base-release", bundle)
         build = bundle[bundle.index("- name: build release"):]
         self.assertIn("GH_TOKEN: ${{ github.token }}", build[:build.index("run: |")])

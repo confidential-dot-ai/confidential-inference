@@ -115,15 +115,10 @@ spec:
             matchLabels:
               app.kubernetes.io/component: sglang-router
       ports: [{protocol: TCP, port: 30000}]
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: c8s-system
-      ports: [{protocol: TCP, port: 8443}]
+    {{- include "confidential-inference.cdsEgress" . | nindent 4 }}
     # DNS uses allow-dns. C8s redirects workload TCP to its node mesh.
     # The Kubernetes API is a host endpoint after Service DNAT.
-    # c8s >= v0.66: credential clients dial the node's CDS NodePort 30808.
-    - ports: [{protocol: TCP, port: 15001}, {protocol: TCP, port: 6443}, {protocol: TCP, port: 30808}]
+    - ports: [{protocol: TCP, port: 15001}, {protocol: TCP, port: 6443}]
     - to:
         - ipBlock: {cidr: 10.53.0.1/32}
       ports: [{protocol: TCP, port: 443}]

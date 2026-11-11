@@ -52,7 +52,7 @@ spec:
     {{- end }}
 ---
 # c8s injects certificate and secret clients into confidential workloads.
-# They must reach the c8s certificate service before the main containers start.
+# They must reach the CDS before the main containers start.
 # They must also reach the c8s mesh: ratls-mesh DNATs every TCP connection from
 # one confidential workload to another, on this node or another, to
 # nodeIP:15001 in PREROUTING, and the CNI applies this egress policy after the
@@ -70,26 +70,12 @@ spec:
         values: [gateway, sglang-router, inference-worker, telemetry-collector, kube-state-metrics]
   policyTypes: [Egress]
   egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: c8s-system
-      ports:
-        - {protocol: TCP, port: 8443}
-    # CDS verifies the requesting CVM through that CVM's local attestation API.
-    # Cilium classifies node addresses as host identities, not CIDR peers.
-    - ports:
-        - {protocol: TCP, port: {{ .Values.attestationReceipts.attestationApiPort }}}
-    # The mesh listens on the node address, which Cilium also classifies as a
-    # host identity, so this rule names no peer either.
+    # The mesh listens on the node address, which Cilium classifies as a host
+    # identity, not a CIDR peer, so this rule names no peer.
     - ports:
         - {protocol: TCP, port: 15001}
-    # c8s >= v0.66 (C8s #806): the node hands its injected credential clients
-    # (c8s-cert, c8s-secret, c8s-volume) the CDS NodePort on the address the
-    # target launched with, outside the inner cluster. The node's pod ruleset
-    # admits only that endpoint, so this rule names no peer.
-    - ports:
-        - {protocol: TCP, port: 30808}
+    # The injected credential clients (c8s-cert, c8s-secret, c8s-volume).
+    {{- include "confidential-inference.cdsEgress" . | nindent 4 }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -283,7 +269,7 @@ spec:
     {{- with .Values.telemetry.kubeStateMetrics.target }}
     # C8s's platform kube-state-metrics. C8s, not this policy, limits it to
     # the one address; a node address is a host identity to Cilium, not a
-    # CIDR peer, so the rule names only the port (like the CDS NodePort).
+    # CIDR peer, so the rule names only the port (like the mesh port).
     - ports:
         - {protocol: TCP, port: {{ last (splitList ":" .) }}}
     {{- end }}
@@ -340,28 +326,6 @@ spec:
     - ports:
         - {protocol: TCP, port: 443}
         - {protocol: TCP, port: {{ .Values.kubeStateMetrics.kubeApiPort }}}
-{{- if and .Values.inference.enabled .Values.inference.model.cache.enabled }}
----
-# fetch-model downloads the pinned model revision from Hugging Face and its
-# LFS/Xet CDN, which have no fixed addresses. The byte manifest pins every
-# downloaded byte.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: inference-worker-model-download
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/component: inference-worker
-  policyTypes: [Egress]
-  egress:
-    - to:
-        {{- range .Values.inference.model.cache.egressCidrs }}
-        - ipBlock: {cidr: {{ . | quote }} }
-        {{- end }}
-      ports:
-        - {protocol: TCP, port: 443}
-{{- end }}
 {{- if and .Values.inference.enabled .Values.inference.pd.enabled }}
 ---
 # Decode reaches prefill's KV bootstrap port at the address the router gives

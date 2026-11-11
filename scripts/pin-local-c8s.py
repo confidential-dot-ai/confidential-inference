@@ -6,9 +6,8 @@ Usage:
     scripts/pin-local-c8s.py <local-c8s dir> --c8s-repo <c8s checkout>
         [--confos-repo <confidential-os-builder checkout>]
 
-The directory holds the build's node manifest.json, its c8s CLI and, for a
-dev build, the node image's allowlist-seed.json (internal
-deploy/tools/staging-dev-c8s writes it).
+The directory holds the build's node manifest.json and its c8s CLI, which
+also renders the seed.
 The CLI's version names the build: a C8s release tag or the Go pseudo-version of an unsigned dev build.
 When release/staging already pins that version and that manifest.json, the
 script changes nothing. Otherwise it moves the staging profile with
@@ -47,6 +46,10 @@ def main() -> int:
     parser.add_argument("--c8s-repo", required=True, type=Path, help="a clean c8s checkout")
     parser.add_argument("--confos-repo", type=Path, help="a confidential-os-builder checkout")
     args = parser.parse_args()
+    # The bump runs from the repository root, so a relative path would name another directory.
+    args.directory, args.c8s_repo = args.directory.resolve(), args.c8s_repo.resolve()
+    if args.confos_repo is not None:
+        args.confos_repo = args.confos_repo.resolve()
     match = VERSION.search(run([str(args.directory / "c8s"), "--version"]))
     if match is None:
         print(f"pin-local-c8s: {args.directory}/c8s reports no c8s release or pseudo-version", file=sys.stderr)
@@ -62,9 +65,8 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as directory:
         diff = Path(directory) / "protocol.diff"
         command = [sys.executable, str(BUMP), "--tag", version, "--profile", "staging",
-                   "--c8s-repo", str(args.c8s_repo), "--protocol-review", "--protocol-diff-out", str(diff)]
-        if commit:
-            command += ["--seed", str(args.directory / "allowlist-seed.json")]
+                   "--c8s-repo", str(args.c8s_repo), "--c8s", str(args.directory / "c8s"),
+                   "--protocol-review", "--protocol-diff-out", str(diff)]
         if "-beta." in version:
             command.append("--allow-beta")
         if args.confos_repo is not None:
