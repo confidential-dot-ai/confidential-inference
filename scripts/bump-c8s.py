@@ -435,11 +435,12 @@ def share_protocol_manifest(c8s_repo: Path, old_commit: str, new_commit: str, ta
     goes to diff_out, and the manifest notes that the pull request shows it
     for review.
     """
-    for path in sorted(PROTOCOLS.glob("*.json")):
-        manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifests = {path: json.loads(path.read_text(encoding="utf-8")) for path in sorted(PROTOCOLS.glob("*.json"))}
+    if any(new_commit == manifest["commit"] or new_commit in manifest.get("sharedWithCommits", [])
+           for manifest in manifests.values()):
+        return
+    for path, manifest in manifests.items():
         shared = manifest.get("sharedWithCommits", [])
-        if new_commit == manifest["commit"] or new_commit in shared:
-            return
         if old_commit != manifest["commit"] and old_commit not in shared:
             continue
         sources = list(manifest["capturedFrom"].values()) + list(PROTOCOL_TREES)

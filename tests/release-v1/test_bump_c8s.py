@@ -207,6 +207,22 @@ class BumpTests(unittest.TestCase):
             finally:
                 BUMP.PROTOCOLS = original
 
+    def test_a_manifest_captured_for_the_new_commit_wins_over_sharing_the_old_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = git_repo(Path(directory))
+            old = commit(repo, {"server.go": "old\n"})
+            new = commit(repo, {"server.go": "new\n"})
+            protocols = Path(directory) / "protocols"
+            protocols.mkdir()
+            # The old commit's manifest sorts first, so one ordered pass would share it.
+            for name, value in (("a", old), ("b", new)):
+                manifest = {"commit": value, "capturedFrom": {"routes": "server.go"}, "capturedFromNote": "Captured."}
+                (protocols / f"{name}.json").write_text(json.dumps(manifest, indent=2) + "\n")
+            before = {path.name: path.read_text() for path in protocols.iterdir()}
+            with mock.patch.object(BUMP, "PROTOCOLS", protocols):
+                BUMP.share_protocol_manifest(repo, old, new, "v0.99.29")
+            self.assertEqual({path.name: path.read_text() for path in protocols.iterdir()}, before)
+
     def protocol_bump(self, old_source: str, new_source: str, diff_out: Path | None = None) -> dict:
         """Share the manifest of a commit with one that changes pkg/types/codes.go."""
         with tempfile.TemporaryDirectory() as directory:
