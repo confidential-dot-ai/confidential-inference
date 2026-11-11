@@ -21,6 +21,12 @@ receipts in a separate private repository.
 - `helm/confidential-inference`: the generic Kubernetes application chart.
 - `api`: public API and release schemas.
 
+The intended SGLang boundary is to consume published engine/router images while
+keeping Kubernetes orchestration in this chart. Current releases still build
+the images under `images/sglang*`; their active security and serving behavior
+must be preserved before removal. See [SGLang separation and cleanup](docs/sglang-separation.md)
+and the [inference serving interface](api/inference-serving.md).
+
 ## Build and publish
 
 Use the approved `Release images` workflow on public `main`. It selects
