@@ -94,8 +94,9 @@ PROTOCOL_TREES = ("pkg/types",)
 # The chart component inventory and the chart values its valuePaths name.
 COMPONENTS = "charts/lib/files/components.yaml"
 CHART_VALUES = "charts/cloud/values.yaml"
-# The first C8s release with the worker and CDS guest images (guests/worker,
-# guests/cds) in place of node-guest-base, and without the seed release asset.
+# The first C8s release with the worker guest image (guests/worker) in place of
+# node-guest-base. Not every later tag publishes guests/cds; the bump stops
+# when crane finds no digest.
 GUEST_IMAGES_SINCE = (0, 99, 0)
 CDS_IMAGE = REGISTRY + "guests/cds"
 # The worker image build: its pinned kubelet and Helm versions render the seed.
