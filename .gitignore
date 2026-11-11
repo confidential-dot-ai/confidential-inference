@@ -1,5 +1,4 @@
 # Local credentials and live cluster state
-.infisical.json
 .env
 .env.*
 !.env.example
