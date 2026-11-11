@@ -136,6 +136,15 @@ not define Kubernetes permissions. Those permissions and guards are part of
 the measured node implementation. Retaining a launch-bound operator key does
 not require issuing an unrestricted administrator credential.
 
+## Request media
+
+The worker accepts request images, audio and video only as inline data. It
+refuses media URLs, `file://` URLs and paths before any network or file
+access. Pillow decodes only JPEG, PNG, WEBP and GIF. FFmpeg receives only
+bytes that start with an allowlisted binary container and contain no
+playlist or manifest marker. FFmpeg and Pillow still parse request bytes in
+the worker process, so a decoder defect remains in scope for review.
+
 ## Verification limits
 
 - Quote signatures alone do not establish current revocation or accepted TCB
