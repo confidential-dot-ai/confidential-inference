@@ -149,9 +149,11 @@ the worker process, so a decoder defect remains in scope for review.
 
 A single-node worker listens off loopback only on its HTTP serving port and
 the metrics port. The image binds the `torch.distributed` store, Gloo and
-NCCL bootstrap sockets and other internal SGLang listeners to `127.0.0.1`,
-and the launcher refuses multi-node and other options that open further
-rendezvous, control or publisher listeners.
+NCCL bootstrap sockets, the prefill/decode KV bootstrap server and other
+internal SGLang listeners to `127.0.0.1`, and the launcher refuses
+multi-node and other options that open further rendezvous, control or
+publisher listeners. Decode workers contact the KV bootstrap server on
+`127.0.0.1` only, whatever host a request names.
 
 ## Verification limits
 

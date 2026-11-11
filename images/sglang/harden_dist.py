@@ -3,8 +3,11 @@
 
 The torch.distributed store, gloo and NCCL bootstrap listen on loopback only,
 whatever --host, --dist-init-addr or the environment say. Components that bind
-or advertise the local IP get 127.0.0.1. The launcher refuses multi-node and
-other settings that open further internal listeners.
+or advertise the local IP get 127.0.0.1. The prefill/decode KV bootstrap
+server listens on loopback, and decode reaches it on loopback whatever host a
+request names: every chart layout runs prefill and decode in one pod. The
+launcher refuses multi-node and other settings that open further internal
+listeners.
 """
 import argparse
 import ast
@@ -15,9 +18,12 @@ SOURCE_HASHES = {
     "bootstrap": "fc31071a2e6d56b865f8e15b416f3261016583bcd7e55c483f6731215c39a676",
     "engine": "059c29dabd318a2766024ae8cd62d82e4f4c95bd67ebd9aa346ee8ddd6ad5423",
     "network": "335811df5b7125ffa02dd12a206c3f42977b35091fe83618db4b511ad1ad1968",
+    "disagg_service": "899392c361d227963544aa805a593fa633c1efca9e1cc7779a957815883f4339",
+    "decode": "87c66385b11ac194ea749621b17e9bf134aa7bcd4007d20444445d27708839f7",
 }
 PATHS = {"bootstrap": "srt/distributed/bootstrap.py", "engine": "srt/entrypoints/engine.py",
-         "network": "srt/utils/network.py"}
+         "network": "srt/utils/network.py", "disagg_service": "srt/managers/disagg_service.py",
+         "decode": "srt/disaggregation/decode.py"}
 
 RESOLVE = '    return NetworkAddress("127.0.0.1", dist_port).to_tcp()\n'
 PIN_CALL = "    _pin_listeners_to_loopback(dist_port)\n"
@@ -66,6 +72,12 @@ def _refuse_non_local_listeners(cfg) -> None:
 
 LOCAL_IP = '    return "127.0.0.1"\n'
 BIND_PORT = '    return try_bind_socket("127.0.0.1", port, listen=True)\n'
+# Exact (old, new) text edits; each old text occurs once in the pinned source.
+TEXT_EDITS = {
+    "disagg_service": [("            host=get_serving().host,\n", '            host="127.0.0.1",\n')],
+    "decode": [("    return NetworkAddress(req.bootstrap_host, req.bootstrap_port).to_host_port_str()\n",
+                '    return NetworkAddress("127.0.0.1", req.bootstrap_port).to_host_port_str()\n')],
+}
 
 
 def function(tree, name):
@@ -132,6 +144,15 @@ def harden_network(source):
     return source
 
 
+def harden_text(key, source):
+    for old, new in TEXT_EDITS[key]:
+        if source.count(old) != 1:
+            raise ValueError(f"unsupported source: {key}")
+        source = source.replace(old, new)
+    compile(source, f"hardened_{key}", "exec")
+    return source
+
+
 def patch(root):
     paths = {key: root / path for key, path in PATHS.items()}
     sources = {key: path.read_text() for key, path in paths.items()}
@@ -139,7 +160,8 @@ def patch(root):
         if hashlib.sha256(source.encode()).hexdigest() != SOURCE_HASHES[key]:
             raise ValueError(f"unsupported {key} source; review the listener policy before building")
     results = {"bootstrap": harden_bootstrap(sources["bootstrap"]), "engine": harden_engine(sources["engine"]),
-               "network": harden_network(sources["network"])}
+               "network": harden_network(sources["network"]),
+               **{key: harden_text(key, sources[key]) for key in TEXT_EDITS}}
     for key, result in results.items():
         paths[key].write_text(result)
 

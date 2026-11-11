@@ -141,7 +141,9 @@ def get_video_bytes(video_file: Union[str, bytes, VideoData]) -> bytes:
     "srt/multimodal/processors/bailing_mm.py": {
         "BailingMMMultimodalProcessor._request_url": f'''\
     @staticmethod
-    def _request_url(item, decode=inline_media_bytes):
+    def _request_url(item, decode=inline_media_bytes, media_type="image/png"):
+        import base64
+
         if isinstance(item, (ImageData, VideoData)):
             item = item.url
         elif isinstance(item, dict):
@@ -150,8 +152,8 @@ def get_video_bytes(video_file: Union[str, bytes, VideoData]) -> bytes:
             item = item["url"]
         if not isinstance(item, str) or not item.startswith("data:"):
             raise ValueError({INLINE_ONLY!r})
-        decode(item)
-        return item
+        # The model's processor parses this again; hand it only the checked bytes.
+        return f"data:{{media_type}};base64,{{base64.b64encode(decode(item)).decode()}}"
 ''',
     },
     "srt/multimodal/processors/moss_vl.py": {
@@ -356,7 +358,7 @@ def _make_video_decoder(video_bytes):
          "from sglang.srt.utils import ImageData, VideoData\n"
          "from sglang.srt.utils.common import inline_media_bytes, inline_media_container\n"),
         ('                    "video_url": {"url": self._request_url(item)},\n',
-         '                    "video_url": {"url": self._request_url(item, inline_media_container)},\n'),
+         '                    "video_url": {"url": self._request_url(item, inline_media_container, "video/mp4")},\n'),
     ],
     "srt/multimodal/inkling/feature_extraction.py": [
         ('''\

@@ -285,20 +285,22 @@ class MediaPolicyTests(unittest.TestCase):
             for name, check in entries:
                 with self.subTest(path=path, entry=name):
                     self.assertIn(check, called_names(policy.definition(tree, name)))
-        self.assertIn('self._request_url(item, inline_media_container)',
+        self.assertIn('self._request_url(item, inline_media_container, "video/mp4")',
                       self.hardened["srt/multimodal/processors/bailing_mm.py"])
         moss = ast.parse(self.hardened["srt/multimodal/processors/moss_vl.py"])
         self.assertNotIn("suffix", ast.unparse(policy.definition(moss, "MossVLImageProcessor._normalize_video_string")))
 
-    def test_bailing_passes_only_data_urls(self):
+    def test_bailing_passes_only_canonical_data_urls(self):
         common = lift(self.hardened[COMMON])
         namespace = {"ImageData": SimpleNamespace, "VideoData": type("VideoData", (), {}),
                      "inline_media_bytes": common["inline_media_bytes"]}
         request_url = lift_method(self.hardened["srt/multimodal/processors/bailing_mm.py"],
                                   "BailingMMMultimodalProcessor._request_url", namespace)
+        png = data_url(b"\x89PNG\r\n", "image/png")
+        self.assertEqual(png, request_url({"url": data_url(b"\x89PNG\r\n", "x/y;q=1")}))
         mp4 = data_url(CONTAINERS["mp4"], "video/mp4")
-        self.assertEqual(mp4, request_url({"url": mp4}))
-        self.assertEqual(mp4, request_url(mp4, common["inline_media_container"]))
+        self.assertEqual(mp4, request_url(data_url(CONTAINERS["mp4"], "image/x"), common["inline_media_container"],
+                                          "video/mp4"))
         refused = ("http://127.0.0.1:1/a.png", "file:///etc/hostname", "/etc/hostname",
                    base64.b64encode(CONTAINERS["mp4"]).decode(), data_url(MPD), CONTAINERS["mp4"])
         for value in refused:

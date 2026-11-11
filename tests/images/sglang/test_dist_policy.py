@@ -60,6 +60,8 @@ class DistPolicyTests(unittest.TestCase):
         cls.bootstrap = policy.harden_bootstrap(cls.sources["bootstrap"])
         cls.engine = policy.harden_engine(cls.sources["engine"])
         cls.network = policy.harden_network(cls.sources["network"])
+        cls.disagg_service = policy.harden_text("disagg_service", cls.sources["disagg_service"])
+        cls.decode = policy.harden_text("decode", cls.sources["decode"])
 
     def test_pinned_source_patches_and_fails_closed_on_drift(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -71,6 +73,8 @@ class DistPolicyTests(unittest.TestCase):
             self.assertEqual(self.bootstrap, (root / policy.PATHS["bootstrap"]).read_text())
             self.assertEqual(self.engine, (root / policy.PATHS["engine"]).read_text())
             self.assertEqual(self.network, (root / policy.PATHS["network"]).read_text())
+            self.assertEqual(self.disagg_service, (root / policy.PATHS["disagg_service"]).read_text())
+            self.assertEqual(self.decode, (root / policy.PATHS["decode"]).read_text())
             with self.assertRaisesRegex(ValueError, "unsupported"):
                 policy.patch(root)
 
@@ -148,6 +152,30 @@ class DistPolicyTests(unittest.TestCase):
                 refuse(SimpleNamespace(**{**safe, field: value}))
         with self.assertRaisesRegex(RuntimeError, "single-node"):
             refuse(SimpleNamespace(**{**safe, "dist_init_addr": "127.0.0.1:5000"}))
+
+    def test_kv_bootstrap_is_loopback_whatever_the_request(self):
+        servers = []
+        mode = type("DisaggregationMode", (str,), {"PREFILL": "prefill", "NULL": "null"})
+        ns = functions(self.disagg_service, "start_disagg_service", DisaggregationMode=mode, TransferBackend=str,
+                       get_disagg=lambda: SimpleNamespace(disaggregation_mode="prefill",
+                                                          disaggregation_transfer_backend="mooncake",
+                                                          enable_pd_role_switch=False,
+                                                          disaggregation_bootstrap_port=8999),
+                       get_serving=lambda: SimpleNamespace(host="0.0.0.0"),
+                       get_kv_class=lambda *_: lambda **kwargs: servers.append(kwargs),
+                       KVClassType=SimpleNamespace(BOOTSTRAP_SERVER=None),
+                       maybe_create_ascend_config_store=lambda **_: None)
+        ns["start_disagg_service"]()
+        self.assertEqual([{"host": "127.0.0.1", "port": 8999}], servers)
+
+        class Address(NetworkAddress):
+            def to_host_port_str(self):
+                return f"{self.host}:{self.port}"
+
+        decode = functions(self.decode, "_bootstrap_addr", NetworkAddress=Address, Req=object)["_bootstrap_addr"]
+        for host in ("10.0.0.5", "attacker.example", None):
+            request = SimpleNamespace(bootstrap_host=host, bootstrap_port=8999)
+            self.assertEqual("127.0.0.1:8999", decode(request))
 
     def test_local_ip_and_port_reservations_are_loopback(self):
         ns = functions(self.network, "get_local_ip_auto", "bind_port", "try_bind_socket", "_get_addrinfos_for_bind",

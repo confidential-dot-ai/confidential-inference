@@ -45,6 +45,11 @@ listeners on loopback for single-node runs:
 - The local IP that SGLang components bind or advertise is `127.0.0.1`,
   whatever `SGLANG_HOST_IP` or `HOST_IP` say. Data-parallel port
   reservations bind `127.0.0.1`.
+- The prefill/decode KV bootstrap server binds `127.0.0.1`, and decode
+  reaches it on `127.0.0.1` whatever `bootstrap_host` a request names. Every
+  chart layout runs prefill and decode in one pod, so the bootstrap port in
+  the chart's Service and container ports is no longer reachable from
+  outside the pod.
 - The launcher refuses multi-node runs, `--dist-init-addr`,
   `SGLANG_DISTRIBUTED_INIT_METHOD_OVERRIDE`, `--gated-launch-port`, elastic
   EP, the NIXL all-to-all backend, weight cache daemons, transfer-engine
