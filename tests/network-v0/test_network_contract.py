@@ -199,7 +199,8 @@ class NetworkContractTests(unittest.TestCase):
                 result = subprocess.run(["helm", "template", "example", str(chart), *values],
                                         cwd=ROOT, text=True, capture_output=True)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("cidrs: Array must have at least 1 items", result.stderr)
+                # Helm words the schema error differently across versions.
+                self.assertRegex(result.stderr, r"cidrs'?: .*(at least 1 items|minItems)")
 
     def test_each_confidential_workload_can_reach_the_mesh(self) -> None:
         # ratls-mesh DNATs every connection between confidential workloads to

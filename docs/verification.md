@@ -64,7 +64,7 @@ To pin the launch file of a deployment:
    `cdsImage.manifestSha256` of the release manifest you verified:
 
    ```sh
-   test "$(sha256sum < cds-manifest.json | cut -d' ' -f1)" = "$(jq -r .cdsImage.manifestSha256 release-bundle.json)"
+   test "sha256:$(sha256sum < cds-manifest.json | cut -d' ' -f1)" = "$(jq -r .cdsImage.manifestSha256 release-bundle.json)"
    ```
 
 3. Review `worker.yaml`. Each `cds.measurements` entry must carry the MRTD,

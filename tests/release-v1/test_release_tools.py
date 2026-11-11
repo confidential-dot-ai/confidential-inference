@@ -101,6 +101,9 @@ def build_release(tag: str, evidence: dict, download_dir: Path | None, generate,
         stack.enter_context(mock.patch.object(MAN, "verify_image_source_boundary"))
         stack.enter_context(mock.patch.object(MAN, "changed_paths", return_value=[]))
         stack.enter_context(mock.patch.object(MAN.release_signature, "verify_release_signature"))
+        # The signature check is replaced, so a machine without cosign can run the build.
+        which = MAN.shutil.which
+        stack.enter_context(mock.patch.object(MAN.shutil, "which", side_effect=lambda name: which(name) or "/usr/bin/cosign"))
         stack.enter_context(mock.patch.dict(MAN.ALLOWLIST_GENERATOR, {
             "generate": generate, "image_config": REPOSITORY_CONFIGS.__getitem__,
             "verify_core_seed": verify_core_seed,
