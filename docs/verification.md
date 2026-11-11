@@ -1,14 +1,23 @@
 # Verify Confidential Inference
 
+## Future Confidential Cloud deployment
+
+This procedure is for a new Confidential Cloud deployment. Do not apply it to
+current production or change existing client configurations. The current
+deployment keeps its existing verification policy. Its instructions remain
+available at [the current deployment's source commit](https://github.com/confidential-dot-ai/confidential-inference/blob/eb1249834319615e7a9464e3b34916c550e71740/docs/verification.md).
+
 ## Verification inputs
 
 Client verification uses a signed release, an exact reviewed allowlist, the
 front-door workload, an approved route digest, and Intel TCB status. It does
 not require an operator public key or an operator-key seed in RTMR3.
 
-This procedure uses release `v0.16.2` and TEErminator `v0.0.4` as an example.
-Select a release that matches the endpoint. This example does not establish
-which release is serving production today.
+The release downloads below use `v0.16.2` only to show the file and signature
+checks. The new deployment must select its own signed release and a compatible
+TEErminator version. Replace the release tag in every download and certificate
+identity together. TEErminator `v0.0.4` supports the flags shown here. This
+example does not establish which release is serving production today.
 
 The deployment owner must supply the endpoint, front-door workload, and
 approved route digest through a channel you already trust. Review the route
@@ -79,13 +88,14 @@ Set `APPROVED_ROUTE_DIGEST` to the reviewed route-manifest SHA-256: 64 lowercase
 hexadecimal characters without `sha256:`. This guide does not supply a trusted
 route digest for the current installation. Stop until the deployment owner
 supplies one. For the example release, also confirm that the selected endpoint
-uses the front-door workload shown below.
+uses the front-door workload supplied for that deployment.
 
 ```sh
 : "${APPROVED_ROUTE_DIGEST:?Set the independently approved route digest first}"
-./teerminator remote add 127.0.0.1:8080 https://candidate.api.confidential.ai/ \
+: "${FRONT_DOOR_WORKLOAD:?Set the workload from the reviewed deployment policy}"
+./teerminator remote add 127.0.0.1:8080 https://inference.example.invalid/ \
   --mode attest-lb --image-manifest release-bundle.json \
-  --allowlist allowlist.json --workload c8s-router-7210bdeb078b \
+  --allowlist allowlist.json --workload "$FRONT_DOOR_WORKLOAD" \
   --route-digest "$APPROVED_ROUTE_DIGEST" \
   --tdx-tcb-status UpToDate
 ./teerminator status

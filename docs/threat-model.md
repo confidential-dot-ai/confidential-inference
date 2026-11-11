@@ -1,6 +1,9 @@
 # Threat model
 
-This document describes the current client-verification contract. For exact commands, read [verification.md](verification.md).
+This document describes the client-verification boundary. The operator-key-free
+procedure below is proposed for a new Confidential Cloud deployment. Current
+production and existing client configurations stay unchanged. For the proposed
+commands and the link to current instructions, read [verification.md](verification.md).
 Historical release snapshots in Git history do not describe the current
 serving cluster.
 
@@ -86,7 +89,8 @@ egress policy remain security-sensitive configuration.
 ## Operator authority and client policy
 
 C8s uses operator keys to authorize policy updates and credential release.
-Client verification does not use those keys as trust anchors. It checks a
+For the new Confidential Cloud deployment, the proposed client procedure does
+not use those keys as trust anchors. It checks a
 signed release, an exact reviewed allowlist, and an approved route digest.
 The gateway does not serve an operator-key verification API.
 
