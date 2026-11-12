@@ -5,8 +5,8 @@ The framework release (scripts/build-release-manifest.py) names the software.
 An environment (for example staging or production) adds its configuration:
 its name (--environment), Helm values files, and an allowlist policy (the
 workloads that it runs, its chart release name and namespace). This tool
-joins them into the allowlist of one deployment of that environment. Run it from a checkout of this repository at the
-framework release's source commit:
+joins them into the allowlist of one deployment of that environment. Run it
+from a checkout of this repository at the framework release's source commit:
 
     python3 scripts/render-allowlist.py \\
       --release release-bundle.json --signature release-bundle.sigstore.json \\
