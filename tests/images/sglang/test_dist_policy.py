@@ -6,6 +6,7 @@ with stubs; never imports SGLang or torch.
 """
 import ast
 import importlib.util
+import json
 import os
 from pathlib import Path
 import socket
@@ -20,7 +21,11 @@ ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location("harden_dist", ROOT / "images/sglang/harden_dist.py")
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
-PIN = "a7fd2e1158c389c33077bae67fb797efa8dd09bd"
+FORK = json.loads((ROOT / "tests/images/sglang/fixtures/legacy-diagnostics/source.lock").read_text())["source"]
+PINS = {
+    "release": ("sgl-project/sglang", "a7fd2e1158c389c33077bae67fb797efa8dd09bd"),
+    "diagnostic-fork": (FORK["repository"].removeprefix("https://github.com/"), FORK["commit"]),
+}
 
 
 def functions(source, *names, **namespace):
@@ -43,6 +48,14 @@ class NetworkAddress:
         return f"tcp://{self.host}:{self.port}"
 
 
+def method(source, cls, name, **namespace):
+    tree = ast.parse(source)
+    body = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls).body
+    node = next(n for n in body if isinstance(n, ast.FunctionDef) and n.name == name)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "patched", "exec"), namespace)
+    return namespace[name]
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -52,31 +65,37 @@ def free_port():
 class DistPolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.sources = {}
-        for key, path in policy.PATHS.items():
-            url = f"https://raw.githubusercontent.com/sgl-project/sglang/{PIN}/python/sglang/{path}"
-            with urlopen(url, timeout=60) as response:
-                cls.sources[key] = response.read().decode()
+        cls.trees = {}
+        for variant, (repo, rev) in PINS.items():
+            cls.trees[variant] = {}
+            for key, path in policy.PATHS.items():
+                url = f"https://raw.githubusercontent.com/{repo}/{rev}/python/sglang/{path}"
+                with urlopen(url, timeout=60) as response:
+                    cls.trees[variant][key] = response.read().decode()
+        cls.sources = cls.trees["release"]
         cls.bootstrap = policy.harden_bootstrap(cls.sources["bootstrap"])
         cls.engine = policy.harden_engine(cls.sources["engine"])
         cls.network = policy.harden_network(cls.sources["network"])
         cls.disagg_service = policy.harden_text("disagg_service", cls.sources["disagg_service"])
         cls.decode = policy.harden_text("decode", cls.sources["decode"])
+        cls.conn = policy.harden_text("conn", cls.sources["conn"])
 
-    def test_pinned_source_patches_and_fails_closed_on_drift(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for key, path in policy.PATHS.items():
-                (root / path).parent.mkdir(parents=True, exist_ok=True)
-                (root / path).write_text(self.sources[key])
-            policy.patch(root)
-            self.assertEqual(self.bootstrap, (root / policy.PATHS["bootstrap"]).read_text())
-            self.assertEqual(self.engine, (root / policy.PATHS["engine"]).read_text())
-            self.assertEqual(self.network, (root / policy.PATHS["network"]).read_text())
-            self.assertEqual(self.disagg_service, (root / policy.PATHS["disagg_service"]).read_text())
-            self.assertEqual(self.decode, (root / policy.PATHS["decode"]).read_text())
-            with self.assertRaisesRegex(ValueError, "unsupported"):
+    def test_pinned_sources_patch_and_fail_closed_on_drift(self):
+        self.assertEqual(set(PINS), set(policy.SOURCE_HASHES))
+        for variant, sources in self.trees.items():
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for key, path in policy.PATHS.items():
+                    (root / path).parent.mkdir(parents=True, exist_ok=True)
+                    (root / path).write_text(sources[key])
                 policy.patch(root)
+                for key, path in policy.PATHS.items():
+                    self.assertNotEqual(sources[key], (root / path).read_text(), key)
+                if variant == "release":
+                    for key in policy.PATHS:
+                        self.assertEqual(getattr(self, key), (root / policy.PATHS[key]).read_text())
+                with self.assertRaisesRegex(ValueError, "unsupported"):
+                    policy.patch(root)
 
     def test_hooks_run_before_listeners_open(self):
         lines = [line.strip() for line in self.bootstrap.splitlines()]
@@ -176,6 +195,31 @@ class DistPolicyTests(unittest.TestCase):
         for host in ("10.0.0.5", "attacker.example", None):
             request = SimpleNamespace(bootstrap_host=host, bootstrap_port=8999)
             self.assertEqual("127.0.0.1:8999", decode(request))
+
+    def test_prefill_registers_on_loopback_whatever_the_host(self):
+        class Address(NetworkAddress):
+            def to_url(self):
+                return f"http://{self.host}:{self.port}"
+
+        for variant, sources in self.trees.items():
+            urls = []
+            register = method(policy.harden_text("conn", sources["conn"]), "CommonKVManager",
+                              "register_to_bootstrap", NetworkAddress=Address,
+                              get_parallel=lambda: SimpleNamespace(enable_cp_tp_group_sharing=False,
+                                                                   load_balance_method="round_robin",
+                                                                   enable_dsa_cache_layer_split=False),
+                              get_serving=lambda: SimpleNamespace(port=30000),
+                              get_disagg=lambda: SimpleNamespace(disaggregation_decode_allocation_policy=None),
+                              envs=SimpleNamespace(SGLANG_RUST_SERVER=SimpleNamespace(get=lambda: False)))
+            for host in ("0.0.0.0", "::", "10.0.0.5"):
+                manager = SimpleNamespace(
+                    dist_init_addr=None, bootstrap_host=host, bootstrap_port=8999, kv_args=SimpleNamespace(page_size=1),
+                    _register_topology_row=lambda url, payload: urls.append(url), **dict.fromkeys(
+                        ("attn_tp_size", "attn_tp_rank", "attn_cp_size", "attn_cp_rank", "attn_dp_size",
+                         "attn_dp_rank", "pp_size", "pp_rank", "system_dp_size", "system_dp_rank", "local_ip",
+                         "rank_port", "kv_cache_dtype_str", "dsv41_spec_layout"), 0))
+                register(manager)
+            self.assertEqual(["http://127.0.0.1:8999/route"] * 3, urls, variant)
 
     def test_local_ip_and_port_reservations_are_loopback(self):
         ns = functions(self.network, "get_local_ip_auto", "bind_port", "try_bind_socket", "_get_addrinfos_for_bind",

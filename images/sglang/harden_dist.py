@@ -4,26 +4,34 @@
 The torch.distributed store, gloo and NCCL bootstrap listen on loopback only,
 whatever --host, --dist-init-addr or the environment say. Components that bind
 or advertise the local IP get 127.0.0.1. The prefill/decode KV bootstrap
-server listens on loopback, and decode reaches it on loopback whatever host a
-request names: every chart layout runs prefill and decode in one pod. The
-launcher refuses multi-node and other settings that open further internal
-listeners.
+server listens on loopback; prefill registers with it and decode reaches it on
+loopback whatever --host or a request names: every chart layout runs prefill
+and decode in one pod. The launcher refuses multi-node and other settings that
+open further internal listeners.
 """
 import argparse
 import ast
 import hashlib
 from pathlib import Path
 
-SOURCE_HASHES = {
+RELEASE_HASHES = {
     "bootstrap": "fc31071a2e6d56b865f8e15b416f3261016583bcd7e55c483f6731215c39a676",
     "engine": "059c29dabd318a2766024ae8cd62d82e4f4c95bd67ebd9aa346ee8ddd6ad5423",
     "network": "335811df5b7125ffa02dd12a206c3f42977b35091fe83618db4b511ad1ad1968",
     "disagg_service": "899392c361d227963544aa805a593fa633c1efca9e1cc7779a957815883f4339",
     "decode": "87c66385b11ac194ea749621b17e9bf134aa7bcd4007d20444445d27708839f7",
+    "conn": "8cf4df4d9c651dcec6539d16b5b22dc660d1b715ebfd9a62822efd0a95b394b3",
+}
+# Reviewed source sets; every file of a tree must match one set.
+SOURCE_HASHES = {
+    "release": RELEASE_HASHES,
+    "diagnostic-fork": {**RELEASE_HASHES,
+                        "decode": "7100e620a0cd3730e7a503fc14b38b8d5f7d8b2dc9fa37dcbb41f9e8e1f88157",
+                        "conn": "694e2fb4c9f4ef441a66cbbd8ba0ba1cf33e9190696bdc1857fdca11c1e8f1ec"},
 }
 PATHS = {"bootstrap": "srt/distributed/bootstrap.py", "engine": "srt/entrypoints/engine.py",
          "network": "srt/utils/network.py", "disagg_service": "srt/managers/disagg_service.py",
-         "decode": "srt/disaggregation/decode.py"}
+         "decode": "srt/disaggregation/decode.py", "conn": "srt/disaggregation/common/conn.py"}
 
 RESOLVE = '    return NetworkAddress("127.0.0.1", dist_port).to_tcp()\n'
 PIN_CALL = "    _pin_listeners_to_loopback(dist_port)\n"
@@ -77,6 +85,8 @@ TEXT_EDITS = {
     "disagg_service": [("            host=get_serving().host,\n", '            host="127.0.0.1",\n')],
     "decode": [("    return NetworkAddress(req.bootstrap_host, req.bootstrap_port).to_host_port_str()\n",
                 '    return NetworkAddress("127.0.0.1", req.bootstrap_port).to_host_port_str()\n')],
+    "conn": [("        bootstrap_na = NetworkAddress(host, self.bootstrap_port)\n",
+              '        bootstrap_na = NetworkAddress("127.0.0.1", self.bootstrap_port)\n')],
 }
 
 
@@ -156,9 +166,9 @@ def harden_text(key, source):
 def patch(root):
     paths = {key: root / path for key, path in PATHS.items()}
     sources = {key: path.read_text() for key, path in paths.items()}
-    for key, source in sources.items():
-        if hashlib.sha256(source.encode()).hexdigest() != SOURCE_HASHES[key]:
-            raise ValueError(f"unsupported {key} source; review the listener policy before building")
+    digests = {key: hashlib.sha256(source.encode()).hexdigest() for key, source in sources.items()}
+    if digests not in SOURCE_HASHES.values():
+        raise ValueError("unsupported source; review the listener policy before building")
     results = {"bootstrap": harden_bootstrap(sources["bootstrap"]), "engine": harden_engine(sources["engine"]),
                "network": harden_network(sources["network"]),
                **{key: harden_text(key, sources[key]) for key in TEXT_EDITS}}
