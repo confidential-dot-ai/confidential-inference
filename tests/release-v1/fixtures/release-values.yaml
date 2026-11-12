@@ -8,4 +8,4 @@ images:
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:38e2c52da58dc80e1e7591373b0881672c4412098394147bb44c0619b8552b75
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2

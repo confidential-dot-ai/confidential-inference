@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://confidential.ai/schemas/release-manifest/v2",
   "title": "Confidential inference framework release manifest",
-  "description": "The signed framework release. It names the software: image digests, the chart, C8s and the node image. It holds no deployment value: no allowlist, no Helm values, no model, no hostname.",
+  "description": "The signed framework release. It names the software: image digests, the chart, C8s, the node image and the CDS guest image. It holds no deployment value: no allowlist, no Helm values, no model, no hostname.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -237,6 +237,23 @@
     "rtmr2": {
       "$ref": "#/$defs/sha384Hex"
     },
+    "cdsImage": {
+      "description": "The CDS guest image of the C8s release and the SHA-256 of its manifest.json (the release asset cds-manifest.json). A deployment's CDS pin binds a launch digest from that manifest.json.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference",
+        "manifestSha256"
+      ],
+      "properties": {
+        "reference": {
+          "$ref": "#/$defs/imageReference"
+        },
+        "manifestSha256": {
+          "$ref": "#/$defs/sha256Digest"
+        }
+      }
+    },
     "sourceLock": {
       "type": "object",
       "additionalProperties": false,
@@ -256,5 +273,29 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "$comment": "C8s v0.99.0 and later run CDS from its own guest image, which the release must name.",
+      "if": {
+        "properties": {
+          "c8s": {
+            "required": [
+              "release"
+            ],
+            "properties": {
+              "release": {
+                "pattern": "^v(?:0\\.(?:99|[1-9][0-9]{2,})|[1-9][0-9]*)\\."
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "cdsImage"
+        ]
+      }
+    }
+  ]
 }

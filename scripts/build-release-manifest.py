@@ -9,7 +9,8 @@ is, and a client verifies it. It lists:
 - the Helm chart identity and the chart package;
 - the c8s release, its source commit, its core image digests, the images of
   its node seed, and the source lock entry for that commit;
-- the node image digest and its TDX measurements.
+- the node image digest and its TDX measurements;
+- the CDS guest image digest and the SHA-256 of its manifest.json.
 
 It holds no deployment value: no allowlist, no Helm values, no model, no
 hostname, no address. Each deployment renders its own allowlist from a
@@ -36,7 +37,7 @@ When the base is a commit, there is no base release. --download-dir keeps
 the downloaded files; the build uses the files already there, after the same
 checks.
 
-The build writes two files to --output-dir:
+The build writes three files to --output-dir:
 
 - release-bundle.json: the manifest. It must match
   api/release-manifest-v2.schema.json;
@@ -44,7 +45,10 @@ The build writes two files to --output-dir:
   (chart.archiveSha256) and the OCI reference the publish job pushes it to
   (chart.reference). The build writes the archive itself with fixed metadata
   (not helm package, whose output carries file times), so a rebuild gives
-  the same bytes.
+  the same bytes;
+- cds-manifest.json: the CDS guest image manifest.json (release/cds-manifest.json).
+  The manifest binds its SHA-256 (cdsImage.manifestSha256). A client needs
+  its measurements to check the CDS pin of a deployment.
 
 The release workflow builds them at the tag, signs the manifest, and attaches
 both to the GitHub release. Anyone can build them again from the tagged tree
@@ -153,6 +157,14 @@ def validate_spec(spec: Any) -> dict[str, Any]:
             "c8s.nodeManifestArtifact.digest must be a SHA-256 digest")
     require(DIGEST.fullmatch(str(c8s["nodeManifestArtifact"].get("manifestJson"))) is not None,
             "c8s.nodeManifestArtifact.manifestJson must be a SHA-256 digest")
+    cds = c8s.get("cdsImage")
+    require(isinstance(cds, dict) and isinstance(cds.get("reference"), str)
+            and DIGEST.fullmatch(str(cds.get("digest"))) is not None,
+            "c8s.cdsImage needs a reference and a digest")
+    artifact = c8s.get("cdsManifestArtifact")
+    require(isinstance(artifact, dict) and DIGEST.fullmatch(str(artifact.get("digest"))) is not None
+            and DIGEST.fullmatch(str(artifact.get("manifestJson"))) is not None,
+            "c8s.cdsManifestArtifact needs a digest and a manifestJson SHA-256 digest")
     core_images = c8s.get("coreImages")
     require(isinstance(core_images, list) and core_images
             and len(set(core_images)) == len(core_images)
@@ -254,6 +266,15 @@ def node_measurements(path: Path, spec: dict[str, Any]) -> dict[str, Any]:
         "manifestJsonSha256": sha256(data),
         "tdx": values,
     }
+
+
+def cds_image(path: Path, spec: dict[str, Any]) -> dict[str, str]:
+    """The pinned CDS guest image and the SHA-256 of its manifest.json, which the CDS pin of a deployment binds."""
+    data = path.read_bytes()
+    require(sha256(data) == spec["c8s"]["cdsManifestArtifact"]["manifestJson"],
+            f"{path.name} differs from c8s.cdsManifestArtifact.manifestJson")
+    image = spec["c8s"]["cdsImage"]
+    return {"reference": f"{image['reference']}@{image['digest']}", "manifestSha256": sha256(data)}
 
 
 def read_publication(path: Path) -> tuple[bytes, dict[str, Any]]:
@@ -469,9 +490,10 @@ def publication_binding(
 def seed_images(c8s: dict[str, Any]) -> list[str]:
     """The images of the C8s node seed: the core entries that every allowlist mirrors.
 
-    The seed is the signed release asset of the pinned C8s release (or its
-    record in release/inputs/c8s-seeds/). It can name images that are not C8s
-    core images, for example kube-state-metrics.
+    The seed is the record of the pinned commit in release/inputs/c8s-seeds/,
+    which scripts/bump-c8s.py renders with the c8s CLI of that commit, and
+    scripts/render-allowlist.py renders again. It can name images that are
+    not C8s core images, for example kube-state-metrics.
     """
     try:
         seed = ALLOWLIST_GENERATOR["core_seed"](c8s)
@@ -497,8 +519,9 @@ def build(
     download_dir: Path | None,
     spec_path: Path = release_spec.SPEC,
     node_manifest: Path = release_spec.NODE_MANIFEST,
+    cds_manifest: Path = release_spec.CDS_MANIFEST,
 ) -> dict[str, bytes]:
-    """Return the release files by name: the manifest and the chart package."""
+    """Return the release files by name: the manifest, the chart package and the CDS image manifest."""
     version = chart_version(tag)
     chart = chart.resolve()
     identity = chart_identity(chart)
@@ -511,6 +534,7 @@ def build(
         base = base_release_images(publication, download_dir or Path(directory), required_images=required_images)
     images = release_images(spec["images"], publication, base)
     node = node_measurements(node_manifest, spec)
+    cds = cds_image(cds_manifest, spec)
     lock = source_lock_entry(read_json(lock_path), spec["c8s"]["sourceCommit"])
     require(lock.get("tag") == spec["c8s"]["release"], "the source lock tag differs from c8s.release")
     node_reference = f"{spec['c8s']['nodeImage']['reference']}@{spec['c8s']['nodeImage']['digest']}"
@@ -551,13 +575,17 @@ def build(
         "mrtd": node["tdx"]["mrtd"],
         "rtmr1": node["tdx"]["rtmr1"],
         "rtmr2": node["tdx"]["rtmr2"],
+        # The SHA-256 of release/cds-manifest.json, the manifest.json of the
+        # pinned CDS guest image, which the release publishes beside the manifest.
+        "cdsImage": cds,
         "sourceLock": {
             "path": lock_path.relative_to(ROOT).as_posix() if ROOT in lock_path.resolve().parents else str(lock_path),
             "sha256": sha256(lock_path.read_bytes()),
         },
     }
     validate_schema(manifest)
-    return {"release-bundle.json": encode(manifest), archive_name: archive}
+    return {"release-bundle.json": encode(manifest), archive_name: archive,
+            "cds-manifest.json": cds_manifest.read_bytes()}
 
 
 def encode(manifest: dict[str, Any]) -> bytes:

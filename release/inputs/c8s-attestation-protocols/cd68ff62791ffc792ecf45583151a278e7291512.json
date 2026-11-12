@@ -1,0 +1,96 @@
+{
+  "schema": "confidential-inference.c8s-attestation-protocol-manifest/v1",
+  "commit": "cd68ff62791ffc792ecf45583151a278e7291512",
+  "sharedWithCommits": [
+    "bf781caf2bcafd5df0b599d4a33a08c8ec7ab31c"
+  ],
+  "attestationProtocol": "c8s/attest-pq/v1+xwing",
+  "capturedFrom": {
+    "cdsattestRoutes": "internal/cmds/cdsattest/server.go",
+    "bundleTypes": "pkg/types/verify.go",
+    "cdsAllowlistRoutes": "internal/cmds/cds/routes.go"
+  },
+  "cdsattestRoutes": [
+    {
+      "method": "POST",
+      "path": "/.well-known/c8s/attest-pq"
+    },
+    {
+      "method": "GET",
+      "path": "/.well-known/c8s/attest-pq",
+      "note": "always 400 invalid_request (client-first POST only)"
+    },
+    {
+      "method": "GET",
+      "path": "/.well-known/c8s/attest-lb"
+    },
+    {
+      "method": "POST",
+      "path": "/.well-known/c8s/tunnel"
+    }
+  ],
+  "attestPqRequest": {
+    "method": "POST",
+    "bodyFields": [
+      "nonce",
+      "xwing_ek"
+    ]
+  },
+  "attestationBundleFields": [
+    "version",
+    "platform",
+    "generation",
+    "nonce",
+    "evidence",
+    "cds_cert_pem",
+    "front_door_mode",
+    "xwing_ek",
+    "xwing_ct",
+    "session_id",
+    "identity_proof",
+    "serving_leaf_sha256",
+    "measured_policies",
+    "route_digest"
+  ],
+  "identityProofFields": [
+    "algorithm",
+    "leaf_sha256",
+    "mesh_ca_sha256",
+    "signature"
+  ],
+  "cdsRoutes": [
+    {
+      "method": "GET",
+      "path": "/allowlist"
+    },
+    {
+      "method": "PUT",
+      "path": "/allowlist"
+    },
+    {
+      "method": "PUT",
+      "path": "/allowlist/workloads/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/allowlist/workloads/{name}"
+    },
+    {
+      "method": "GET",
+      "path": "/ca"
+    },
+    {
+      "method": "GET",
+      "path": "/operator-keys"
+    },
+    {
+      "method": "GET",
+      "path": "/measurements"
+    }
+  ],
+  "allowlistDocumentTopLevelFields": [
+    "schema",
+    "workloads"
+  ],
+  "capturedFromNote": "Read from the C8s v0.80.10 source. Since v0.74.0-beta.2 (4c0f5fd6), internal/cmds/cdsattest/server.go and pkg/types changed; the route table, the attest-pq request and the identity proof fields are unchanged, and the bundle gained the optional measured_policies and route_digest fields. c8s v0.80.9 commit bf781caf2bcafd5df0b599d4a33a08c8ec7ab31c is byte-identical to this commit in internal/cmds/cdsattest/server.go, pkg/types/verify.go, internal/cmds/cds/routes.go, pkg/types, and therefore shares this manifest."
+}

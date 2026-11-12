@@ -23,8 +23,6 @@ gateway:
 attestationReceipts:
   evidenceBaseUrl: https://api.example.invalid
   evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
-  cds:
-    url: https://192.0.2.20:30808
 kubeStateMetrics:
   enabled: false
 inference:
