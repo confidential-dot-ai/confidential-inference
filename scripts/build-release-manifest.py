@@ -12,7 +12,7 @@ The manifest states what the release is. The client verifies it. It lists:
 - the model identity;
 - the SHA-256 of the generated allowlist and of the generated values file.
 
-It holds no deployment value: no mesh CA, no operator key, no node name.
+It holds no deployment value: no mesh CA, no node name.
 
 The release tag is the version. The tag selects the profile
 (release/profiles.json), and the build sets the release name and the chart

@@ -31,11 +31,6 @@ the pepper or a plaintext API key.
 
 - `maintenance-dns-receipt.schema.json`: secret-free DNS change receipts.
 
-## Historical contracts
-
-- `release-bundle.schema.json`: release inventory format before v0.14.0.
-  The release signature check still validates old releases against it.
-
 The network port and observability references moved to
 [docs/network-ports.yaml](../docs/network-ports.yaml) and
 [docs/observability-metrics.yaml](../docs/observability-metrics.yaml). The C8s

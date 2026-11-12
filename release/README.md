@@ -4,7 +4,7 @@ This directory is the one source of truth for the next production release.
 It holds the release inputs and signing trust files. Generated assets are
 published on GitHub Releases. Historical snapshots remain in Git history.
 
-The release contains no target, placement, operator key, or mesh CA. The
+The release contains no target, placement, or mesh CA. The
 private deployment repository holds the targets.
 
 `release/profiles.json` declares the release profiles: the tag suffix, the

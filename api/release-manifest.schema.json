@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://confidential.ai/schemas/release-manifest/v1",
   "title": "Confidential inference release manifest",
-  "description": "The signed public release, v0.14.0 and later. It names the software, not a deployment: no target, placement, operator key, or mesh CA.",
+  "description": "The signed public release, v0.14.0 and later. It names the software, not a deployment: no target, placement, or mesh CA.",
   "type": "object",
   "additionalProperties": false,
   "required": [

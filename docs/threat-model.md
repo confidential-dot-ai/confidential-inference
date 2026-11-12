@@ -34,6 +34,12 @@ application data. The internal request path must remain protected by the
 reviewed C8s and application controls. Front-door verification alone is not a
 receipt from every serving worker.
 
+The allowlist states what each workload may run. The route manifest states
+which workload receives the traffic for a host name. The front-door evidence
+binds the SHA-256 of the route manifest in use. A client that pins that digest
+rejects a changed route, for example a route from `api.confidential.ai` to an
+allowlisted workload other than the gateway.
+
 ## Policy and configuration protection
 
 Production retains an operator-managed allowlist and Kubernetes update rights.
@@ -83,23 +89,16 @@ does not stop approved application code from deliberately exposing data.
 TLS and the internal mesh protect transport; peer selection and application
 egress policy remain security-sensitive configuration.
 
-## Operator keys and client policy
+## Client pins
 
-`c8s.operatorKeys` reports actual CDS public update keys. It is not a proof of
-exclusive private-key custody. The gateway obtains the list through verified
-CDS access. An independently accessible direct CDS check is a separate
-integration; do not treat the gateway's public `/operator-keys` route as CDS.
-
-A release-signing key, CDS policy-update key, mesh CA, and Kubernetes client CA
-have different roles. Do not use the old production PEM files as new release
-anchors. New manifests do not require one fixed deployment mesh CA or operator
-key. A client can choose additional pins and must understand their scope.
+The release-signing identity, the mesh CA, and the Kubernetes client CA have
+different roles. New manifests do not require one fixed deployment mesh CA.
+A client can choose additional pins and must understand their scope.
 
 ## Restricted Kubernetes credentials
 
-The C8s operator authentication key authorizes credential release and policy
-updates. The `c8s-operator` workload is a different component. Do not confuse
-CDS policy-update authority with Kubernetes permissions.
+CDS policy-update authority is different from Kubernetes permissions. The
+`c8s-operator` workload is a different component.
 
 The C8s node image pinned by the `v0.14.29` example issues Kubernetes user
 `operator` in group `c8s:node-operators`, rather than `system:masters`.
@@ -131,10 +130,9 @@ CDS application secrets are distinct from Kubernetes Secrets. Launch checks
 do not establish that approved application code never writes sensitive data
 to a log or exposes it through an API.
 
-RTMR3 binds launch configuration, including the operator public key. It does
-not define Kubernetes permissions. Those permissions and guards are part of
-the measured node implementation. Retaining a launch-bound operator key does
-not require issuing an unrestricted administrator credential.
+RTMR3 binds the launch configuration. It does not define Kubernetes
+permissions. Those permissions and guards are part of the measured node
+implementation.
 
 ## Request media
 
