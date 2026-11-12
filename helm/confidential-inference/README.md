@@ -22,7 +22,7 @@ The signed release manifest binds it by digest (`chart.archiveSha256`). It
 has no values files: each environment keeps its own
 ([release/README.md](../../release/README.md)).
 
-The gateway uses one internal HTTP service behind C8s TLS-LB. Public inference
+The gateway uses one internal HTTP service behind the C8s router. Public inference
 requests and signed admin requests use that same entry path. The gateway reads
 its API-key pepper and its admin client configuration from C8s
 application-secret memory. It keeps no state on disk: it pulls the API keys
@@ -32,7 +32,7 @@ them, and sends usage events back to the admin (`gateway.usage.enabled`).
 The gateway no longer serves `/attestation` (clients verify the front door with
 TEErminator; see [client verification](../../docs/verification.md)). The chart
 renders nothing from its former attestation inputs (`attestationReceipts`
-except `evidenceEgressCidrs` and `attestationApiPort`, `runtimeConfig.releaseBundle`). It
+except `evidenceEgressCidrs`, `runtimeConfig.releaseBundle`). It
 still accepts them, because `bin/deploy` sets them for every release it
 deploys; they go once production runs a release built from this chart.
 
@@ -77,6 +77,67 @@ for worker in inference-worker-0 inference-worker-1; do
   # Send one chat completion through the router before the next worker.
 done
 ```
+
+## Model download
+
+A worker gets its model in one of two ways:
+
+- The C8s model volume (the default): an encrypted volume that CDS opens for
+  the pod (`inference.model.c8sVolumeSource`, the `confidential.ai/c8s-volumes`
+  annotation).
+- A download at each start (`inference.model.download.enabled`).
+
+The plain model cache (`inference.model.cache`) is refused. The C8s v0.99.29
+worker mounts its models disk (`/var/lib/models`) read-only, so `fetch-model`
+cannot fill it.
+
+With `inference.model.download`, the worker downloads the model at each start
+to its writable `data` disk. That is the encrypted scratch disk of the
+Confidential Cloud `c8s-worker` image (serial `confai-scratch`, at least 64
+GiB). The guest encrypts it with a key for each boot, so it is empty after
+each boot. The chart does this:
+
+1. The pod gets a default-medium `emptyDir`, `model-download`. The kubelet
+   places it under `/var/lib/kubelet`, on the scratch disk. The C8s node
+   classifies the mount as encrypted storage, so an `emptyDir` allowlist rule
+   admits it.
+2. The container that verifies the model (`sglang`, the PD `engram-holder`, or
+   `sglang-pair`) runs `fetch-model` first. It writes to
+   `/mnt/c8s-data/model-download`. It checks each file against the byte
+   manifest (`inference.model.download.manifest`, from the `model-manifest`
+   ConfigMap). The argv pins the SHA-256 of the manifest. That SHA-256 must be
+   the `mountVerification` pin of `revisionMetadata`, or the render fails.
+3. Then `wait-for-model --plain-cache` checks every file again on a read-only
+   mount of the same volume, at the model path
+   (`volumeDirectory/<volume name>`). Then it starts SGLang. The model path is
+   the same as with the C8s model volume, so the worker argv does not change.
+
+A C8s v0.99.29 worker drops all outbound traffic of a pod, except to the
+exits of its allowlist entry. The node gives a pod its exits only when all
+its main containers run. Thus the download runs in a main container, not in
+an init container. Each `inference.model.download.hosts` entry is one exit on
+port 443. Its address goes into `hostAliases`, so no DNS answer can move it.
+The first host is the endpoint. The other hosts are the hosts that it
+redirects to. C8s accepts at most 8 exits, each a fixed address. The CDN of
+Hugging Face has no fixed addresses, so use a model mirror at a fixed address.
+Its TLS certificate must chain to a CA in the image. The deployment's
+allowlist policy must declare `"egress": {"port": 443}` for each inference
+workload. `scripts/render-allowlist.py` refuses a pod with `hostAliases` and
+no declared egress. The `inference-worker-model-download` NetworkPolicy
+admits the same addresses.
+
+Limits:
+
+- Each start downloads the whole model. A container restart keeps the
+  `emptyDir`, and `fetch-model` keeps the files that match. A new pod or a
+  reboot downloads all files again. The startup probe and the pair's
+  `startupTimeoutSeconds` must include the download time.
+- `sizeLimit` (512Gi by default) must hold the model. The kubelet evicts the
+  pod above it. The scratch disk must hold the model and the other node state.
+- The scratch disk encryption has no integrity protection. The checks before
+  the start find a changed byte. After the start, the host can change blocks
+  to random data without detection. With the C8s model volume, dm-verity
+  checks every read.
 
 ## Prefill/decode layout
 
@@ -132,7 +193,10 @@ keeps other pods out: the KV bootstrap server shares the worker's `--host`
 binds `INADDR_ANY`.
 
 The plain model cache (`inference.model.cache`) is not supported with this
-layout; the render fails if it is enabled. With telemetry on, the collector
+layout; the render fails if it is enabled. With `inference.model.download`,
+the holder (or, in a pair, the model gate of `sglang-pair`) downloads the
+model before it verifies it, and every worker reads the same read-only
+mount ("Model download"). With telemetry on, the collector
 scrapes one job per PD worker (`inference-pd-<name>`, the worker's port: add
 `--enable-metrics` to its args) besides the gateway, the router and
 kube-state-metrics. The PD pod has no GPU exporter. SGLang serves

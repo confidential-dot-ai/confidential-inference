@@ -23,6 +23,9 @@ It refuses to render when:
 - a values file sets `environment`: the render sets it from --environment;
 - the --environment name is not lowercase letters, digits, and hyphens;
 - the chart renders an image that the framework release does not name;
+- the C8s seed record of the pinned commit (release/inputs/c8s-seeds/) is
+  not what `c8s node-image render` of the --c8s CLI writes. The render runs
+  the Helm version that the record names, so put it first on PATH;
 - `c8s allowlist lint --strict` finds a problem that the deployment did not
   accept (--accepted-findings).
 
@@ -337,6 +340,8 @@ def render(
             allowlist_bytes = ALLOWLIST_GENERATOR["generate"](
                 deployment, c8s, canonical_tool, overlay=overlay_path, image_env=configs, c8s=spec["c8s"],
             )
+            # The allowlist mirrors the seed record; it must be the render of the pinned CLI.
+            ALLOWLIST_GENERATOR["verify_core_seed"](c8s, canonical_tool, spec["c8s"])
         except ALLOWLIST_GENERATOR["GenerationError"] as error:
             raise ManifestError(str(error)) from error
     allowlist = json.loads(allowlist_bytes)

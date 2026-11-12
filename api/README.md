@@ -20,7 +20,7 @@ the exact active bytes.
 ## Gateway APIs
 
 - `gateway-inference.openapi.json`: public inference, model catalog, health,
-  and native C8s routes served by TLS-LB.
+  and native C8s routes served by the C8s router.
 - `gateway-admin.openapi.json`: the key registry snapshot. The gateway pulls
   it from the admin (`GET /api/gateway/key-snapshot`); the admin may also
   push it to the gateway's signed admin API.

@@ -21,6 +21,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "release/spec.yaml"
 NODE_MANIFEST = ROOT / "release/node-manifest.json"
+CDS_MANIFEST = ROOT / "release/cds-manifest.json"
 IMAGE_CONFIG = ROOT / "release/inputs/image-config.json"
 # The registry of the images that this repository builds. spec.yaml names
 # these images without a digest; the release build adds the published digest.

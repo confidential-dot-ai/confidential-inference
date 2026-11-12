@@ -21,8 +21,6 @@ gateway:
 attestationReceipts:
   evidenceBaseUrl: https://staging.example.invalid
   evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
-  cds:
-    url: https://192.0.2.21:30808
 kubeStateMetrics:
   enabled: false
 inference:
@@ -39,7 +37,7 @@ inference:
     mountVerification:
       expectedFileList:
       - path: .model-lock-local-manifest.json
-        sha256: d39aa41f901cb2cb07087157bcdc9c8ec32b6bf1e82c5018df35eff8cad6522e
+        sha256: 1a105d410c2df850bb259a1e0dfcc7a571497b417de9eaff920dbd821351558d
       - path: config.json
         sha256: 5b52782dd9a2b8a4eb87f321448a61cd56cf0764493a1ff73f327259e14ab382
       - path: tokenizer_config.json
@@ -48,6 +46,16 @@ inference:
     - dsv4
     - dsv4-1
     c8sVolumeSource: /confidential-inference/volumes/dsv4
+    # The worker downloads the model at each start (C8s v0.99.29 workers).
+    # The manifest is `fetch-model manifest` of the model revision.
+    download:
+      enabled: true
+      hosts:
+      - serverName: models.example.invalid
+        address: 192.0.2.20
+      sizeLimit: 8Gi
+      manifest: |
+        {"canonical_local_manifest_sha256":"8f82e2cb16d458979b730d00b5e69619f743da1cc95f247d6ea64ab7f236872c","classification":"verified_local_snapshot_bytes","files":[{"content_sha256":"11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361","path":".gitattributes","size":1519},{"content_sha256":"6936b52be9212b61193c08317559a1999a91b5f10f3382f54b0639aaf7a26c8d","path":"README.md","size":5178},{"content_sha256":"5b52782dd9a2b8a4eb87f321448a61cd56cf0764493a1ff73f327259e14ab382","path":"config.json","size":721},{"content_sha256":"571666454de749a224e3739e09821239165ebfed71213632951805ccf25e90bb","path":"generation_config.json","size":116},{"content_sha256":"49c20f32c6c597480fcaec5df2f86c645eabea765cbea1e67886dbae45e5c992","path":"model.safetensors","size":4131280},{"content_sha256":"f2c87402ad46c39f45071afc4d5cc539ffa157c9dc439471d9b964b015176f72","path":"onnx/model.onnx","size":8398936},{"content_sha256":"4859e5dbde90e059988a0a2136d8df3f2773d4d2fc4c4543690028f0b2166e7f","path":"special_tokens_map.json","size":552},{"content_sha256":"9cf973f7249a063159ed9c5e7eb05e5d15289b7c5571ae4e1d7315b2189b5831","path":"tokenizer.json","size":1842764},{"content_sha256":"9e556afd44213b6bd1be2b850ebbbd98f5481437a8021afaf58ee7fb1818d347","path":"tokenizer.model","size":499723},{"content_sha256":"1847d0a066bd2bd9fb9cb01a2141e7f3befb0a915689878903c3a4dad0f761f9","path":"tokenizer_config.json","size":1918}],"immutable_ref":"hf-internal-testing/tiny-random-LlamaForCausalLM@9fb191250dd56d0ba7ec9785a025ed29c03d5998","immutable_revision":"9fb191250dd56d0ba7ec9785a025ed29c03d5998","repository":"hf-internal-testing/tiny-random-LlamaForCausalLM","schema":"confidential-benchmark/local-model-byte-manifest/v1","source_remote_inventory_sha256":"c9457a60a3b9b931bc3febf6e8f02b4a36eebce1d63ee80bc82be4a2dbf0c807"}
   simulator:
     validateModelMount: true
     outputMode: BLOCKING

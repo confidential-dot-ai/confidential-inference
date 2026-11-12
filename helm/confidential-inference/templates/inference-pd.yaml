@@ -35,8 +35,9 @@ http://{{ $host }}:{{ .worker.port }}
 {{- fail "inference.pd requires inference.mode=model" }}
 {{- end }}
 {{- if .Values.inference.model.cache.enabled }}
-{{- fail "inference.pd reads the c8s model volume; set inference.model.cache.enabled=false" }}
+{{- fail "inference.pd reads the c8s model volume or inference.model.download; set inference.model.cache.enabled=false" }}
 {{- end }}
+{{- $download := .Values.inference.model.download.enabled }}
 {{- if eq (len .Values.inference.gpuArchitectures) 0 }}
 {{- fail "inference.gpuArchitectures is required when inference.pd.enabled is true" }}
 {{- end }}
@@ -145,13 +146,19 @@ spec:
         confidential.ai/environment: {{ .Values.environment | quote }}
       annotations:
         confidential.ai/cw: {{ $pd.attestedWorkload }}
+        {{- if not $download }}
         confidential.ai/c8s-volumes: {{ printf "%s=%s" $volumeName .Values.inference.model.c8sVolumeSource | quote }}
         confidential.ai/c8s-volume-dir: {{ .Values.inference.model.volumeDirectory | quote }}
+        {{- end }}
         confidential.ai/gpu-architectures: {{ join "," .Values.inference.gpuArchitectures | quote }}
         confidential.ai/attested-gpu-count: {{ gt (int .Values.inference.attestedGpuCount) 0 | ternary (int .Values.inference.attestedGpuCount) $gpus | quote }}
     spec:
       nodeSelector:
         kubernetes.io/hostname: {{ include "confidential-inference.inferenceNodeName" (dict "root" . "index" 0) | quote }}
+      {{- if $download }}
+      # The model source addresses are also the pod's allowlist exits.
+      {{- include "confidential-inference.modelDownloadHostAliases" . | nindent 6 }}
+      {{- end }}
       enableServiceLinks: false
       serviceAccountName: confidential-inference
       terminationGracePeriodSeconds: {{ .Values.inference.terminationGracePeriodSeconds }}
@@ -159,15 +166,26 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-        # Checks every model file against the release, then locks the Engram
-        # shards. mlock needs the node's RLIMIT_MEMLOCK to cover them: this
-        # container has no capability.
+        # Checks every model file against the release (after the download of
+        # inference.model.download), then locks the Engram shards. mlock needs
+        # the node's RLIMIT_MEMLOCK to cover them: this container has no
+        # capability.
         - name: engram-holder
           image: {{ $image }}
           imagePullPolicy: IfNotPresent
+          {{- if $download }}
+          command: {{ include "confidential-inference.modelDownloadCommand" . }}
+          {{- else }}
           command: ["/usr/local/bin/wait-for-model"]
+          {{- end }}
           args:
+            {{- if $download }}
+            - /usr/local/bin/wait-for-model
+            {{- end }}
             - --path={{ $modelPath }}
+            {{- if $download }}
+            - --plain-cache
+            {{- end }}
             - --timeout-seconds={{ .Values.inference.model.mountVerification.timeoutSeconds }}
             - --poll-seconds={{ .Values.inference.model.mountVerification.pollSeconds }}
             - --expected-repository={{ .Values.inference.model.name }}
@@ -209,6 +227,9 @@ spec:
           volumeMounts:
             - name: run
               mountPath: /run/dsv41
+            {{- if $download }}
+            {{- include "confidential-inference.modelDownloadMounts" (dict "root" . "path" $modelPath) | nindent 12 }}
+            {{- end }}
         {{- range $index, $w := $pd.workers }}
         {{- $previous := list }}
         {{- range $before := slice $pd.workers 0 $index }}
@@ -292,6 +313,11 @@ spec:
             - name: run
               mountPath: /run/dsv41
               readOnly: true
+            {{- if $download }}
+            - name: model-download
+              mountPath: {{ $modelPath }}
+              readOnly: true
+            {{- end }}
         {{- end }}
       volumes:
         - name: shm
@@ -305,6 +331,9 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
+        {{- if $download }}
+        {{- include "confidential-inference.modelDownloadVolumes" . | nindent 8 }}
+        {{- end }}
 {{- end }}
 
 {{- end -}}

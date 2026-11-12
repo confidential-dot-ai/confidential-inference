@@ -21,6 +21,9 @@ inference:
     c8sVolumeSource: /confidential-inference/model-updates/b200-dsv41
     volumeNames:
     - dsv41
+    # The layer reads its C8s model volume, not the staging download.
+    download:
+      enabled: false
     mountVerification:
       expectedFileList:
       - path: .model-lock-local-manifest.json

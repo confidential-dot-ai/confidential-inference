@@ -136,6 +136,7 @@ jobs:
             dist/release-bundle.sigstore.json
             dist/release-tag-commit.txt
             dist/image-publication-manifest.json
+            dist/cds-manifest.json
             dist/*.tgz
           if-no-files-found: error
           retention-days: 90
@@ -235,9 +236,10 @@ jobs:
             --verify-tag \
             --target "$expected_commit" \
             --title "$RELEASE_TAG" \
-            --notes "Signed Confidential Inference framework release. The signed file is the release manifest built from release/spec.yaml at the tag commit. It names every image digest, the chart package, C8s and the node image. It holds no deployment settings: each deployment renders its own allowlist with scripts/render-allowlist.py." \
+            --notes "Signed Confidential Inference framework release. The signed file is the release manifest built from release/spec.yaml at the tag commit. It names every image digest, the chart package, C8s, the node image and the CDS guest image. It holds no deployment settings: each deployment renders its own allowlist with scripts/render-allowlist.py." \
             "dist/release-bundle.json#Release bundle" \
             "dist/release-bundle.sigstore.json#Sigstore verification bundle" \
             "dist/release-tag-commit.txt#Signed tag commit" \
             "dist/image-publication-manifest.json#Image publication evidence" \
+            "dist/cds-manifest.json#CDS guest image manifest" \
             dist/*.tgz

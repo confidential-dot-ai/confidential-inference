@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 import runpy
 import subprocess
@@ -128,44 +127,100 @@ def g7_violations(documents: list[dict], secret_reads: dict[str, list[str]]) -> 
 
 
 def check_model_cache() -> None:
-    """The plain model cache: fetch-model fills a hostPath, the gate reads it read-only."""
-    manifest = '{"files":[]}\n'
-    pin = hashlib.sha256(manifest.encode()).hexdigest()
-    with tempfile.NamedTemporaryFile("w", suffix=".yaml") as values:
-        yaml.safe_dump({"inference": {"simulator": {"validateModelMount": True}, "model": {
-            "mountVerification": {"expectedFiles": {".model-lock-local-manifest.json": pin}},
-            "cache": {"enabled": True, "manifest": manifest}}}}, values)
-        values.flush()
-        documents = render("--values", values.name)
-        maps = {item["metadata"]["name"]: item for item in documents if item["kind"] == "ConfigMap"}
-        assert maps["model-manifest"]["data"]["manifest.json"] == manifest
+    """The C8s v0.99.29 worker mounts the plain models disk read-only, so the chart refuses the plain cache."""
+    for name, cache, error in (
+            ("enabled", {"enabled": True}, "inference.model.cache is unsupported"),
+            ("old cache setting", {"enabled": False, "hostPath": "/var/lib/models/model"}, "hostPath")):
+        result = subprocess.run(["helm", "template", "example", str(CHART), *NEUTRAL_MODE,
+                                 "--set-json", f"inference.model.cache={json.dumps(cache)}"],
+                                cwd=ROOT, text=True, capture_output=True, check=False)
+        assert result.returncode != 0 and error in result.stderr, (name, result.stderr)
+    templates = "".join(path.read_text() for path in (CHART / "templates").glob("*.yaml"))
+    for stale in ("cache.hostPath", "$cache.hostPath", "model-cache"):
+        assert stale not in templates, stale
+
+
+MANIFEST = '{"schema":"confidential-benchmark/local-model-byte-manifest/v1"}\n'
+DOWNLOAD_HOSTS = [{"serverName": "models.example.invalid", "address": "192.0.2.20"},
+                  {"serverName": "cdn.example.invalid", "address": "192.0.2.21"}]
+
+
+def download_values(**download) -> dict:
+    """Values that turn on inference.model.download, with the manifest pinned by its SHA-256."""
+    import hashlib
+    return {"inference": {"replicas": 1, "simulator": {"validateModelMount": True}, "model": {
+        "volumeNames": ["model"],
+        "mountVerification": {"expectedFiles": {
+            ".model-lock-local-manifest.json": hashlib.sha256(MANIFEST.encode()).hexdigest()}},
+        "download": {"enabled": True, "hosts": DOWNLOAD_HOSTS, "manifest": MANIFEST, **download}}}}
+
+
+def render_values(values: dict, *arguments: str, success: bool = True):
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "values.yaml"
+        path.write_text(yaml.safe_dump(values))
+        if success:
+            return render("-f", str(path), *arguments)
+        result = subprocess.run(["helm", "template", "example", str(CHART), *NEUTRAL_MODE, "-f", str(path), *arguments],
+                                cwd=ROOT, text=True, capture_output=True, check=False)
+        assert result.returncode != 0, "the render unexpectedly succeeded"
+        return result.stderr
+
+
+def check_model_download() -> None:
+    """inference.model.download: the worker downloads the model at each start into an emptyDir
+    on its encrypted scratch disk, verifies it read-only, and reaches only the pinned source."""
+    import hashlib
+    admission = runpy.run_path(str(ROOT / "scripts/check-c8s-admission.py"))
+    pin = hashlib.sha256(MANIFEST.encode()).hexdigest()
+    for mode in ("simulator", "model"):
+        documents = render_values(download_values(), "--set", f"inference.mode={mode}",
+                                  "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
         worker = next(item for item in documents if item["kind"] == "StatefulSet"
                       and item["metadata"]["name"] == "inference-worker-0")
-        pod = worker["spec"]["template"]["spec"]
-        assert "confidential.ai/c8s-volumes" not in worker["spec"]["template"]["metadata"]["annotations"]
-        fetch, = pod["initContainers"]
-        assert fetch["command"] == ["/usr/local/bin/fetch-model"]
-        assert "--path=/mnt/c8s-data/models/cache" in fetch["args"]
-        assert f"--manifest-sha256={pin}" in fetch["args"]
-        assert {"name": "model-cache", "mountPath": "/mnt/c8s-data/models/cache"} in fetch["volumeMounts"]
-        sglang = next(item for item in pod["containers"] if item["name"] == "sglang")
-        assert "--plain-cache" in sglang["args"] and "--path=/mnt/c8s-data/models/cache" in sglang["args"]
-        assert f"--expected-file=.model-lock-local-manifest.json={pin}" in sglang["args"]
-        assert {"name": "model-cache", "mountPath": "/mnt/c8s-data/models/cache", "readOnly": True} in sglang["volumeMounts"]
-        volume = next(item for item in pod["volumes"] if item["name"] == "model-cache")
-        assert volume["hostPath"] == {"path": "/var/lib/models/model", "type": "DirectoryOrCreate"}
-        egress = next(item for item in documents if item["kind"] == "NetworkPolicy"
-                      and item["metadata"]["name"] == "inference-worker-model-download")
-        assert egress["spec"]["egress"][0]["ports"] == [{"protocol": "TCP", "port": 443}]
-        # G7: the cache worker mounts a host path, so it drops the model volume
-        # read, and its workload policy must list no secretReads.
-        assert g7_violations(documents, {}) == []
-        assert g7_violations(documents, {"StatefulSet/inference-worker-0": ["/confidential-inference/volumes/dsv4"]}) == [
-            "StatefulSet/inference-worker-0"]
-        helm("template", "example", str(CHART), *NEUTRAL_MODE, "--values", values.name,
-             "--set", "inference.model.cache.manifest=other", success=False)
-    default = render()
-    assert not any(item["metadata"]["name"] in {"model-manifest", "inference-worker-model-download"} for item in default)
+        template = worker["spec"]["template"]
+        pod = template["spec"]
+        assert "confidential.ai/c8s-volumes" not in template["metadata"]["annotations"], mode
+        assert pod["hostAliases"] == [{"ip": host["address"], "hostnames": [host["serverName"]]}
+                                      for host in DOWNLOAD_HOSTS], mode
+        assert "initContainers" not in pod, "the C8s worker grants the exits only to running main containers"
+        container = pod["containers"][0]
+        shell, flag, script, name = container["command"]
+        assert (shell, flag, name) == ("/bin/sh", "-c", "sh")
+        assert ("/usr/local/bin/fetch-model --endpoint=https://models.example.invalid fetch "
+                f"--path=/mnt/c8s-data/model-download --manifest=/mnt/c8s-data/model-manifest/manifest.json "
+                f"--manifest-sha256={pin} --revision-metadata=.model-lock-local-manifest.json &") in script
+        assert script.endswith('exec "$@"')
+        assert container["args"][:3] == ["/usr/local/bin/wait-for-model", "--path=/mnt/c8s-data/models/model",
+                                         "--plain-cache"], container["args"][:3]
+        assert container["volumeMounts"][1:] == [
+            {"name": "model-download", "mountPath": "/mnt/c8s-data/model-download"},
+            {"name": "model-download", "mountPath": "/mnt/c8s-data/models/model", "readOnly": True},
+            {"name": "model-manifest", "mountPath": "/mnt/c8s-data/model-manifest", "readOnly": True}]
+        volumes = {volume["name"]: volume for volume in pod["volumes"]}
+        # A default-medium emptyDir: the worker places it on its encrypted scratch disk.
+        assert volumes["model-download"] == {"name": "model-download", "emptyDir": {"sizeLimit": "512Gi"}}
+        assert volumes["model-manifest"]["configMap"] == {"name": "model-manifest"}
+        manifest = next(item for item in documents if item["kind"] == "ConfigMap"
+                        and item["metadata"]["name"] == "model-manifest")
+        assert manifest["data"] == {"manifest.json": MANIFEST}
+        policy = next(item for item in documents if item["kind"] == "NetworkPolicy"
+                      and item["metadata"]["name"] == "inference-worker-model-download")["spec"]
+        assert policy["egress"] == [{"to": [{"ipBlock": {"cidr": "192.0.2.20/32"}}, {"ipBlock": {"cidr": "192.0.2.21/32"}}],
+                                     "ports": [{"protocol": "TCP", "port": 443}]}]
+        assert admission["refusals"](documents) == [], mode
+    # Off by default: no download object renders.
+    plain = render()
+    assert not any(item["metadata"]["name"] in {"model-manifest", "inference-worker-model-download"} for item in plain)
+    for name, values, error in (
+            ("manifest pin", download_values(manifest=MANIFEST + " "), "does not match the pinned SHA-256"),
+            ("no source", download_values(hosts=[]), "hosts"),
+            ("no manifest", download_values(manifest=""), "manifest"),
+            ("too many exits", download_values(hosts=[{"serverName": f"h{i}.example.invalid", "address": f"192.0.2.{i}"}
+                                                      for i in range(9)]), "hosts"),
+            ("not an address", download_values(hosts=[{"serverName": "models.example.invalid", "address": "models"}]), "address"),
+            ("size", download_values(sizeLimit="512G"), "sizeLimit")):
+        assert error in render_values(values, success=False), name
 
 
 def check_front_door_namespace() -> None:
@@ -182,28 +237,69 @@ def check_front_door_namespace() -> None:
 
 
 def check_c8s_admission() -> None:
-    """Every example deployment renders pods the c8s webhook admits (scripts/check-c8s-admission.py)."""
+    """Every example deployment renders pods C8s worker admission accepts (scripts/check-c8s-admission.py)."""
     admission = runpy.run_path(str(ROOT / "scripts/check-c8s-admission.py"))
     release = ("--namespace", "confidential-inference", "-f", "tests/fixtures/deployments/production-values.yaml",
                "-f", "tests/release-v1/fixtures/release-values.yaml",
                "--set", "frameworkRelease.name=v0.14.18")
     for profile in ((), release, (*release, "-f", "tests/fixtures/deployments/staging-values.yaml"),
-                    ("--values", "tests/api/values-sglang.yaml")):
+                    ("--values", "tests/api/values-sglang.yaml"),
+                    ("--set", "dcgmExporter.enabled=true",
+                     "--set", "nodeExporter.enabled=true", "--set", "c8s.cds.cidrs={198.51.100.4/32}")):
         found = admission["refusals"](render(*profile))
         assert found == [], (profile, found)
-    # The refusals of 2026-10-22 staging: a tcpSocket probe, the credential
-    # directory in an app container, a probe over the 5 s budget, no CDS egress.
-    pod = {"kind": "Pod", "metadata": {"name": "p", "annotations": {"confidential.ai/cw": "p"}, "labels": {"a": "b"}},
-           "spec": {"containers": [{"name": "app", "readinessProbe": {"tcpSocket": {"port": 1}},
-                                    "livenessProbe": {"httpGet": {"port": 8080, "path": "/health"}, "timeoutSeconds": 10},
-                                    "volumeMounts": [{"name": "certs", "mountPath": "/etc/c8s/certs"}]}]}}
+
+    def pod(container: dict, spec: dict | None = None) -> dict:
+        return {"kind": "Pod", "metadata": {"name": "p", "annotations": {"confidential.ai/cw": "p"}},
+                "spec": {**(spec or {}), "containers": [{"name": "app", **container}]}}
+
+    user = {"securityContext": {"runAsUser": 1001}}
+    tests = {
+        # The refusals of 2026-10-22 staging.
+        "tcpSocket probe": (pod({**user, "readinessProbe": {"tcpSocket": {"port": 1}}}), ["tcpSocket"]),
+        "slow probe": (pod({**user, "livenessProbe": {"httpGet": {"port": 8080, "path": "/health"},
+                                                     "timeoutSeconds": 10}}), ["timeoutSeconds 10"]),
+        "credential mount": (pod({**user, "volumeMounts": [{"name": "certs", "mountPath": "/etc/c8s/certs"}]}),
+                             ["/etc/c8s/certs"]),
+        "privileged": (pod({"securityContext": {"runAsUser": 1001, "privileged": True}}), ["privileged: true"]),
+        "privilege escalation": (pod({"securityContext": {"runAsUser": 1001, "allowPrivilegeEscalation": True}}),
+                                 ["allowPrivilegeEscalation: true"]),
+        "undeclarable capability": (pod({"securityContext": {"runAsUser": 1001, "capabilities": {"add": ["net_raw"]}}}),
+                                    ["capability net_raw"]),
+        "declarable capability": (pod({"securityContext": {"runAsUser": 1001, "capabilities": {"add": ["SYS_ADMIN"]}}}),
+                                  []),
+        "container root": (pod({"securityContext": {"runAsUser": 0}}), ["runAsUser: 0"]),
+        "pod root": (pod({}, {"securityContext": {"runAsUser": 0}}), ["runAsUser: 0"]),
+        "container overrides pod root": (pod(user, {"securityContext": {"runAsUser": 0}}), []),
+        "no user": (pod({}), ["sets no runAsUser"]),
+        "reserved gid": (pod({"securityContext": {"runAsUser": 1001, "runAsGroup": 1338}}), ["runAsGroup 1338"]),
+        "reserved pod uid": (pod({}, {"securityContext": {"runAsUser": 1337}}), ["runAsUser 1337"]),
+        "container overrides reserved pod ids": (
+            pod({"securityContext": {"runAsUser": 1001, "runAsGroup": 1001}},
+                {"securityContext": {"runAsUser": 1337, "runAsGroup": 1338}}), []),
+        "reserved fsGroup":(pod(user, {"securityContext": {"fsGroup": 1337}}), ["fsGroup 1337"]),
+        "exec probe": (pod({**user, "readinessProbe": {"exec": {"command": ["true"]}}}), ["exec probes"]),
+        "exec hook": (pod({**user, "lifecycle": {"preStop": {"exec": {"command": ["true"]}}}}), ["exec lifecycle hook"]),
+        "terminal": (pod({**user, "tty": True}), ["tty: true"]),
+        "stdin": (pod({**user, "stdin": True, "stdinOnce": True}), ["stdin: true"]),
+        "init container stdin": (pod(user, {"initContainers": [{"name": "init", **user, "stdin": True}]}),
+                                 ["container init: sets stdin: true"]),
+        "terminal and stdin off": (pod({**user, "tty": False, "stdin": False}), []),
+    }
+    for name, (document, expected) in tests.items():
+        found = admission["refusals"]([document])
+        assert len(found) == len(expected) and all(want in line for want, line in zip(expected, found)), (name, found)
+
     deny = {"kind": "NetworkPolicy", "metadata": {"name": "deny"},
             "spec": {"podSelector": {}, "policyTypes": ["Egress"], "egress": [{"ports": [{"port": 443}]}]}}
-    found = admission["refusals"]([pod, deny])
-    assert len(found) == 4, found
-    for expected, line in zip(("/etc/c8s/certs", "tcpSocket", "timeoutSeconds 10", "TCP 30808"), found):
-        assert expected in line, (expected, line)
-
+    cds = {"kind": "NetworkPolicy", "metadata": {"name": "cds"},
+           "spec": {"podSelector": {}, "policyTypes": ["Egress"], "egress": [
+               {"to": [{"ipBlock": {"cidr": "198.51.100.4/32"}}], "ports": [{"protocol": "TCP", "port": 8443}]}]}}
+    restricted = pod(user)
+    found = admission["refusals"]([restricted, deny])
+    assert len(found) == 1 and "CDS on TCP 8443" in found[0], found
+    assert admission["refusals"]([restricted, deny, cds]) == []
+    assert len(admission["refusals"]([restricted, deny, cds], 9443)) == 1
 
 TELEMETRY = (
     "--set", "telemetry.enabled=true",
@@ -234,7 +330,8 @@ def check_telemetry_collector() -> None:
     pods = {item["metadata"]["name"]: item["spec"]["template"]["spec"] for item in documents
             if item["kind"] in {"Deployment", "StatefulSet"}}
     # The collector and (stateless, #223) the gateway are the only pods with
-    # an exit; each exit is a hostAliases address and its one ipBlock.
+    # an exit; each exit is a hostAliases address and its one ipBlock. The
+    # CDS rule on TCP 8443 is the only other ipBlock.
     exits = {name for name, pod in pods.items() if pod.get("hostAliases")}
     assert "telemetry-collector" in exits and exits <= {"telemetry-collector", "gateway"}, exits
     collector = pods["telemetry-collector"]
@@ -251,7 +348,8 @@ def check_telemetry_collector() -> None:
                        for container in pod["containers"] for mount in container.get("volumeMounts", []))
     policies = {item["metadata"]["name"]: item for item in documents if item["kind"] == "NetworkPolicy"}
     blocks = [peer["ipBlock"]["cidr"] for policy in policies.values()
-              for rule in policy["spec"].get("egress", []) for peer in rule.get("to", []) if "ipBlock" in peer]
+              for rule in policy["spec"].get("egress", []) if {"protocol": "TCP", "port": 8443} not in rule.get("ports", [])
+              for peer in rule.get("to", []) if "ipBlock" in peer]
     addresses = {alias["ip"] + "/32" for name in exits for alias in pods[name]["hostAliases"]}
     assert sorted(blocks) == sorted(addresses) and "203.0.113.7/32" in blocks, blocks
 
@@ -460,7 +558,7 @@ def main() -> None:
     local_documents = render(
         "--set", "attestationReceipts.evidenceBaseUrl=https://api.example.test",
         "--set", "attestationReceipts.evidenceConnectHost=c8s-router.c8s-system.svc.cluster.local",
-        "--set", "attestationReceipts.cds.url=https://c8s-cds.c8s-system.svc:8443",
+        "--set", "attestationReceipts.cds.url=https://198.51.100.4:8443",
     )
     assert Gateway(local_documents).deployment == Gateway(render()).deployment
     assert gateway.container["readinessProbe"]["httpGet"]["path"] == "/ready"
@@ -684,7 +782,8 @@ def main() -> None:
     router_slot = next(item for item in staging_documents if item["kind"] == "Service" and item["metadata"]["name"] == settings["routerService"])
     assert router_slot["spec"]["clusterIP"] == "None"
     assert routes["routes"] == {model: [model]}
-    assert not any(item["kind"] == "ConfigMap" for item in staging_documents)
+    # The only ConfigMap is the byte manifest of the staging model download.
+    assert [item["metadata"]["name"] for item in staging_documents if item["kind"] == "ConfigMap"] == ["model-manifest"]
     assert not any(container["name"] == "cds-attest" for document in staging_documents
                    if document["kind"] in {"Deployment", "StatefulSet"}
                    for container in document["spec"]["template"]["spec"]["containers"])
@@ -711,6 +810,7 @@ def main() -> None:
     check_plain_http_behind_the_mesh()
     check_override_replaces_strategy()
     check_model_cache()
+    check_model_download()
     check_front_door_namespace()
     check_c8s_admission()
     check_telemetry_collector()
