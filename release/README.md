@@ -212,6 +212,13 @@ Hand traffic over only when all of these hold:
 - Every encrypted volume key is written back from its escrow file with
   `c8s secrets put` (C8s `docs/volumes.md`). A volume without an escrow file
   cannot move; provision it again.
+- Every inference worker gets its model. The v0.99.29 worker mounts its
+  models disk read-only, so the plain model cache cannot work. A deployment
+  downloads the model at each start to the worker's encrypted scratch disk
+  (`inference.model.download`), or reads a C8s model volume. A download needs
+  a model source at fixed addresses, and the allowlist policy must declare
+  `"egress": {"port": 443}` for each inference workload (the chart README,
+  "Model download").
 - Every client and gateway that pins a mesh CA pins the new CDS's mesh CA.
   Leaves issued under the old mesh CA are not trusted by the new deployment.
 

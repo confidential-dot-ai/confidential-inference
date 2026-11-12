@@ -1073,27 +1073,45 @@ class RenderTests(unittest.TestCase):
         with self.assertRaisesRegex(REN.ManifestError, "check out source commit"):
             REN.require_checkout(manifest)
 
-    def test_staging_workers_verify_the_model_before_the_simulator(self):
+    def test_staging_workers_download_and_verify_the_model_before_the_simulator(self):
+        """Staging downloads the model at each start (inference.model.download), as C8s v0.99.29 workers do."""
+        values = STAGING.read_values()["inference"]["model"]
+        manifest_sha256 = MAN.sha256(values["download"]["manifest"].encode()).removeprefix("sha256:")
         workers = rendered_workers(STAGING)
         self.assertEqual(len(workers), 2)
         for worker in workers:
             pod = worker["spec"]["template"]
             container = pod["spec"]["containers"][0]
-            self.assertEqual(container["command"], ["/usr/local/bin/wait-for-model"])
+            self.assertEqual(container["command"][:2], ["/bin/sh", "-c"])
+            self.assertIn(f"--manifest-sha256={manifest_sha256} ", container["command"][2])
+            self.assertEqual(container["args"][:3], ["/usr/local/bin/wait-for-model",
+                                                     container["args"][1], "--plain-cache"])
             self.assertIn("python3", container["args"])
             self.assertIn("sglang_simulator.simulation.sglang.launch_server", container["args"])
-            self.assertIn("confidential.ai/c8s-volumes", pod["metadata"]["annotations"])
+            self.assertNotIn("confidential.ai/c8s-volumes", pod["metadata"]["annotations"])
+            self.assertEqual(pod["spec"]["hostAliases"], [{"ip": "192.0.2.20", "hostnames": ["models.example.invalid"]}])
             self.assertEqual(container["resources"]["requests"]["memory"], "16Gi")
 
         allowlist = json.loads(STAGING_ALLOWLIST.read_text())
         zero_digest = "sha256:" + "0" * 64
-        for name in ("inference-worker-0", "inference-worker-1"):
-            guarded = [item for item in allowlist["workloads"][name]["containers"]
-                       if item["command"].get("argv") == ["/usr/local/bin/wait-for-model"]]
+        for index, name in enumerate(("inference-worker-0", "inference-worker-1")):
+            entry = allowlist["workloads"][name]
+            # The download address is the entry's one exit (C8s #1047).
+            self.assertEqual(entry["egress"], [{"cidr": "192.0.2.20/32", "port": 443}])
+            guarded = [item for item in entry["containers"]
+                       if item["command"].get("argv", [""])[0] == "/bin/sh"]
             self.assertEqual(len(guarded), 1)
             policy = guarded[0]
-            self.assertEqual(policy["command"]["argv"], ["/usr/local/bin/wait-for-model"])
+            self.assertEqual(policy["command"]["argv"], workers[index]["spec"]["template"]["spec"]["containers"][0]["command"])
+            self.assertEqual(policy["args"]["argv"][0], "/usr/local/bin/wait-for-model")
             self.assertIn("sglang_simulator.simulation.sglang.launch_server", policy["args"]["argv"])
+            model = "/mnt/c8s-data/models/" + values["volumeNames"][index]
+            # The download volume is writable at the fetch path and read-only at the model path.
+            self.assertEqual(policy["mounts"], {"policy": "exact", "rules": [
+                {"destination": "/dev/shm", "kind": "emptyDir"},
+                {"destination": "/mnt/c8s-data/model-download", "kind": "emptyDir"},
+                {"destination": "/mnt/c8s-data/model-manifest", "kind": "data"},
+                {"destination": model, "kind": "emptyDir"}]})
         self.assertNotIn(zero_digest, STAGING_ALLOWLIST.read_text())
 
     @staticmethod

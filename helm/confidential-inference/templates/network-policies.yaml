@@ -326,6 +326,28 @@ spec:
     - ports:
         - {protocol: TCP, port: 443}
         - {protocol: TCP, port: {{ .Values.kubeStateMetrics.kubeApiPort }}}
+{{- if and .Values.inference.enabled .Values.inference.model.download.enabled }}
+---
+# fetch-model downloads the model from the pinned addresses of
+# inference.model.download.hosts, which are also the workers' allowlist exits.
+# The byte manifest pins every downloaded byte.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inference-worker-model-download
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: inference-worker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.inference.model.download.hosts }}
+        - ipBlock: {cidr: {{ printf "%s/32" .address | quote }}}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 443}
+{{- end }}
 {{- if and .Values.inference.enabled .Values.inference.pd.enabled }}
 ---
 # Decode reaches prefill's KV bootstrap port at the address the router gives

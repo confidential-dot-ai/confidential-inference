@@ -96,6 +96,16 @@ requirement. For a selected release, review its exact node image and storage
 implementation. Encryption alone does not imply authenticated disk contents;
 model integrity uses the release's verified model-volume checks.
 
+A deployment can instead download the model at each start
+(`inference.model.download`, in the chart README). The worker writes it to an
+`emptyDir` on the encrypted scratch disk. Before SGLang starts, `fetch-model`
+and `wait-for-model` check every byte against the byte manifest that the
+release pins. The model source is untrusted: a changed byte stops the start.
+The scratch disk has no integrity protection, so after the start the host can
+change model blocks to random data. That can corrupt output or stop the
+worker. It cannot put chosen bytes in the model, and it cannot read the
+model. The C8s model volume checks every read with dm-verity.
+
 Hardware memory protection excludes host reads of guest and GPU memory. It
 does not stop approved application code from deliberately exposing data.
 TLS and the internal mesh protect transport; peer selection and application

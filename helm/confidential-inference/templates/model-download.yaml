@@ -1,0 +1,12 @@
+{{- /* The byte manifest of inference.model.download. fetch-model checks it
+against the SHA-256 that its argv pins (templates/_helpers.tpl). */}}
+{{- if and .Values.inference.enabled .Values.inference.model.download.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: model-manifest
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+data:
+  manifest.json: {{ .Values.inference.model.download.manifest | quote }}
+{{- end }}

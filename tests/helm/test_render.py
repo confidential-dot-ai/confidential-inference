@@ -136,8 +136,91 @@ def check_model_cache() -> None:
                                 cwd=ROOT, text=True, capture_output=True, check=False)
         assert result.returncode != 0 and error in result.stderr, (name, result.stderr)
     templates = "".join(path.read_text() for path in (CHART / "templates").glob("*.yaml"))
-    for stale in ("fetch-model", "model-manifest", "model-download", "plain-cache", "cache.hostPath"):
+    for stale in ("cache.hostPath", "$cache.hostPath", "model-cache"):
         assert stale not in templates, stale
+
+
+MANIFEST = '{"schema":"confidential-benchmark/local-model-byte-manifest/v1"}\n'
+DOWNLOAD_HOSTS = [{"serverName": "models.example.invalid", "address": "192.0.2.20"},
+                  {"serverName": "cdn.example.invalid", "address": "192.0.2.21"}]
+
+
+def download_values(**download) -> dict:
+    """Values that turn on inference.model.download, with the manifest pinned by its SHA-256."""
+    import hashlib
+    return {"inference": {"replicas": 1, "simulator": {"validateModelMount": True}, "model": {
+        "volumeNames": ["model"],
+        "mountVerification": {"expectedFiles": {
+            ".model-lock-local-manifest.json": hashlib.sha256(MANIFEST.encode()).hexdigest()}},
+        "download": {"enabled": True, "hosts": DOWNLOAD_HOSTS, "manifest": MANIFEST, **download}}}}
+
+
+def render_values(values: dict, *arguments: str, success: bool = True):
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "values.yaml"
+        path.write_text(yaml.safe_dump(values))
+        if success:
+            return render("-f", str(path), *arguments)
+        result = subprocess.run(["helm", "template", "example", str(CHART), *NEUTRAL_MODE, "-f", str(path), *arguments],
+                                cwd=ROOT, text=True, capture_output=True, check=False)
+        assert result.returncode != 0, "the render unexpectedly succeeded"
+        return result.stderr
+
+
+def check_model_download() -> None:
+    """inference.model.download: the worker downloads the model at each start into an emptyDir
+    on its encrypted scratch disk, verifies it read-only, and reaches only the pinned source."""
+    import hashlib
+    admission = runpy.run_path(str(ROOT / "scripts/check-c8s-admission.py"))
+    pin = hashlib.sha256(MANIFEST.encode()).hexdigest()
+    for mode in ("simulator", "model"):
+        documents = render_values(download_values(), "--set", f"inference.mode={mode}",
+                                  "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
+        worker = next(item for item in documents if item["kind"] == "StatefulSet"
+                      and item["metadata"]["name"] == "inference-worker-0")
+        template = worker["spec"]["template"]
+        pod = template["spec"]
+        assert "confidential.ai/c8s-volumes" not in template["metadata"]["annotations"], mode
+        assert pod["hostAliases"] == [{"ip": host["address"], "hostnames": [host["serverName"]]}
+                                      for host in DOWNLOAD_HOSTS], mode
+        assert "initContainers" not in pod, "the C8s worker grants the exits only to running main containers"
+        container = pod["containers"][0]
+        shell, flag, script, name = container["command"]
+        assert (shell, flag, name) == ("/bin/sh", "-c", "sh")
+        assert ("/usr/local/bin/fetch-model --endpoint=https://models.example.invalid fetch "
+                f"--path=/mnt/c8s-data/model-download --manifest=/mnt/c8s-data/model-manifest/manifest.json "
+                f"--manifest-sha256={pin} --revision-metadata=.model-lock-local-manifest.json &") in script
+        assert script.endswith('exec "$@"')
+        assert container["args"][:3] == ["/usr/local/bin/wait-for-model", "--path=/mnt/c8s-data/models/model",
+                                         "--plain-cache"], container["args"][:3]
+        assert container["volumeMounts"][1:] == [
+            {"name": "model-download", "mountPath": "/mnt/c8s-data/model-download"},
+            {"name": "model-download", "mountPath": "/mnt/c8s-data/models/model", "readOnly": True},
+            {"name": "model-manifest", "mountPath": "/mnt/c8s-data/model-manifest", "readOnly": True}]
+        volumes = {volume["name"]: volume for volume in pod["volumes"]}
+        # A default-medium emptyDir: the worker places it on its encrypted scratch disk.
+        assert volumes["model-download"] == {"name": "model-download", "emptyDir": {"sizeLimit": "512Gi"}}
+        assert volumes["model-manifest"]["configMap"] == {"name": "model-manifest"}
+        manifest = next(item for item in documents if item["kind"] == "ConfigMap"
+                        and item["metadata"]["name"] == "model-manifest")
+        assert manifest["data"] == {"manifest.json": MANIFEST}
+        policy = next(item for item in documents if item["kind"] == "NetworkPolicy"
+                      and item["metadata"]["name"] == "inference-worker-model-download")["spec"]
+        assert policy["egress"] == [{"to": [{"ipBlock": {"cidr": "192.0.2.20/32"}}, {"ipBlock": {"cidr": "192.0.2.21/32"}}],
+                                     "ports": [{"protocol": "TCP", "port": 443}]}]
+        assert admission["refusals"](documents) == [], mode
+    # Off by default: no download object renders.
+    plain = render()
+    assert not any(item["metadata"]["name"] in {"model-manifest", "inference-worker-model-download"} for item in plain)
+    for name, values, error in (
+            ("manifest pin", download_values(manifest=MANIFEST + " "), "does not match the pinned SHA-256"),
+            ("no source", download_values(hosts=[]), "hosts"),
+            ("no manifest", download_values(manifest=""), "manifest"),
+            ("too many exits", download_values(hosts=[{"serverName": f"h{i}.example.invalid", "address": f"192.0.2.{i}"}
+                                                      for i in range(9)]), "hosts"),
+            ("not an address", download_values(hosts=[{"serverName": "models.example.invalid", "address": "models"}]), "address"),
+            ("size", download_values(sizeLimit="512G"), "sizeLimit")):
+        assert error in render_values(values, success=False), name
 
 
 def check_front_door_namespace() -> None:
@@ -699,7 +782,8 @@ def main() -> None:
     router_slot = next(item for item in staging_documents if item["kind"] == "Service" and item["metadata"]["name"] == settings["routerService"])
     assert router_slot["spec"]["clusterIP"] == "None"
     assert routes["routes"] == {model: [model]}
-    assert not any(item["kind"] == "ConfigMap" for item in staging_documents)
+    # The only ConfigMap is the byte manifest of the staging model download.
+    assert [item["metadata"]["name"] for item in staging_documents if item["kind"] == "ConfigMap"] == ["model-manifest"]
     assert not any(container["name"] == "cds-attest" for document in staging_documents
                    if document["kind"] in {"Deployment", "StatefulSet"}
                    for container in document["spec"]["template"]["spec"]["containers"])
@@ -726,6 +810,7 @@ def main() -> None:
     check_plain_http_behind_the_mesh()
     check_override_replaces_strategy()
     check_model_cache()
+    check_model_download()
     check_front_door_namespace()
     check_c8s_admission()
     check_telemetry_collector()

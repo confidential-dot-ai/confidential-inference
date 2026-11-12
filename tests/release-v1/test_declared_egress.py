@@ -23,8 +23,14 @@ class DeclaredEgressTests(unittest.TestCase):
                          [{"cidr": "203.0.113.7/32", "port": 443}, {"cidr": "203.0.113.9/32", "port": 443}])
 
     def test_an_item_without_egress_has_no_exit(self) -> None:
+        self.assertEqual(GEN["declared_egress"](controller([]), {"controller": "Deployment/gateway"}), [])
+
+    def test_host_aliases_without_declared_egress_are_refused(self) -> None:
+        # The model download of inference.model.download pins its source with
+        # hostAliases; without the exit the node drops every connection to it.
         aliases = [{"ip": "203.0.113.7", "hostnames": ["a"]}]
-        self.assertEqual(GEN["declared_egress"](controller(aliases), {"controller": "Deployment/gateway"}), [])
+        with self.assertRaisesRegex(GEN["GenerationError"], "declares no egress"):
+            GEN["declared_egress"](controller(aliases), {"controller": "StatefulSet/inference-worker-0"})
 
     def test_declared_egress_needs_an_address(self) -> None:
         with self.assertRaises(GEN["GenerationError"]):

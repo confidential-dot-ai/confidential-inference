@@ -199,9 +199,31 @@ inference:
       # (see the confidential-inference.expectedFiles helper).
     # The plain model cache (a hostPath models disk that fetch-model fills)
     # is unsupported on C8s v0.99.29, which mounts that disk read-only. The
-    # chart refuses to render with it enabled.
+    # chart refuses to render with it enabled. Use download instead.
     cache:
       enabled: false
+    # Download the model at each start into the worker's encrypted scratch
+    # disk, instead of reading the C8s model volume (c8sVolumeSource). The
+    # model path stays volumeDirectory/<volume name>; it is an emptyDir that
+    # the main container fills with fetch-model, then verifies read-only with
+    # wait-for-model. The README of this chart ("Model download") explains it.
+    download:
+      enabled: false
+      # The HTTPS model source, in the order fetch-model meets them: the first
+      # serves <repository>/resolve/<revision>/<file>, the others are hosts it
+      # redirects to. Each address is pinned with hostAliases and is one
+      # allowlist exit on port 443, so the deployment's allowlist policy must
+      # declare `egress: {port: 443}` for every inference workload. C8s
+      # admits at most 8 exits.
+      #   - serverName: models.example.invalid
+      #     address: 192.0.2.20
+      hosts: []
+      # The byte manifest (`fetch-model manifest`). Its SHA-256 must be the
+      # mountVerification pin of revisionMetadata.
+      manifest: ""
+      # The emptyDir limit. The kubelet evicts the pod above it. The scratch
+      # disk must hold the model next to the node's other state.
+      sizeLimit: 512Gi
   port: 30000
   metricsPort: 29000
   # Name of the reasoning parser to pass as --reasoning-parser on the model
@@ -224,7 +246,8 @@ inference:
     memory: 8Gi
   simulator:
     # Mount and verify the release model before the CPU simulator starts.
-    # Staging enables this to exercise the encrypted model-volume path.
+    # Staging enables this to exercise the model path of the deployment (the
+    # C8s model volume, or model.download).
     validateModelMount: false
     outputMode: BLOCKING
     maxTotalTokens: 8192

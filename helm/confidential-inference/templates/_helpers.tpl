@@ -124,3 +124,80 @@ every address. */}}
     - ipBlock: {cidr: {{ . | quote }}}
     {{- end }}
 {{- end }}
+
+{{/* Model download (inference.model.download). The C8s v0.99.29 worker mounts
+its models disk read-only, so a worker that does not read a C8s model volume
+downloads the model at each start into an emptyDir. The worker places a
+default-medium emptyDir under /var/lib/kubelet, on its encrypted scratch disk
+(serial confai-scratch), and the node classifies that mount as encrypted
+storage. fetch-model checks every byte against the manifest, whose SHA-256 the
+release pins (mountVerification), and wait-for-model checks every byte again
+on a read-only mount of the same volume before the server starts.
+
+The C8s worker grants a pod its allowlist exits only once all its main
+containers run, so the download runs in the main container that verifies the
+model, not in an init container. The volume outlives a container restart, so
+fetch-model keeps the files that already match. */}}
+{{- define "confidential-inference.modelDownloadDirectory" -}}/mnt/c8s-data/model-download{{- end }}
+{{- define "confidential-inference.modelManifestDirectory" -}}/mnt/c8s-data/model-manifest{{- end }}
+
+{{/* Check the download values; return the SHA-256 of the manifest. */}}
+{{- define "confidential-inference.modelDownloadManifestSha256" -}}
+{{- $download := .Values.inference.model.download -}}
+{{- if not $download.hosts -}}
+{{- fail "inference.model.download.hosts needs the model source address: the C8s worker admits egress only to an allowlist exit" -}}
+{{- end -}}
+{{- if not $download.manifest -}}
+{{- fail "inference.model.download.manifest is required" -}}
+{{- end -}}
+{{- $metadata := .Values.inference.model.mountVerification.revisionMetadata -}}
+{{- $pin := "" -}}
+{{- range $file := include "confidential-inference.expectedFiles" . | fromJsonArray -}}
+{{- if hasPrefix (printf "%s=" $metadata) $file -}}
+{{- $pin = regexReplaceAll "^.*=" $file "" -}}
+{{- end -}}
+{{- end -}}
+{{- if ne $pin (sha256sum $download.manifest) -}}
+{{- fail "inference.model.download.manifest does not match the pinned SHA-256 of mountVerification.revisionMetadata" -}}
+{{- end -}}
+{{- $pin -}}
+{{- end }}
+
+{{/* The command of the container that verifies the model: download, then
+exec the argv in the container args (wait-for-model). A stop during the
+download stops fetch-model at once. */}}
+{{- define "confidential-inference.modelDownloadCommand" -}}
+{{- $download := .Values.inference.model.download -}}
+{{- $fetch := printf "/usr/local/bin/fetch-model --endpoint=https://%s fetch --path=%s --manifest=%s/manifest.json --manifest-sha256=%s --revision-metadata=%s" (index $download.hosts 0).serverName (include "confidential-inference.modelDownloadDirectory" .) (include "confidential-inference.modelManifestDirectory" .) (include "confidential-inference.modelDownloadManifestSha256" .) .Values.inference.model.mountVerification.revisionMetadata -}}
+{{- list "/bin/sh" "-c" (printf "trap 'kill $f 2>/dev/null; wait $f; exit 143' TERM INT; %s & f=$!; wait $f || exit $?; trap - TERM INT; exec \"$@\"" $fetch) "sh" | toJson -}}
+{{- end }}
+
+{{/* The pinned addresses of the model source. Each is one allowlist exit. */}}
+{{- define "confidential-inference.modelDownloadHostAliases" -}}
+hostAliases:
+  {{- range .Values.inference.model.download.hosts }}
+  - ip: {{ .address | quote }}
+    hostnames: [{{ .serverName | quote }}]
+  {{- end }}
+{{- end }}
+
+{{/* The mounts of the container that downloads and verifies the model. */}}
+{{- define "confidential-inference.modelDownloadMounts" -}}
+- name: model-download
+  mountPath: {{ include "confidential-inference.modelDownloadDirectory" .root }}
+- name: model-download
+  mountPath: {{ .path }}
+  readOnly: true
+- name: model-manifest
+  mountPath: {{ include "confidential-inference.modelManifestDirectory" .root }}
+  readOnly: true
+{{- end }}
+
+{{- define "confidential-inference.modelDownloadVolumes" -}}
+- name: model-download
+  emptyDir:
+    sizeLimit: {{ .Values.inference.model.download.sizeLimit }}
+- name: model-manifest
+  configMap:
+    name: model-manifest
+{{- end }}

@@ -127,6 +127,10 @@
 {{- $_ := set $app "ports" $ports -}}
 {{- $_ := set $app "resources" (dict "requests" (dict "cpu" (toString $cpu) "memory" (printf "%dGi" $memory) "nvidia.com/gpu" $gpus) "limits" (dict "nvidia.com/gpu" $gpus)) -}}
 {{- range $mount := $app.volumeMounts }}{{ if eq $mount.name "run" }}{{ $_ := unset $mount "readOnly" }}{{ end }}{{ end -}}
+{{- /* The model gate runs in this container: it takes the holder's mounts (the download volume and manifest of inference.model.download). */ -}}
+{{- $paths := dict -}}
+{{- range $app.volumeMounts }}{{ $_ := set $paths .mountPath true }}{{ end -}}
+{{- range $mount := $holder.volumeMounts }}{{ if not (hasKey $paths $mount.mountPath) }}{{ $_ := set $app "volumeMounts" (append $app.volumeMounts $mount) }}{{ end }}{{ end -}}
 {{- $failedProbeGrace := int (add $pd.paired.shutdownTimeoutSeconds 15) -}}
 {{- $_ := set $app "startupProbe" (dict "httpGet" (dict "path" "/startupz" "port" $pd.paired.statusPort) "periodSeconds" 15 "timeoutSeconds" 5 "failureThreshold" (int (div (add $pd.paired.startupTimeoutSeconds 14) 15)) "terminationGracePeriodSeconds" $failedProbeGrace) -}}
 {{- $_ := set $app "readinessProbe" (dict "httpGet" (dict "path" "/readyz" "port" $pd.paired.statusPort) "periodSeconds" 5 "timeoutSeconds" 5 "failureThreshold" 1) -}}

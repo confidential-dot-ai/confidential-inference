@@ -434,11 +434,15 @@ def declared_egress(controller: dict[str, Any], item: dict[str, Any]) -> list[di
     """The exits of a policy item that declares `egress` (C8s #1047).
 
     Each hostAliases address of the pod is one /32 exit on the declared port,
-    so the chart value that names the destination is also the exit.
+    so the chart value that names the destination is also the exit. A pod
+    with hostAliases whose item declares no egress is refused: without the
+    exit, the node drops every connection to those addresses.
     """
-    if "egress" not in item:
-        return []
     aliases = controller["spec"]["template"]["spec"].get("hostAliases", [])
+    if "egress" not in item:
+        if aliases:
+            raise GenerationError(f"{item['controller']}: its pod pins hostAliases addresses, and the policy declares no egress")
+        return []
     if not aliases:
         raise GenerationError(f"{item['controller']}: declares egress, and its pod has no hostAliases address")
     return sorted(({"cidr": f"{alias['ip']}/32", "port": item["egress"]["port"]} for alias in aliases),
