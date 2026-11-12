@@ -63,6 +63,11 @@ jobs:
           fi
           [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
             || { echo "A release tag is vX.Y.Z." >&2; exit 1; }
+          # An earlier staging release pushed chart version X.Y.Z for vX.Y.Z-staging.
+          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}-staging" >/dev/null; then
+            echo "${RELEASE_TAG}-staging exists, and its chart has version ${RELEASE_TAG#v}. Use a higher version." >&2
+            exit 1
+          fi
           git merge-base --is-ancestor HEAD refs/remotes/origin/main \
             || { echo "The release tag does not point to a commit on main." >&2; exit 1; }
 
@@ -160,8 +165,10 @@ jobs:
           tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
           sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
 
-      # The signed manifest binds the package by its SHA-256. The job pushes
-      # it, then pulls it at the reference and proves it is the signed one.
+      # The signed manifest binds the package by its SHA-256. The job never
+      # replaces a pushed chart version: when the reference exists, it must
+      # already be the signed package (a rerun). Otherwise the job pushes it,
+      # then pulls it at the reference and proves it is the signed one.
       - name: push chart
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -175,7 +182,14 @@ jobs:
           test "${#archives[@]}" -eq 1 && test -e "${archives[0]}"
           test "$(digest "${archives[0]}")" = "$expected" \
             || { echo "The chart package differs from the signed manifest." >&2; exit 1; }
-          helm push "${archives[0]}" "oci://${reference%/*}"
+          mkdir "$RUNNER_TEMP/existing"
+          if helm pull "oci://${reference%:*}" --version "${reference##*:}" --destination "$RUNNER_TEMP/existing" 2>/dev/null; then
+            existing=("$RUNNER_TEMP"/existing/*.tgz)
+            test "$(digest "${existing[0]}")" = "$expected" \
+              || { echo "$reference exists with other bytes. Refusing to replace it." >&2; exit 1; }
+          else
+            helm push "${archives[0]}" "oci://${reference%/*}"
+          fi
           mkdir "$RUNNER_TEMP/pulled"
           helm pull "oci://${reference%:*}" --version "${reference##*:}" --destination "$RUNNER_TEMP/pulled"
           pulled=("$RUNNER_TEMP"/pulled/*.tgz)

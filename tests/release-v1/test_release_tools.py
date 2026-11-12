@@ -857,6 +857,13 @@ class RenderTests(unittest.TestCase):
             with self.assertRaisesRegex(REN.ManifestError, "does not name"):
                 render_deployment(manifest=changed)
 
+    def test_the_allowlist_names_only_digests_of_the_framework_release(self):
+        changed = framework_manifest()
+        changed["c8s"]["seedImages"] = [image for image in changed["c8s"]["seedImages"]
+                                        if "kube-state-metrics" not in image]
+        with self.assertRaisesRegex(REN.ManifestError, "does not name: \\['sha256:42cfe372"):
+            render_deployment(manifest=changed)
+
     def test_the_render_requires_the_checkout_of_the_framework_release(self):
         manifest = framework_manifest()
         with self.assertRaisesRegex(REN.ManifestError, "check out source commit"):

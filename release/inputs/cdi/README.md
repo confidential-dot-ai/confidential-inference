@@ -15,7 +15,7 @@ One file for each NVIDIA driver version: `nvidia-<driver>.json`.
 ```
 
 `nodeImages` lists every node image that the record holds for. The allowlist
-generator refuses a record that does not list the node image of the profile.
+generator refuses a record that does not list the pinned node image.
 
 `driverInputs.confosFetchGpuSha256` is the SHA-256 of `bin/confos-fetch-gpu` in
 confidential-os-builder at the ref that C8s pins in `.github/build-pins.json`.

@@ -123,9 +123,9 @@ client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key=YOUR_API_KEY)
 TEErminator checks the server again for new connections and blocks requests
 that fail.
 
-## Releases after v0.16.x
+## Framework releases
 
-Releases after `v0.16.x` are framework releases. Their `release-bundle.json`
+Releases after `v0.16.9` are framework releases: their `release-bundle.json`
 has the schema `confidential.ai/release-manifest/v2`. It names every image
 digest, the C8s core images, and the C8s node seed images, but no
 allowlist: each deployment renders its own allowlist from the framework

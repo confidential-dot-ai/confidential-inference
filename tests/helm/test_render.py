@@ -169,7 +169,7 @@ def check_front_door_namespace() -> None:
 
 
 def check_c8s_admission() -> None:
-    """Every profile renders pods the c8s webhook admits (scripts/check-c8s-admission.py)."""
+    """Every example deployment renders pods the c8s webhook admits (scripts/check-c8s-admission.py)."""
     admission = runpy.run_path(str(ROOT / "scripts/check-c8s-admission.py"))
     release = ("--namespace", "confidential-inference", "-f", "tests/fixtures/deployments/production-values.yaml",
                "-f", "tests/release-v1/fixtures/release-values.yaml",
@@ -646,7 +646,7 @@ def main() -> None:
     assert "inference" in result.stderr
     assert "mode" in result.stderr
 
-    # Each release profile must state its own mode, since
+    # Each deployment must state its own mode, since
     # the chart will not choose one for it.
     production_values = yaml.safe_load(
         (ROOT / "tests/fixtures/deployments/production-values.yaml").read_text()

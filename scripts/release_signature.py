@@ -25,8 +25,9 @@ LEGACY_POLICY_REFERENCE = "releases/trust/release-signing-policy.json"
 POLICY_PATH = ROOT / POLICY_REFERENCE
 TRUSTED_ROOT_REFERENCE = "release/trust/sigstore-public-good-trusted-root.json"
 LEGACY_TRUSTED_ROOT_REFERENCE = "releases/trust/sigstore-public-good-trusted-root.json"
-# The signed file names its schema. A framework release uses v2. Releases
-# v0.14.0 to v0.16.x use v1; the tools still read them as base releases.
+# The signed file names its schema. A framework release uses v2. Earlier
+# releases (v0.14.0 to v0.16.9, and their -staging tags) use v1; the tools
+# still read them as base releases.
 # Earlier release formats are not supported.
 RELEASE_MANIFEST_SCHEMA = "confidential.ai/release-manifest/v2"
 RELEASE_MANIFEST_SCHEMAS = {

@@ -65,16 +65,26 @@ OCI = MAN["OCI"]
 FRAMEWORK_VALUES = ("images", ("attestationReceipts", "releaseId"))
 
 
-def verify_release(release: Path, signature: Path, cosign: Path) -> dict[str, Any]:
-    """Return the framework release manifest after checking its signature and format."""
+def verify_release(release: Path, signature: Path, cosign: Path) -> tuple[dict[str, Any], bytes]:
+    """Return the framework release manifest and its bytes after checking its signature and format.
+
+    The bytes are read once before the check and must be unchanged after it,
+    so the manifest that the tool uses is the one that the signature covers.
+    """
+    data = release.read_bytes()
     try:
         release_signature.verify_release_signature(release, signature, cosign, 60)
     except (OSError, release_signature.ReleaseSignatureError) as error:
         raise ManifestError(f"framework release signature: {error}") from error
-    manifest = MAN["read_json"](release)
-    require(manifest.get("schema") == MAN["SCHEMA"], f"the framework release is not {MAN['SCHEMA']}")
+    require(release.read_bytes() == data, "the framework release changed during its signature check")
+    try:
+        manifest = json.loads(data)
+    except json.JSONDecodeError as error:
+        raise ManifestError(f"the framework release is not JSON: {error}") from error
+    require(isinstance(manifest, dict) and manifest.get("schema") == MAN["SCHEMA"],
+            f"the framework release is not {MAN['SCHEMA']}")
     MAN["validate_schema"](manifest)
-    return manifest
+    return manifest, data
 
 
 def require_checkout(manifest: dict[str, Any], chart: Path = CHART, repo: Path = ROOT) -> dict[str, Any]:
@@ -82,9 +92,10 @@ def require_checkout(manifest: dict[str, Any], chart: Path = CHART, repo: Path =
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True)
     require(head.returncode == 0 and head.stdout.strip() == manifest["source"]["commit"],
             f"check out source commit {manifest['source']['commit']} of the framework release first")
-    dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo,
-                           capture_output=True, text=True)
-    require(dirty.returncode == 0 and not dirty.stdout.strip(), "the checkout has changes")
+    # Untracked files count too: the generator reads files under release/inputs/.
+    dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all",
+                            "--", "release", "scripts", "helm", "tools"], cwd=repo, capture_output=True, text=True)
+    require(dirty.returncode == 0 and not dirty.stdout.strip(), "the checkout has changes or extra files")
     require(MAN["chart_identity"](chart)["treeSha256"] == manifest["chart"]["sha256"],
             "the chart differs from the framework release")
     require(sha256((repo / manifest["sourceLock"]["path"]).read_bytes()) == manifest["sourceLock"]["sha256"],
@@ -296,6 +307,11 @@ def render(
     }
     missing = [image for image in images if OCI.fullmatch(image).group(2) not in allowlisted]
     require(not missing, f"rendered images absent from the allowlist: {missing}")
+    # The client check: every digest of the allowlist is named by the release.
+    named = {image.rsplit("@", 1)[1] for image in
+             [*manifest["images"].values(), *manifest["c8s"]["coreImages"], *manifest["c8s"]["seedImages"]]}
+    unnamed = sorted(allowlisted - named)
+    require(not unnamed, f"the allowlist names digests that the framework release does not name: {unnamed}")
     record = {
         "schema": "confidential.ai/deployment-render/v1",
         "frameworkRelease": {"name": manifest["release"]["name"], "sourceCommit": manifest["source"]["commit"],
@@ -333,14 +349,14 @@ def main() -> int:
     try:
         cosign = args.cosign or (Path(found) if (found := shutil.which("cosign")) else None)
         require(cosign is not None, "verifying the framework release needs cosign")
-        manifest = verify_release(args.release, args.signature, cosign.resolve())
+        manifest, bundle = verify_release(args.release, args.signature, cosign.resolve())
         spec = require_checkout(manifest)
         deployment = release_spec.Deployment(
             tuple(path.resolve() for path in args.values), args.policy.resolve(),
             args.accepted_findings.resolve() if args.accepted_findings else None)
         files = render(manifest, spec, deployment, args.c8s.resolve(),
                        args.canonical_tool.resolve() if args.canonical_tool else None,
-                       sha256(args.release.read_bytes()))
+                       sha256(bundle))
         args.output_dir.mkdir(parents=True, exist_ok=True)
         for name, data in files.items():
             (args.output_dir / name).write_bytes(data)
