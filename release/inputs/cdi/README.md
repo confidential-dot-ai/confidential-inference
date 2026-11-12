@@ -6,7 +6,7 @@ One file for each NVIDIA driver version: `nvidia-<driver>.json`.
 {
   "driverVersion": "595.71.05",
   "toolkitVersion": "1.19.1",
-  "nodeImages": ["ghcr.io/confidential-dot-ai/node-guest-base@sha256:..."],
+  "nodeImages": ["ghcr.io/confidential-dot-ai/guests/worker@sha256:..."],
   "driverInputs": {"confosFetchGpuSha256": "sha256:..."},
   "source": "who captured it, how, and from which node image",
   "env": {"NVIDIA_VISIBLE_DEVICES": "void", "NVIDIA_CTK_LIBCUDA_DIR": "/usr/lib/x86_64-linux-gnu"},
@@ -15,7 +15,7 @@ One file for each NVIDIA driver version: `nvidia-<driver>.json`.
 ```
 
 `nodeImages` lists every node image that the record holds for. The allowlist
-generator refuses a record that does not list the node image of the profile.
+generator refuses a record that does not list the pinned node image.
 
 `driverInputs.confosFetchGpuSha256` is the SHA-256 of `bin/confos-fetch-gpu` in
 confidential-os-builder at the ref that C8s pins in `.github/build-pins.json`.

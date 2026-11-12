@@ -4,11 +4,10 @@ runtimeConfig:
   modelRoutes:
     deepseek-ai/DeepSeek-V4.1-Flash-1017:
     - deepseek-ai/DeepSeek-V4.1-Flash-1017
-environment: production
 gateway:
   admin:
-    url: https://ci-admin-next-loki.centralus.cloudapp.azure.com/api/usage/ingest
-    address: 172.173.67.102
+    url: https://admin.example.invalid/api/usage/ingest
+    address: 192.0.2.10
   usage:
     enabled: true
     models:
@@ -22,10 +21,8 @@ gateway:
     - 10.52.0.0/16
     - 10.42.0.0/16
 attestationReceipts:
-  evidenceBaseUrl: https://api.confidential.ai
+  evidenceBaseUrl: https://api.example.invalid
   evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
-  cds:
-    url: https://10.45.250.26:30808
 kubeStateMetrics:
   enabled: false
 inference:
@@ -73,28 +70,17 @@ telemetry:
   enabled: true
   deployment: b200-vanilla-20261106
   relay:
-    serverName: ci-admin-next-loki.centralus.cloudapp.azure.com
-    address: 172.173.67.102
+    serverName: admin.example.invalid
+    address: 192.0.2.10
   metrics:
-    tenantId: 693babab-0ab8-4ffb-8b5c-eb8aef3b10d1
-    clientId: c486ee14-1dca-4c1d-af4f-be163302ff44
+    tenantId: 00000000-0000-4000-8000-000000000001
+    clientId: 00000000-0000-4000-8000-000000000002
     dataCollectionRule: dcr-50a134d921ce434a86bcd8f01ab93b6e
   kubeStateMetrics:
     target: 10.53.0.11:8080
 c8s:
   frontDoorPodLabelName: router
   frontDoorNamespace: c8s-router
-images:
-  rolloutClient: ghcr.io/confidential-dot-ai/confidential-inference/rollout-client
-  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway
-  sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang
-  sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang
-  sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang-router
-  telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849
-  dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
-  nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
-  kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:38e2c52da58dc80e1e7591373b0881672c4412098394147bb44c0619b8552b75
 workloadOverridesEnabled: false
 scheduling:
   gatewayNodeName: gateway-node-1

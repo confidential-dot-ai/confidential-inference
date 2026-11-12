@@ -20,11 +20,13 @@
     },
     {
       "name": "inference-worker-0",
-      "controller": "StatefulSet/inference-worker-0"
+      "controller": "StatefulSet/inference-worker-0",
+      "egress": {"port": 443}
     },
     {
       "name": "inference-worker-1",
-      "controller": "StatefulSet/inference-worker-1"
+      "controller": "StatefulSet/inference-worker-1",
+      "egress": {"port": 443}
     },
 
     {

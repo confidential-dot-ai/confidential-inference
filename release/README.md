@@ -1,93 +1,49 @@
 # Release
 
-This directory is the one source of truth for the next production release.
-It holds the release inputs and signing trust files. Generated assets are
-published on GitHub Releases. Historical snapshots remain in Git history.
+This directory holds the inputs of the framework release and its signing
+trust files. Generated assets are published on GitHub Releases. Historical
+snapshots remain in Git history.
 
-The release contains no target, placement, or mesh CA. The
-private deployment repository holds the targets.
-
-`release/profiles.json` declares the release profiles: the tag suffix, the
-environment, the signing environment, and the layers of each profile. The
-tools read the profile of a tag or a directory from it with
-`scripts/release_profiles.py`.
-
-`release/staging/` is the staging profile. It is a layer on top of this
-directory. Its `spec.yaml` replaces only the model and the public hostnames,
-and Helm applies its `values.yaml` after `release/values.yaml`. Staging uses
-the CPU SGLang simulator and validates the encrypted model mount before the
-simulator starts. It has its own allowlist policy and accepted lint findings.
-It shares the node manifest and the image configuration. To move staging
-ahead of production, set `c8s` in `release/staging/spec.yaml`; the node
-manifest of that C8s release is then written to
-`release/staging/node-manifest.json`.
+The framework release is the software: the image digests, the Helm chart,
+the C8s release with its node and CDS guest images, and the tools that
+render an allowlist. It holds no environment value: no allowlist, no Helm
+values, no model, no hostname, no address, no mesh CA. Each environment keeps
+its own values and allowlist policy in the deployment repository. Each
+deployment renders its allowlist from a verified framework release and its
+environment with `scripts/render-allowlist.py`. See the terms in
+[README.md](../README.md#terms).
 
 The repository holds no digest of an image that it builds. The release build
 takes each one from signed evidence, so a release needs no commit that pins
 image digests. The release commit is the image source commit.
 
-## Plain V4.1 worker profile
-
-The next normal release serves `deepseek-ai/DeepSeek-V4.1-Flash-1017` at
-revision `1bae0e1088993b9b82de08f59de5be5a34e42170`. It uses two complete
-TP=4 workers. Each worker requires its own four-GPU CVM and encrypted model
-disk. The private deployment selects the CVM names.
-
-The worker uses the pinned upstream source. Speculative decoding and PD are
-disabled. No custom CPU Engram staging, CED handoff, HiCache, or bounded
-replay settings are enabled. Model files come from the verified encrypted
-mount, with Hugging Face network access disabled.
-
-The configured context limit is 131,072 tokens for input and output together.
-The larger native model limit is deferred. Keep the gateway defaults: 2 MiB
-per request body, 10 seconds to read the body, 900 seconds for the upstream
-request, and 60 seconds without stream data. A gateway limit does not prove
-the front door accepts the same request size; record the tested end-to-end
-limit in the deployment receipt.
-
-Select the upstream PyTorch sampling backend explicitly. A filtered sampling
-request caused a worker health failure with the prior FlashInfer path. The
-cause remains unknown. This configuration is a mitigation to test; it does
-not establish a kernel defect or a performance improvement. Require single
-bounded-top-k and mixed greedy/default inference to pass before acceptance.
-
-Keep the limit at 16 active requests per worker and 32 across the gateway.
-Test both workers and record actual latency, throughput, and memory headroom.
-
-Native worker output is discarded to protect prompt and response text.
-Metrics and fixed numeric process-exit events remain available. Detailed
-Python stack dumps, NCCL flight-recorder dumps, and native CUDA error text
-are not available through this output path. These are diagnostic gaps.
-
 ## Files
 
 | File | Written by | Contents |
 | --- | --- | --- |
-| `spec.yaml` | A person, or `bump-c8s.py` for `c8s` | The C8s release with its node image and core images, the model identity, and the public hostnames. It is the one place that pins C8s. It names no version: the tag is the version |
-| `values.yaml` | A person | The chart values of the release. Only release values, no deployment values. It names each repository image without a digest |
-| `allowlist-policy.json` | A person | The workloads and the inputs of the allowlist. The C8s pins come from `spec.yaml` |
-| `profiles.json` | A person | The release profiles and their layers |
-| `inputs/image-config.json` | `generate-release-allowlist.py --refresh-image-config` | The `ENV`, `ENTRYPOINT`, and `CMD` of every image that a profile renders and this repository does not build. All profiles share it. Review the diff by hand |
-| `inputs/cdi/nvidia-<driver>.json` | A person, from a reviewed record | The NVIDIA CDI environment variables and driver mounts of one driver version |
-| `inputs/c8s-source-lock.json` | `bump-c8s.py` | The pinned C8s commits and source hashes. The signed manifest records its path and digest. All profiles share it |
-| `inputs/c8s-attestation-protocols/<commit>.json` | `bump-c8s.py` | The attestation protocol of each C8s commit. `check-c8s-protocol-lockstep.py` compares them with the source lock |
+| `spec.yaml` | A person, or `bump-c8s.py` for `c8s` and `images.c8sOperator` | The C8s release with its node image, CDS guest image and core images, and every image that the chart can run, by chart image key. A repository image has no digest. It names no version: the tag is the version |
 | `node-manifest.json` | `fetch-node-manifest.py` | The C8s `manifest.json` of the node image. It holds MRTD, RTMR1, and RTMR2 |
-| `accepted-lint-findings.json` | A reviewer | The `c8s allowlist lint --strict` findings that the release accepts, each with its reason and issue |
+| `cds-manifest.json` | `fetch-node-manifest.py` | The C8s `manifest.json` of the CDS guest image. The release manifest binds its SHA-256 as `cdsImage.manifestSha256`, and the release publishes it as an asset; a deployment's `cds-pin.json` takes its launch digest from it |
+| `inputs/image-config.json` | `generate-release-allowlist.py --refresh-image-config` | The `ENV`, `ENTRYPOINT`, and `CMD` of every image in `spec.yaml` that this repository does not build, and of the C8s core images. Review the diff by hand |
+| `inputs/cdi/nvidia-<driver>.json` | A person, from a reviewed record | The NVIDIA CDI environment variables and driver mounts of one driver version |
+| `inputs/c8s-source-lock.json` | `bump-c8s.py` | The pinned C8s commits and source hashes. The signed manifest records its path and digest |
+| `inputs/c8s-attestation-protocols/<commit>.json` | `bump-c8s.py` | The attestation protocol of each C8s commit. `check-c8s-protocol-lockstep.py` compares them with the source lock |
+| `inputs/c8s-seeds/<commit>.json` | `bump-c8s.py` | The allowlist seed of a pinned C8s commit and the inputs it was rendered with |
+| `trust/` | A person | The release-signing policy and the Sigstore trusted root |
 
 ## The release build
 
-The release workflow runs `build-release-manifest.py` at the tag commit. It
-writes the files below, and the workflow attaches them to the GitHub release
-with the signature, the tag commit, the image publication evidence and the
-profile values files:
+A person pushes the tag `vX.Y.Z` on a main commit. The release workflow
+(`.github/workflows/release-bundle.yml`) runs `build-release-manifest.py` at
+the tag commit, signs the manifest, and attaches these files to the GitHub
+release with the signature, the tag commit, and the image publication
+evidence:
 
 | Asset | Contents |
 | --- | --- |
-| `release-bundle.json` | The release manifest. The workflow signs it. It must match `api/release-manifest.schema.json` |
-| `allowlist.json` | The exact C8s allowlist of the release, in canonical bytes. The manifest binds its SHA-256 as `allowlist.sha256`; `allowlist.path` names the profile, for example `release/staging/allowlist.json` |
-| `release-values.yaml` | The repository image digests and `attestationReceipts.releaseId` (the tag) as a Helm values file. Apply it after the profile values files. The manifest binds its SHA-256 as `releaseValues.sha256`; `releaseValues.path` names the profile, for example `release/staging/release-values.yaml`. Each image in it is also in the manifest `images` |
-| `confidential-inference-X.Y.Z.tgz` | The chart package of the source commit, written by the staging release build at version X.Y.Z (the tag without `v` and `-staging`). The manifest binds its SHA-256 as `chart.archiveSha256` and the registry reference the publish job pushes it to as `chart.reference` (`ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference:X.Y.Z`); the SHA-256 is the digest of the chart layer there. A production release of the same commit builds no package: its manifest binds the staging package, so production promotes the chart staging verified. `chart.sha256` stays the tree hash of `helm/confidential-inference` at the tag |
-| `profile-values-<path>.yaml` | Each profile values file, named by its repository path with `/` as `-` (`profile-values-release-values.yaml`, then `profile-values-release-staging-values.yaml` for staging). The manifest lists them in layer order as `profileValues`, each with its digest and asset name. Apply them before `release-values.yaml` |
+| `release-bundle.json` | The framework release manifest. The workflow signs it. It must match `api/release-manifest-v2.schema.json`. It names every image digest (`images`), the C8s release and core images (`c8s`), the node image and its measurements, the CDS guest image (`cdsImage`), the chart, and the source lock |
+| `confidential-inference-X.Y.Z.tgz` | The chart package at version X.Y.Z (the tag without `v`). The manifest binds its SHA-256 as `chart.archiveSha256` and the registry reference the publish job pushes it to as `chart.reference` (`ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference:X.Y.Z`). `chart.sha256` is the tree hash of `helm/confidential-inference` at the tag |
+| `cds-manifest.json` | The C8s `manifest.json` of the pinned CDS guest image (`release/cds-manifest.json`). The manifest binds its SHA-256 as `cdsImage.manifestSha256` |
 
 The build takes the image digests from two signed sources:
 
@@ -100,97 +56,203 @@ The build takes the image digests from two signed sources:
 2. The signed manifest of the base release of that image run, when its
    `base_ref` is a release tag. The image run publishes only the images that
    changed after its base, so every other image keeps the digest of the base
-   release. The build reads `base_ref` from the evidence (`source.baseRef`)
-   and downloads `release-bundle.json` and `release-bundle.sigstore.json` of
-   that GitHub release itself; the caller does not give them. The
-   build verifies the base signature with the trust policy in
-   `release/trust/`, requires that the base manifest names the base tag and
-   commit of the evidence, and requires that no build input of such an image
-   changed since the base commit. A base release from the other profile is
-   valid: the images do not depend on the profile. After a change to the
-   trust policy, an older release does not verify; run `release-images` with
-   a base release that the current policy signed, or with a commit base.
+   release. The build downloads and verifies that release itself, requires
+   that it names the base tag and commit of the evidence, and requires that
+   no build input of such an image changed since the base commit. A base
+   release can be of the earlier format (`release-manifest/v1`, v0.14.0 to
+   v0.16.x, including `-staging` tags).
 
 When `base_ref` is a commit, the evidence must name every repository image
-that the chart renders.
-
-The build then renders the chart with these digests, reads the
-configuration of each repository image from the registry by digest, and
-generates the allowlist with the C8s CLI built from the pinned C8s commit. It
-binds the release source commit, the image publication evidence, the
-allowlist digest, and the `release-values.yaml` digest into the manifest. A
-consumer verifies each asset by its digest in the signed manifest.
-
-`releaseValues`, `chart.archiveSha256`, `chart.reference` and `profileValues`
-are optional in the schema because releases built before them do not carry
-them, and they must still verify. The build always writes them.
+in `spec.yaml`.
 
 The build writes the chart package itself, as a function of the tagged tree
 and the version alone (sorted entries, fixed file metadata, no gzip name or
-time), so a rebuild gives the same bytes and `--check` compares it like every
-other file. `helm package` is not reproducible, so the build does not use it.
-A production build needs the signed staging release of its commit; without
-one it fails and says so.
+time), so a rebuild gives the same bytes. `helm package` is not reproducible,
+so the build does not use it.
 
 ## Order
 
 1. Merge the change to main. A release needs no other commit.
 2. Run `release-images` on main with `publish` and `rebuild_audit` enabled and
    the newest release tag as `base_ref`. The workflow selects every changed
-   repository image. This includes release images such as
-   `maintenance-gateway` even when the application chart does not deploy
-   them. It builds each selected image twice and requires equal platform
-   digests. It then pushes the first audited OCI archive, so the pushed
-   digest is the audited digest. The sglang archive is too large to pass
-   between jobs, so sglang is built a third time and must give the same
-   digest. Standard images do not wait for the sglang audit. The run writes
-   one publication artifact, `release-image-publication-<commit>`. When no
-   image changed since the newest image run, skip this step.
-3. Tag the commit `vX.Y.Z` or `vX.Y.Z-staging`. The release workflow builds,
-   signs, and publishes the release. The tag is the version, so no commit
-   changes a version. A staging tag needs no production tag.
+   repository image. It builds each selected image twice and requires equal
+   platform digests. It then pushes the first audited OCI archive, so the
+   pushed digest is the audited digest. The run writes one publication
+   artifact, `release-image-publication-<commit>`. When no image changed
+   since the newest image run, skip this step.
+3. Tag the commit `vX.Y.Z` and push the tag. The release workflow builds,
+   signs, and publishes the release. A fix is a new patch version. Tags never
+   move, so a failed release uses the next patch number.
 
-To build the release again from the tagged tree, give the same evidence and
-a C8s CLI built from the pinned C8s commit. The build downloads the base
-release that the evidence names:
+To build the release again from the tagged tree and compare it:
 
 ```sh
 python3 scripts/build-release-manifest.py \
-  --tag vX.Y.Z-staging \
-  --source-commit "$(git rev-parse vX.Y.Z-staging^{commit})" \
+  --tag vX.Y.Z \
+  --source-commit "$(git rev-parse vX.Y.Z^{commit})" \
   --image-publication image-publication-manifest.json \
-  --c8s /path/to/pinned/c8s \
   --output-dir /tmp/release \
   --check
 ```
 
-Without `--check`, it writes the files to `--output-dir`. With `--check`, each
-file there must equal a new build. The checked files are the release assets.
-The repository is public, so downloading the base release needs no token;
-the build sends `GH_TOKEN` to GitHub when it is set. `--download-dir` keeps
-the downloaded files, and the build uses files already there after the same
-signature and binding checks. Verifying the base release needs `cosign`;
-reading the image configuration needs `crane` with read access to the
-registry.
+With `--check`, each file in `--output-dir` must equal a new build.
+Downloading the base release needs no token; the build sends `GH_TOKEN` to
+GitHub when it is set. Verifying the base release needs `cosign`.
+
+## Render a deployment allowlist
+
+The operator runs this for each deployment, from a checkout at the framework
+release's source commit. It needs `helm`, `cosign`, `crane` with read access
+to the registry, and a C8s CLI built from the pinned C8s commit:
+
+```sh
+python3 scripts/render-allowlist.py \
+  --release release-bundle.json --signature release-bundle.sigstore.json \
+  --environment staging --values values.yaml --policy allowlist-policy.json \
+  [--accepted-findings accepted-lint-findings.json] \
+  --c8s /path/to/pinned/c8s --output-dir out
+```
+
+It verifies the release signature and that the checkout is the release
+source. `--environment` is required: the environment name, for example
+`staging` or `production` (lowercase letters, digits, and hyphens, at most 63
+characters). The render sets the chart value `environment` to it. The gateway
+gets it as `DEPLOYMENT_ENVIRONMENT`, and the chart permits
+`stagingValidation` only when it is `staging`.
+
+It refuses environment values files that set `images` or
+`frameworkRelease`, because the framework release supplies them. It refuses
+values files that set `environment`, because the render sets it from the
+environment name. The gateway
+pins `frameworkRelease` as exact environment values, so the live allowlist
+names the framework release and its bundle digest.
+It renders the chart, refuses an image that the framework release does not
+name, generates the allowlist, and runs `c8s allowlist lint --strict`. It
+writes `allowlist.json`, `release-values.yaml` (the image digests, the
+framework release, and the environment name; apply it after the environment
+values files), and `render.json` (the environment name and the SHA-256 of
+each input).
+
+These checks help the operator. A client does not rely on them: it reads the
+live allowlist and checks it against the signed framework release
+([docs/verification.md](../docs/verification.md)).
+
+The allowlist policy of an environment lists its workloads (name and
+controller), the chart release name, namespace, and Kubernetes version, the
+`kubernetes` Service address, the CDI record, egress, and secret reads.
+`tests/fixtures/deployments/` holds two example environments (`staging` and
+`production`) with example addresses for the tests.
 
 ## Change the C8s release
-
-Use one command to move every profile to a new C8s tag:
 
 ```sh
 scripts/bump-c8s.py --tag vX.Y.Z --c8s-repo <clean c8s checkout at the tag>
 ```
 
-For a signed beta, select the profile explicitly and use `--allow-beta`.
-Production can use a beta when the deployment calls for it. The signature
-check still requires the exact beta workflow and source commit.
+For a signed beta, add `--allow-beta`. The signature check still requires the
+exact beta workflow and source commit.
 
-It needs `crane`, Go, and read access to the C8s Go module. It changes the C8s
-pins, the source lock, the node manifests, and the image config, and then
-runs the release checks. The next release build generates the allowlist with
-the new C8s CLI. The script stops when the attestation protocol files or the
-NVIDIA inputs of the node image change. Do those steps by hand. Review the
-full diff before you commit.
+It needs `crane`, Go, read access to the C8s Go module, and first on `PATH`
+the Helm version that the worker image build pins (`HELM_VERSION` in its
+`mkosi.sync`; v3.14.4 at C8s v0.99.38). `--c8s` gives a C8s CLI built from the
+tag; without it the script builds one. It changes the C8s pins in `spec.yaml`,
+the source lock, the seed record, the node and CDS manifests, the image
+config, and the allowlist test fixture, and then runs the release checks.
+The script stops when the attestation
+protocol files or the NVIDIA inputs of the node image change. Do those steps
+by hand. Review the full diff before you commit.
+
+## Move a deployment to C8s v0.99.29
+
+A release that pins C8s v0.99.29 or later runs only on workers of the
+pinned C8s release with a standalone CDS VM. This release pins C8s v0.99.38.
+From v0.99.38 each GPU worker runs the NVIDIA device plugin and
+dcgm-exporter as static pods (C8s #1700). The old cluster's CDS state does
+not carry over: a new CDS keeps its secrets in process memory, starts empty,
+and mints a new mesh CA (C8s `docs/secrets.md`, `docs/cds-ha.md`). Keep the
+old cluster, its CDS and its release serving until the new deployment passes
+every acceptance check.
+
+The deployment has two kinds of input. Launch files never change while a VM
+lives: `cds-config.yaml` for the CDS and `worker.yaml` for each worker, which
+embeds the CDS pin and so the exact bytes of `cds-config.yaml`. The worker
+documents the CDS admits are not in either file: operator-signed decrees in
+the CDS log carry them, and a later `node-images` decree replaces the set
+(C8s `docs/cds-ha.md`, `docs/launch-configuration.md`). Bring a deployment
+of workers up in this order:
+
+1. Write `cds-config.yaml` with `c8s cds config new --replica CDS_HOST
+   --voters 1` and no `--node-pins`, so the launch file names no nodes.
+   `CDS_HOST` is the CDS VM's DNS name or IPv4 address; name each replica
+   for more than one VM, with an odd `--voters`. A CDS without `--replica`
+   needs `--node-pins`, which cannot bind a worker document that embeds the
+   configuration itself.
+2. Boot the CDS VM from the release's `cdsImage` and that file.
+3. Write `worker.yaml` with `c8s worker new` against the deployment's
+   `cds-pin.json`.
+4. Sign the Genesis decree as C8s `docs/cds-ha-runbooks.md` runbook 1
+   describes, with `--image-manifest cds-manifest.json` from the release and
+   `--worker-document worker.yaml --worker-image worker-image.json`, where
+   `worker-image.json` holds the measurements of the release's node image
+   (`c8s cds ha decree genesis`).
+5. Admit every later or changed `worker.yaml` with a `node-images` decree on
+   the set in force.
+
+Hand traffic over only when all of these hold:
+
+- The CDS VM runs the `cdsImage` that the release manifest pins, and its
+  `cds-pin.json` launch digest comes from the release's `cds-manifest.json`
+  asset, whose SHA-256 equals `cdsImage.manifestSha256` of the verified
+  release manifest.
+- Every client that verifies the deployment pins the worker's launch file
+  besides the release's node image, as
+  [verification.md](../docs/verification.md#releases-on-c8s-v09929) describes.
+  Worker admission alone does not show that clients enforce the CDS image and
+  configuration.
+- The operator keys in its `cds-config.yaml` are the deployment's operator
+  keys.
+- Every application secret is written to the new CDS.
+- Every encrypted volume key is written back from its escrow file with
+  `c8s secrets put` (C8s `docs/volumes.md`). A volume without an escrow file
+  cannot move; provision it again.
+- Every inference worker gets its model. The v0.99.29 worker mounts its
+  models disk read-only, so the plain model cache cannot work. A deployment
+  downloads the model at each start to the worker's encrypted scratch disk
+  (`inference.model.download`), or reads a C8s model volume. A download needs
+  a model source at fixed addresses, and the allowlist policy must declare
+  `"egress": {"port": 443}` for each inference workload (the chart README,
+  "Model download").
+- Every client and gateway that pins a mesh CA pins the new CDS's mesh CA.
+  Leaves issued under the old mesh CA are not trusted by the new deployment.
+
+Accept the new deployment only after these checks pass on it:
+
+1. A confidential workload starts, and its injected `c8s-cert` client gets a
+   certificate from the standalone CDS.
+2. The CDS admits each worker over TCP 1019, and the workers' pods start under
+   the release allowlist.
+3. A credential client whose `cds-pin.json` names another CDS launch digest
+   is refused.
+4. A worker launched with a `worker.yaml` that no entry of the decree in
+   force binds is refused admission and gets no credentials. Read the set in
+   force with `c8s cds ha decrees --config cds-config.yaml --cds-pin
+   cds-pin.json --json` (its `node_pins`), not from `cds-config.yaml`.
+5. The public attestation route verifies against the new release manifest
+   and the RTMR[3] seed of the deployment's `worker.yaml`.
+6. The same check with the seed of another `worker.yaml`, for example one
+   that names another CDS configuration, fails.
+
+Releases on C8s v0.99.0 and later carry `cdsImage`, which the release
+manifest schema of earlier source commits refuses. Verify such a release with
+`scripts/verify-release-bundle-signature.py` and
+`api/release-manifest-v2.schema.json` from its own source commit or a later one.
+Move every verifier, including deployment readiness checks, to that source
+before you publish the release.
+
+Roll back to the previous release and cluster when any check fails before
+handover. After handover, rolling back needs the old CDS still running with
+its secrets: once it stops, its secrets and mesh CA are gone, and a rollback is
+a new deployment of the old release.
 
 ## The allowlist
 
@@ -199,54 +261,22 @@ generator combines five pinned sources: the image configuration, the chart
 pod specification, the `kubernetes` Service variables and `HOSTNAME`, the
 mounts that the C8s webhook adds, and the NVIDIA CDI record for GPU
 containers. `c8s allowlist derive` of the pinned C8s release writes each
-entry. The C8s core entries mirror the node image's bootstrap seed byte for
-byte: CDS serves the uploaded allowlist as it is, so it must carry the seed.
-The seed is the pinned C8s release's asset `allowlist-seed-<platform>.json`
-(C8s #975; the platform of the node image tag, `-cdi` included). The generator
-downloads it, verifies the release statement with cosign against the C8s
-release workflow identity, and requires the asset's sha256 to be the one the
-statement lists. A dev build, or a release from before the asset (C8s
-v0.59.1), has a record in `inputs/c8s-seeds/<source commit>.json` instead. `tools/c8s-allowlist-canonical`, built against the pinned C8s
-module, writes the canonical bytes. `c8s allowlist lint --strict` must pass,
-except for the findings in `accepted-lint-findings.json`. The generator fails
-on any other finding, and on a listed finding that no longer appears. Today
-the file accepts 4 findings: the node image CDI mounts `/usr/bin/nvidia-smi`
-and `/usr/bin/nvidia-persistenced` overlap the worker `PATH`
-(C8s issue #713).
+entry. The C8s core entries mirror the seed byte for byte: CDS serves the
+uploaded allowlist as it is, so it must carry the seed. C8s publishes no seed
+asset from v0.95.0. `bump-c8s.py` renders the seed with
+`c8s node-image render` of the pinned commit, with the kubelet and Helm
+versions of the worker image build, and records it in
+`inputs/c8s-seeds/<source commit>.json`. The generator reads the record of
+the pinned commit, and the framework manifest names its images
+(`c8s.seedImages`). `render-allowlist.py` renders the seed again with the
+pinned CLI and the record's inputs, with the record's Helm version first on
+`PATH`, and fails unless the canonical render equals the record. `tools/c8s-allowlist-canonical`,
+built against the pinned C8s module, writes the canonical bytes. `c8s allowlist lint --strict` must pass,
+except for the findings that the deployment accepts. The generator fails on
+any other finding, and on an accepted finding that no longer appears. A
+deployment without accepted findings accepts no finding.
 
-The `kubernetes` Service address is `10.53.0.1`. The node image measures the
-service network `10.53.0.0/16`, so the address is the same on every cluster.
-
-## Versions
-
-A production release uses `vX.Y.Z`. A staging release uses `vX.Y.Z-staging`.
-A fix is a new patch version. The tag selects the profile
-(`release/profiles.json`), and the build takes the version from it: the
-manifest `release.name` and the chart value `attestationReceipts.releaseId`
-are the tag. Each profile is released on its own: `vX.Y.Z-staging` needs no
-`vX.Y.Z`, and the two numbers can differ. Tags never move, so a failed
-release uses the next patch number.
-
-## Unsigned branch builds
-
-A staging target can deploy a branch before it is merged. The internal
-`bin/deploy --build <branch>@<commit>` takes such a build when the target has
-`RELEASE_POLICY=unsigned`, which it refuses for production and for any target
-that serves `api.confidential.ai`.
-
-Run `release-bundle.yml` on the branch (workflow dispatch):
-
-```sh
-gh workflow run release-bundle.yml --ref <branch>
-```
-
-In one run it builds each image that changed since the nearest staging release
-tag once (`release-images.yml` with `single_build`: no rebuild audit), then
-runs the release build at the branch head with the staging profile and the
-name `v0.0.<run number>-staging`, pushes the chart package, and keeps the
-files as the workflow artifact `unsigned-release-<name>`. It signs nothing and
-creates no tag and no GitHub Release. A signed release never uses these
-images: it takes the evidence of `release-images.yml` runs on main only.
-
-The workflow runs from the branch, so the branch must contain this workflow
-version (merge main into it first).
+The allowlist pins the `kubernetes` Service address `10.53.0.1`. With C8s
+v0.99.29 the control plane runs outside the TEE and the worker's launch file
+sets the Service range (`kubernetes.serviceCIDR`). Both must give the
+`kubernetes` Service `10.53.0.1`; the charts assume `10.53.0.0/16`.

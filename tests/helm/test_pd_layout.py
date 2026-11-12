@@ -313,11 +313,11 @@ def check_off_by_default() -> None:
     assert router["args"][0] == "--worker-urls" and "--pd-disaggregation" not in router["args"]
 
 
-# The staging layer for one 8-GPU B200 node (release/staging/b200/values.yaml):
+# The staging layer for one 8-GPU B200 node (tests/fixtures/deployments/b200-staging-values.yaml):
 # the plan's layout with the per-worker limits of the B200 1p1d tuning run
 # (1 PP2 prefill + 1 TP2 decode on 4 B200, 180 GB HBM). Every other flag and
 # variable is the plan's.
-B200_LAYER = ROOT / "release/staging/b200/values.yaml"
+B200_LAYER = ROOT / "tests/fixtures/deployments/b200-staging-values.yaml"
 B200_FLAGS = {
     "prefill": {
         "--context-length": "131072",
@@ -371,6 +371,8 @@ def derive_b200_layer(plan: dict) -> dict:
                 "revision": model["revision"],
                 "c8sVolumeSource": model["c8sVolumeSource"],
                 "volumeNames": ["dsv41"],
+                # The layer reads its C8s model volume, not the staging download.
+                "download": {"enabled": False},
                 "mountVerification": {"expectedFileList": [
                     {"path": ".model-lock-local-manifest.json", "sha256": model["manifestSha256"]},
                     {"path": "config.json", "sha256": model["configSha256"]},
@@ -388,12 +390,13 @@ def derive_b200_layer(plan: dict) -> dict:
 def check_b200_layer() -> None:
     """The B200 layer is the plan with the B200 limits, and renders on top of staging."""
     layer = yaml.safe_load(B200_LAYER.read_text())
-    assert layer == derive_b200_layer(PLAN), "regenerate release/staging/b200/values.yaml (derive_b200_layer)"
+    assert layer == derive_b200_layer(PLAN), "regenerate tests/fixtures/deployments/b200-staging-values.yaml (derive_b200_layer)"
     image = "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:" + "0" * 64
     result = subprocess.run(["helm", "template", "example", str(CHART), "--namespace", "confidential-inference",
-                             "--values", "release/values.yaml", "--values", "release/staging/values.yaml",
+                             "--values", "tests/fixtures/deployments/production-values.yaml", "--values", "tests/fixtures/deployments/staging-values.yaml",
+                             "--set", "environment=staging",
                              "--values", str(B200_LAYER), "--values", "tests/release-v1/fixtures/release-values.yaml",
-                             "--set", "attestationReceipts.releaseId=v0.14.18-staging",
+                             "--set", "frameworkRelease.name=v0.14.18",
                              "--set", "inference.pd.paired.enabled=false",
                              "--set", f"images.sglangWorker={image}"],
                             cwd=ROOT, text=True, capture_output=True, check=False)
@@ -466,7 +469,7 @@ def check_pair_render(values: dict) -> None:
     assert json.loads(env["CI_ROUTER_PD_PAIRS"]) == routes
     assert admission["refusals"](documents) == []
     observed = copy.deepcopy(values)
-    observed["telemetry"] = yaml.safe_load((ROOT / "release/values.yaml").read_text())["telemetry"]
+    observed["telemetry"] = yaml.safe_load((ROOT / "tests/fixtures/deployments/production-values.yaml").read_text())["telemetry"]
     rendered = render(observed, "--values", str(FIXTURES / "pd-pairs-values.yaml"))
     for name in ("inference-pd-a", "inference-pd-b"):
         app = by_name(rendered, "StatefulSet", name)["spec"]["template"]["spec"]["containers"][0]
@@ -539,6 +542,43 @@ def check_pair_model_disks(values: dict) -> None:
     assert "modelVolumeName" in error
 
 
+def check_model_download(values: dict) -> None:
+    """inference.model.download: the holder (or a pair's model gate) downloads the model into the
+    pod's emptyDir and verifies it read-only; every worker reads the same read-only mount."""
+    import hashlib
+    manifest = '{"schema":"confidential-benchmark/local-model-byte-manifest/v1"}\n'
+    download = copy.deepcopy(values)
+    download["inference"]["model"].update(
+        mountVerification={"expectedFiles": {".model-lock-local-manifest.json": hashlib.sha256(manifest.encode()).hexdigest()}},
+        download={"enabled": True, "manifest": manifest,
+                  "hosts": [{"serverName": "models.example.invalid", "address": "192.0.2.20"}]})
+    fetch = "/usr/local/bin/fetch-model --endpoint=https://models.example.invalid fetch --path=/mnt/c8s-data/model-download "
+    read_only = {"name": "model-download", "mountPath": MODEL_PATH, "readOnly": True}
+    writable = {"name": "model-download", "mountPath": "/mnt/c8s-data/model-download"}
+    documents = render(download)
+    template = by_name(documents, "StatefulSet", "inference-pd")["spec"]["template"]
+    assert "confidential.ai/c8s-volumes" not in template["metadata"]["annotations"]
+    assert template["spec"]["hostAliases"] == [{"ip": "192.0.2.20", "hostnames": ["models.example.invalid"]}]
+    holder, *workers = template["spec"]["containers"]
+    assert holder["command"][:2] == ["/bin/sh", "-c"] and fetch in holder["command"][2]
+    assert holder["args"][:3] == ["/usr/local/bin/wait-for-model", "--path=" + MODEL_PATH, "--plain-cache"]
+    assert writable in holder["volumeMounts"] and read_only in holder["volumeMounts"]
+    for worker in workers:
+        assert read_only in worker["volumeMounts"] and writable not in worker["volumeMounts"], worker["name"]
+    assert admission["refusals"](documents) == []
+    documents = render(download, "--values", str(FIXTURES / "pd-pairs-values.yaml"))
+    for name in ("inference-pd-a", "inference-pd-b"):
+        spec = by_name(documents, "StatefulSet", name)["spec"]["template"]["spec"]
+        (app,) = spec["containers"]
+        gate = json.loads(app["args"][1])["modelGate"]
+        assert gate[:2] == ["/bin/sh", "-c"] and fetch in gate[2]
+        assert gate[4:7] == ["/usr/local/bin/wait-for-model", "--path=" + MODEL_PATH, "--plain-cache"]
+        # The gate runs in the pair container, so it takes the holder's mounts.
+        assert writable in app["volumeMounts"] and read_only in app["volumeMounts"]
+        assert {"name": "model-manifest", "mountPath": "/mnt/c8s-data/model-manifest", "readOnly": True} in app["volumeMounts"]
+    assert admission["refusals"](documents) == []
+
+
 def main() -> None:
     values = check_values_file_is_the_plan()
     check_render(values)
@@ -547,6 +587,7 @@ def main() -> None:
     check_b200_layer()
     check_pair_render(values)
     check_pair_model_disks(values)
+    check_model_download(values)
     print("PD layout checks passed")
 
 

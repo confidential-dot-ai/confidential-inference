@@ -5,18 +5,22 @@ endpoint and [release documentation](../release/README.md) for publication.
 
 ## Current release and discovery
 
-- `release-manifest.schema.json`: signed release manifest for v0.14.0 and
-  later. It records source, image digests, node measurements, publication
-  evidence, and the initial policy.
-- `environment-spec.schema.json`: deployment environment input format.
+- `release-manifest-v2.schema.json`: signed framework release manifest. It
+  records source, every image digest, the C8s pins, node measurements, the
+  chart, and publication evidence. It holds no policy and no environment value.
+- `release-manifest.schema.json`: the earlier signed release manifest
+  (v0.14.0 to v0.16.x), which also bound an initial policy.
+- `environment-spec.schema.json`: environment input format.
 
-The active policy can differ from the signed initial policy. Clients review
-and pin the exact active bytes separately.
+Each deployment renders its own policy from a framework release and its
+environment. Clients
+check its image digests against the signed release, review the rest, and pin
+the exact active bytes.
 
 ## Gateway APIs
 
 - `gateway-inference.openapi.json`: public inference, model catalog, health,
-  and native C8s routes served by TLS-LB.
+  and native C8s routes served by the C8s router.
 - `gateway-admin.openapi.json`: the key registry snapshot. The gateway pulls
   it from the admin (`GET /api/gateway/key-snapshot`); the admin may also
   push it to the gateway's signed admin API.

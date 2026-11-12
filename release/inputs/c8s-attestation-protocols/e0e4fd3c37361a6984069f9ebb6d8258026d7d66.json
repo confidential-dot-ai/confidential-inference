@@ -1,0 +1,100 @@
+{
+  "schema": "confidential-inference.c8s-attestation-protocol-manifest/v1",
+  "commit": "e0e4fd3c37361a6984069f9ebb6d8258026d7d66",
+  "attestationProtocol": "c8s/attest-pq/v1+xwing",
+  "capturedFrom": {
+    "cdsattestRoutes": "internal/cmds/cdsattest/server.go",
+    "bundleTypes": "pkg/types/verify.go",
+    "cdsAllowlistRoutes": "internal/cmds/cds/routes.go"
+  },
+  "cdsattestRoutes": [
+    {
+      "method": "POST",
+      "path": "/.well-known/c8s/attest-pq"
+    },
+    {
+      "method": "GET",
+      "path": "/.well-known/c8s/attest-pq",
+      "note": "always 400 invalid_request (client-first POST only)"
+    },
+    {
+      "method": "GET",
+      "path": "/.well-known/c8s/attest-lb"
+    },
+    {
+      "method": "POST",
+      "path": "/.well-known/c8s/tunnel"
+    }
+  ],
+  "retiredRoutes": [
+    {
+      "method": "PUT",
+      "path": "/allowlist/workloads/{name}",
+      "note": "handler removed; answers 404"
+    },
+    {
+      "method": "DELETE",
+      "path": "/allowlist/workloads/{name}",
+      "note": "handler removed; answers 404"
+    }
+  ],
+  "attestPqRequest": {
+    "method": "POST",
+    "bodyFields": [
+      "nonce",
+      "xwing_ek"
+    ]
+  },
+  "attestationBundleFields": [
+    "version",
+    "platform",
+    "generation",
+    "nonce",
+    "evidence",
+    "cds_cert_pem",
+    "front_door_mode",
+    "xwing_ek",
+    "xwing_ct",
+    "session_id",
+    "identity_proof",
+    "serving_leaf_sha256",
+    "measured_policies",
+    "route_digest"
+  ],
+  "identityProofFields": [
+    "algorithm",
+    "leaf_sha256",
+    "mesh_ca_sha256",
+    "signature"
+  ],
+  "cdsRoutes": [
+    {
+      "method": "GET",
+      "path": "/allowlist"
+    },
+    {
+      "method": "PUT",
+      "path": "/allowlist"
+    },
+    {
+      "method": "GET",
+      "path": "/ca"
+    },
+    {
+      "method": "GET",
+      "path": "/operator-keys"
+    },
+    {
+      "method": "GET",
+      "path": "/measurements"
+    }
+  ],
+  "allowlistDocumentTopLevelFields": [
+    "schema",
+    "workloads"
+  ],
+  "capturedFromNote": "Read from the C8s v0.99.29 source. Against v0.80.10 (cd68ff62), the cds-attest route table, the attest-pq request, the bundle fields and the identity proof fields are unchanged. CDS no longer routes PUT and DELETE /allowlist/workloads/{name}: an allowlist write replaces the whole document (PUT /allowlist). The other changes in internal/cmds/cds/routes.go add routes outside this manifest (pod secret release, CDS replica routes) and serve /measurements from the admitted node image set. c8s v0.99.38 commit ad27c221dde2f8394d37c105de7bd21cb6331a5e differs from commit e0e4fd3c37361a6984069f9ebb6d8258026d7d66 in pkg/types/discovery.go, pkg/types/discovery_test.go. It shares this manifest only after a person reviews that diff in the pull request that adds it and merges it.",
+  "sharedWithCommits": [
+    "ad27c221dde2f8394d37c105de7bd21cb6331a5e"
+  ]
+}

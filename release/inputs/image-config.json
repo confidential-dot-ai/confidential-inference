@@ -11,7 +11,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:3fce8c123911f7242cab3f323edc11a4e73b764e8475e6e8128d3bd0248423e1": {
+  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:292c78f3f7a0dc93885847e9abb55a69930d8a63a8b23af57655d1dfb503cf56": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",
@@ -21,17 +21,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:7d136dc13d675a17ba8f50c25eabdb3c16bad0180910e9be362b2960b777d17e": {
-    "cmd": [],
-    "entrypoint": [
-      "/app/c8s",
-      "armtls-mesh"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    ]
-  },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:38e2c52da58dc80e1e7591373b0881672c4412098394147bb44c0619b8552b75": {
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
@@ -41,39 +31,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:593dea857bfdb2512af5dcfbbec34b10c08de66bbd67f7d33d23a1f8581429b5": {
-    "cmd": [],
-    "entrypoint": [
-      "/c8s"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
-    ]
-  },
-  "ghcr.io/confidential-dot-ai/cds@sha256:5c7337b189ad7b95b69382ab103d2058d1cf9c30eab07283d59865621e73db2a": {
-    "cmd": [],
-    "entrypoint": [
-      "/c8s",
-      "cds"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
-    ]
-  },
-  "ghcr.io/confidential-dot-ai/cds@sha256:aaf6a581487d27b24228ceb10e4a600e1ae1a4b405d0f6f4b8f95422ae8ba204": {
-    "cmd": [],
-    "entrypoint": [
-      "/c8s",
-      "cds"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
-    ]
-  },
-  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:6b30a4cd196b8db217f8787665f2c006dd07b1f22567fa845938f9d8673d3376": {
+  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:8b1327975e77deb0c5e4a8f96e39d147728029517cedda0d69f0d14b5353b979": {
     "cmd": [
       "--config",
       "/etc/nri/conf.d/image-policy.yaml"
@@ -86,20 +44,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:9ecc1b70bb93746a6811a95f62b88445407bcb3f20d462dee1788ff4c2cdc4a6": {
-    "cmd": [
-      "--config",
-      "/etc/nri/conf.d/image-policy.yaml"
-    ],
-    "entrypoint": [
-      "/usr/local/bin/c8s",
-      "nri-image-policy"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    ]
-  },
-  "ghcr.io/confidential-dot-ai/volumed@sha256:8e8f4a8bb691a8e200b1a54e23da405459223e276ce25049e09833bc8d2dde1f": {
+  "ghcr.io/confidential-dot-ai/volumed@sha256:82f5d5c28eb40d9e9dd73908265d5434af4bb5242141c1227e4bceea15dd590c": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",
@@ -107,32 +52,6 @@
     ],
     "env": [
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    ]
-  },
-  "ghcr.io/confidential-dot-ai/volumed@sha256:98fc6d348290de3810499b283f35a9137057873f7e3666f5e338d7cd1ebe1a33": {
-    "cmd": [],
-    "entrypoint": [
-      "/app/c8s",
-      "volumed"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    ]
-  },
-  "nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0": {
-    "cmd": [
-      "nginx",
-      "-g",
-      "daemon off;"
-    ],
-    "entrypoint": [
-      "/docker-entrypoint.sh"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "NGINX_VERSION=1.30.5",
-      "PKG_RELEASE=1",
-      "DYNPKG_RELEASE=1"
     ]
   },
   "nginxinc/nginx-unprivileged@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6": {
@@ -149,6 +68,15 @@
       "NGINX_VERSION=1.30.6",
       "PKG_RELEASE=1",
       "DYNPKG_RELEASE=1"
+    ]
+  },
+  "quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a": {
+    "cmd": [],
+    "entrypoint": [
+      "/bin/node_exporter"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
   "registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9": {

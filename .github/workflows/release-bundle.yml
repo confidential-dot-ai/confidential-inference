@@ -1,76 +1,35 @@
 name: Signed release bundle
 
+# A person pushes a protected tag vX.Y.Z on a main commit. This workflow
+# builds the framework release of that commit, signs its manifest, and
+# publishes the manifest and the chart package. It renders no allowlist and
+# reads no deployment value.
+
 on:
   push:
     tags:
       - "v[0-9]*"
-  # An unsigned build of the dispatched branch, for a staging target with
-  # RELEASE_POLICY=unsigned (internal bin/deploy --build). In the same run it
-  # builds each image that changed since the nearest staging release tag once
-  # (release-images.yml single_build, no audit), then the same files as a
-  # staging release from the same steps. It signs nothing and creates no
-  # tag and no GitHub Release: the files stay a workflow artifact
-  # (unsigned-release-<name>, for `gh run download`), and the chart package
-  # goes to GHCR. Its name is v0.0.<run number>-staging, a version that no
-  # release tag uses, so its chart version never replaces a release's.
-  workflow_dispatch:
 
 permissions: {}
 
 env:
-  RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || format('v0.0.{0}-staging', github.run_number) }}
+  RELEASE_TAG: ${{ github.ref_name }}
 
 concurrency:
   group: signed-release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  # The release profile of the tag selects the signing environment, so it is
-  # read before the signing job starts.
-  select-profile:
-    name: select profile
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      directory: ${{ steps.profile.outputs.directory }}
-      signing_environment: ${{ steps.profile.outputs.signing_environment }}
-    steps:
-      - name: checkout tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-
-      - name: select profile
-        id: profile
-        run: |
-          python3 scripts/release_profiles.py resolve --tag "$RELEASE_TAG" --format github \
-            >> "$GITHUB_OUTPUT"
-
-  images:
-    if: github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: read
-      packages: write
-    uses: ./.github/workflows/release-images.yml
-    with:
-      single_build: true
-
   sign-release-bundle:
     name: sign
-    needs: [select-profile, images]
-    # A tag push skips the images job.
-    if: ${{ !cancelled() && needs.select-profile.result == 'success' && needs.images.result != 'failure' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
-      name: ${{ github.event_name == 'push' && needs.select-profile.outputs.signing_environment || '' }}
+      name: signed-release-production
     permissions:
       actions: read
       contents: read
       id-token: write
-      packages: read
     steps:
       - name: checkout tag
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -91,7 +50,6 @@ jobs:
             --requirement scripts/requirements-release-signing.txt
 
       - name: validate tag
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -103,36 +61,15 @@ jobs:
             echo "The release version is already published." >&2
             exit 1
           fi
-          # select-profile refused a tag that no release profile accepts.
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
+            || { echo "A release tag is vX.Y.Z." >&2; exit 1; }
+          # An earlier staging release pushed chart version X.Y.Z for vX.Y.Z-staging.
+          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}-staging" >/dev/null; then
+            echo "${RELEASE_TAG}-staging exists, and its chart has version ${RELEASE_TAG#v}. Use a higher version." >&2
+            exit 1
+          fi
           git merge-base --is-ancestor HEAD refs/remotes/origin/main \
             || { echo "The release tag does not point to a commit on main." >&2; exit 1; }
-
-      - name: install helm
-        run: |
-          curl -fsSL -o /tmp/helm.tar.gz \
-            https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz
-          echo "a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c1ef29c259  /tmp/helm.tar.gz" \
-            | sha256sum --check --strict
-          tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
-          sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
-
-      - name: install crane
-        run: |
-          curl -fsSL -o /tmp/crane.tar.gz \
-            https://github.com/google/go-containerregistry/releases/download/v0.21.6/go-containerregistry_Linux_x86_64.tar.gz
-          echo "7ebbdcd05b652345c1f5105f8475e518534b90d66f3bdb50017be63f426ea435  /tmp/crane.tar.gz" \
-            | sha256sum --check --strict
-          tar -xzf /tmp/crane.tar.gz -C /tmp crane
-          sudo install -m 0755 /tmp/crane /usr/local/bin/crane
-
-      # The allowlist needs the configuration of each repository image, which
-      # crane reads from the registry by digest.
-      - name: login ghcr
-        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
 
       - name: install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -141,20 +78,12 @@ jobs:
 
       # The release names the image publication of the nearest main commit at
       # or before the tag commit. No image build input may change in between.
-      # An unsigned branch build takes the images it built itself, else a
-      # release-images run on its branch.
       - name: find image evidence
         id: publication
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILT_IMAGES: ${{ needs.images.outputs.names }}
         run: |
-          if [ -n "$BUILT_IMAGES" ]; then
-            printf 'artifact_name=release-image-publication-%s\nrun_id=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           select=(--tag "$RELEASE_TAG")
-          [ "$GITHUB_EVENT_NAME" = push ] || select=(--branch "$GITHUB_REF_NAME")
           python3 scripts/find-image-publication-run.py \
             --repository "$GITHUB_REPOSITORY" \
             --release-commit "$(git rev-parse HEAD)" \
@@ -174,62 +103,6 @@ jobs:
           python3 scripts/image-publication-manifest.py check \
             dist/image-publication-manifest.json
 
-      - name: read c8s pin
-        id: c8s
-        env:
-          RELEASE_DIRECTORY: ${{ needs.select-profile.outputs.directory }}
-        run: |
-          python3 - "$RELEASE_DIRECTORY" >> "$GITHUB_OUTPUT" <<'PY'
-          import sys
-          from pathlib import Path
-          sys.path.insert(0, "scripts")
-          import release_profiles
-          profile = release_profiles.for_directory(Path(sys.argv[1]))
-          print("source_commit=" + release_profiles.read_spec(profile)["c8s"]["sourceCommit"])
-          PY
-
-      - name: checkout c8s
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          repository: confidential-dot-ai/c8s
-          ref: ${{ steps.c8s.outputs.source_commit }}
-          path: c8s-source
-          persist-credentials: false
-
-      - name: install go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: c8s-source/go.mod
-          cache: false
-
-      # The build from a cold cache took 108 s of each signing run. A run on
-      # a tag can restore only caches of main, and warm-c8s-go-cache.yml
-      # saves them there with this key, after a reviewed merge. The caches
-      # of main are written only by workflows that run reviewed main code.
-      # Release apply in the internal repository rebuilds every release
-      # asset with a SHA-256-pinned c8s CLI and refuses a byte mismatch, so
-      # a cache that changed the build fails closed.
-      - name: restore go cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: c8s-go-${{ runner.os }}-${{ steps.c8s.outputs.source_commit }}-${{ hashFiles('c8s-source/go.sum', 'tools/c8s-allowlist-canonical/go.sum') }}
-
-      - name: build c8s cli
-        env:
-          GOPRIVATE: github.com/confidential-dot-ai/*
-          # setup-go installs the Go of the pinned c8s; the canonical tool may need a newer one.
-          GOTOOLCHAIN: auto
-        run: |
-          mkdir -p "$RUNNER_TEMP/bin"
-          (cd c8s-source && go build -o "$RUNNER_TEMP/bin/c8s" ./cmd/c8s)
-          (cd tools/c8s-allowlist-canonical && go build -o "$RUNNER_TEMP/bin/c8s-allowlist-canonical" .)
-
-      # An image that did not change after the base release of the image run
-      # keeps the digest of the signed base release manifest. The build reads
-      # the base from the evidence and downloads and verifies that release.
       - name: build release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -239,22 +112,15 @@ jobs:
             --tag "$RELEASE_TAG" \
             --source-commit "$(git rev-parse HEAD)" \
             --image-publication dist/image-publication-manifest.json \
-            --c8s "$RUNNER_TEMP/bin/c8s" \
-            --canonical-tool "$RUNNER_TEMP/bin/c8s-allowlist-canonical" \
             --output-dir dist
 
       - name: sign bundle
-        if: github.event_name == 'push'
         run: |
-          # A dev c8s build (a Go pseudo-version) is for unsigned staging builds only.
-          jq -e '.c8s.release | test("^v[0-9]+\\.[0-9]+\\.[0-9]+(-beta\\.[1-9][0-9]*)?$")' dist/release-bundle.json > /dev/null \
-            || { echo "A signed release must pin a c8s release tag, not a dev build." >&2; exit 1; }
           cosign sign-blob --yes \
             --bundle dist/release-bundle.sigstore.json \
             dist/release-bundle.json
 
       - name: verify signature offline
-        if: github.event_name == 'push'
         run: |
           python3 scripts/verify-release-bundle-signature.py \
             --bundle dist/release-bundle.json \
@@ -264,15 +130,13 @@ jobs:
       - name: upload release
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ github.event_name == 'push' && 'signed' || 'unsigned' }}-release-${{ env.RELEASE_TAG }}
+          name: signed-release-${{ env.RELEASE_TAG }}
           path: |
             dist/release-bundle.json
             dist/release-bundle.sigstore.json
             dist/release-tag-commit.txt
             dist/image-publication-manifest.json
-            dist/allowlist.json
-            dist/release-values.yaml
-            dist/profile-values-*.yaml
+            dist/cds-manifest.json
             dist/*.tgz
           if-no-files-found: error
           retention-days: 90
@@ -280,8 +144,6 @@ jobs:
   publish-release:
     name: publish
     needs: sign-release-bundle
-    # A tag push skips the images ancestor. Publish when signing succeeded.
-    if: ${{ !cancelled() && needs.sign-release-bundle.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -292,7 +154,7 @@ jobs:
       - name: download release
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: ${{ github.event_name == 'push' && 'signed' || 'unsigned' }}-release-${{ env.RELEASE_TAG }}
+          name: signed-release-${{ env.RELEASE_TAG }}
           path: dist
 
       - name: install helm
@@ -304,10 +166,10 @@ jobs:
           tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
           sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
 
-      # The signed manifest binds the package by its SHA-256. A staging release
-      # pushes its package; every release then pulls the package at the
-      # reference and proves it is the signed one, so a production release
-      # finds its staging package there.
+      # The signed manifest binds the package by its SHA-256. The job never
+      # replaces a pushed chart version: when the reference exists, it must
+      # already be the signed package (a rerun). Otherwise the job pushes it,
+      # then pulls it at the reference and proves it is the signed one.
       - name: push chart
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -318,10 +180,15 @@ jobs:
           digest() { echo "sha256:$(sha256sum "$1" | cut -d' ' -f1)"; }
           printf '%s' "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           archives=(dist/*.tgz)
-          if [ -e "${archives[0]}" ]; then
-            test "${#archives[@]}" -eq 1
-            test "$(digest "${archives[0]}")" = "$expected" \
-              || { echo "The chart package differs from the signed manifest." >&2; exit 1; }
+          test "${#archives[@]}" -eq 1 && test -e "${archives[0]}"
+          test "$(digest "${archives[0]}")" = "$expected" \
+            || { echo "The chart package differs from the signed manifest." >&2; exit 1; }
+          mkdir "$RUNNER_TEMP/existing"
+          if helm pull "oci://${reference%:*}" --version "${reference##*:}" --destination "$RUNNER_TEMP/existing" 2>/dev/null; then
+            existing=("$RUNNER_TEMP"/existing/*.tgz)
+            test "$(digest "${existing[0]}")" = "$expected" \
+              || { echo "$reference exists with other bytes. Refusing to replace it." >&2; exit 1; }
+          else
             helm push "${archives[0]}" "oci://${reference%/*}"
           fi
           mkdir "$RUNNER_TEMP/pulled"
@@ -331,7 +198,6 @@ jobs:
             || { echo "The chart at $reference is not the signed package." >&2; exit 1; }
 
       - name: publish github release
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -365,36 +231,15 @@ jobs:
             echo "The release tag changed during publication. Refusing publication." >&2
             exit 1
           fi
-          # A production release has no package of its own (it binds the
-          # staging one), so the package is attached only when present.
-          shopt -s nullglob
-          extra_assets=(dist/profile-values-*.yaml dist/*.tgz)
-          shopt -u nullglob
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --target "$expected_commit" \
             --title "$RELEASE_TAG" \
-            --notes "Signed Confidential Inference release. The signed file is the release manifest built from release/ at the tag commit. It binds allowlist.json, release-values.yaml, the profile values files and the chart package by SHA-256." \
+            --notes "Signed Confidential Inference framework release. The signed file is the release manifest built from release/spec.yaml at the tag commit. It names every image digest, the chart package, C8s, the node image and the CDS guest image. It holds no deployment settings: each deployment renders its own allowlist with scripts/render-allowlist.py." \
             "dist/release-bundle.json#Release bundle" \
             "dist/release-bundle.sigstore.json#Sigstore verification bundle" \
             "dist/release-tag-commit.txt#Signed tag commit" \
             "dist/image-publication-manifest.json#Image publication evidence" \
-            "dist/allowlist.json#c8s allowlist" \
-            "dist/release-values.yaml#Release image values" \
-            "${extra_assets[@]}"
-
-      # The target.env pins of an unsigned build (internal docs/runbooks/deploy.md).
-      - name: report unsigned build
-        if: github.event_name != 'push'
-        run: |
-          {
-            echo "### Unsigned build of $GITHUB_REF_NAME at $GITHUB_SHA"
-            echo
-            echo '```'
-            echo "RELEASE_POLICY=unsigned"
-            echo "RELEASE=$RELEASE_TAG"
-            echo "RELEASE_RUN=$GITHUB_RUN_ID"
-            echo "RELEASE_BUNDLE_SHA256=sha256:$(sha256sum < dist/release-bundle.json | cut -d' ' -f1)"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+            "dist/cds-manifest.json#CDS guest image manifest" \
+            dist/*.tgz

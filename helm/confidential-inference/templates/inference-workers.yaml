@@ -20,37 +20,21 @@ spec:
     - name: inference
       port: {{ .Values.inference.port }}
       targetPort: inference
-{{- $cache := .Values.inference.model.cache }}
-{{- if $cache.enabled }}
-{{- $manifestPin := "" }}
-{{- range $file := include "confidential-inference.expectedFiles" . | fromJsonArray }}
-{{- if hasPrefix (printf "%s=" $.Values.inference.model.mountVerification.revisionMetadata) $file }}
-{{- $manifestPin = regexReplaceAll "^.*=" $file "" }}
+{{- if .Values.inference.model.cache.enabled }}
+{{- fail "inference.model.cache is unsupported on C8s v0.99.29: the worker mounts /var/lib/models read-only; use inference.model.download or the c8s model volume" }}
 {{- end }}
-{{- end }}
-{{- if ne $manifestPin (sha256sum $cache.manifest) }}
-{{- fail "inference.model.cache.manifest does not match the pinned SHA-256 of mountVerification.revisionMetadata" }}
-{{- end }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: model-manifest
-  labels:
-    {{- include "confidential-inference.labels" . | nindent 4 }}
-data:
-  manifest.json: {{ $cache.manifest | quote }}
-{{- end }}
+{{- $download := .Values.inference.model.download.enabled }}
 {{- range $index := until (int .Values.inference.replicas) }}
 {{- $simulatorMode := eq $.Values.inference.mode "simulator" }}
 {{- $modelMount := or (not $simulatorMode) $.Values.inference.simulator.validateModelMount }}
 {{- $volumeName := "" }}
-{{- $modelPath := "/mnt/c8s-data/models/cache" }}
-{{- if and $modelMount (not $cache.enabled) }}
+{{- $modelPath := "" }}
+{{- if $modelMount }}
 {{- $volumeName = index $.Values.inference.model.volumeNames $index }}
 {{- $modelPath = printf "%s/%s" $.Values.inference.model.volumeDirectory $volumeName }}
 {{- end }}
 {{- $attestedWorkload := index $.Values.inference.attestedWorkloads $index }}
+{{- $fetch := and $modelMount $download }}
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -78,7 +62,7 @@ spec:
         confidential.ai/environment: {{ $.Values.environment | quote }}
       annotations:
         confidential.ai/cw: inference-worker-{{ $index }}
-        {{- if and $modelMount (not $cache.enabled) }}
+        {{- if and $modelMount (not $download) }}
         confidential.ai/c8s-volumes: {{ printf "%s=%s" $volumeName $.Values.inference.model.c8sVolumeSource | quote }}
         confidential.ai/c8s-volume-dir: {{ $.Values.inference.model.volumeDirectory | quote }}
         {{- end }}
@@ -93,59 +77,34 @@ spec:
     spec:
       nodeSelector:
         kubernetes.io/hostname: {{ include "confidential-inference.inferenceNodeName" (dict "root" $ "index" $index) | quote }}
+      {{- if $fetch }}
+      # The model source addresses are also the pod's allowlist exits.
+      {{- include "confidential-inference.modelDownloadHostAliases" $ | nindent 6 }}
+      {{- end }}
       enableServiceLinks: false
       serviceAccountName: confidential-inference
       terminationGracePeriodSeconds: {{ $.Values.inference.terminationGracePeriodSeconds }}
       securityContext:
         seccompProfile:
           type: RuntimeDefault
-      {{- if and $modelMount $cache.enabled }}
-      initContainers:
-        # Root owns the hostPath directory; the container has no capability.
-        - name: fetch-model
-          image: {{ $.Values.images.sglangWorker }}
-          imagePullPolicy: IfNotPresent
-          command: ["/usr/local/bin/fetch-model"]
-          args:
-            - --endpoint={{ $cache.endpoint }}
-            - fetch
-            - --path={{ $modelPath }}
-            - --manifest=/mnt/c8s-data/model-manifest/manifest.json
-            - --manifest-sha256={{ sha256sum $cache.manifest }}
-            - --revision-metadata={{ $.Values.inference.model.mountVerification.revisionMetadata }}
-          env:
-            - name: HOME
-              value: /tmp
-          securityContext:
-            allowPrivilegeEscalation: false
-            runAsUser: 0
-            runAsGroup: 0
-            capabilities:
-              drop: ["ALL"]
-          resources:
-            requests:
-              cpu: "2"
-              memory: 2Gi
-          volumeMounts:
-            - name: model-cache
-              mountPath: {{ $modelPath }}
-            - name: model-manifest
-              mountPath: /mnt/c8s-data/model-manifest
-              readOnly: true
-      {{- end }}
       containers:
         - name: sglang
           image: {{ $.Values.images.sglangWorker }}
           imagePullPolicy: IfNotPresent
           {{- if and $simulatorMode (not $modelMount) }}
           command: ["python3"]
+          {{- else if $fetch }}
+          command: {{ include "confidential-inference.modelDownloadCommand" $ }}
           {{- else }}
           command: ["/usr/local/bin/wait-for-model"]
           {{- end }}
           args:
+            {{- if $fetch }}
+            - /usr/local/bin/wait-for-model
+            {{- end }}
             {{- if and $simulatorMode $modelMount }}
             - --path={{ $modelPath }}
-            {{- if $cache.enabled }}
+            {{- if $fetch }}
             - --plain-cache
             {{- end }}
             - --timeout-seconds={{ $.Values.inference.model.mountVerification.timeoutSeconds }}
@@ -189,7 +148,7 @@ spec:
             - --port={{ $.Values.inference.port }}
             {{- else }}
             - --path={{ $modelPath }}
-            {{- if $cache.enabled }}
+            {{- if $fetch }}
             - --plain-cache
             {{- end }}
             - --timeout-seconds={{ $.Values.inference.model.mountVerification.timeoutSeconds }}
@@ -301,24 +260,16 @@ spec:
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
-            {{- if and $modelMount $cache.enabled }}
-            - name: model-cache
-              mountPath: {{ $modelPath }}
-              readOnly: true
+            {{- if $fetch }}
+            {{- include "confidential-inference.modelDownloadMounts" (dict "root" $ "path" $modelPath) | nindent 12 }}
             {{- end }}
       volumes:
         - name: shm
           emptyDir:
             medium: Memory
             sizeLimit: 64Gi
-        {{- if and $modelMount $cache.enabled }}
-        - name: model-cache
-          hostPath:
-            path: {{ $cache.hostPath }}
-            type: DirectoryOrCreate
-        - name: model-manifest
-          configMap:
-            name: model-manifest
+        {{- if $fetch }}
+        {{- include "confidential-inference.modelDownloadVolumes" $ | nindent 8 }}
         {{- end }}
 {{- end }}
 {{- end }}
