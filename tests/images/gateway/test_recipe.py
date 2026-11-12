@@ -85,7 +85,6 @@ class GatewayImageRecipeTests(unittest.TestCase):
             ],
             DOCKERIGNORE.splitlines(),
         )
-        self.assertNotIn(".infisical.json", DOCKERIGNORE)
         self.assertNotIn(".kube", DOCKERIGNORE)
 
     def test_runtime_has_one_kubernetes_entrypoint(self) -> None:

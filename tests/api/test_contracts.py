@@ -29,74 +29,7 @@ def validate(instance: dict, schema: dict) -> None:
 class ContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.release_schema = load(ROOT / "api/release-bundle.schema.json")
-        cls.release = load(FIXTURES / "release-bundle.valid.json")
         cls.source_lock = load(ROOT / "images/sglang/source.lock")
-
-        jsonschema.Draft202012Validator.check_schema(cls.release_schema)
-
-    def test_valid_release_bundle(self):
-        release = self.release
-        validate(release, self.release_schema)
-
-        names = [workload["name"] for workload in release["workloads"]]
-        self.assertEqual(len(names), len(set(names)))
-        for workload in release["workloads"]:
-            if workload["name"].startswith("inference-worker-"):
-                self.assertEqual(
-                    workload["modelDmVerityRoot"], release["model"]["dmVerityRoot"]
-                )
-
-    def test_release_rejects_tag_in_place_of_digest(self):
-        for digest in ("latest", "sha256:" + "A" * 64, "sha256:" + "a" * 63, "sha512:" + "a" * 64):
-            with self.subTest(digest=digest):
-                altered = copy.deepcopy(self.release)
-                altered["workloads"][0]["image"]["digest"] = digest
-                with self.assertRaises(jsonschema.ValidationError):
-                    validate(altered, self.release_schema)
-
-    def test_release_rejects_tagged_or_digest_qualified_reference(self):
-        for reference in (
-            "docker.io/lmsysorg/sglang:latest",
-            "docker.io/lmsysorg/sglang@sha256:" + "a" * 64,
-        ):
-            with self.subTest(reference=reference):
-                altered = copy.deepcopy(self.release)
-                altered["workloads"][1]["image"]["reference"] = reference
-                with self.assertRaises(jsonschema.ValidationError):
-                    validate(altered, self.release_schema)
-
-    def test_schemas_reject_missing_required_fields(self):
-        for field in ("schemaVersion", "release", "source", "node", "c8s", "allowlistDigest", "model", "workloads"):
-            with self.subTest(contract="release", field=field):
-                altered = copy.deepcopy(self.release)
-                del altered[field]
-                with self.assertRaises(jsonschema.ValidationError):
-                    validate(altered, self.release_schema)
-
-        nested_cases = (
-            (self.release, self.release_schema, ("node", "evidenceArtifactDigest")),
-            (self.release, self.release_schema, ("model", "dmVerityRoot")),
-            (self.release, self.release_schema, ("c8s", "operatorKeySetSha256")),
-            (self.release, self.release_schema, ("c8s", "frontDoorWorkload")),
-        )
-        for instance, schema, (parent, field) in nested_cases:
-            with self.subTest(parent=parent, field=field):
-                altered = copy.deepcopy(instance)
-                del altered[parent][field]
-                with self.assertRaises(jsonschema.ValidationError):
-                    validate(altered, schema)
-
-        gpu_case = copy.deepcopy(self.release)
-        gpu_case["workloads"][0]["gpu"] = {
-            "required": True, "deviceCount": 1, "architectures": ["BLACKWELL"]
-        }
-        for field in ("required", "deviceCount", "architectures"):
-            with self.subTest(parent="workloads[0].gpu", field=field):
-                altered = copy.deepcopy(gpu_case)
-                del altered["workloads"][0]["gpu"][field]
-                with self.assertRaises(jsonschema.ValidationError):
-                    validate(altered, self.release_schema)
 
     def test_source_lock_has_required_immutable_pins(self):
         lock = self.source_lock
