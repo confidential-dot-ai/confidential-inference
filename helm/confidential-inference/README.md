@@ -22,7 +22,7 @@ The signed release manifest binds it by digest (`chart.archiveSha256`). It
 has no values files: each environment keeps its own
 ([release/README.md](../../release/README.md)).
 
-The gateway uses one internal HTTP service behind C8s TLS-LB. Public inference
+The gateway uses one internal HTTP service behind the C8s router. Public inference
 requests and signed admin requests use that same entry path. The gateway reads
 its API-key pepper and its admin client configuration from C8s
 application-secret memory. It keeps no state on disk: it pulls the API keys
@@ -32,7 +32,7 @@ them, and sends usage events back to the admin (`gateway.usage.enabled`).
 The gateway no longer serves `/attestation` (clients verify the front door with
 TEErminator; see [client verification](../../docs/verification.md)). The chart
 renders nothing from its former attestation inputs (`attestationReceipts`
-except `evidenceEgressCidrs` and `attestationApiPort`, `runtimeConfig.releaseBundle`). It
+except `evidenceEgressCidrs`, `runtimeConfig.releaseBundle`). It
 still accepts them, because `bin/deploy` sets them for every release it
 deploys; they go once production runs a release built from this chart.
 

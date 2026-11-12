@@ -17,9 +17,12 @@ the caller's own key value, or prompt text from it.
 
 Trust the CPU and GPU hardware security mechanisms, their vendor attestation
 chains, the accepted measured node image, and the software and policies that
-you review. Host management and Kubernetes declarations are not proof of
-approved execution. Measured admission and connection controls must enforce
-those declarations.
+you review. With C8s v0.99.29, CDS runs as its own confidential VM outside
+the cluster, from the CDS guest image that the release pins. Its launch binds
+the exact bytes of its per-deployment `cds-config.yaml`, and the worker's
+launch file pins that CDS image and configuration. Host management and
+Kubernetes declarations are not proof of approved execution. Measured
+admission and connection controls must enforce those declarations.
 
 Release-signing and policy-update authority remain part of the review.
 A signature identifies an authorized release; it does not prove that its code
@@ -39,6 +42,10 @@ which workload receives the traffic for a host name. The front-door evidence
 binds the SHA-256 of the route manifest in use. A client that pins that digest
 rejects a changed route, for example a route from `api.confidential.ai` to an
 allowlisted workload other than the gateway.
+
+With C8s v0.99.29, the image tuple does not identify the CDS. Pin the RTMR[3]
+seed of the worker's reviewed launch file too: the launch file selects the CDS
+image and configuration that admit workers and issue their identities.
 
 ## Policy and configuration protection
 
@@ -76,7 +83,9 @@ verified root filesystem. Pin MRTD, RTMR1, and RTMR2 together; MRTD alone does
 not identify the full TDX guest image.
 
 The accepted GPU node image uses a measured confidential-computing boot gate.
-Every passed-through GPU must satisfy that gate before RKE2 starts. Failure
+Every passed-through GPU must satisfy that gate before the node's Kubernetes
+runtime starts: containerd on the C8s v0.99.29 worker, RKE2 on the node
+images of earlier releases. Failure
 blocks node admission and powers off the node. This is the supported GPU
 verification contract, not a public raw-GPU-evidence collection.
 
@@ -100,8 +109,9 @@ A client can choose additional pins and must understand their scope.
 
 ## Restricted Kubernetes credentials
 
-CDS policy-update authority is different from Kubernetes permissions. The
-`c8s-operator` workload is a different component.
+CDS policy-update authority is different from Kubernetes permissions. Before
+C8s v0.99.29, the C8s operator authentication key also authorized credential
+release. The `c8s-operator` workload is a different component.
 
 The C8s node image pinned by the `v0.14.29` example issues Kubernetes user
 `operator` in group `c8s:node-operators`, rather than `system:masters`.
@@ -112,6 +122,12 @@ containers. They also protect system namespaces and prevent operator changes
 to the guards and cluster-wide permissions. Credential release waits for its
 measured readiness checks before serving credentials. Review these controls
 at the C8s commit in your selected release; group names alone grant no rights.
+
+With C8s v0.99.29, the Kubernetes control plane runs outside every TEE and
+issues the Kubernetes credentials; a measured node releases none. Treat the
+control plane as untrusted. The measured worker's kubelet serves no exec,
+attach, or port-forward handler, and its runtime wrapper `c8s-runc` refuses
+the `exec` verb.
 
 The operator role can read pod logs, Kubernetes Secrets, and ConfigMaps.
 Protect request data and confidential keys from those readable resources.
@@ -134,8 +150,11 @@ do not establish that approved application code never writes sensitive data
 to a log or exposes it through an API.
 
 RTMR3 binds the launch configuration. It does not define Kubernetes
-permissions. Those permissions and guards are part of the measured node
-implementation.
+permissions. In releases before C8s v0.99.29, the permissions and guards are
+part of the measured node implementation. With C8s v0.99.29, RTMR3 starts
+from the digest of the worker's launch file. A measured worker takes the
+operator keys from the CDS configuration that this file pins, and the guards
+are the measured worker's admission and runtime controls.
 
 ## Verification limits
 
