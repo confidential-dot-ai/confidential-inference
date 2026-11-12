@@ -244,8 +244,7 @@ def check_c8s_admission() -> None:
                "--set", "frameworkRelease.name=v0.14.18")
     for profile in ((), release, (*release, "-f", "tests/fixtures/deployments/staging-values.yaml"),
                     ("--values", "tests/api/values-sglang.yaml"),
-                    ("--set", "dcgmExporter.enabled=true",
-                     "--set", "nodeExporter.enabled=true", "--set", "c8s.cds.cidrs={198.51.100.4/32}")):
+                    ("--set", "nodeExporter.enabled=true", "--set", "c8s.cds.cidrs={198.51.100.4/32}")):
         found = admission["refusals"](render(*profile))
         assert found == [], (profile, found)
 

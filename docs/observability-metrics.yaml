@@ -36,6 +36,8 @@ collection:
 # (images/sglang/dcgm-counters.csv). The collector's remote write appends
 # `_total` to every DCGM counter, so a counter is stored as, for example,
 # DCGM_FI_DEV_ECC_DBE_VOL_TOTAL_total.
+# The C8s v0.99.38 dcgm-exporter static pod (kube-system/dcgm-exporter,
+# port 9400) is not scraped: a member pod cannot reach it through the mesh.
 gpuMetrics:
   source: images/sglang/dcgm-counters.csv
   counterSuffix: _total

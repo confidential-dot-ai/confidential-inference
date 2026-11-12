@@ -147,6 +147,7 @@ rules:
   - The CDS must reach every confidential node at the node's own address on TCP port 1019, without NAT.
   - From C8s v0.99.29 the Kubernetes API server runs outside every worker, and no worker serves a Kubernetes API. Each worker's kubelet and static pods (Cilium agent, kube-proxy, CoreDNS) must reach it on TCP port 6443. The C8s operator and the Cilium operator run beside it. Pods reach it through the `kubernetes` Service, 10.53.0.1:443.
   - CDS replicas reach each other on TCP port 8444 only in a highly available CDS.
+  - From C8s v0.99.38 each GPU worker runs dcgm-exporter as a static pod behind the C8s `kube-system/dcgm-exporter` Service on TCP port 9400. The chart runs no dcgm-exporter of its own. The telemetry collector does not scrape that Service: the mesh captures a member pod's TCP, the static pod is not a mesh member, and an allowlist egress cannot name a cluster range. The collector scrapes GPU series from the exporter in each SGLang worker.
   - With inference.model.download, each inference worker downloads its model at each start through HTTPS from the addresses of inference.model.download.hosts, which are its allowlist exits on TCP port 443. A C8s v0.99.29 worker drops every other outbound connection of the pod.
   - The outer forwarder must overwrite X-Forwarded-For with one client address.
   - The gateway must trust X-Forwarded-For only from a configured outer proxy CIDR.

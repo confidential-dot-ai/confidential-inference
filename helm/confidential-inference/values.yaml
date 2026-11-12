@@ -21,7 +21,6 @@ images:
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
   telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849  # 0.163.2
-  dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: ghcr.io/confidential-dot-ai/confidential-inference/kube-state-metrics@sha256:89c1fe0bbd01800eb7475825467b29d0268273e7c5be7b574c72b3370b5fc3f0
   c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:1468ac37566b0f198c41c56c098c32133c09279c08d549f7a57263d8b09d2b89
@@ -406,17 +405,6 @@ telemetry:
     - gen_ai.latency.time_in_model_prefill
     - gen_ai.latency.time_in_model_decode
     - gen_ai.latency.time_in_model_inference
-
-# A C8s v0.99.29 worker refuses a root container, so the exporter runs as uid
-# 65534 with no capability. Its nv-hostengine then reports no DCGM_FI_PROF_*
-# profiling fields, which need root with SYS_ADMIN. Check the scraped metric
-# set on a worker before you enable it.
-dcgmExporter:
-  enabled: false
-  port: 9400
-  resources:
-    cpu: 100m
-    memory: 128Mi
 
 nodeExporter:
   enabled: false

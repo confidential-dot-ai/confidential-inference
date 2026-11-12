@@ -32,7 +32,7 @@
     },
     "images": {
       "type": "object",
-      "required": ["gateway", "sglang", "sglangWorker", "telemetryCollector", "dcgmExporter", "nodeExporter", "kubeStateMetrics", "c8sOperator"],
+      "required": ["gateway", "sglang", "sglangWorker", "telemetryCollector", "nodeExporter", "kubeStateMetrics", "c8sOperator"],
       "additionalProperties": false,
       "properties": {
         "gateway": {"$ref": "#/definitions/image"},
@@ -41,7 +41,6 @@
         "sglangRouter": {"$ref": "#/definitions/image"},
         "rolloutClient": {"$ref": "#/definitions/image"},
         "telemetryCollector": {"$ref": "#/definitions/image"},
-        "dcgmExporter": {"$ref": "#/definitions/image"},
         "nodeExporter": {"$ref": "#/definitions/image"},
         "kubeStateMetrics": {"$ref": "#/definitions/image"},
         "c8sOperator": {"type": "string", "pattern": "^ghcr\\.io/confidential-dot-ai/c8s-operator@sha256:[a-f0-9]{64}$"}
@@ -569,16 +568,6 @@
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
         "port": {"const": 8080},
         "kubeApiPort": {"const": 6443},
-        "resources": {"$ref": "#/definitions/resources"}
-      }
-    },
-    "dcgmExporter": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["enabled", "port", "resources"],
-      "properties": {
-        "enabled": {"type": "boolean"},
-        "port": {"const": 9400},
         "resources": {"$ref": "#/definitions/resources"}
       }
     },
