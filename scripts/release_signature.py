@@ -16,7 +16,7 @@ from typing import Any
 import jsonschema
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import release_profiles
+import release_spec
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,17 +25,21 @@ LEGACY_POLICY_REFERENCE = "releases/trust/release-signing-policy.json"
 POLICY_PATH = ROOT / POLICY_REFERENCE
 TRUSTED_ROOT_REFERENCE = "release/trust/sigstore-public-good-trusted-root.json"
 LEGACY_TRUSTED_ROOT_REFERENCE = "releases/trust/sigstore-public-good-trusted-root.json"
-# v0.14.0 and later sign a release manifest built from release/. The signed
-# file names its schema. Earlier release formats are not supported.
-RELEASE_MANIFEST_SCHEMA = "confidential.ai/release-manifest/v1"
-RELEASE_MANIFEST_SCHEMA_PATH = ROOT / "api/release-manifest.schema.json"
+# The signed file names its schema. A framework release uses v2. Releases
+# v0.14.0 to v0.16.x use v1; the tools still read them as base releases.
+# Earlier release formats are not supported.
+RELEASE_MANIFEST_SCHEMA = "confidential.ai/release-manifest/v2"
+RELEASE_MANIFEST_SCHEMAS = {
+    "confidential.ai/release-manifest/v1": ROOT / "api/release-manifest.schema.json",
+    RELEASE_MANIFEST_SCHEMA: ROOT / "api/release-manifest-v2.schema.json",
+}
 MAX_RELEASE_BUNDLE_BYTES = 2 * 1024 * 1024
 MAX_SIGNATURE_BUNDLE_BYTES = 2 * 1024 * 1024
 RELEASE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
-# A release profile maps its tags to its environment (release/profiles.json).
-# Keep these other mappings for verification of signed historical releases.
-# The publication workflow no longer accepts either legacy prefix.
+# A v1 release states the environment of its tag. Keep these mappings for
+# verification of signed historical releases. A v2 release has no environment.
 LEGACY_TAG_ENVIRONMENTS = (
+    (re.compile(release_spec.VERSION + r"(?:-transition)?-staging"), "staging"),
     (re.compile(r"v[0-9][a-z0-9._-]{0,126}"), "production"),
     (re.compile(r"integration-staging-v[0-9][a-z0-9._-]{0,106}"), "integration-staging"),
     (re.compile(r"conf-inference-prod-v[0-9][a-z0-9._-]{0,107}"), "conf-inference-prod"),
@@ -47,11 +51,7 @@ class ReleaseSignatureError(ValueError):
 
 
 def environment_for_tag(tag: str) -> str:
-    """Return the one environment that a protected release tag can sign."""
-    try:
-        return release_profiles.for_tag(tag).environment
-    except release_profiles.ProfileError:
-        pass
+    """Return the one environment that a protected v1 release tag can sign."""
     for pattern, environment in LEGACY_TAG_ENVIRONMENTS:
         if pattern.fullmatch(tag) is not None:
             return environment
@@ -140,8 +140,10 @@ def validate_policy(
     release_name = release_metadata.get("name") if isinstance(release_metadata, dict) else None
     if not isinstance(release_name, str) or RELEASE_RE.fullmatch(release_name) is None:
         raise ReleaseSignatureError("the release name is invalid")
-    expected_environment = environment_for_tag(release_name)
-    if release_metadata.get("environment") != expected_environment:
+    if release.get("schema") == RELEASE_MANIFEST_SCHEMA:
+        if release_spec.TAG.fullmatch(release_name) is None or "environment" in release_metadata:
+            raise ReleaseSignatureError("a framework release has a vX.Y.Z tag and no environment")
+    elif release_metadata.get("environment") != environment_for_tag(release_name):
         raise ReleaseSignatureError("the release environment does not match its protected tag")
     trusted_root = policy.get("trustedRoot")
     if not isinstance(trusted_root, dict):
@@ -156,11 +158,12 @@ def validate_policy(
 
 def validate_release_schema(release: dict[str, Any], schema_path: Path | None = None) -> None:
     if schema_path is None:
-        if release.get("schema") != RELEASE_MANIFEST_SCHEMA:
+        schema_path = RELEASE_MANIFEST_SCHEMAS.get(release.get("schema"))
+        if schema_path is None:
             raise ReleaseSignatureError(
-                f"the release does not use the {RELEASE_MANIFEST_SCHEMA} format"
+                "the release does not use a supported format: "
+                + ", ".join(sorted(RELEASE_MANIFEST_SCHEMAS))
             )
-        schema_path = RELEASE_MANIFEST_SCHEMA_PATH
     _, schema = read_object(schema_path, "release schema", 512 * 1024)
     try:
         jsonschema.Draft202012Validator(
@@ -205,7 +208,8 @@ def verify_release_signature(
     inclusion proof, and the signature over the exact release bytes.
 
     `schema_path` selects the release document schema. It defaults to the
-    release-manifest schema, which v0.14.0 and later releases use.
+    schema that the release names: v2 for a framework release, v1 for
+    v0.14.0 to v0.16.x.
     """
     if not cosign.is_file() or cosign.is_symlink():
         raise ReleaseSignatureError("the required Cosign verifier is not a file")

@@ -123,6 +123,32 @@ client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key=YOUR_API_KEY)
 TEErminator checks the server again for new connections and blocks requests
 that fail.
 
+## Releases after v0.16.x
+
+Releases after `v0.16.x` are framework releases. Their `release-bundle.json`
+has the schema `confidential.ai/release-manifest/v2`. It names every image
+digest, the C8s core images, and the C8s node seed images, but no
+allowlist: each deployment renders its own allowlist from the framework
+release and its settings. The release has
+no `allowlist.json` asset, so `cmp` in step 4 does not apply. Download only
+`release-bundle.json` and `release-bundle.sigstore.json` in step 2, and
+check the signature in the same way.
+
+After `allowlist fetch` in step 4, check that the live allowlist runs only
+images of the signed framework release:
+
+```sh
+jq -r '[.images[], .c8s.coreImages[], .c8s.seedImages[]] | map(split("@")[1]) | unique[]' release-bundle.json > release-digests.txt
+jq -r '[.workloads[] | ((.initContainers // []) + (.containers // []))[] | .digest] | unique[]' allowlist-live.json > live-digests.txt
+comm -13 release-digests.txt live-digests.txt
+```
+
+`comm` must print nothing. Then review the rest of each workload in
+`allowlist-live.json`: commands, arguments, environment, mounts, secret
+reads, and egress. These are deployment settings. They can change what the
+approved code does within its own limits, so read them before you pin the
+policy.
+
 ## What TEErminator checks
 
 TEErminator obtains fresh nonce-bound C8s evidence and binds it to the exact

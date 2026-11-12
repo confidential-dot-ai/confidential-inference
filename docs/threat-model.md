@@ -53,9 +53,12 @@ pins that implementation. Review core entries too: an application restriction
 does not make an unrestricted core entry restrictive.
 
 The active policy can contain multiple release definitions during an update.
-It can differ from the signed initial allowlist. The client must review that
-live policy separately; a release signature does not cover later operator
-changes. Keep your approved bytes until you explicitly accept an update.
+The release signature covers the software: every image digest that a policy
+may name. The deployment renders the policy from that release and its own
+settings, so a signature does not cover the policy itself. The client checks
+each digest in the live policy against the signed framework release and
+reviews the rest of the policy. Keep your approved bytes until you explicitly
+accept an update.
 
 A workload certificate records a policy decision at issuance. A new connection
 proof does not establish that CDS has not changed the policy since issuance.

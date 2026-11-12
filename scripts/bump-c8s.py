@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
-"""Move release profiles to one c8s release tag.
+"""Move the framework release to one c8s release tag.
 
 Usage:
 
-    scripts/bump-c8s.py --tag v0.33.8 --c8s-repo ../c8s [--profile staging]
-        [--seed allowlist-seed.json]
+    scripts/bump-c8s.py --tag v0.33.8 --c8s-repo ../c8s [--allow-beta]
         [--confos-repo ../confidential-os-builder]
         [--protocol-review --protocol-diff-out protocol.diff]
 
---c8s-repo is a clean c8s checkout at the tag. Without --profile, the script
-moves every profile. With --profile, it moves only the named profiles: a
-profile that takes c8s from a shared layer gets its own c8s pins, so staging
-can move ahead of production. The script:
+--c8s-repo is a clean c8s checkout at the tag. The script:
 
 1. reads the published digests of the tag from the registry with crane;
-2. writes the new `c8s` mapping into the spec.yaml layer that holds it, and
-   the c8s operator image into the values.yaml layer that holds it. It edits
-   only those values, then parses each file again and requires that nothing
-   else changed;
+2. writes the new `c8s` mapping and the c8s operator image
+   (images.c8sOperator) into release/spec.yaml. It edits only those values,
+   then parses the file again and requires that nothing else changed;
 3. adds the source lock entry, and shares the attestation protocol manifest
    when the protocol source files did not change, or changed only in Go
    comments (tools/go-strip-comments). With --protocol-review it also shares
@@ -28,19 +23,18 @@ can move ahead of production. The script:
    inputs did not change. The inputs are bin/confos-fetch-gpu at the
    confidential-os-builder ref that c8s pins in .github/build-pins.json. When
    the ref changed, --confos-repo must be a confidential-os-builder checkout;
-5. for a dev build, records --seed, the node image's
-   /usr/lib/c8s/allowlist-seed.json, in release/inputs/c8s-seeds/<source
-   commit>.json, and deletes the old record no profile pins any more. A
-   release tag's seed is its signed release asset allowlist-seed-<platform>.json
-   (C8s #975), which the allowlist generator verifies and mirrors;
-6. fetches each node manifest and refreshes the image config;
-7. when the staging profile moves, builds the c8s CLI from --c8s-repo and
-   regenerates the staging allowlist test fixture with it;
+5. deletes the c8s seed record in release/inputs/c8s-seeds/ of the old pin.
+   A release tag's seed is its signed release asset
+   allowlist-seed-<platform>.json (C8s #975), which the allowlist generator
+   verifies and mirrors;
+6. fetches the node manifest and refreshes the image config;
+7. builds the c8s CLI from --c8s-repo and regenerates the allowlist test
+   fixture (tests/release-v1/fixtures/staging-allowlist.json) with it;
 8. runs the release checks.
 
-The release build generates the allowlist with a c8s CLI built from the
-pinned commit, so the bump does not write one. The test fixture names the
-c8s core image digests, so it moves with the staging pins.
+A deployment renders its allowlist with a c8s CLI built from the pinned
+commit, so the bump does not write one. The test fixture names the c8s core
+image digests, so it moves with the pins.
 
 It stops when a step needs a person: protocol source files changed in more
 than comments (without --protocol-review), changed NVIDIA driver inputs, a pin it cannot edit in place, a deleted pinned source file, or a failed check. Review
@@ -66,8 +60,8 @@ from typing import Any
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import release_profiles
 import c8s_release
+import release_spec
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = ROOT / "release/inputs/c8s-source-lock.json"
@@ -75,7 +69,6 @@ PROTOCOLS = ROOT / "release/inputs/c8s-attestation-protocols"
 CDI_DIR = ROOT / "release/inputs/cdi"
 CANONICAL_TOOL = ROOT / "tools/c8s-allowlist-canonical"
 STRIP_COMMENTS_TOOL = ROOT / "tools/go-strip-comments"
-STAGING = ROOT / "release/staging"
 RELEASE_TESTS = ROOT / "tests/release-v1/test_release_tools.py"
 NODE = runpy.run_path(str(ROOT / "scripts/fetch-node-manifest.py"))
 REGISTRY = "ghcr.io/confidential-dot-ai/"
@@ -310,34 +303,9 @@ def pin_c8s_mapping(path: Path, value: dict[str, Any]) -> None:
     path.write_text(updated)
 
 
-def target_file(layer_file: Path, owner: release_profiles.Profile, moved: list[release_profiles.Profile],
-                users: list[release_profiles.Profile]) -> Path:
-    """Edit a shared layer only when every profile that uses it moves."""
-    if all(profile in moved for profile in users):
-        return layer_file
-    return owner.directory / layer_file.name
-
-
-def pin_profiles(moved: list[release_profiles.Profile], everyone: tuple[release_profiles.Profile, ...],
-                 c8s: dict[str, Any]) -> None:
-    # The file that holds each pin, for every profile, read once.
-    pins = {
-        ("c8s",): ({p: release_profiles.owning_file(p.spec_files, ("c8s",)) for p in everyone}, c8s),
-        ("images", "c8sOperator"): (
-            {p: release_profiles.owning_file(p.values_files, ("images", "c8sOperator")) for p in everyone},
-            operator_image(c8s),
-        ),
-    }
-    for key_path, (owners, value) in pins.items():
-        targets = set()
-        for profile in moved:
-            users = [other for other in everyone if owners[other] == owners[profile]]
-            targets.add(target_file(owners[profile], profile, moved, users))
-        for path in sorted(targets):
-            if key_path == ("c8s",):
-                pin_c8s_mapping(path, value)
-            else:
-                edit_yaml(path, key_path, value)
+def pin_spec(c8s: dict[str, Any], spec: Path = release_spec.SPEC) -> None:
+    pin_c8s_mapping(spec, c8s)
+    edit_yaml(spec, ("images", "c8sOperator"), operator_image(c8s))
 
 
 # ---------------------------------------------------------------------------
@@ -507,48 +475,29 @@ def extend_cdi_record(c8s_repo: Path, confos_repo: Path | None, old: dict[str, A
 # ---------------------------------------------------------------------------
 
 
-def move_core_seed(seed: Path | None, old: dict[str, Any], new: dict[str, Any],
-                   everyone: tuple[release_profiles.Profile, ...]) -> None:
-    """Record a dev build's seed (--seed, the node image's
-    /usr/lib/c8s/allowlist-seed.json) in canonical form, and delete the old
-    record when no profile pins its commit any more. A release tag needs no
-    record: the allowlist mirrors its signed seed asset (C8s #975)."""
-    records = ROOT / "release/inputs/c8s-seeds"
-    if seed is not None:
-        generator = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
-        allowlist = json.loads(generator["canonicalize"](json.loads(seed.read_text()), None))
-        write_json(records / (new["sourceCommit"] + ".json"),
-                   {"sourceCommit": new["sourceCommit"], "coreImages": new["coreImages"], "allowlist": allowlist})
-    pinned = {release_profiles.read_spec(profile)["c8s"]["sourceCommit"] for profile in everyone}
-    stale = records / (old["sourceCommit"] + ".json")
-    if old["sourceCommit"] not in pinned and stale.exists():
+def remove_old_seed(old: dict[str, Any], new: dict[str, Any]) -> None:
+    """Delete the seed record of the old pin. A release tag needs no record:
+    the allowlist mirrors its signed seed asset (C8s #975)."""
+    stale = ROOT / "release/inputs/c8s-seeds" / (old["sourceCommit"] + ".json")
+    if old["sourceCommit"] != new["sourceCommit"] and stale.exists():
         run(["git", "-C", str(ROOT), "rm", "-q", str(stale)])
 
 
-def regenerate(moved: list[release_profiles.Profile]) -> None:
-    # Profiles can share a node manifest, so each file is fetched once.
-    fetched: set[Path] = set()
-    for profile in moved:
-        manifest = release_profiles.node_manifest(profile)
-        if manifest not in fetched:
-            fetched.add(manifest)
-            run([sys.executable, "scripts/fetch-node-manifest.py", "--release", profile.relative(profile.directory)],
-                cwd=ROOT)
+def regenerate() -> None:
+    run([sys.executable, "scripts/fetch-node-manifest.py"], cwd=ROOT)
     run([sys.executable, "scripts/generate-release-allowlist.py", "--refresh-image-config"], cwd=ROOT)
 
 
-def regenerate_staging_fixture(c8s_repo: Path, moved: list[release_profiles.Profile]) -> None:
-    """Generate the staging allowlist test fixture with the c8s CLI of the tag."""
-    if not any(profile.directory == STAGING for profile in moved):
-        return
+def regenerate_fixture(c8s_repo: Path) -> None:
+    """Generate the allowlist test fixture with the c8s CLI of the tag."""
     tests = runpy.run_path(str(RELEASE_TESTS))
     with tempfile.TemporaryDirectory(prefix="bump-c8s-") as directory:
         binary = Path(directory) / "c8s"
         run(["go", "build", "-o", str(binary), "./cmd/c8s"], cwd=c8s_repo, env=go_env())
         try:
             data = tests["staging_allowlist"](binary)
-        except tests["MAN"].ManifestError as error:
-            raise BumpError(f"cannot generate the staging allowlist fixture: {error}") from error
+        except (tests["MAN"].ManifestError, tests["REN"].ManifestError) as error:
+            raise BumpError(f"cannot generate the allowlist fixture: {error}") from error
     tests["STAGING_ALLOWLIST"].write_bytes(data)
 
 
@@ -560,13 +509,9 @@ def check(c8s_repo: Path, commit: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--allow-beta", action="store_true", help="permit a signed beta for explicitly named profiles")
-    parser.add_argument("--tag", required=True,
-                        help="the c8s release tag, for example v0.33.8, or the Go pseudo-version of a dev build")
+    parser.add_argument("--allow-beta", action="store_true", help="permit a signed c8s beta")
+    parser.add_argument("--tag", required=True, help="the c8s release tag, for example v0.33.8")
     parser.add_argument("--c8s-repo", required=True, type=Path, help="a clean c8s checkout at the tag")
-    parser.add_argument("--seed", type=Path,
-                        help="a dev build's node image allowlist seed (/usr/lib/c8s/allowlist-seed.json)")
-    parser.add_argument("--profile", action="append", help="a profile to move (default: every profile)")
     parser.add_argument("--confos-repo", type=Path, help="a confidential-os-builder checkout")
     parser.add_argument("--protocol-review", action="store_true",
                         help="share the protocol manifest also when its source files changed, for review")
@@ -574,20 +519,15 @@ def main() -> int:
                         help="with --protocol-review, the file for the diff of changed protocol source files")
     args = parser.parse_args()
     try:
-        if not TAG.fullmatch(args.tag):
-            raise BumpError("--tag must be vX.Y.Z, vX.Y.Z-beta.N or a c8s Go pseudo-version")
-        dev = TAG.fullmatch(args.tag).group(5)
-        if "-beta." in args.tag and (not args.allow_beta or args.profile != ["staging"]):
-            raise BumpError("beta requires --allow-beta and --profile staging")
-        if dev and args.profile != ["staging"]:
-            raise BumpError("an unsigned dev c8s build moves only --profile staging")
-        if bool(dev) != (args.seed is not None):
-            raise BumpError("--seed is for a dev build, and a dev build needs it: a release tag's seed is its signed release asset")
+        if not TAG.fullmatch(args.tag) or TAG.fullmatch(args.tag).group(5):
+            raise BumpError("--tag must be vX.Y.Z or vX.Y.Z-beta.N")
+        if "-beta." in args.tag and not args.allow_beta:
+            raise BumpError("a beta requires --allow-beta")
         if args.protocol_review != (args.protocol_diff_out is not None):
             raise BumpError("--protocol-review and --protocol-diff-out go together")
         verified = c8s_release.verify_c8s_tag(args.tag, allow_beta=True) if "-beta." in args.tag else None
         c8s_repo = args.c8s_repo.resolve()
-        ref = dev or args.tag
+        ref = args.tag
         commit = git(c8s_repo, "rev-parse", f"{ref}^{{commit}}")
         if verified is not None and verified["commit"] != commit:
             raise BumpError("the verified release commit differs from the local tag")
@@ -595,37 +535,26 @@ def main() -> int:
             raise BumpError(f"--c8s-repo must be a clean checkout at {ref}")
         if git(ROOT, "status", "--porcelain"):
             raise BumpError("the repository must be clean")
-        everyone = release_profiles.load()
-        names = args.profile or [profile.name for profile in everyone]
-        unknown = sorted(set(names) - {profile.name for profile in everyone})
-        if unknown:
-            raise BumpError(f"unknown profiles: {unknown}")
-        moved = [profile for profile in everyone
-                 if profile.name in names and release_profiles.read_spec(profile)["c8s"]["release"] != args.tag]
-        if not moved:
-            raise BumpError(f"the profiles already pin {args.tag}")
-        olds = [release_profiles.read_spec(profile)["c8s"] for profile in moved]
-        if any(value != olds[0] for value in olds):
-            raise BumpError("the moved profiles pin different c8s releases; move them one at a time")
-        old = olds[0]
+        old = release_spec.read_spec()["c8s"]
+        if old["release"] == args.tag:
+            raise BumpError(f"release/spec.yaml already pins {args.tag}")
         renamed = "armtls-mesh-image" in git(c8s_repo, "grep", "-e", "armtls-mesh-image", "-e", "ratls-mesh-image", ref, "--", "cmd", "internal")
         new = new_c8s(args.tag, commit, old, renamed_mesh=renamed, c8s_repo=c8s_repo)
 
-        pin_profiles(moved, everyone, new)
+        pin_spec(new)
         bump_module(old["release"], args.tag)
         add_source_lock(c8s_repo, old, new)
         share_protocol_manifest(c8s_repo, old["sourceCommit"], commit, args.tag,
                                 args.protocol_diff_out.resolve() if args.protocol_review else None)
         extend_cdi_record(c8s_repo, args.confos_repo.resolve() if args.confos_repo else None, old, new)
-
-        move_core_seed(args.seed.resolve() if args.seed else None, old, new, release_profiles.load())
-        regenerate(moved)
-        regenerate_staging_fixture(c8s_repo, moved)
+        remove_old_seed(old, new)
+        regenerate()
+        regenerate_fixture(c8s_repo)
         check(c8s_repo, commit)
-    except (BumpError, c8s_release.ReleaseError, release_profiles.ProfileError, NODE["FetchError"]) as error:
+    except (BumpError, c8s_release.ReleaseError, release_spec.SpecError, NODE["FetchError"]) as error:
         print(f"bump-c8s: {error}", file=sys.stderr)
         return 1
-    print(json.dumps({"tag": args.tag, "profiles": [profile.name for profile in moved], "c8s": new}, indent=2))
+    print(json.dumps({"tag": args.tag, "c8s": new}, indent=2))
     return 0
 
 

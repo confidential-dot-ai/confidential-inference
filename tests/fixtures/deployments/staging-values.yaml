@@ -5,8 +5,8 @@ runtimeConfig:
 environment: staging
 gateway:
   admin:
-    url: https://ci-admin-next-loki.centralus.cloudapp.azure.com/api/usage/ingest
-    address: 172.173.67.102
+    url: https://admin.example.invalid/api/usage/ingest
+    address: 192.0.2.10
   usage:
     enabled: true
     models:
@@ -20,10 +20,10 @@ gateway:
     inferenceConcurrency: 48
     inferenceQueue: 0
 attestationReceipts:
-  evidenceBaseUrl: https://staging.api.confidential.ai
+  evidenceBaseUrl: https://staging.example.invalid
   evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
   cds:
-    url: https://10.43.58.194:30808
+    url: https://192.0.2.21:30808
 kubeStateMetrics:
   enabled: false
 inference:
@@ -62,19 +62,17 @@ telemetry:
   enabled: true
   deployment: staging-20260926
   relay:
-    serverName: ci-admin-next-loki.centralus.cloudapp.azure.com
-    address: 172.173.67.102
+    serverName: admin.example.invalid
+    address: 192.0.2.10
   metrics:
-    tenantId: 693babab-0ab8-4ffb-8b5c-eb8aef3b10d1
-    clientId: c486ee14-1dca-4c1d-af4f-be163302ff44
+    tenantId: 00000000-0000-4000-8000-000000000001
+    clientId: 00000000-0000-4000-8000-000000000002
     dataCollectionRule: dcr-50a134d921ce434a86bcd8f01ab93b6e
   kubeStateMetrics:
     target: 10.53.0.11:8080
 c8s:
   frontDoorPodLabelName: router
   frontDoorNamespace: c8s-router
-images:
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:38e2c52da58dc80e1e7591373b0881672c4412098394147bb44c0619b8552b75
 workloadOverridesEnabled: false
 scheduling:
   inferenceNodeNames:

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Fetch the node image manifest.json named by a release profile.
+"""Fetch the node image manifest.json named by release/spec.yaml.
 
 c8s publishes a measurement artifact beside each node image. The artifact
 holds manifest.json, which records the TDX measurements MRTD, RTMR1, and
 RTMR2 of the node image. This script downloads that file through the digest
-chain that the profile specification pins, checks every digest, checks the
-measurements, and writes the exact bytes to node-manifest.json in the layer
-that sets `c8s` (release/node-manifest.json unless a profile overrides c8s).
+chain that release/spec.yaml pins, checks every digest, checks the
+measurements, and writes the exact bytes to release/node-manifest.json.
 
 Anyone can repeat the check: the SHA-256 of node-manifest.json must equal the
 manifest.json layer digest of the pinned artifact.
@@ -26,7 +25,7 @@ from typing import Any
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import release_profiles
+import release_spec
 
 ROOT = Path(__file__).resolve().parents[1]
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -110,23 +109,21 @@ def fetch(spec: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--release", type=Path, default=ROOT / "release", help="the profile directory")
-    parser.add_argument("--output", type=Path, help="default: node-manifest.json in the layer that sets c8s")
+    parser.add_argument("--spec", type=Path, default=release_spec.SPEC, help="the release specification")
+    parser.add_argument("--output", type=Path, default=release_spec.NODE_MANIFEST)
     parser.add_argument(
         "--check", action="store_true",
         help="fail when the committed file differs from the registry bytes",
     )
     args = parser.parse_args()
     try:
-        profile = release_profiles.for_directory(args.release)
-        data, record = fetch(read_spec(release_profiles.read_spec(profile)))
-        args.output = args.output or release_profiles.node_manifest(profile)
+        data, record = fetch(read_spec(release_spec.read_spec(args.spec)))
         if args.check:
             if args.output.read_bytes() != data:
                 raise FetchError(f"{args.output} differs from the pinned artifact")
         else:
             args.output.write_bytes(data)
-    except (OSError, FetchError, release_profiles.ProfileError, json.JSONDecodeError, yaml.YAMLError) as error:
+    except (OSError, FetchError, release_spec.SpecError, json.JSONDecodeError, yaml.YAMLError) as error:
         print(f"fetch-node-manifest: {error}", file=sys.stderr)
         return 1
     print(json.dumps(record, sort_keys=True))

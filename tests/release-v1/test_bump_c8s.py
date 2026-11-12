@@ -154,12 +154,15 @@ class BumpTests(unittest.TestCase):
         self.assertEqual(BUMP.yaml.safe_load(path.read_text()),
                          {"version": "v0.14.0-staging", "images": {"c8sOperator": "example@sha256:" + "4" * 64}})
 
-    def test_a_shared_layer_moves_only_with_every_profile_that_uses_it(self):
-        production, staging = BUMP.release_profiles.load()
-        shared = ROOT / "release/spec.yaml"
-        self.assertEqual(BUMP.target_file(shared, staging, [production, staging], [production, staging]), shared)
-        self.assertEqual(BUMP.target_file(shared, staging, [staging], [production, staging]),
-                         ROOT / "release/staging/spec.yaml")
+    def test_the_pin_moves_c8s_and_the_operator_image_in_the_spec(self):
+        path = self.write(SPEC_TEXT + "images:\n  gateway: example/gateway\n  c8sOperator: old@sha256:" + "9" * 64 + "\n")
+        new = self.new_c8s()
+        new["coreImages"].append("ghcr.io/confidential-dot-ai/c8s-operator@sha256:" + "5" * 64)
+        with mock.patch.object(BUMP, "ROOT", path.parent):
+            BUMP.pin_spec(new, path)
+        pinned = BUMP.yaml.safe_load(path.read_text())
+        self.assertEqual(pinned["c8s"], new)
+        self.assertEqual(pinned["images"], {"gateway": "example/gateway", "c8sOperator": BUMP.operator_image(new)})
 
     def test_the_cdi_record_extends_only_while_the_driver_inputs_hold(self):
         old = {"sourceCommit": "", "nodeImage": {"reference": "example/node", "digest": "sha256:" + "1" * 64}}
@@ -283,15 +286,7 @@ class BumpTests(unittest.TestCase):
         with self.assertRaisesRegex(BUMP.BumpError, "pkg/ratls/tls.go are gone"):
             self.source_lock_bump(lambda repo: (repo / "pkg/ratls/tls.go").unlink())
 
-    def test_the_staging_fixture_moves_only_with_the_staging_profile(self):
-        production, staging = BUMP.release_profiles.load()
-        with mock.patch.object(BUMP, "run") as run, mock.patch.object(BUMP.runpy, "run_path") as run_path:
-            BUMP.regenerate_staging_fixture(Path("c8s"), [production])
-        run.assert_not_called()
-        run_path.assert_not_called()
-
-    def test_the_staging_fixture_is_generated_with_the_c8s_cli_of_the_tag(self):
-        production, staging = BUMP.release_profiles.load()
+    def test_the_fixture_is_generated_with_the_c8s_cli_of_the_tag(self):
         binaries = []
 
         def staging_allowlist(binary):
@@ -300,9 +295,10 @@ class BumpTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             fixture = Path(directory) / "staging-allowlist.json"
-            tests = {"staging_allowlist": staging_allowlist, "MAN": mock.Mock(), "STAGING_ALLOWLIST": fixture}
+            tests = {"staging_allowlist": staging_allowlist, "MAN": mock.Mock(), "REN": mock.Mock(),
+                     "STAGING_ALLOWLIST": fixture}
             with mock.patch.object(BUMP, "run") as run, mock.patch.object(BUMP.runpy, "run_path", return_value=tests):
-                BUMP.regenerate_staging_fixture(Path("c8s"), [production, staging])
+                BUMP.regenerate_fixture(Path("c8s"))
             self.assertEqual(fixture.read_bytes(), b'{"schema": "c8s.allowlist/v1"}\n')
         command = run.call_args.args[0]
         self.assertEqual(command, ["go", "build", "-o", command[3], "./cmd/c8s"])
@@ -315,24 +311,22 @@ if __name__ == "__main__":
 
 
 class BetaCompatibilityTests(unittest.TestCase):
-    def test_beta_requires_explicit_profile_and_opt_in_before_network(self):
-        for extra in ([], ['--allow-beta'], ['--profile', 'staging'], ['--allow-beta', '--profile', 'production']):
-            with mock.patch('sys.argv', ['bump-c8s', '--tag', 'v0.37.0-beta.1', '--c8s-repo', '/unused', *extra]), mock.patch.object(BUMP.c8s_release, 'verify_c8s_tag') as verify:
-                self.assertEqual(BUMP.main(), 1)
-                verify.assert_not_called()
+    def test_beta_requires_opt_in_before_network(self):
+        with mock.patch('sys.argv', ['bump-c8s', '--tag', 'v0.37.0-beta.1', '--c8s-repo', '/unused']), mock.patch.object(BUMP.c8s_release, 'verify_c8s_tag') as verify:
+            self.assertEqual(BUMP.main(), 1)
+            verify.assert_not_called()
 
-    def test_a_dev_build_moves_only_staging_and_uses_dev_image_tags(self):
+    def test_a_dev_build_is_refused(self):
         dev = 'v0.72.1-0.20261023005616-90bd65abd955'
         self.assertEqual(BUMP.image_tag(dev), 'dev-90bd65abd955')
         self.assertEqual(BUMP.image_tag('v0.72.0'), 'v0.72.0')
-        for extra in ([], ['--profile', 'production'], ['--profile', 'staging', '--profile', 'production']):
-            with mock.patch('sys.argv', ['bump-c8s', '--tag', dev, '--c8s-repo', '/unused', *extra]), \
-                    mock.patch.object(BUMP, 'git') as git:
-                self.assertEqual(BUMP.main(), 1)
-                git.assert_not_called()
+        with mock.patch('sys.argv', ['bump-c8s', '--tag', dev, '--c8s-repo', '/unused']), \
+                mock.patch.object(BUMP, 'git') as git:
+            self.assertEqual(BUMP.main(), 1)
+            git.assert_not_called()
 
-    def test_staging_beta_still_requires_signature_verification(self):
-        with mock.patch('sys.argv', ['bump-c8s', '--tag', 'v0.37.0-beta.1', '--c8s-repo', '/unused', '--allow-beta', '--profile', 'staging']), mock.patch.object(BUMP.c8s_release, 'verify_c8s_tag', side_effect=BUMP.c8s_release.ReleaseError('invalid signature')) as verify:
+    def test_a_beta_still_requires_signature_verification(self):
+        with mock.patch('sys.argv', ['bump-c8s', '--tag', 'v0.37.0-beta.1', '--c8s-repo', '/unused', '--allow-beta']), mock.patch.object(BUMP.c8s_release, 'verify_c8s_tag', side_effect=BUMP.c8s_release.ReleaseError('invalid signature')) as verify:
             self.assertEqual(BUMP.main(), 1)
             verify.assert_called_once_with('v0.37.0-beta.1', allow_beta=True)
 

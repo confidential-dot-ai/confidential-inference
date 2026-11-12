@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Generate the allowlist of a release profile with exact environment and mount rules.
+"""Generate the allowlist of a deployment with exact environment and mount rules.
 
-The release build (scripts/build-release-manifest.py) calls `generate` with
-the image digests of the release, and publishes the result as the release
-asset allowlist.json. The allowlist is not in the repository: it names image
-digests and is a build output, like the release manifest.
+The render tool (scripts/render-allowlist.py) calls `generate` with the image
+digests of a verified framework release and the values of one deployment.
+The allowlist is not in the repository: it names image digests and
+deployment settings, and it is a build output.
 
 Every application container gets `env: exact` and `mounts: exact`. The final
 container environment and mount set combine five pinned sources, as the
@@ -13,8 +13,8 @@ internal release runbook describes:
 1. the image: its `ENV` list. release/inputs/image-config.json records it for
    every image that this repository does not build. The release build reads
    it for a repository image from the registry by digest;
-2. the pod specification: the chart rendered with the profile values files
-   (release/profiles.json) and the image digests of the release;
+2. the pod specification: the chart rendered with the deployment values
+   files and the image digests of the framework release;
 3. Kubernetes: the `kubernetes` Service variables and `HOSTNAME`;
 4. c8s: the certificate, secret, and volume mounts that its webhook adds;
 5. NVIDIA CDI: the driver variables and mounts, recorded for one driver
@@ -33,9 +33,8 @@ pinned Go tool in tools/c8s-allowlist-canonical writes the canonical bytes,
 and `c8s allowlist lint --strict` must pass.
 
 `--refresh-image-config` records the `ENV`, `ENTRYPOINT`, and `CMD` of every
-image that any profile renders and this repository does not build, with
-crane. All profiles share this record. Review that diff by hand: it is a
-release input.
+image in release/spec.yaml that this repository does not build, and of the
+C8s core images, with crane. Review that diff by hand: it is a release input.
 """
 
 from __future__ import annotations
@@ -54,7 +53,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import c8s_release
-import release_profiles
+import release_spec
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_SCHEMA = "confidential.ai/release-allowlist-policy/v2"
@@ -145,14 +144,14 @@ def split_image(image: Any) -> tuple[str, str]:
 
 
 def render_chart(
-    policy: dict[str, Any], profile: release_profiles.Profile, overlay: Path,
+    policy: dict[str, Any], deployment: release_spec.Deployment, overlay: Path,
 ) -> list[dict[str, Any]]:
-    """Render the chart with the profile values files in layer order, then the overlay."""
+    """Render the chart with the deployment values files in order, then the overlay."""
     chart = policy["chart"]
     output = run([
         "helm", "template", chart["release"], str(CHART),
         "--namespace", chart["namespace"], "--kube-version", chart["kubeVersion"],
-        *release_profiles.helm_values_args(profile, overlay),
+        *deployment.helm_values_args(overlay),
     ]).decode()
     return [item for item in yaml.safe_load_all(output) if isinstance(item, dict)]
 
@@ -472,7 +471,7 @@ def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
     if path.exists():
         record = read_json(path)
         if record.get("sourceCommit") != c8s["sourceCommit"] or record.get("coreImages") != c8s["coreImages"]:
-            raise GenerationError("the C8s node seed inputs differ from the profile pins")
+            raise GenerationError("the C8s node seed inputs differ from the release pins")
         seed = record.get("allowlist", {})
     else:
         platform = re.fullmatch(r"rke2-(tdx|snp)(?:-cdi)?-.+", c8s["nodeImage"]["tag"])
@@ -523,27 +522,26 @@ def canonicalize(document: dict[str, Any], tool: Path | None) -> bytes:
 
 
 def generate(
-    profile: release_profiles.Profile,
+    deployment: release_spec.Deployment,
     executable: Path,
     tool: Path | None,
     *,
     overlay: Path,
     image_env: dict[str, Any],
+    c8s: dict[str, Any],
 ) -> bytes:
-    """Return the canonical allowlist bytes of the profile.
+    """Return the canonical allowlist bytes of the deployment.
 
-    `overlay` is the values file with the image digests of the release, and
-    `image_env` holds the configuration of every rendered image.
+    `overlay` is the values file with the image digests of the framework
+    release, `image_env` holds the configuration of every rendered image, and
+    `c8s` is the C8s pin of the framework release (release/spec.yaml).
     """
-    policy = release_profiles.policy_for_release(
-        read_json(profile.policy), yaml.safe_load(overlay.read_text())["attestationReceipts"]["releaseId"])
+    policy = read_json(deployment.policy)
     if policy.get("schema") != POLICY_SCHEMA:
-        raise GenerationError(f"{profile.relative(profile.policy)} has the wrong schema")
-    # The specification is the one place that pins c8s.
-    c8s = release_profiles.read_spec(profile)["c8s"]
+        raise GenerationError(f"{deployment.relative(deployment.policy)} has the wrong schema")
     verify_c8s_binary(executable, c8s["sourceCommit"])
     node_image = f"{c8s['nodeImage']['reference']}@{c8s['nodeImage']['digest']}"
-    rendered = controllers(render_chart(policy, profile, overlay))
+    rendered = controllers(render_chart(policy, deployment, overlay))
     expected = {item["controller"] for item in policy["workloads"]}
     if set(rendered) != expected:
         raise GenerationError(
@@ -618,8 +616,8 @@ def generate(
     with tempfile.TemporaryDirectory(prefix="release-allowlist-lint-") as directory:
         candidate = Path(directory) / "allowlist.json"
         candidate.write_bytes(canonical)
-        lint(executable, candidate, {finding for finding in read_accepted_findings(profile.accepted_findings)
-                                    if finding[0] in workloads})
+        accepted = read_accepted_findings(deployment.accepted_findings) if deployment.accepted_findings else set()
+        lint(executable, candidate, {finding for finding in accepted if finding[0] in workloads})
     return canonical
 
 
@@ -647,7 +645,7 @@ def read_accepted_findings(path: Path) -> set[tuple[str, str, str, str, str]]:
 def lint(executable: Path, candidate: Path, accepted: set[tuple[str, str, str, str, str]]) -> None:
     """Run `c8s allowlist lint --strict`, allowing only the accepted findings.
 
-    Every finding must be one that release/accepted-lint-findings.json lists,
+    Every finding must be one that the accepted lint findings list,
     and every listed finding must still appear. A line the parser does not
     know is a failure.
     """
@@ -699,44 +697,27 @@ def image_config(image: str) -> dict[str, list[str]]:
     }
 
 
-def refresh_image_config(profiles: tuple[release_profiles.Profile, ...]) -> dict[str, dict[str, list[str]]]:
-    """Record the configuration of every rendered image that this repository does not build.
-
-    The chart needs a digest for each repository image, so this renders it
-    with a placeholder digest and skips those images.
-    """
-    images: set[str] = set()
-    with tempfile.TemporaryDirectory(prefix="release-image-config-") as directory:
-        for profile in profiles:
-            images.update(release_profiles.read_spec(profile)["c8s"]["coreImages"])
-            placeholder = {
-                key: f"{value}@sha256:{'0' * 64}"
-                for key, value in release_profiles.read_values(profile).get("images", {}).items()
-                if isinstance(value, str) and value.startswith(release_profiles.REPOSITORY_IMAGES)
-            }
-            overlay = Path(directory) / f"{profile.name}.yaml"
-            overlay.write_text(json.dumps({"images": placeholder}))
-            policy = read_json(profile.policy)
-            for controller in controllers(render_chart(policy, profile, overlay)).values():
-                pod = controller["spec"]["template"]["spec"]
-                for container in pod.get("initContainers", []) + pod.get("containers", []):
-                    split_image(container["image"])
-                    if not container["image"].startswith(release_profiles.REPOSITORY_IMAGES):
-                        images.add(container["image"])
+def refresh_image_config(spec: dict[str, Any]) -> dict[str, dict[str, list[str]]]:
+    """Record the configuration of every pinned image that this repository does not build."""
+    images = set(spec["c8s"]["coreImages"])
+    for image in spec.get("images", {}).values():
+        if not image.startswith(release_spec.REPOSITORY_IMAGES):
+            split_image(image)
+            images.add(image)
     return {image: image_config(image) for image in sorted(images)}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--refresh-image-config", action="store_true", required=True,
-                        help="record the image configuration of every profile")
+                        help="record the image configuration of the pinned images")
     parser.parse_args()
     try:
-        path = release_profiles.IMAGE_CONFIG
+        path = release_spec.IMAGE_CONFIG
         path.parent.mkdir(parents=True, exist_ok=True)
-        record = refresh_image_config(release_profiles.load())
+        record = refresh_image_config(release_spec.read_spec())
         path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
-    except (GenerationError, release_profiles.ProfileError, OSError, KeyError) as error:
+    except (GenerationError, release_spec.SpecError, OSError, KeyError) as error:
         print(f"generate-release-allowlist: {error}", file=sys.stderr)
         return 1
     print(json.dumps({"imageConfig": str(path)}))

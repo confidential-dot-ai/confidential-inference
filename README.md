@@ -79,9 +79,10 @@ signed release. See [release publication](release/README.md).
 
 ## Attestation trust inputs
 
-The release bundle is an independently verified release artifact. The active
-allowlist is the exact policy that the client reviews and pins. In an operator
-managed deployment, that policy can differ from the signed initial policy.
+The framework release is an independently verified release artifact. It
+names every image digest, but no deployment settings. Each deployment renders
+its own allowlist from it. The active allowlist is the exact policy that the
+client checks against the signed release, reviews, and pins.
 
 The release-signing policy is a Sigstore policy under `release/trust/`.
 

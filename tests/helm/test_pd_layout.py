@@ -313,11 +313,11 @@ def check_off_by_default() -> None:
     assert router["args"][0] == "--worker-urls" and "--pd-disaggregation" not in router["args"]
 
 
-# The staging layer for one 8-GPU B200 node (release/staging/b200/values.yaml):
+# The staging layer for one 8-GPU B200 node (tests/fixtures/deployments/b200-staging-values.yaml):
 # the plan's layout with the per-worker limits of the B200 1p1d tuning run
 # (1 PP2 prefill + 1 TP2 decode on 4 B200, 180 GB HBM). Every other flag and
 # variable is the plan's.
-B200_LAYER = ROOT / "release/staging/b200/values.yaml"
+B200_LAYER = ROOT / "tests/fixtures/deployments/b200-staging-values.yaml"
 B200_FLAGS = {
     "prefill": {
         "--context-length": "131072",
@@ -388,10 +388,10 @@ def derive_b200_layer(plan: dict) -> dict:
 def check_b200_layer() -> None:
     """The B200 layer is the plan with the B200 limits, and renders on top of staging."""
     layer = yaml.safe_load(B200_LAYER.read_text())
-    assert layer == derive_b200_layer(PLAN), "regenerate release/staging/b200/values.yaml (derive_b200_layer)"
+    assert layer == derive_b200_layer(PLAN), "regenerate tests/fixtures/deployments/b200-staging-values.yaml (derive_b200_layer)"
     image = "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:" + "0" * 64
     result = subprocess.run(["helm", "template", "example", str(CHART), "--namespace", "confidential-inference",
-                             "--values", "release/values.yaml", "--values", "release/staging/values.yaml",
+                             "--values", "tests/fixtures/deployments/production-values.yaml", "--values", "tests/fixtures/deployments/staging-values.yaml",
                              "--values", str(B200_LAYER), "--values", "tests/release-v1/fixtures/release-values.yaml",
                              "--set", "attestationReceipts.releaseId=v0.14.18-staging",
                              "--set", "inference.pd.paired.enabled=false",
@@ -466,7 +466,7 @@ def check_pair_render(values: dict) -> None:
     assert json.loads(env["CI_ROUTER_PD_PAIRS"]) == routes
     assert admission["refusals"](documents) == []
     observed = copy.deepcopy(values)
-    observed["telemetry"] = yaml.safe_load((ROOT / "release/values.yaml").read_text())["telemetry"]
+    observed["telemetry"] = yaml.safe_load((ROOT / "tests/fixtures/deployments/production-values.yaml").read_text())["telemetry"]
     rendered = render(observed, "--values", str(FIXTURES / "pd-pairs-values.yaml"))
     for name in ("inference-pd-a", "inference-pd-b"):
         app = by_name(rendered, "StatefulSet", name)["spec"]["template"]["spec"]["containers"][0]

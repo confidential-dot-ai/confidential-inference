@@ -46,18 +46,12 @@ authentication, attestation evidence, release schemas, and operator interfaces.
 Internal implementation changes do not require a major version when these
 interfaces remain compatible.
 
-New release tags are `vX.Y.Z`, `vX.Y.Z-staging`, `vX.Y.Z-transition`, or
-`vX.Y.Z-transition-staging`. The staging tag uses the reviewed simulator
-profile. A fix to either profile uses a new patch
-version. The tag is the version: no commit changes a version, and a staging
-tag needs no production tag. The tag must point to a commit on `main`. After
-publication, the tag must never move or be deleted.
-
-A transition release binds the prior release, the final release, and the
-required test workloads. Publish the final definition first. Publish the
-transition definition from the same source commit. The transition policy
-contains the exact final workload rules, the prior workload rules, and the
-test rules. It does not require another gateway image for a release name.
+A release tag is `vX.Y.Z`. It releases the framework: the image digests, the
+chart, and the C8s and node image pins. It holds no deployment value. A fix
+uses a new patch version. The tag is the version: no commit changes a
+version. The tag must point to a commit on `main`. After publication, the
+tag must never move or be deleted. Earlier releases also used `-staging` and
+`-transition` tags; the tools still read them as base releases.
 The runtime release selection changes after the enforced policy changes.
 The gateway reports a release only when its policy matches the evidence in
 that response. Clients still verify the release and its build evidence.
@@ -97,17 +91,20 @@ Keep private topology, DNS state, secret references, traffic state, deployment
 receipts, the admin system, and private infrastructure controls in
 `confidential-inference-internal`.
 
-The interface between the repositories is a signed release reference. The
-private repository selects it by exact digest and does not rebuild its product
+The interface between the repositories is a signed framework release. The
+private repository selects a release version, verifies it, supplies the
+deployment values and allowlist policy of each installation, and renders the
+allowlist with `scripts/render-allowlist.py`. It does not rebuild product
 artifacts.
 
 ## 5. Example workflow
 
 1. Create `feature/better-streaming` from `main`.
 2. Make the change and merge it into `main`.
-3. Create `v0.14.3-staging` from that exact commit.
-4. Build and sign the release with exact artifact and dependency digests.
-5. Give the signed release reference to `confidential-inference-internal`.
-6. Validate those artifacts in staging and in the candidate production slot.
-7. Publish `v0.14.3` when the production profile is approved.
+3. Run `release-images` on that commit, then push the tag `v0.14.3`.
+4. The release workflow builds and signs the framework release.
+5. `confidential-inference-internal` selects `v0.14.3` and renders the
+   allowlist of each installation.
+6. Validate the release in staging, then in the candidate.
+7. Promote the same release to production.
 8. If code or an artifact changes, return to `main` and increase the patch version.

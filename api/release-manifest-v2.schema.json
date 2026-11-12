@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://confidential.ai/schemas/release-manifest/v2",
+  "title": "Confidential inference framework release manifest",
+  "description": "The signed framework release. It names the software: image digests, the chart, C8s and the node image. It holds no deployment value: no allowlist, no Helm values, no model, no hostname.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "release",
+    "releaseTrust",
+    "source",
+    "imagePublication",
+    "images",
+    "chart",
+    "c8s",
+    "nodeImage",
+    "mrtd",
+    "rtmr1",
+    "rtmr2",
+    "sourceLock"
+  ],
+  "$defs": {
+    "sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "sha384Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{96}$"
+    },
+    "gitCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "imageReference": {
+      "type": "string",
+      "pattern": "^[a-z0-9./_-]+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$"
+    }
+  },
+  "properties": {
+    "schema": {
+      "const": "confidential.ai/release-manifest/v2"
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+        }
+      }
+    },
+    "releaseTrust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policyPath",
+        "policySha256",
+        "signatureType"
+      ],
+      "properties": {
+        "policyPath": {
+          "enum": [
+            "release/trust/release-signing-policy.json",
+            "releases/trust/release-signing-policy.json"
+          ]
+        },
+        "policySha256": {
+          "$ref": "#/$defs/sha256Digest"
+        },
+        "signatureType": {
+          "const": "sigstore-keyless"
+        }
+      }
+    },
+    "source": {
+      "description": "The tagged framework source: the chart, the render tool, and the release inputs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "commit"
+      ],
+      "properties": {
+        "repository": {
+          "const": "https://github.com/confidential-dot-ai/confidential-inference"
+        },
+        "commit": {
+          "$ref": "#/$defs/gitCommit"
+        }
+      }
+    },
+    "imagePublication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact",
+        "manifestSha256",
+        "sourceCommit",
+        "baseRef",
+        "baseRefCommit",
+        "images"
+      ],
+      "properties": {
+        "artifact": {
+          "const": "image-publication-manifest.json"
+        },
+        "manifestSha256": {
+          "$ref": "#/$defs/sha256Digest"
+        },
+        "sourceCommit": {
+          "description": "The earlier image source commit used by the deterministic image publication run.",
+          "$ref": "#/$defs/gitCommit"
+        },
+        "baseRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseRefCommit": {
+          "$ref": "#/$defs/gitCommit"
+        },
+        "images": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/$defs/sha256Digest"
+          }
+        }
+      }
+    },
+    "images": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/imageReference"
+      },
+      "description": "Every image that the chart can run, by chart image key. A deployment allowlist names only these images and the C8s core images."
+    },
+    "chart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "sha256",
+        "archiveSha256",
+        "reference"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "description": "The chart package version: the release tag without v.",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "sha256": {
+          "description": "The SHA-256 of the chart source tree.",
+          "$ref": "#/$defs/sha256Digest"
+        },
+        "archiveSha256": {
+          "description": "The SHA-256 of the chart package (.tgz), a release asset.",
+          "$ref": "#/$defs/sha256Digest"
+        },
+        "reference": {
+          "description": "The OCI reference of the chart package.",
+          "type": "string",
+          "pattern": "^ghcr\\.io/confidential-dot-ai/confidential-inference/charts/[a-z0-9-]+:[0-9]+\\.[0-9]+\\.[0-9]+$"
+        }
+      }
+    },
+    "c8s": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "release",
+        "sourceCommit",
+        "coreImages",
+        "seedImages"
+      ],
+      "properties": {
+        "release": {
+          "type": "string",
+          "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-beta\\.[1-9][0-9]*)?$"
+        },
+        "sourceCommit": {
+          "$ref": "#/$defs/gitCommit"
+        },
+        "coreImages": {
+          "description": "The C8s core images. The c8s core entries of every deployment allowlist use these digests.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/imageReference"
+          }
+        },
+        "seedImages": {
+          "description": "The images of the C8s node seed. Every deployment allowlist mirrors the seed entries.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/imageReference"
+          }
+        }
+      }
+    },
+    "nodeImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference",
+        "manifestSha256"
+      ],
+      "properties": {
+        "reference": {
+          "$ref": "#/$defs/imageReference"
+        },
+        "manifestSha256": {
+          "$ref": "#/$defs/sha256Digest"
+        }
+      }
+    },
+    "mrtd": {
+      "$ref": "#/$defs/sha384Hex"
+    },
+    "rtmr1": {
+      "$ref": "#/$defs/sha384Hex"
+    },
+    "rtmr2": {
+      "$ref": "#/$defs/sha384Hex"
+    },
+    "sourceLock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "enum": [
+            "contracts/c8s-admission-source-lock.json",
+            "release/inputs/c8s-source-lock.json"
+          ]
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256Digest"
+        }
+      }
+    }
+  }
+}

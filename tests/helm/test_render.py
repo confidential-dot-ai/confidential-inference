@@ -34,7 +34,7 @@ def helm(*arguments: str, success: bool = True) -> str:
 
 def render(*arguments: str) -> list[dict]:
     """The documents of `helm template example CHART` with the neutral mode and arguments."""
-    mode = () if any(arg.endswith(("release/values.yaml", "tests/api/values-sglang.yaml")) for arg in arguments) else NEUTRAL_MODE
+    mode = () if any(arg.endswith(("tests/fixtures/deployments/production-values.yaml", "tests/api/values-sglang.yaml")) for arg in arguments) else NEUTRAL_MODE
     output = helm("template", "example", str(CHART), *mode, *arguments)
     return [item for item in yaml.safe_load_all(output) if item]
 
@@ -158,7 +158,7 @@ def check_model_cache() -> None:
 def check_front_door_namespace() -> None:
     # From c8s v0.66.0 the router runs in its own namespace, c8s-router.
     documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
-        '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+        '--namespace', 'confidential-inference', '-f', str(ROOT/'tests/fixtures/deployments/production-values.yaml'),
         '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
         '--set', 'attestationReceipts.releaseId=v0.14.18', '--set', 'c8s.frontDoorNamespace=c8s-router')) if item]
     policies = {d['metadata']['name']: d for d in documents if d['kind'] == 'NetworkPolicy'}
@@ -171,10 +171,10 @@ def check_front_door_namespace() -> None:
 def check_c8s_admission() -> None:
     """Every profile renders pods the c8s webhook admits (scripts/check-c8s-admission.py)."""
     admission = runpy.run_path(str(ROOT / "scripts/check-c8s-admission.py"))
-    release = ("--namespace", "confidential-inference", "-f", "release/values.yaml",
+    release = ("--namespace", "confidential-inference", "-f", "tests/fixtures/deployments/production-values.yaml",
                "-f", "tests/release-v1/fixtures/release-values.yaml",
                "--set", "attestationReceipts.releaseId=v0.14.18-staging")
-    for profile in ((), release, (*release, "-f", "release/staging/values.yaml"),
+    for profile in ((), release, (*release, "-f", "tests/fixtures/deployments/staging-values.yaml"),
                     ("--values", "tests/api/values-sglang.yaml")):
         found = admission["refusals"](render(*profile))
         assert found == [], (profile, found)
@@ -307,7 +307,7 @@ def check_telemetry_collector() -> None:
 def main() -> None:
     # The production release must route to a real Service.
     production = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
-        '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+        '--namespace', 'confidential-inference', '-f', str(ROOT/'tests/fixtures/deployments/production-values.yaml'),
         '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
         '--set', 'attestationReceipts.releaseId=v0.14.18')) if item]
     # The gateway keeps no state: it rolls with one extra pod, and c8s gives
@@ -353,7 +353,7 @@ def main() -> None:
     public_models = [model]
     assert production_settings['catalogModelIds'] == public_models
     assert production_settings['inferenceModelIds'] == public_models
-    production_values = yaml.safe_load((ROOT / 'release/values.yaml').read_text())
+    production_values = yaml.safe_load((ROOT / 'tests/fixtures/deployments/production-values.yaml').read_text())
     assert production_values['runtimeConfig']['modelRoutes'] == {
         model: [model]}
     bindings = production_values['gateway']['usage']['models']
@@ -363,7 +363,7 @@ def main() -> None:
         'model_revision': '1bae0e1088993b9b82de08f59de5be5a34e42170'}
     # Values that bin/deploy sets per deployment do not reach the pod.
     deployed = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
-        '--namespace', 'confidential-inference', '-f', str(ROOT/'release/values.yaml'),
+        '--namespace', 'confidential-inference', '-f', str(ROOT/'tests/fixtures/deployments/production-values.yaml'),
         '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
         '--set', 'attestationReceipts.releaseId=v0.14.18',
         '--set', 'attestationReceipts.evidenceBaseUrl=https://candidate.example.test',
@@ -649,17 +649,17 @@ def main() -> None:
     # Each release profile must state its own mode, since
     # the chart will not choose one for it.
     production_values = yaml.safe_load(
-        (ROOT / "release/values.yaml").read_text()
+        (ROOT / "tests/fixtures/deployments/production-values.yaml").read_text()
     )
     assert production_values["inference"]["mode"] == "model"
     staging_values = yaml.safe_load(
-        (ROOT / "release/staging/values.yaml").read_text()
+        (ROOT / "tests/fixtures/deployments/staging-values.yaml").read_text()
     )
     assert staging_values["inference"]["mode"] == "simulator"
 
     # The staging layer clears production model routes and loads live files.
-    staging_documents = render("--values", "release/values.yaml", "--values",
-                               "release/staging/values.yaml", "--values",
+    staging_documents = render("--values", "tests/fixtures/deployments/production-values.yaml", "--values",
+                               "tests/fixtures/deployments/staging-values.yaml", "--values",
                                "tests/release-v1/fixtures/release-values.yaml")
     model = "hf-internal-testing/tiny-random-LlamaForCausalLM"
     settings = Gateway(staging_documents).settings

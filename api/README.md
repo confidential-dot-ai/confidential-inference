@@ -5,13 +5,16 @@ endpoint and [release documentation](../release/README.md) for publication.
 
 ## Current release and discovery
 
-- `release-manifest.schema.json`: signed release manifest for v0.14.0 and
-  later. It records source, image digests, node measurements, publication
-  evidence, and the initial policy.
+- `release-manifest-v2.schema.json`: signed framework release manifest. It
+  records source, every image digest, the C8s pins, node measurements, the
+  chart, and publication evidence. It holds no policy and no deployment value.
+- `release-manifest.schema.json`: the earlier signed release manifest
+  (v0.14.0 to v0.16.x), which also bound an initial policy.
 - `environment-spec.schema.json`: deployment environment input format.
 
-The active policy can differ from the signed initial policy. Clients review
-and pin the exact active bytes separately.
+Each deployment renders its own policy from a framework release. Clients
+check its image digests against the signed release, review the rest, and pin
+the exact active bytes.
 
 ## Gateway APIs
 
