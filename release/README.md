@@ -154,7 +154,7 @@ exact beta workflow and source commit.
 
 It needs `crane`, Go, read access to the C8s Go module, and first on `PATH`
 the Helm version that the worker image build pins (`HELM_VERSION` in its
-`mkosi.sync`; v3.14.4 at C8s v0.99.29). `--c8s` gives a C8s CLI built from the
+`mkosi.sync`; v3.14.4 at C8s v0.99.38). `--c8s` gives a C8s CLI built from the
 tag; without it the script builds one. It changes the C8s pins in `spec.yaml`,
 the source lock, the seed record, the node and CDS manifests, the image
 config, and the allowlist test fixture, and then runs the release checks.
@@ -164,11 +164,14 @@ by hand. Review the full diff before you commit.
 
 ## Move a deployment to C8s v0.99.29
 
-A release that pins C8s v0.99.29 runs only on v0.99.29 workers with a
-standalone CDS VM. The old cluster's CDS state does not carry over: a new CDS
-keeps its secrets in process memory, starts empty, and mints a new mesh CA
-(C8s `docs/secrets.md`, `docs/cds-ha.md`). Keep the old cluster, its CDS and
-its release serving until the new deployment passes every acceptance check.
+A release that pins C8s v0.99.29 or later runs only on workers of the
+pinned C8s release with a standalone CDS VM. This release pins C8s v0.99.38.
+From v0.99.38 each GPU worker runs the NVIDIA device plugin and
+dcgm-exporter as static pods (C8s #1700). The old cluster's CDS state does
+not carry over: a new CDS keeps its secrets in process memory, starts empty,
+and mints a new mesh CA (C8s `docs/secrets.md`, `docs/cds-ha.md`). Keep the
+old cluster, its CDS and its release serving until the new deployment passes
+every acceptance check.
 
 The deployment has two kinds of input. Launch files never change while a VM
 lives: `cds-config.yaml` for the CDS and `worker.yaml` for each worker, which

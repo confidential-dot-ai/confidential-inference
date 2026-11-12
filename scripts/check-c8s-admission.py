@@ -14,7 +14,8 @@ pod that
 - sets a credential path annotation the injector fixes;
 - has a probe the per-pod mesh cannot forward: tcpSocket or grpc, HTTP
   headers, HTTPS, a timeout over 5 s, a mesh port, a named port no port of
-  the container declares, a path that is not clean, or an HTTP lifecycle hook;
+  the container declares, a path that is not clean, an HTTP lifecycle hook,
+  or (from C8s v0.99.38) an exec probe or exec lifecycle hook;
 - runs a container privileged, with allowPrivilegeEscalation: true, with an
   added capability no allowlist entry may declare (ALL, NET_ADMIN, NET_RAW,
   SETUID, SETGID), or with an explicit runAsUser: 0.

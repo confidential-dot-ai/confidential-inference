@@ -3,30 +3,30 @@
 # (scripts/build-release-manifest.py) gives each repository image without a
 # digest its published digest. Deployment values do not set images.
 c8s:
-  release: v0.99.29
-  sourceCommit: e0e4fd3c37361a6984069f9ebb6d8258026d7d66
+  release: v0.99.38
+  sourceCommit: ad27c221dde2f8394d37c105de7bd21cb6331a5e
   nodeImage:
     reference: ghcr.io/confidential-dot-ai/guests/worker
-    tag: v0.99.29-tdx-kubevirt
-    digest: sha256:b275edc77db7b42a2492081513e77ed749d3a84327803f16d024e29d7862ab64
+    tag: v0.99.38-tdx-kubevirt
+    digest: sha256:3e20ad729ebe4b630daa42f12727987e4ebcf34b0d7a3026b42a23f7d1ec33ac
   coreImages:
-  - ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2
-  - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:864c7a3874cd327f3bf64bd6804c6ed711e2b71b2cd8340c60a3fefa8151e7f0
-  - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:93e541fa1dd14f8f19c3f40a95dd2c49633eb9eb716d60410abde046ee9a4f81
-  - ghcr.io/confidential-dot-ai/volumed@sha256:f0065eb836a09c9c5afff38371271540150715e40f08929f2080c69f61403c2b
+  - ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518
+  - ghcr.io/confidential-dot-ai/armtls-mesh@sha256:292c78f3f7a0dc93885847e9abb55a69930d8a63a8b23af57655d1dfb503cf56
+  - ghcr.io/confidential-dot-ai/nri-image-policy@sha256:8b1327975e77deb0c5e4a8f96e39d147728029517cedda0d69f0d14b5353b979
+  - ghcr.io/confidential-dot-ai/volumed@sha256:82f5d5c28eb40d9e9dd73908265d5434af4bb5242141c1227e4bceea15dd590c
   - nginxinc/nginx-unprivileged@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6
   nodeManifestArtifact:
-    tag: v0.99.29-tdx
-    digest: sha256:6d2e8963b85c2044d65895071a860a44e0faaa0fc308f71ac0117dd0efdb7ffb
-    manifestJson: sha256:3e5dd4547762bd7a9d57febbef7070f9c857ad645825f13c6981e831d2928839
+    tag: v0.99.38-tdx
+    digest: sha256:7aa8b8e649350746537a36b30e9ccae307fa6d1f51ae627155435757a5fecd16
+    manifestJson: sha256:c858409d373efc7f3102262ce07f35f14c38723734b2751d0af0d64ecd0ceb26
   cdsImage:
     reference: ghcr.io/confidential-dot-ai/guests/cds
-    tag: v0.99.29-kubevirt
-    digest: sha256:509f16c3d200bf70e9a132c0657f649820a500f98a01c1b8a9f5ef1e3b33ce02
+    tag: v0.99.38-kubevirt
+    digest: sha256:5d9657cfa3706ac9090eaf333d653fac945e38f3874415a6271e9ec6f51ef890
   cdsManifestArtifact:
-    tag: v0.99.29
-    digest: sha256:b0386110b8121466d5c00611e6db59f2394d69f57dc85384eea9b96fb66c2d03
-    manifestJson: sha256:88bdbb2d06e58230fbc158155041e595cb45a5a592f34ff6bdbc30f0cf33487c
+    tag: v0.99.38
+    digest: sha256:474046481694f71ef72f2e475945cf87e2a3980c8edee4eafc6a11e6926fc4bc
+    manifestJson: sha256:e6b006b499a8cd7a3caea7e5ef99789f4dec0caeaf5ecd5e4a98a3261d50729c
 images:
   rolloutClient: ghcr.io/confidential-dot-ai/confidential-inference/rollout-client
   gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway
@@ -37,4 +37,4 @@ images:
   dcgmExporter: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:b7a4241c608253aa829041cc3575ea57082491251a4a626bcdddc68eaf9a3101
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518

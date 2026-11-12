@@ -1,25 +1,25 @@
 {
-  "sourceCommit": "e0e4fd3c37361a6984069f9ebb6d8258026d7d66",
+  "sourceCommit": "ad27c221dde2f8394d37c105de7bd21cb6331a5e",
   "coreImages": [
-    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-    "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:864c7a3874cd327f3bf64bd6804c6ed711e2b71b2cd8340c60a3fefa8151e7f0",
-    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:93e541fa1dd14f8f19c3f40a95dd2c49633eb9eb716d60410abde046ee9a4f81",
-    "ghcr.io/confidential-dot-ai/volumed@sha256:f0065eb836a09c9c5afff38371271540150715e40f08929f2080c69f61403c2b",
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+    "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:292c78f3f7a0dc93885847e9abb55a69930d8a63a8b23af57655d1dfb503cf56",
+    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:8b1327975e77deb0c5e4a8f96e39d147728029517cedda0d69f0d14b5353b979",
+    "ghcr.io/confidential-dot-ai/volumed@sha256:82f5d5c28eb40d9e9dd73908265d5434af4bb5242141c1227e4bceea15dd590c",
     "nginxinc/nginx-unprivileged@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6"
   ],
   "hardwarePlatform": "tdx",
-  "kubeVersion": "v1.36.4",
+  "kubeVersion": "v1.36.6",
   "helmVersion": "v3.14.4",
   "allowlist": {
     "schema": "c8s.allowlist/v1",
     "workloads": {
-      "armtls-mesh-864c7a3874cd-7e3c30f2": {
-        "label": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:864c7a3874cd327f3bf64bd6804c6ed711e2b71b2cd8340c60a3fefa8151e7f0",
+      "armtls-mesh-292c78f3f7a0-cba161f1": {
+        "label": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:292c78f3f7a0dc93885847e9abb55a69930d8a63a8b23af57655d1dfb503cf56",
         "initContainers": [],
         "containers": [
           {
-            "digest": "sha256:864c7a3874cd327f3bf64bd6804c6ed711e2b71b2cd8340c60a3fefa8151e7f0",
-            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:864c7a3874cd327f3bf64bd6804c6ed711e2b71b2cd8340c60a3fefa8151e7f0",
+            "digest": "sha256:292c78f3f7a0dc93885847e9abb55a69930d8a63a8b23af57655d1dfb503cf56",
+            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:292c78f3f7a0dc93885847e9abb55a69930d8a63a8b23af57655d1dfb503cf56",
             "command": {
               "policy": "exact",
               "argv": [
@@ -84,8 +84,8 @@
             }
           },
           {
-            "digest": "sha256:864c7a3874cd327f3bf64bd6804c6ed711e2b71b2cd8340c60a3fefa8151e7f0",
-            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:864c7a3874cd327f3bf64bd6804c6ed711e2b71b2cd8340c60a3fefa8151e7f0",
+            "digest": "sha256:292c78f3f7a0dc93885847e9abb55a69930d8a63a8b23af57655d1dfb503cf56",
+            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:292c78f3f7a0dc93885847e9abb55a69930d8a63a8b23af57655d1dfb503cf56",
             "command": {
               "policy": "exact",
               "argv": [
@@ -147,8 +147,8 @@
             }
           },
           {
-            "digest": "sha256:864c7a3874cd327f3bf64bd6804c6ed711e2b71b2cd8340c60a3fefa8151e7f0",
-            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:864c7a3874cd327f3bf64bd6804c6ed711e2b71b2cd8340c60a3fefa8151e7f0",
+            "digest": "sha256:292c78f3f7a0dc93885847e9abb55a69930d8a63a8b23af57655d1dfb503cf56",
+            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:292c78f3f7a0dc93885847e9abb55a69930d8a63a8b23af57655d1dfb503cf56",
             "command": {
               "policy": "exact",
               "argv": [
@@ -211,13 +211,13 @@
           }
         ]
       },
-      "c8s-operator-006afc6612e9-f0249741": {
-        "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+      "c8s-operator-4f7c7a31190f-3d340563": {
+        "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
         "initContainers": [],
         "containers": [
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -293,8 +293,8 @@
             }
           },
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -366,8 +366,8 @@
             }
           },
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -447,8 +447,8 @@
             }
           },
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -524,8 +524,8 @@
             }
           },
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -601,8 +601,8 @@
             }
           },
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -674,8 +674,8 @@
             }
           },
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -744,8 +744,8 @@
             }
           },
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -810,8 +810,8 @@
             }
           },
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -894,8 +894,8 @@
             }
           },
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -962,8 +962,8 @@
             }
           },
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1058,8 +1058,8 @@
             }
           },
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1084,7 +1084,7 @@
                 "--discovery-public-tls-hostnames-file=/run/c8s-node/router/hostnames",
                 "--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
                 "--ca-watch-interval=1m",
-                "--expected-workload=c8s-router-a01219975bad"
+                "--expected-workload=c8s-router-83fdbc27edaf"
               ]
             },
             "mounts": {
@@ -1152,8 +1152,8 @@
             }
           },
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1219,11 +1219,11 @@
           }
         ]
       },
-      "c8s-router-a01219975bad": {
+      "c8s-router-83fdbc27edaf": {
         "initContainers": [
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1308,8 +1308,8 @@
         ],
         "containers": [
           {
-            "digest": "sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:006afc6612e9fe17bfbbf55e01802a892d21ce3af8753105f5ce4bc93cf3baf2",
+            "digest": "sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518",
             "command": {
               "policy": "exact",
               "argv": [
