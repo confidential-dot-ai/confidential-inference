@@ -827,7 +827,8 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(sorted(files), ["allowlist.json", "release-values.yaml", "render.json"])
         self.assertEqual(files["allowlist.json"], STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n"))
         self.assertEqual(yaml.safe_load(files["release-values.yaml"]),
-                         {"images": RELEASE_IMAGES, "attestationReceipts": {"releaseId": "v0.17.0"}})
+                         {"images": RELEASE_IMAGES, "frameworkRelease": {
+                             "name": "v0.17.0", "bundleSha256": MAN.sha256(framework_bytes())}})
         record = json.loads(files["render.json"])
         self.assertEqual(record["frameworkRelease"], {"name": "v0.17.0", "sourceCommit": "d" * 40,
                                                       "bundleSha256": MAN.sha256(framework_bytes())})
@@ -839,7 +840,7 @@ class RenderTests(unittest.TestCase):
 
     def test_deployment_values_cannot_set_framework_values(self):
         for values, field in (({"images": {"gateway": "example/gateway@sha256:" + "1" * 64}}, "images"),
-                              ({"attestationReceipts": {"releaseId": "v9.9.9"}}, "attestationReceipts.releaseId")):
+                              ({"frameworkRelease": {"name": "v9.9.9"}}, "frameworkRelease")):
             with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "values.yaml"
                 path.write_text(yaml.safe_dump(values))
@@ -852,7 +853,8 @@ class RenderTests(unittest.TestCase):
         changed = copy.deepcopy(manifest)
         changed["images"]["gateway"] = changed["images"]["gateway"].split("@")[0] + "@sha256:" + "1" * 64
         with mock.patch.object(REN, "release_overlay", return_value=yaml.safe_dump(
-                {"images": manifest["images"], "attestationReceipts": {"releaseId": "v0.17.0"}}).encode()), \
+                {"images": manifest["images"], "frameworkRelease": {
+                    "name": "v0.17.0", "bundleSha256": MAN.sha256(framework_bytes())}}).encode()), \
                 mock.patch.dict(REN.MAN, {}):
             with self.assertRaisesRegex(REN.ManifestError, "does not name"):
                 render_deployment(manifest=changed)
@@ -863,6 +865,17 @@ class RenderTests(unittest.TestCase):
                                         if "kube-state-metrics" not in image]
         with self.assertRaisesRegex(REN.ManifestError, "does not name: \\['sha256:42cfe372"):
             render_deployment(manifest=changed)
+
+    def test_the_live_allowlist_names_the_framework_release(self):
+        allowlist = json.loads(STAGING_ALLOWLIST.read_text())
+        gateway = allowlist["workloads"]["gateway"]["containers"][0]
+        self.assertEqual(REN.pinned_env(gateway)["CI_FRAMEWORK_RELEASE"], "v0.17.0")
+        self.assertEqual(REN.pinned_env(gateway)["CI_FRAMEWORK_RELEASE_BUNDLE_SHA256"], MAN.sha256(framework_bytes()))
+        REN.require_release_identity(allowlist, "v0.17.0", MAN.sha256(framework_bytes()))
+        with self.assertRaisesRegex(REN.ManifestError, "does not pin the framework release"):
+            REN.require_release_identity(allowlist, "v0.17.1", MAN.sha256(framework_bytes()))
+        with self.assertRaisesRegex(REN.ManifestError, "does not pin the framework release"):
+            REN.require_release_identity(allowlist, "v0.17.0", "sha256:" + "0" * 64)
 
     def test_the_render_requires_the_checkout_of_the_framework_release(self):
         manifest = framework_manifest()

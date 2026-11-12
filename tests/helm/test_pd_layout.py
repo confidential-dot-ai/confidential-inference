@@ -393,7 +393,7 @@ def check_b200_layer() -> None:
     result = subprocess.run(["helm", "template", "example", str(CHART), "--namespace", "confidential-inference",
                              "--values", "tests/fixtures/deployments/production-values.yaml", "--values", "tests/fixtures/deployments/staging-values.yaml",
                              "--values", str(B200_LAYER), "--values", "tests/release-v1/fixtures/release-values.yaml",
-                             "--set", "attestationReceipts.releaseId=v0.14.18-staging",
+                             "--set", "frameworkRelease.name=v0.14.18",
                              "--set", "inference.pd.paired.enabled=false",
                              "--set", f"images.sglangWorker={image}"],
                             cwd=ROOT, text=True, capture_output=True, check=False)

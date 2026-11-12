@@ -110,7 +110,9 @@ python3 scripts/render-allowlist.py \
 
 It verifies the release signature and that the checkout is the release
 source. It refuses deployment values that set `images` or
-`attestationReceipts.releaseId`, because the framework release supplies them.
+`frameworkRelease`, because the framework release supplies them. The gateway
+pins `frameworkRelease` as exact environment values, so the live allowlist
+names the framework release and its bundle digest.
 It renders the chart, refuses an image that the framework release does not
 name, generates the allowlist, and runs `c8s allowlist lint --strict`. It
 writes `allowlist.json`, `release-values.yaml` (apply it after the deployment

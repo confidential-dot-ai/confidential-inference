@@ -17,8 +17,8 @@ It refuses to render when:
 - the framework release signature or schema is not valid;
 - the checkout is not the release's source commit, or its chart, spec, or
   source lock differ from the release;
-- a values file sets `images` or `attestationReceipts.releaseId`: the
-  framework release supplies them;
+- a values file sets `images` or `frameworkRelease`: the framework release
+  supplies them;
 - the chart renders an image that the framework release does not name;
 - `c8s allowlist lint --strict` finds a problem that the deployment did not
   accept (--accepted-findings).
@@ -62,7 +62,9 @@ require = MAN["require"]
 sha256 = MAN["sha256"]
 OCI = MAN["OCI"]
 # The values that the framework release supplies. A deployment cannot set them.
-FRAMEWORK_VALUES = ("images", ("attestationReceipts", "releaseId"))
+FRAMEWORK_VALUES = ("images", "frameworkRelease")
+# The gateway environment that names the framework release in the live allowlist.
+RELEASE_ENV = ("CI_FRAMEWORK_RELEASE", "CI_FRAMEWORK_RELEASE_BUNDLE_SHA256")
 
 
 def verify_release(release: Path, signature: Path, cosign: Path) -> tuple[dict[str, Any], bytes]:
@@ -121,9 +123,10 @@ def require_deployment_values(deployment: release_spec.Deployment) -> None:
             require(current is None, f"{path} sets {'.'.join(keys)}; the framework release supplies it")
 
 
-def release_overlay(manifest: dict[str, Any]) -> bytes:
+def release_overlay(manifest: dict[str, Any], bundle_sha256: str) -> bytes:
     """The Helm values that the framework release supplies."""
-    overlay = {"images": manifest["images"], "attestationReceipts": {"releaseId": manifest["release"]["name"]}}
+    overlay = {"images": manifest["images"],
+               "frameworkRelease": {"name": manifest["release"]["name"], "bundleSha256": bundle_sha256}}
     return yaml.safe_dump(overlay, sort_keys=True).encode()
 
 
@@ -264,6 +267,27 @@ def require_allowlist_contract(
                 f"allowlist workload {item['name']} process differs from the rendered chart")
 
 
+def pinned_env(container: dict[str, Any]) -> dict[str, str]:
+    """The environment values that a C8s container rule pins exactly."""
+    env = container.get("env") or {}
+    if env.get("policy") == "exact":
+        return dict(env.get("values") or {})
+    return {key: rule["exact"] for key, rule in (env.get("variables") or {}).items()
+            if isinstance(rule, dict) and "exact" in rule}
+
+
+def require_release_identity(allowlist: dict[str, Any], name: str, bundle_sha256: str) -> None:
+    """The live allowlist must name the framework release: the gateway pins it in its environment."""
+    expected = {RELEASE_ENV[0]: name, RELEASE_ENV[1]: bundle_sha256}
+    pinned = [
+        container
+        for entry in allowlist["workloads"].values()
+        for container in entry.get("containers", [])
+        if all(pinned_env(container).get(key) == value for key, value in expected.items())
+    ]
+    require(len(pinned) == 1, "the allowlist does not pin the framework release in exactly one gateway container")
+
+
 def render(
     manifest: dict[str, Any],
     spec: dict[str, Any],
@@ -276,7 +300,7 @@ def render(
     """Return the deployment files by name: allowlist.json, release-values.yaml, and render.json."""
     require_deployment_values(deployment)
     policy = read_allowlist_policy(deployment.policy)
-    overlay_bytes = release_overlay(manifest)
+    overlay_bytes = release_overlay(manifest, bundle_sha256)
     framework_images = set(manifest["images"].values()) | set(manifest["c8s"]["coreImages"])
     feature = ALLOWLIST_GENERATOR["feature_release"](spec["c8s"])
     with tempfile.TemporaryDirectory(prefix="render-allowlist-") as directory:
@@ -312,6 +336,7 @@ def render(
              [*manifest["images"].values(), *manifest["c8s"]["coreImages"], *manifest["c8s"]["seedImages"]]}
     unnamed = sorted(allowlisted - named)
     require(not unnamed, f"the allowlist names digests that the framework release does not name: {unnamed}")
+    require_release_identity(allowlist, manifest["release"]["name"], bundle_sha256)
     record = {
         "schema": "confidential.ai/deployment-render/v1",
         "frameworkRelease": {"name": manifest["release"]["name"], "sourceCommit": manifest["source"]["commit"],

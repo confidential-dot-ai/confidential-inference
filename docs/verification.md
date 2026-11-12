@@ -129,13 +129,27 @@ Releases after `v0.16.9` are framework releases: their `release-bundle.json`
 has the schema `confidential.ai/release-manifest/v2`. It names every image
 digest, the C8s core images, and the C8s node seed images, but no
 allowlist: each deployment renders its own allowlist from the framework
-release and its settings. The release has
-no `allowlist.json` asset, so `cmp` in step 4 does not apply. Download only
-`release-bundle.json` and `release-bundle.sigstore.json` in step 2, and
-check the signature in the same way.
+release and its settings. The release has no `allowlist.json` asset, so
+`sha256sum allowlist.json` in step 2 and `cmp` in step 4 do not apply.
 
-After `allowlist fetch` in step 4, check that the live allowlist runs only
-images of the signed framework release:
+The live allowlist names its framework release. After `allowlist fetch` in
+step 4, read the release name and the digest of its bundle from the gateway:
+
+```sh
+jq -r '.workloads.gateway.containers[0].env.values | .CI_FRAMEWORK_RELEASE, .CI_FRAMEWORK_RELEASE_BUNDLE_SHA256' allowlist-live.json
+```
+
+Use that release name in place of `v0.16.2` in step 2. Download only
+`release-bundle.json` and `release-bundle.sigstore.json`, and check the
+signature in the same way. Then check that the bundle has the digest that
+the live allowlist names. `sha256sum` prints the hex value without the
+`sha256:` prefix:
+
+```sh
+sha256sum release-bundle.json
+```
+
+Then check that the live allowlist runs only images of that release:
 
 ```sh
 jq -r '[.images[], .c8s.coreImages[], .c8s.seedImages[]] | map(split("@")[1]) | unique[]' release-bundle.json > release-digests.txt

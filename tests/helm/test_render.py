@@ -160,7 +160,7 @@ def check_front_door_namespace() -> None:
     documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
         '--namespace', 'confidential-inference', '-f', str(ROOT/'tests/fixtures/deployments/production-values.yaml'),
         '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
-        '--set', 'attestationReceipts.releaseId=v0.14.18', '--set', 'c8s.frontDoorNamespace=c8s-router')) if item]
+        '--set', 'frameworkRelease.name=v0.14.18', '--set', 'c8s.frontDoorNamespace=c8s-router')) if item]
     policies = {d['metadata']['name']: d for d in documents if d['kind'] == 'NetworkPolicy'}
     peer = policies['gateway-ingress']['spec']['ingress'][0]['from'][0]
     assert peer['namespaceSelector']['matchLabels'] == {'kubernetes.io/metadata.name': 'c8s-router'}
@@ -173,7 +173,7 @@ def check_c8s_admission() -> None:
     admission = runpy.run_path(str(ROOT / "scripts/check-c8s-admission.py"))
     release = ("--namespace", "confidential-inference", "-f", "tests/fixtures/deployments/production-values.yaml",
                "-f", "tests/release-v1/fixtures/release-values.yaml",
-               "--set", "attestationReceipts.releaseId=v0.14.18-staging")
+               "--set", "frameworkRelease.name=v0.14.18")
     for profile in ((), release, (*release, "-f", "tests/fixtures/deployments/staging-values.yaml"),
                     ("--values", "tests/api/values-sglang.yaml")):
         found = admission["refusals"](render(*profile))
@@ -309,7 +309,7 @@ def main() -> None:
     production = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
         '--namespace', 'confidential-inference', '-f', str(ROOT/'tests/fixtures/deployments/production-values.yaml'),
         '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
-        '--set', 'attestationReceipts.releaseId=v0.14.18')) if item]
+        '--set', 'frameworkRelease.name=v0.14.18')) if item]
     # The gateway keeps no state: it rolls with one extra pod, and c8s gives
     # it the pepper and the admin client configuration, no volume.
     gateway = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'gateway')
@@ -365,7 +365,7 @@ def main() -> None:
     deployed = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
         '--namespace', 'confidential-inference', '-f', str(ROOT/'tests/fixtures/deployments/production-values.yaml'),
         '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
-        '--set', 'attestationReceipts.releaseId=v0.14.18',
+        '--set', 'frameworkRelease.name=v0.14.18',
         '--set', 'attestationReceipts.evidenceBaseUrl=https://candidate.example.test',
         '--set', 'attestationReceipts.evidenceConnectHost=c8s-router.c8s-router.svc.cluster.local',
         '--set', 'runtimeConfig.releaseBundle={}')) if item]
@@ -395,7 +395,7 @@ def main() -> None:
     # One model definition produces both views, each in its pod's pinned
     # environment: the gateway settings and the router routes.
     routes_json = 'runtimeConfig.modelRoutes={"public-a":["backend-a"],"public-b":["backend-b"]}'
-    runtime_documents = render("--set", "attestationReceipts.releaseId=v0.14.18-transition",
+    runtime_documents = render("--set", "frameworkRelease.name=v0.14.17",
         "--set-json", routes_json)
     runtime_gateway = Gateway(runtime_documents)
     settings = runtime_gateway.settings
@@ -416,7 +416,7 @@ def main() -> None:
                     'GATEWAY_MAXIMUM_BODY_BYTES', 'GATEWAY_UPSTREAM_TIMEOUT_SECONDS'):
         assert removed not in runtime_gateway.env
     assert not any('subPath' in mount for mount in runtime_gateway.container['volumeMounts'])
-    final_documents = render("--set", "attestationReceipts.releaseId=v0.14.18", "--set-json", routes_json)
+    final_documents = render("--set", "frameworkRelease.name=v0.14.18", "--set-json", routes_json)
     private_router = next(item for item in runtime_documents if item['kind'] == 'Service'
                           and item['metadata']['name'] == 'router-headless')
     assert private_router['spec']['clusterIP'] == 'None'

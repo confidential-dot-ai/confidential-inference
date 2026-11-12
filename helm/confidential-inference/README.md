@@ -31,9 +31,14 @@ them, and sends usage events back to the admin (`gateway.usage.enabled`).
 The gateway no longer serves `/attestation` (clients verify the front door with
 TEErminator; see [client verification](../../docs/verification.md)). The chart
 renders nothing from its former attestation inputs (`attestationReceipts`
-except `releaseId` and `attestationApiPort`, `runtimeConfig.releaseBundle`). It
+except `evidenceEgressCidrs` and `attestationApiPort`, `runtimeConfig.releaseBundle`). It
 still accepts them, because `bin/deploy` sets them for every release it
 deploys; they go once production runs a release built from this chart.
+
+The gateway also pins `CI_FRAMEWORK_RELEASE` and
+`CI_FRAMEWORK_RELEASE_BUNDLE_SHA256` from `frameworkRelease`, so the live
+allowlist names the framework release. Only `scripts/render-allowlist.py`
+sets `frameworkRelease`.
 
 The gateway's settings are one environment variable, `GATEWAY_RUNTIME_CONFIG`,
 so the exact allowlist pins them. The gateway mounts only the admin signer

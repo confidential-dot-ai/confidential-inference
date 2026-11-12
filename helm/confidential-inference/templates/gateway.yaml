@@ -89,6 +89,11 @@ spec:
             runAsUser: 65532
             runAsGroup: 65532
           env:
+            # The framework release, pinned exactly in the live allowlist.
+            - name: CI_FRAMEWORK_RELEASE
+              value: {{ .Values.frameworkRelease.name | quote }}
+            - name: CI_FRAMEWORK_RELEASE_BUNDLE_SHA256
+              value: {{ .Values.frameworkRelease.bundleSha256 | quote }}
             - name: GATEWAY_LISTEN
               value: 0.0.0.0:{{ .Values.gateway.containerPorts.public }}
             - name: GATEWAY_METRICS_LISTEN
