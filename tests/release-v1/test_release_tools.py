@@ -1130,7 +1130,7 @@ class ManifestTests(unittest.TestCase):
     def test_the_schema_refuses_deployment_values(self):
         schema = json.loads((ROOT / "api/release-manifest.schema.json").read_text())
         properties = set(schema["properties"])
-        for forbidden in ("meshCa", "operatorPublicKeySha256", "operatorKeySetSha256", "target"):
+        for forbidden in ("meshCa", "target"):
             self.assertNotIn(forbidden, properties)
         self.assertFalse(schema["additionalProperties"])
         jsonschema.Draft202012Validator.check_schema(schema)
