@@ -392,6 +392,7 @@ def check_b200_layer() -> None:
     image = "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:" + "0" * 64
     result = subprocess.run(["helm", "template", "example", str(CHART), "--namespace", "confidential-inference",
                              "--values", "tests/fixtures/deployments/production-values.yaml", "--values", "tests/fixtures/deployments/staging-values.yaml",
+                             "--set", "environment=staging",
                              "--values", str(B200_LAYER), "--values", "tests/release-v1/fixtures/release-values.yaml",
                              "--set", "frameworkRelease.name=v0.14.18",
                              "--set", "inference.pd.paired.enabled=false",

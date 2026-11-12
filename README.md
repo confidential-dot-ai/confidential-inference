@@ -9,7 +9,18 @@ Before you contribute or create a release, read the
 
 Live environment configuration does not belong here. Operators keep machine
 names, addresses, domains, resource sizes, secret paths, and deployment
-receipts in a separate private repository.
+receipts in a separate private deployment repository.
+
+## Terms
+
+- **Framework release**: a signed version of this repository, `vX.Y.Z`. It
+  names the software: image digests, the chart, and the C8s pins.
+- **Environment**: one configuration, for example `staging` or `production`.
+  The deployment repository keeps it: Helm values and an allowlist policy.
+- **Deployment**: an immutable snapshot of one environment at one commit. It
+  has its own cluster.
+- **Alias**: a name (`staging`, `candidate`, or `production`) that points to
+  one deployment.
 
 ## Components
 
@@ -31,7 +42,7 @@ See [release publication](release/README.md) and
 [the developer workflow](docs/runbooks/developer-workflow.md).
 
 Local builds are for development tests. Do not use them for production or
-for a candidate prepared for production.
+for a deployment that the `candidate` or `production` alias will point to.
 
 ## Local development
 
@@ -80,8 +91,8 @@ signed release. See [release publication](release/README.md).
 ## Attestation trust inputs
 
 The framework release is an independently verified release artifact. It
-names every image digest, but no deployment settings. Each deployment renders
-its own allowlist from it. The active allowlist is the exact policy that the
+names every image digest, but no environment configuration. Each deployment
+renders its own allowlist from it and the configuration of its environment. The active allowlist is the exact policy that the
 client checks against the signed release, reviews, and pins.
 
 The release-signing policy is a Sigstore policy under `release/trust/`.
@@ -94,7 +105,7 @@ are available in Git history. Published assets remain on GitHub Releases.
 ## Configuration ownership
 
 - Put reusable behavior in this repository.
-- Put non-secret live settings in a private environment overlay.
+- Put non-secret live settings in the environment, in the deployment repository.
 - Put secret values in a secret manager. Pass only secret names here.
 - Deliver confidential application secrets through C8s CDS.
 - Do not use Kubernetes Secrets for values that CDS must protect.

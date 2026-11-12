@@ -54,8 +54,8 @@ does not make an unrestricted core entry restrictive.
 
 The active policy can contain multiple release definitions during an update.
 The release signature covers the software: every image digest that a policy
-may name. The deployment renders the policy from that release and its own
-settings, so a signature does not cover the policy itself. The client checks
+may name. The deployment renders the policy from that release and its
+environment, so a signature does not cover the policy itself. The client checks
 each digest in the live policy against the signed framework release and
 reviews the rest of the policy. Keep your approved bytes until you explicitly
 accept an update.

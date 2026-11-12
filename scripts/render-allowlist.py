@@ -2,14 +2,15 @@
 """Render the allowlist of one deployment from a verified framework release.
 
 The framework release (scripts/build-release-manifest.py) names the software.
-A deployment adds its own settings: Helm values files and an allowlist
-policy (the workloads that it runs, its chart release name and namespace).
-This tool joins them. Run it from a checkout of this repository at the
+An environment (for example staging or production) adds its configuration:
+its name (--environment), Helm values files, and an allowlist policy (the
+workloads that it runs, its chart release name and namespace). This tool
+joins them into the allowlist of one deployment of that environment. Run it from a checkout of this repository at the
 framework release's source commit:
 
     python3 scripts/render-allowlist.py \\
       --release release-bundle.json --signature release-bundle.sigstore.json \\
-      --values values.yaml --policy allowlist-policy.json \\
+      --environment staging --values values.yaml --policy allowlist-policy.json \\
       --c8s ./c8s --canonical-tool ./c8s-allowlist-canonical --output-dir out
 
 It refuses to render when:
@@ -19,6 +20,8 @@ It refuses to render when:
   source lock differ from the release;
 - a values file sets `images` or `frameworkRelease`: the framework release
   supplies them;
+- a values file sets `environment`: the render sets it from --environment;
+- the --environment name is not lowercase letters, digits, and hyphens;
 - the chart renders an image that the framework release does not name;
 - `c8s allowlist lint --strict` finds a problem that the deployment did not
   accept (--accepted-findings).
@@ -30,8 +33,9 @@ signed framework release, and reviews the rest.
 It writes to --output-dir:
 
 - allowlist.json: the canonical C8s allowlist of the deployment;
-- release-values.yaml: the framework image digests and the release ID as a
-  Helm values file. Apply it after the deployment values files;
+- release-values.yaml: the framework image digests, the release ID, and the
+  environment name as a Helm values file. Apply it after the deployment
+  values files;
 - render.json: what it rendered from, by SHA-256.
 """
 
@@ -39,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import runpy
 import shutil
 import subprocess
@@ -63,6 +68,10 @@ sha256 = MAN["sha256"]
 OCI = MAN["OCI"]
 # The values that the framework release supplies. A deployment cannot set them.
 FRAMEWORK_VALUES = ("images", "frameworkRelease")
+# The value that the render sets from --environment. A deployment cannot set it.
+ENVIRONMENT_VALUE = "environment"
+# The environment name: a DNS label, as values.schema.json and the gateway require.
+ENVIRONMENT_NAME = re.compile(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?")
 # The gateway environment that names the framework release in the live allowlist.
 RELEASE_ENV = ("CI_FRAMEWORK_RELEASE", "CI_FRAMEWORK_RELEASE_BUNDLE_SHA256")
 
@@ -121,11 +130,19 @@ def require_deployment_values(deployment: release_spec.Deployment) -> None:
             for part in keys:
                 current = current.get(part) if isinstance(current, dict) else None
             require(current is None, f"{path} sets {'.'.join(keys)}; the framework release supplies it")
+        require(ENVIRONMENT_VALUE not in values,
+                f"{path} sets {ENVIRONMENT_VALUE}; the render sets it from the environment name (--environment)")
 
 
-def release_overlay(manifest: dict[str, Any], bundle_sha256: str) -> bytes:
-    """The Helm values that the framework release supplies."""
-    overlay = {"images": manifest["images"],
+def require_environment_name(environment: str) -> None:
+    require(isinstance(environment, str) and ENVIRONMENT_NAME.fullmatch(environment) is not None,
+            f"the environment name {environment!r} is not lowercase letters, digits, and hyphens")
+
+
+def release_overlay(manifest: dict[str, Any], bundle_sha256: str, environment: str) -> bytes:
+    """The Helm values that the framework release and the environment name supply."""
+    require_environment_name(environment)
+    overlay = {"environment": environment, "images": manifest["images"],
                "frameworkRelease": {"name": manifest["release"]["name"], "bundleSha256": bundle_sha256}}
     return yaml.safe_dump(overlay, sort_keys=True).encode()
 
@@ -295,12 +312,14 @@ def render(
     c8s: Path,
     canonical_tool: Path | None,
     bundle_sha256: str,
+    environment: str,
     chart: Path = CHART,
 ) -> dict[str, bytes]:
     """Return the deployment files by name: allowlist.json, release-values.yaml, and render.json."""
+    require_environment_name(environment)
     require_deployment_values(deployment)
     policy = read_allowlist_policy(deployment.policy)
-    overlay_bytes = release_overlay(manifest, bundle_sha256)
+    overlay_bytes = release_overlay(manifest, bundle_sha256, environment)
     framework_images = set(manifest["images"].values()) | set(manifest["c8s"]["coreImages"])
     feature = ALLOWLIST_GENERATOR["feature_release"](spec["c8s"])
     with tempfile.TemporaryDirectory(prefix="render-allowlist-") as directory:
@@ -339,6 +358,7 @@ def render(
     require_release_identity(allowlist, manifest["release"]["name"], bundle_sha256)
     record = {
         "schema": "confidential.ai/deployment-render/v1",
+        "environment": environment,
         "frameworkRelease": {"name": manifest["release"]["name"], "sourceCommit": manifest["source"]["commit"],
                              "bundleSha256": bundle_sha256},
         "values": [{"path": deployment.relative(path), "sha256": sha256(path.read_bytes())}
@@ -361,6 +381,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--release", type=Path, required=True, help="the framework release-bundle.json")
     parser.add_argument("--signature", type=Path, required=True, help="its release-bundle.sigstore.json")
+    parser.add_argument("--environment", required=True,
+                        help="the environment name, for example staging or production; the render sets the chart's"
+                             " environment value to it")
     parser.add_argument("--values", type=Path, action="append", required=True,
                         help="a deployment Helm values file; repeat it, in order")
     parser.add_argument("--policy", type=Path, required=True, help="the deployment allowlist policy")
@@ -381,7 +404,7 @@ def main() -> int:
             args.accepted_findings.resolve() if args.accepted_findings else None)
         files = render(manifest, spec, deployment, args.c8s.resolve(),
                        args.canonical_tool.resolve() if args.canonical_tool else None,
-                       sha256(bundle))
+                       sha256(bundle), args.environment)
         args.output_dir.mkdir(parents=True, exist_ok=True)
         for name, data in files.items():
             (args.output_dir / name).write_bytes(data)

@@ -6,10 +6,11 @@ snapshots remain in Git history.
 
 The framework release is the software: the image digests, the Helm chart,
 the C8s release and its node image, and the tools that render an allowlist.
-It holds no deployment value: no allowlist, no Helm values, no model, no
-hostname, no address, no mesh CA. Each deployment keeps its own values and
-allowlist policy, and renders its allowlist from a verified framework
-release with `scripts/render-allowlist.py`.
+It holds no environment value: no allowlist, no Helm values, no model, no
+hostname, no address, no mesh CA. Each environment keeps its own values and
+allowlist policy in the deployment repository. Each deployment renders its
+allowlist from a verified framework release and its environment with
+`scripts/render-allowlist.py`. See the terms in [README.md](../README.md#terms).
 
 The repository holds no digest of an image that it builds. The release build
 takes each one from signed evidence, so a release needs no commit that pins
@@ -96,37 +97,47 @@ GitHub when it is set. Verifying the base release needs `cosign`.
 
 ## Render a deployment allowlist
 
-The operator of a deployment runs this from a checkout at the framework
+The operator runs this for each deployment, from a checkout at the framework
 release's source commit. It needs `helm`, `cosign`, `crane` with read access
 to the registry, and a C8s CLI built from the pinned C8s commit:
 
 ```sh
 python3 scripts/render-allowlist.py \
   --release release-bundle.json --signature release-bundle.sigstore.json \
-  --values values.yaml --policy allowlist-policy.json \
+  --environment staging --values values.yaml --policy allowlist-policy.json \
   [--accepted-findings accepted-lint-findings.json] \
   --c8s /path/to/pinned/c8s --output-dir out
 ```
 
 It verifies the release signature and that the checkout is the release
-source. It refuses deployment values that set `images` or
-`frameworkRelease`, because the framework release supplies them. The gateway
+source. `--environment` is required: the environment name, for example
+`staging` or `production` (lowercase letters, digits, and hyphens, at most 63
+characters). The render sets the chart value `environment` to it. The gateway
+gets it as `DEPLOYMENT_ENVIRONMENT`, and the chart permits
+`stagingValidation` only when it is `staging`.
+
+It refuses environment values files that set `images` or
+`frameworkRelease`, because the framework release supplies them. It refuses
+values files that set `environment`, because the render sets it from the
+environment name. The gateway
 pins `frameworkRelease` as exact environment values, so the live allowlist
 names the framework release and its bundle digest.
 It renders the chart, refuses an image that the framework release does not
 name, generates the allowlist, and runs `c8s allowlist lint --strict`. It
-writes `allowlist.json`, `release-values.yaml` (apply it after the deployment
-values files), and `render.json`, the SHA-256 of each input.
+writes `allowlist.json`, `release-values.yaml` (the image digests, the
+framework release, and the environment name; apply it after the environment
+values files), and `render.json` (the environment name and the SHA-256 of
+each input).
 
 These checks help the operator. A client does not rely on them: it reads the
 live allowlist and checks it against the signed framework release
 ([docs/verification.md](../docs/verification.md)).
 
-The allowlist policy of a deployment lists its workloads (name and
+The allowlist policy of an environment lists its workloads (name and
 controller), the chart release name, namespace, and Kubernetes version, the
 `kubernetes` Service address, the CDI record, egress, and secret reads.
-`tests/fixtures/deployments/` holds example deployments with example
-addresses for the tests.
+`tests/fixtures/deployments/` holds two example environments (`staging` and
+`production`) with example addresses for the tests.
 
 ## Change the C8s release
 

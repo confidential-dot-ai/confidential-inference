@@ -2,7 +2,6 @@ stagingValidation:
   enabled: true
 runtimeConfig:
   modelRoutes: null
-environment: staging
 gateway:
   admin:
     url: https://admin.example.invalid/api/usage/ingest

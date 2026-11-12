@@ -3,17 +3,21 @@
 ## 1. Overview
 
 This repository contains the public Confidential Inference software and its
-workload definitions. It produces releases that the private deployment
-repository can install.
+workload definitions. It produces framework releases that the private deployment
+repository deploys.
 
 Keep these concepts separate:
 
 - A **source commit** is one version of the source code.
 - An **artifact** is a built image or another fixed build output.
-- A **release** is a signed record of the exact artifacts and dependencies that
-  belong together.
-- A **deployment target** is a place where a release runs. Staging, a candidate
-  slot, and production are deployment terms. They are not source branches.
+- A **framework release** (`vX.Y.Z`) is a signed record of the exact artifacts
+  and dependencies that belong together.
+- An **environment** is one configuration, for example `staging` or
+  `production`. The deployment repository keeps it.
+- A **deployment** is an immutable snapshot of one environment at one commit.
+  It has its own cluster.
+- An **alias** (`staging`, `candidate`, or `production`) points to one
+  deployment. Aliases are not source branches.
 
 The public repository creates a release. It does not define which private
 cluster receives that release or when that cluster receives production traffic.
@@ -24,8 +28,8 @@ Use `main` as the only long-lived branch. Use a short-lived branch for each
 change, and merge the change into `main` when it is ready.
 
 Do not create permanent staging, candidate, or production branches. A commit on
-`main` can become a release. The same release can then move through different
-deployment targets without another source branch.
+`main` can become a release. The same release can then go into deployments
+of different environments without another source branch.
 
 ## 3. Release model
 
@@ -47,7 +51,7 @@ Internal implementation changes do not require a major version when these
 interfaces remain compatible.
 
 A release tag is `vX.Y.Z`. It releases the framework: the image digests, the
-chart, and the C8s and node image pins. It holds no deployment value. A fix
+chart, and the C8s and node image pins. It holds no environment value. A fix
 uses a new patch version. The tag is the version: no commit changes a
 version. The tag must point to a commit on `main`. After publication, the
 tag must never move or be deleted. Earlier releases also used `-staging` and
@@ -93,8 +97,9 @@ receipts, the admin system, and private infrastructure controls in
 
 The interface between the repositories is a signed framework release. The
 private repository selects a release version, verifies it, supplies the
-deployment values and allowlist policy of each installation, and renders the
-allowlist with `scripts/render-allowlist.py`. It does not rebuild product
+Helm values and allowlist policy of each environment, and renders the
+allowlist of each deployment with `scripts/render-allowlist.py --environment
+<name>`. It does not rebuild product
 artifacts.
 
 ## 5. Example workflow
@@ -104,7 +109,8 @@ artifacts.
 3. Run `release-images` on that commit, then push the tag `v0.14.3`.
 4. The release workflow builds and signs the framework release.
 5. `confidential-inference-internal` selects `v0.14.3` and renders the
-   allowlist of each installation.
-6. Validate the release in staging, then in the candidate.
-7. Promote the same release to production.
+   allowlist of each new deployment.
+6. Validate the deployment that the `staging` alias points to, then the one
+   that the `candidate` alias points to.
+7. Move the `production` alias to a deployment of the same release.
 8. If code or an artifact changes, return to `main` and increase the patch version.

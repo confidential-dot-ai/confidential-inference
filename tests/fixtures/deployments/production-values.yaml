@@ -4,7 +4,6 @@ runtimeConfig:
   modelRoutes:
     deepseek-ai/DeepSeek-V4.1-Flash-1017:
     - deepseek-ai/DeepSeek-V4.1-Flash-1017
-environment: production
 gateway:
   admin:
     url: https://admin.example.invalid/api/usage/ingest

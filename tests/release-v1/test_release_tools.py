@@ -56,6 +56,8 @@ STAGING = SPEC.Deployment((DEPLOYMENTS / "production-values.yaml", DEPLOYMENTS /
                           DEPLOYMENTS / "staging-allowlist-policy.json",
                           DEPLOYMENTS / "staging-accepted-lint-findings.json")
 OVERLAY = FIXTURES / "release-values.yaml"
+# The environment name that each example deployment passes to the render (--environment).
+ENVIRONMENTS = {PRODUCTION: "production", STAGING: "staging"}
 STAGING_ALLOWLIST = FIXTURES / "staging-allowlist.json"
 REPOSITORY_CONFIGS = json.loads((FIXTURES / "repository-image-config.json").read_text())
 RELEASE_IMAGES = yaml.safe_load(OVERLAY.read_text())["images"]
@@ -73,7 +75,12 @@ LOCK = ROOT / "release/inputs/c8s-source-lock.json"
 @functools.cache
 def rendered(deployment) -> list[dict]:
     """The chart rendered with the deployment values and its policy settings. Do not change it."""
-    return REN.render_chart(MAN.CHART, deployment, REN.read_allowlist_policy(deployment.policy)["chart"], OVERLAY)
+    with tempfile.TemporaryDirectory() as temporary:
+        overlay = Path(temporary) / "release-values.yaml"
+        overlay.write_text(yaml.safe_dump({**yaml.safe_load(OVERLAY.read_text()),
+                                           "environment": ENVIRONMENTS[deployment]}))
+        return REN.render_chart(MAN.CHART, deployment, REN.read_allowlist_policy(deployment.policy)["chart"],
+                                overlay)
 
 
 def publication(images: dict[str, str], *, commit: str = "b" * 40, base_ref: str = "v0.13.28-rc.2",
@@ -139,14 +146,15 @@ def framework_manifest() -> dict:
     return json.loads(framework_bytes())
 
 
-def render_deployment(deployment=STAGING, c8s: Path | None = None, manifest: dict | None = None) -> dict[str, bytes]:
+def render_deployment(deployment=STAGING, c8s: Path | None = None, manifest: dict | None = None,
+                      environment: str = "staging") -> dict[str, bytes]:
     """Render a deployment allowlist. Without `c8s`, the fixture allowlist replaces the c8s CLI."""
     generated = STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")
     generate = REN.ALLOWLIST_GENERATOR["generate"] if c8s else lambda *_args, **_kwargs: generated
     with mock.patch.dict(REN.ALLOWLIST_GENERATOR, {"generate": generate,
                                                    "image_config": REPOSITORY_CONFIGS.__getitem__}):
         return REN.render(manifest or framework_manifest(), REN.MAN["read_spec"](), deployment,
-                          c8s or Path("c8s"), None, MAN.sha256(framework_bytes()))
+                          c8s or Path("c8s"), None, MAN.sha256(framework_bytes()), environment)
 
 
 def staging_allowlist(c8s: Path) -> bytes:
@@ -827,9 +835,10 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(sorted(files), ["allowlist.json", "release-values.yaml", "render.json"])
         self.assertEqual(files["allowlist.json"], STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n"))
         self.assertEqual(yaml.safe_load(files["release-values.yaml"]),
-                         {"images": RELEASE_IMAGES, "frameworkRelease": {
+                         {"environment": "staging", "images": RELEASE_IMAGES, "frameworkRelease": {
                              "name": "v0.17.0", "bundleSha256": MAN.sha256(framework_bytes())}})
         record = json.loads(files["render.json"])
+        self.assertEqual(record["environment"], "staging")
         self.assertEqual(record["frameworkRelease"], {"name": "v0.17.0", "sourceCommit": "d" * 40,
                                                       "bundleSha256": MAN.sha256(framework_bytes())})
         self.assertEqual([item["path"] for item in record["values"]],
@@ -848,12 +857,28 @@ class RenderTests(unittest.TestCase):
                 with self.assertRaisesRegex(REN.ManifestError, f"sets {field}"):
                     render_deployment(deployment)
 
+    def test_the_render_sets_the_environment_from_its_name(self):
+        for name in ("staging", "production", "eu-west-2"):
+            with self.subTest(name=name):
+                self.assertEqual(yaml.safe_load(REN.release_overlay(framework_manifest(), "sha256:" + "0" * 64,
+                                                                    name))["environment"], name)
+        for name in ("", "Staging", "-staging", "staging-", "stag_ing", "a" * 64):
+            with self.subTest(name=name), self.assertRaisesRegex(REN.ManifestError, "environment name"):
+                render_deployment(environment=name)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "values.yaml"
+            path.write_text(yaml.safe_dump({"environment": "staging"}))
+            deployment = SPEC.Deployment((*STAGING.values_files, path), STAGING.policy, STAGING.accepted_findings)
+            with self.assertRaisesRegex(REN.ManifestError,
+                                        "sets environment; the render sets it from the environment name"):
+                render_deployment(deployment)
+
     def test_the_chart_can_render_only_framework_images(self):
         manifest = framework_manifest()
         changed = copy.deepcopy(manifest)
         changed["images"]["gateway"] = changed["images"]["gateway"].split("@")[0] + "@sha256:" + "1" * 64
         with mock.patch.object(REN, "release_overlay", return_value=yaml.safe_dump(
-                {"images": manifest["images"], "frameworkRelease": {
+                {"environment": "staging", "images": manifest["images"], "frameworkRelease": {
                     "name": "v0.17.0", "bundleSha256": MAN.sha256(framework_bytes())}}).encode()), \
                 mock.patch.dict(REN.MAN, {}):
             with self.assertRaisesRegex(REN.ManifestError, "does not name"):

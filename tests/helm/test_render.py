@@ -23,9 +23,22 @@ PINNED = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
 NEUTRAL_MODE = ("--set", "inference.mode=simulator")
 
 
+def environment_args(arguments: tuple[str, ...]) -> tuple[str, ...]:
+    """The environment name that scripts/render-allowlist.py sets for an example environment.
+
+    The example values files do not set `environment`: the render sets it
+    from its --environment argument, after the values files.
+    """
+    files = [arg for arg in arguments if "tests/fixtures/deployments/" in arg]
+    if not files:
+        return ()
+    name = "staging" if any(arg.endswith("staging-values.yaml") for arg in files) else "production"
+    return ("--set", f"environment={name}")
+
+
 def helm(*arguments: str, success: bool = True) -> str:
     result = subprocess.run(
-        ["helm", *arguments], cwd=ROOT, text=True, capture_output=True, check=False
+        ["helm", *arguments, *environment_args(arguments)], cwd=ROOT, text=True, capture_output=True, check=False
     )
     if (result.returncode == 0) != success:
         raise AssertionError(result.stderr or result.stdout)

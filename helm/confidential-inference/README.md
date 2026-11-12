@@ -5,7 +5,9 @@ metrics components in a C8s Kubernetes cluster.
 
 The default values form a small GPU-free simulator deployment. An operator
 must supply an external values file for a real environment. The file must pin
-every image by its Linux AMD64 digest.
+every image by its Linux AMD64 digest. `scripts/render-allowlist.py` sets
+`environment` from its `--environment` argument; an environment values file
+must not set it.
 
 ```sh
 helm lint helm/confidential-inference
@@ -14,12 +16,11 @@ helm template example helm/confidential-inference \
   --values /path/to/environment-values.yaml
 ```
 
-A release publishes this chart as a package,
-`ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference:X.Y.Z`,
-built once by the staging release of a source commit and bound by digest in
-the signed release manifest (`chart.archiveSha256`), together with the
-profile values files as release assets (`release/README.md`, "The release
-build"). An installer that verifies those digests needs no checkout.
+A framework release publishes this chart as a package,
+`ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference:X.Y.Z`.
+The signed release manifest binds it by digest (`chart.archiveSha256`). It
+has no values files: each environment keeps its own
+([release/README.md](../../release/README.md)).
 
 The gateway uses one internal HTTP service behind C8s TLS-LB. Public inference
 requests and signed admin requests use that same entry path. The gateway reads

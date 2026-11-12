@@ -129,7 +129,7 @@ Releases after `v0.16.9` are framework releases: their `release-bundle.json`
 has the schema `confidential.ai/release-manifest/v2`. It names every image
 digest, the C8s core images, and the C8s node seed images, but no
 allowlist: each deployment renders its own allowlist from the framework
-release and its settings. The release has no `allowlist.json` asset, so
+release and its environment. The release has no `allowlist.json` asset, so
 `sha256sum allowlist.json` in step 2 and `cmp` in step 4 do not apply.
 
 The live allowlist names its framework release. After `allowlist fetch` in
@@ -159,7 +159,7 @@ comm -13 release-digests.txt live-digests.txt
 
 `comm` must print nothing. Then review the rest of each workload in
 `allowlist-live.json`: commands, arguments, environment, mounts, secret
-reads, and egress. These are deployment settings. They can change what the
+reads, and egress. These come from the environment. They can change what the
 approved code does within its own limits, so read them before you pin the
 policy.
 
