@@ -38,6 +38,7 @@
         "gateway": {"$ref": "#/definitions/image"},
         "sglang": {"$ref": "#/definitions/image"},
         "sglangWorker": {"$ref": "#/definitions/image"},
+        "sglangStagingWorker": {"$ref": "#/definitions/image"},
         "sglangRouter": {"$ref": "#/definitions/image"},
         "rolloutClient": {"$ref": "#/definitions/image"},
         "telemetryCollector": {"$ref": "#/definitions/image"},
@@ -106,6 +107,7 @@
       "properties": {
         "enabled": {"type": "boolean"},
         "mode": {"enum": ["model", "simulator"]},
+        "workerImage": {"enum": ["sglangWorker", "sglangStagingWorker"]},
         "replicas": {"type": "integer", "minimum": 0},
         "gpusPerReplica": {"type": "integer", "minimum": 0},
         "attestedGpuCount": {"type": "integer", "minimum": 0},

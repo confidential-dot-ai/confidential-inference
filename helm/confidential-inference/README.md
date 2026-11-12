@@ -78,6 +78,17 @@ for worker in inference-worker-0 inference-worker-1; do
 done
 ```
 
+## Worker image
+
+The framework release names every image the chart can run; an environment
+chooses the worker image among them with `inference.workerImage`:
+
+- `sglangWorker` (the default): the production SGLang image.
+- `sglangStagingWorker`: the 1-GPU Qwen3.5-0.8B staging worker that
+  confidential-sglang builds (`recipes/qwen35-0.8b`). Its environment layer is
+  `tests/fixtures/deployments/qwen35-staging-values.yaml`: one GPU per worker,
+  the model download pinned by its byte manifest, and the recipe's worker argv.
+
 ## Model download
 
 A worker gets its model in one of two ways:

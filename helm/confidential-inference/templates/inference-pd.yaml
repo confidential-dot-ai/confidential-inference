@@ -30,7 +30,7 @@ http://{{ $host }}:{{ .worker.port }}
 {{- define "confidential-inference.source.inference-pd" -}}
 {{- $pd := .Values.inference.pd }}
 {{- if and .Values.inference.enabled $pd.enabled }}
-{{- $image := required "inference.pd requires images.sglangWorker" .Values.images.sglangWorker }}
+{{- $image := include "confidential-inference.workerImage" . }}
 {{- if ne .Values.inference.mode "model" }}
 {{- fail "inference.pd requires inference.mode=model" }}
 {{- end }}
