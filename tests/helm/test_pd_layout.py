@@ -345,6 +345,15 @@ B200_MODEL = {
     "tokenizerConfigSha256": "6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547",
     "c8sVolumeSource": "/confidential-inference/model-updates/b200-dsv41",
 }
+# v0: two 4-GPU pairs (1 prefill + 1 decode each) in their own pods, KV over
+# NVLink inside each pod. CUDA IPC needs the importing process to share the
+# exporter's PID namespace and see its GPU, which only one container gives
+# (README "Prefill/decode layout"). Each pair opens its own model disk.
+B200_PAIRS = [
+    {"name": "a", "prefill": "prefill0", "decode": "decode0", "modelVolumeName": "dsv41-a"},
+    {"name": "b", "prefill": "prefill1", "decode": "decode1"},
+]
+B200_NODE = "inference-node-1"
 
 
 def b200_args(args: list[str], role: str) -> list[str]:
@@ -363,7 +372,12 @@ def derive_b200_layer(plan: dict) -> dict:
     for worker in values["inference"]["pd"]["workers"]:
         worker["args"] = b200_args(worker["args"], worker["role"])
     model = B200_MODEL
+    values["inference"]["pd"]["paired"] = {"enabled": True, "transport": "nvlink", "pairs": B200_PAIRS}
     return {
+        # One node: the gateway, the router and both pairs, so no request
+        # hop leaves the node.
+        "scheduling": {"gatewayNodeName": B200_NODE, "routerNodeName": "", "inferenceNodeName": B200_NODE,
+                       "inferenceNodeNames": []},
         "inference": {
             **values["inference"],
             # confidential-sglang's DeepSeek-V4.1 worker: the fork the launcher plan is for.
@@ -390,7 +404,7 @@ def derive_b200_layer(plan: dict) -> dict:
 
 
 def check_b200_layer() -> None:
-    """The B200 layer is the plan with the B200 limits, and renders on top of staging."""
+    """The B200 layer is the plan with the B200 limits as two 4-GPU NVLink pairs, and renders on top of staging."""
     layer = yaml.safe_load(B200_LAYER.read_text())
     assert layer == derive_b200_layer(PLAN), "regenerate tests/fixtures/deployments/b200-staging-values.yaml (derive_b200_layer)"
     release_images = yaml.safe_load((ROOT / "tests/release-v1/fixtures/release-values.yaml").read_text())["images"]
@@ -398,25 +412,62 @@ def check_b200_layer() -> None:
                              "--values", "tests/fixtures/deployments/production-values.yaml", "--values", "tests/fixtures/deployments/staging-values.yaml",
                              "--set", "environment=staging",
                              "--values", str(B200_LAYER), "--values", "tests/release-v1/fixtures/release-values.yaml",
-                             "--set", "frameworkRelease.name=v0.14.18",
-                             "--set", "inference.pd.paired.enabled=false"],
+                             "--set", "frameworkRelease.name=v0.14.18"],
                             cwd=ROOT, text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
     documents = [item for item in yaml.safe_load_all(result.stdout) if item]
-    check_pinned_settings(documents, B200_MODEL["name"])
-    template = by_name(documents, "StatefulSet", "inference-pd")["spec"]["template"]
-    assert template["metadata"]["annotations"]["confidential.ai/attested-gpu-count"] == "8"
-    containers = template["spec"]["containers"]
-    # Every container runs the release's DeepSeek-V4.1 worker image.
-    assert {container["image"] for container in containers} == {release_images["sglangDsv41Worker"]}
-    holder = containers[0]
-    assert f"--expected-repository={B200_MODEL['name']}" in holder["args"]
-    assert f"--expected-file=.model-lock-local-manifest.json={B200_MODEL['manifestSha256']}" in holder["args"]
-    for worker, container in zip(PLAN["workers"], containers[1:]):
-        role = flag_values(worker["command"])["--disaggregation-mode"]
-        assert container["args"] == [PYTHON, "-m", "sglang.launch_server", *b200_args(worker_args(worker["command"]), role)]
-    assert not any(item["kind"] == "StatefulSet" and item["metadata"]["name"].startswith("inference-worker-")
-                   for item in documents)
+    pods = {item["metadata"]["name"]: item for item in documents if item["kind"] == "StatefulSet"
+            and item["metadata"]["name"].startswith("inference-")}
+    assert sorted(pods) == ["inference-pd-a", "inference-pd-b"], sorted(pods)
+    plan = {flag_values(worker["command"])["--disaggregation-mode"] + str(index): worker
+            for index, worker in enumerate(w for w in PLAN["workers"] if "bootstrap_port" in w)}
+    plan.update({"decode" + str(index): worker
+                 for index, worker in enumerate(w for w in PLAN["workers"] if "bootstrap_port" not in w)})
+    routes = {}
+    for pair in B200_PAIRS:
+        name = "inference-pd-" + pair["name"]
+        template = pods[name]["spec"]["template"]
+        volume = pair.get("modelVolumeName", "dsv41")
+        path = "/mnt/c8s-data/models/" + volume
+        annotations = template["metadata"]["annotations"]
+        assert annotations["confidential.ai/attested-gpu-count"] == "4"
+        assert annotations["confidential.ai/c8s-volumes"] == f"{volume}={B200_MODEL['c8sVolumeSource']}"
+        spec = template["spec"]
+        assert spec["nodeSelector"] == {"kubernetes.io/hostname": B200_NODE}
+        (app,) = spec["containers"]
+        # The pair runs the release's DeepSeek-V4.1 worker image, both workers in one container.
+        assert app["name"] == "sglang-pair" and app["image"] == release_images["sglangDsv41Worker"]
+        assert app["command"] == [PYTHON, "/usr/local/bin/sglang-pair"]
+        assert app["resources"]["limits"] == {"nvidia.com/gpu": 4}
+        config = json.loads(app["args"][1])
+        gate = config["modelGate"]
+        assert f"--path={path}" in gate and f"--expected-repository={B200_MODEL['name']}" in gate
+        assert f"--expected-file=.model-lock-local-manifest.json={B200_MODEL['manifestSha256']}" in gate
+        for worker, key in zip(config["workers"], (pair["prefill"], pair["decode"])):
+            source = plan[key]
+            role = flag_values(source["command"])["--disaggregation-mode"]
+            args = [path if arg == MODEL_PATH else arg for arg in b200_args(worker_args(source["command"]), role)]
+            assert worker["command"] == [PYTHON, "-m", "sglang.launch_server", *args]
+            # KV over NVLink (CUDA IPC) between the pair's two processes.
+            assert (worker["env"]["MC_INTRANODE_NVLINK"], worker["env"]["SGLANG_MOONCAKE_CUSTOM_MEM_POOL"]) == ("1", "INTRA_NODE_NVLINK")
+            assert "MC_FORCE_TCP" not in worker["env"]
+        host = f"{name}-0.{name}"
+        ports = [worker["port"] for worker in config["workers"]]
+        routes[f"http://{host}:{ports[0]}"] = f"http://{host}:{ports[1]}"
+    # The router runs on the pairs' node and keeps each request inside one pair.
+    router = by_name(documents, "Deployment", "sglang-router")["spec"]["template"]["spec"]
+    assert router["nodeSelector"] == {"kubernetes.io/hostname": B200_NODE}
+    env = {item["name"]: item["value"] for item in router["containers"][0]["env"]}
+    # Routes and pairs are pod env, never mutable ConfigMap data.
+    assert set(env) == {"CI_ROUTER_MODEL_ROUTES", "CI_ROUTER_PD_PAIRS"}
+    model = B200_MODEL["name"]
+    assert json.loads(env["CI_ROUTER_MODEL_ROUTES"]) == {"routes": {model: [model]}, "schemaVersion": 1}
+    assert json.loads(env["CI_ROUTER_PD_PAIRS"]) == routes
+    assert not any(item["kind"] == "ConfigMap" for item in documents)
+    gateway = by_name(documents, "Deployment", "gateway")["spec"]["template"]["spec"]
+    assert gateway["nodeSelector"] == {"kubernetes.io/hostname": B200_NODE}
+    assert not any(item["kind"] == "StatefulSet" and (item["metadata"]["name"] == "inference-pd"
+                   or item["metadata"]["name"].startswith("inference-worker-")) for item in documents)
     assert admission["refusals"](documents) == []
 
 

@@ -200,8 +200,14 @@ things from the node, which the chart cannot grant:
 - Free order-9 pages for each confidential-compute `cuInit`. The launcher
   compacts host memory before each worker starts (`/proc/sys/vm`, root
   only). In Kubernetes the node image must provide proactive compaction.
-- CUDA IPC between containers that each see only their own GPUs. This is
-  not yet verified on a GPU node.
+- CUDA IPC between containers that each see only their own GPUs. On a
+  4x B200 confidential VM (2026-11-13) this does not work: a CUDA IPC handle
+  opens only in a process that shares the exporting process's PID namespace
+  and sees the exporting GPU. Containers of one pod have neither (C8s refuses
+  `shareProcessNamespace`, and the device plugin gives each container its own
+  GPUs), so the intra-node NVLink transport of this layout fails between its
+  containers. A pair (`inference.pd.paired`) runs both workers in one
+  container, where it works.
 
 The chart sets `SGLANG_HOST_IP=127.0.0.1` for every PD worker. The prefill and
 decode KV transfer ZMQ sockets then bind to loopback, and Mooncake advertises
