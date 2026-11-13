@@ -165,7 +165,8 @@ inference:
   # The key of `images` that the worker containers run. The framework release
   # names every image; an environment only chooses among them. sglangWorker is
   # the production SGLang image; sglangStagingWorker is the 1-GPU
-  # Qwen3.5-0.8B staging worker from confidential-sglang.
+  # Qwen3.5-0.8B staging worker from confidential-sglang; sglangDsv41Worker is
+  # confidential-sglang's DeepSeek-V4.1-Flash worker (PD recipe).
   workerImage: sglangWorker
   replicas: 2
   gpusPerReplica: 0

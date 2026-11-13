@@ -36,6 +36,11 @@ images:
   # The 1-GPU Qwen3.5-0.8B staging worker, built by confidential-sglang
   # (recipes/qwen35-0.8b). An environment selects it with inference.workerImage.
   sglangStagingWorker: ghcr.io/confidential-dot-ai/sglang-qwen35-0.8b@sha256:a95d629c717036b0e4b786b44399b4a3bb12c9825cbe694dd453288fc0e44143
+  # The DeepSeek-V4.1-Flash worker built by confidential-sglang
+  # (recipes/deepseek-v41/chart): its SGLang fork with the PD recipe, for the
+  # aggregated, PD and paired-PD layouts. An environment selects it with
+  # inference.workerImage.
+  sglangDsv41Worker: ghcr.io/confidential-dot-ai/sglang-dsv41-flash@sha256:9d58f70db6636c6f7b0329852db98c4d858b41f6aa9ec8e5d5bbc0d59e48db08
   telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9

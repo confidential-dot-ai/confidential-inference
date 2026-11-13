@@ -366,6 +366,8 @@ def derive_b200_layer(plan: dict) -> dict:
     return {
         "inference": {
             **values["inference"],
+            # confidential-sglang's DeepSeek-V4.1 worker: the fork the launcher plan is for.
+            "workerImage": "sglangDsv41Worker",
             "model": {
                 "name": model["name"],
                 "revision": model["revision"],
@@ -391,14 +393,13 @@ def check_b200_layer() -> None:
     """The B200 layer is the plan with the B200 limits, and renders on top of staging."""
     layer = yaml.safe_load(B200_LAYER.read_text())
     assert layer == derive_b200_layer(PLAN), "regenerate tests/fixtures/deployments/b200-staging-values.yaml (derive_b200_layer)"
-    image = "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:" + "0" * 64
+    release_images = yaml.safe_load((ROOT / "tests/release-v1/fixtures/release-values.yaml").read_text())["images"]
     result = subprocess.run(["helm", "template", "example", str(CHART), "--namespace", "confidential-inference",
                              "--values", "tests/fixtures/deployments/production-values.yaml", "--values", "tests/fixtures/deployments/staging-values.yaml",
                              "--set", "environment=staging",
                              "--values", str(B200_LAYER), "--values", "tests/release-v1/fixtures/release-values.yaml",
                              "--set", "frameworkRelease.name=v0.14.18",
-                             "--set", "inference.pd.paired.enabled=false",
-                             "--set", f"images.sglangWorker={image}"],
+                             "--set", "inference.pd.paired.enabled=false"],
                             cwd=ROOT, text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
     documents = [item for item in yaml.safe_load_all(result.stdout) if item]
@@ -406,6 +407,8 @@ def check_b200_layer() -> None:
     template = by_name(documents, "StatefulSet", "inference-pd")["spec"]["template"]
     assert template["metadata"]["annotations"]["confidential.ai/attested-gpu-count"] == "8"
     containers = template["spec"]["containers"]
+    # Every container runs the release's DeepSeek-V4.1 worker image.
+    assert {container["image"] for container in containers} == {release_images["sglangDsv41Worker"]}
     holder = containers[0]
     assert f"--expected-repository={B200_MODEL['name']}" in holder["args"]
     assert f"--expected-file=.model-lock-local-manifest.json={B200_MODEL['manifestSha256']}" in holder["args"]

@@ -88,6 +88,13 @@ chooses the worker image among them with `inference.workerImage`:
   confidential-sglang builds (`recipes/qwen35-0.8b`). Its environment layer is
   `tests/fixtures/deployments/qwen35-staging-values.yaml`: one GPU per worker,
   the model download pinned by its byte manifest, and the recipe's worker argv.
+- `sglangDsv41Worker`: the DeepSeek-V4.1-Flash worker that confidential-sglang
+  builds (`recipes/deepseek-v41/chart`): its SGLang fork and the PD recipe's
+  launcher files (`inference.pd.python`, `inference.pd.engramHolder.script`),
+  with this chart's `wait-for-model`, `fetch-model`, `sglang-pair` and
+  `dcgm-exporter`, and the same serving-only HTTP policy as `sglangWorker`.
+  `tests/fixtures/deployments/b200-staging-values.yaml` (the 8-GPU B200 PD
+  layer) selects it.
 
 ## Model download
 
