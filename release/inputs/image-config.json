@@ -44,7 +44,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/sglang-qwen35-0.8b@sha256:dea71feb411bd0d8a51dec42f6284dd23bdace65e9dc852874a2c4d53e055ecf": {
+  "ghcr.io/confidential-dot-ai/sglang-qwen35-0.8b@sha256:a95d629c717036b0e4b786b44399b4a3bb12c9825cbe694dd453288fc0e44143": {
     "cmd": [
       "serve"
     ],
