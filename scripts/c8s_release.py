@@ -139,8 +139,9 @@ def signed_statement(tag: str, directory: Path, run: Callable[..., subprocess.Co
         signed = json.loads(statement.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise ReleaseError(f"the c8s {tag} release statement is not JSON: {error}") from error
-    # Statements from C8s #1070 list the allowlist seed assets; later ones name the chart instead.
-    if (not isinstance(signed, dict) or set(signed) - {"repository", "tag", "commit", "allowlistSeeds", "chart"}
+    # Statements from C8s #1070 list the allowlist seed assets; later ones name the chart instead,
+    # and from C8s #1685 the CLI binaries.
+    if (not isinstance(signed, dict) or set(signed) - {"repository", "tag", "commit", "allowlistSeeds", "chart", "cli"}
             or signed.get("repository") != C8S_SIGNED_REPOSITORY or signed.get("tag") != tag
             or not isinstance(signed.get("commit"), str)):
         raise ReleaseError(f"the signed c8s {tag} statement {signed} does not name {C8S_SIGNED_REPOSITORY} {tag}")
