@@ -3,7 +3,7 @@
   "info": {
     "title": "Confidential Inference Public Gateway API",
     "version": "1.0.0",
-    "description": "This contract defines the real public API of the Rust gateway in services/gateway. The gateway sits behind the c8s tls-lb, which terminates public TLS inside the TEE and forwards HTTP to the gateway process. `/v1/chat/completions` and `/v1/completions` are OpenAI-compatible: request and response bodies follow the OpenAI chat-completions and legacy-completions shapes. The gateway itself validates only the `model` field on inference requests (services/gateway/src/lib.rs, `proxy_inference`); it forwards the rest of the body to the upstream sglang-router unchanged. Bearer tokens authenticate with `Authorization: Bearer <api-key>` (services/gateway/src/lib.rs, `authenticate`). Every response carries an `X-Request-ID` header (services/gateway/src/lib.rs, `request_id`); a caller may supply this header on the request, and the gateway echoes a valid value back or generates one. Every response also carries a fresh server-generated `X-CI-Request-ID`, which identifies the internal audit record and upstream request. Caller values cannot set this ID. It is exposed to browser clients. The caller-facing `X-Request-ID` is never used as the audit ID. The gateway sends the router an `X-SMG-Routing-Key` header that keeps one conversation on one inference worker (services/gateway/src/routing_key.rs); a caller may supply its own conversation key in the same header."
+    "description": "This contract defines the real public API of the Rust gateway in services/gateway. The gateway sits behind the c8s tls-lb, which terminates public TLS inside the TEE and forwards HTTP to the gateway process. `/v1/chat/completions`, `/v1/completions`, and `/v1/responses` are OpenAI-compatible: request and response bodies follow the OpenAI chat-completions, legacy-completions, and Responses API shapes. The SGLang worker serves `/v1/responses` natively and the sglang-router forwards it; the gateway does not translate it. The gateway itself validates only the `model` field on inference requests (services/gateway/src/lib.rs, `proxy_inference`); it forwards the rest of the body to the upstream sglang-router unchanged. Bearer tokens authenticate with `Authorization: Bearer <api-key>` (services/gateway/src/lib.rs, `authenticate`). Every response carries an `X-Request-ID` header (services/gateway/src/lib.rs, `request_id`); a caller may supply this header on the request, and the gateway echoes a valid value back or generates one. Every response also carries a fresh server-generated `X-CI-Request-ID`, which identifies the internal audit record and upstream request. Caller values cannot set this ID. It is exposed to browser clients. The caller-facing `X-Request-ID` is never used as the audit ID. The gateway sends the router an `X-SMG-Routing-Key` header that keeps one conversation on one inference worker (services/gateway/src/routing_key.rs); a caller may supply its own conversation key in the same header."
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [
@@ -40,7 +40,7 @@
   "tags": [
     {"name": "health", "description": "Liveness and readiness."},
     {"name": "models", "description": "The advertised model catalog."},
-    {"name": "inference", "description": "OpenAI-compatible chat and legacy completions."},
+    {"name": "inference", "description": "OpenAI-compatible chat completions, legacy completions, and stateless Responses API requests."},
     {"name": "tls-lb-static", "description": "Paths that the c8s tls-lb nginx process serves directly. Nginx never forwards these to the gateway process."}
   ],
   "paths": {
@@ -245,6 +245,69 @@
         }
       }
     },
+    "/v1/responses": {
+      "post": {
+        "operationId": "createResponse",
+        "tags": ["inference"],
+        "summary": "Create an OpenAI-compatible response (stateless Responses API)",
+        "description": "This route accepts an OpenAI Responses API request and proxies it to the sglang-router upstream (services/gateway/src/lib.rs, `responses` calls `proxy_inference`). The pinned SGLang worker serves `/v1/responses` natively, and the router forwards it; the gateway does not translate it to chat completions. Authentication, the body limit, the body-read timeout, the per-key and global admission limits, model authorization, model-name rewriting, audit records, metrics, and usage accounting are the same as for `/v1/chat/completions`. The gateway keeps no response state, and it tells the upstream not to keep any: it rejects a request with a non-null `previous_response_id` or `conversation`, or with `store` or `background` set to a value other than `false` or `null` (400, `stateful_responses_not_supported`), and it forwards every accepted request with `store: false`. It also sets an absent or null `stream` to `false`. Send the full input with each request. The gateway does not serve `GET /v1/responses/{response_id}`, `POST /v1/responses/{response_id}/cancel`, `DELETE /v1/responses/{response_id}`, or `GET /v1/responses/{response_id}/input_items`. The router parses the request with its own Responses API types and drops non-text input parts, so image and file inputs do not reach the model. Set `stream: true` for a `text/event-stream` response. Usage uses `input_tokens` and `output_tokens`; in a stream, the usage is in the `response` of the terminal `response.completed`, `response.incomplete`, or `response.failed` event.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/RoutingKey"}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ResponsesRequest"},
+              "examples": {
+                "nonStreaming": {
+                  "value": {"model": "deepseek-ai/DeepSeek-V4-Flash-0731", "input": "Say hello."}
+                },
+                "streaming": {
+                  "value": {
+                    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+                    "instructions": "Answer in one word.",
+                    "input": [{"role": "user", "content": "Say hello."}],
+                    "stream": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The non-streaming response is one JSON `response` object. The streaming response is a `text/event-stream` of typed `response.*` events; it ends with one terminal `response.completed`, `response.incomplete`, or `response.failed` event and has no `data: [DONE]` event.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ResponsesResponse"},
+                "example": {
+                  "id": "resp_example",
+                  "object": "response",
+                  "created_at": 0,
+                  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+                  "status": "completed",
+                  "store": false,
+                  "output": [
+                    {"type": "message", "id": "msg_example", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "Hello.", "annotations": []}]}
+                  ],
+                  "usage": {"input_tokens": 1, "input_tokens_details": {"cached_tokens": 0}, "output_tokens": 3, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 4}
+                }
+              },
+              "text/event-stream": {
+                "schema": {"$ref": "#/components/schemas/ResponsesEventStream"},
+                "example": "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_example\",\"object\":\"response\",\"model\":\"deepseek-ai/DeepSeek-V4-Flash-0731\",\"status\":\"in_progress\",\"output\":[],\"usage\":null}}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_example\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hello.\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"resp_example\",\"object\":\"response\",\"model\":\"deepseek-ai/DeepSeek-V4-Flash-0731\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":3,\"total_tokens\":4}}}\n\n"
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidResponsesRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "408": {"$ref": "#/components/responses/RequestBodyTimeout"},
+          "413": {"$ref": "#/components/responses/RequestTooLarge"},
+          "429": {"$ref": "#/components/responses/InferenceCapacity"},
+          "503": {"$ref": "#/components/responses/InferenceUnavailable"}
+        }
+      }
+    },
     "/v1/discovery": {
       "get": {
         "operationId": "getV1Discovery",
@@ -356,7 +419,7 @@
         "name": "X-SMG-Routing-Key",
         "in": "header",
         "required": false,
-        "description": "An optional conversation key: send one value for every turn of one conversation. The gateway never forwards this value. It sends the router an HMAC, under a secret drawn at gateway start, of the API key's record ID and this value, so each conversation stays on one inference worker and reuses its prefix cache. A value outside 1 to 128 visible ASCII bytes is ignored. Without a valid value, a chat completion's key is the HMAC of the model and the messages up to and including the first user message, which later turns repeat; a legacy completion gets no key and the router picks a worker at random (services/gateway/src/routing_key.rs).",
+        "description": "An optional conversation key: send one value for every turn of one conversation. The gateway never forwards this value. It sends the router an HMAC, under a secret drawn at gateway start, of the API key's record ID and this value, so each conversation stays on one inference worker and reuses its prefix cache. A value outside 1 to 128 visible ASCII bytes is ignored. Without a valid value, a chat completion's key is the HMAC of the model and the messages up to and including the first user message, which later turns repeat; a Responses API request's key is the HMAC of the model, the `instructions`, and the `input` items up to and including the first user message (a string `input` counts as one user message); a legacy completion gets no key and the router picks a worker at random (services/gateway/src/routing_key.rs).",
         "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]+$"}
       }
     },
@@ -579,6 +642,51 @@
         "type": "string",
         "description": "A `text/event-stream` body carrying `text_completion`-shaped events, ending with a literal `data: [DONE]\\n\\n` event."
       },
+      "ResponsesRequest": {
+        "type": "object",
+        "required": ["model"],
+        "description": "The gateway itself requires only `model` and the stateless rules below. The upstream enforces the rest of the OpenAI Responses API request contract, including `input`.",
+        "properties": {
+          "model": {"type": "string"},
+          "input": {"type": ["string", "array"]},
+          "instructions": {"type": "string"},
+          "stream": {"type": "boolean", "default": false},
+          "max_output_tokens": {"type": "integer"},
+          "tools": {"type": "array"},
+          "store": {"type": ["boolean", "null"], "enum": [false, null], "description": "Only `false` or `null`. The gateway forwards `false`."},
+          "background": {"type": ["boolean", "null"], "enum": [false, null], "description": "Only `false` or `null`."},
+          "previous_response_id": {"type": "null", "description": "Not supported: the gateway keeps no response state."},
+          "conversation": {"type": "null", "description": "Not supported: the gateway keeps no conversation state."}
+        }
+      },
+      "ResponsesResponse": {
+        "type": "object",
+        "required": ["id", "object", "model", "status", "output"],
+        "properties": {
+          "id": {"type": "string"},
+          "object": {"type": "string", "const": "response"},
+          "created_at": {"type": "integer"},
+          "model": {"type": "string", "description": "The public model name. The gateway replaces an internal backend name."},
+          "status": {"type": "string", "enum": ["completed", "incomplete", "failed", "in_progress", "cancelled", "queued"]},
+          "output": {"type": "array", "items": {"type": "object"}},
+          "usage": {"$ref": "#/components/schemas/ResponsesUsage"}
+        }
+      },
+      "ResponsesUsage": {
+        "type": "object",
+        "required": ["input_tokens", "output_tokens", "total_tokens"],
+        "properties": {
+          "input_tokens": {"type": "integer"},
+          "input_tokens_details": {"type": "object", "properties": {"cached_tokens": {"type": "integer"}}},
+          "output_tokens": {"type": "integer"},
+          "output_tokens_details": {"type": "object", "properties": {"reasoning_tokens": {"type": "integer"}}},
+          "total_tokens": {"type": "integer"}
+        }
+      },
+      "ResponsesEventStream": {
+        "type": "string",
+        "description": "A `text/event-stream` body. Each event is `event: <type>\\ndata: <JSON with the same type>\\n\\n`. Events that carry a `response` object (`response.created`, `response.in_progress`, and the terminal event) have its `model` set to the public model name. The stream ends with one terminal `response.completed`, `response.incomplete`, or `response.failed` event, whose `response.usage` holds the token counts. There is no `data: [DONE]` event."
+      },
       "Usage": {
         "type": "object",
         "required": ["prompt_tokens", "completion_tokens", "total_tokens"],
@@ -622,6 +730,18 @@
             "examples": {
               "invalidJson": {"value": {"error": {"code": "invalid_json", "message": "Bad Request"}}},
               "modelRequired": {"value": {"error": {"code": "model_required", "message": "Bad Request"}}}
+            }
+          }
+        }
+      },
+      "InvalidResponsesRequest": {
+        "description": "The body is not valid JSON (`invalid_json`), `model` is missing (`model_required`), or the request asks for server-side state (`stateful_responses_not_supported`): a non-null `previous_response_id` or `conversation`, or `store` or `background` with a value other than `false` or `null`. The message names the refused field.",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/GatewayError"},
+            "examples": {
+              "invalidJson": {"value": {"error": {"code": "invalid_json", "message": "Bad Request"}}},
+              "statefulRequest": {"value": {"error": {"code": "stateful_responses_not_supported", "message": "The gateway keeps no response state. Remove `previous_response_id`, and send the full input with each request."}}}
             }
           }
         }

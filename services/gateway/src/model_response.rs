@@ -1,15 +1,54 @@
 //! Keep internal model aliases out of public completion responses.
-use crate::usage::Observation;
+use crate::usage::{Observation, Outcome};
 use serde_json::Value;
 use std::io;
 
 const MAXIMUM_PENDING_BYTES: usize = 16 * 1024 * 1024;
 
+const MAXIMUM_TOKENS: u64 = 9_007_199_254_740_991;
+
+/// The `type` of each event that ends a Responses API stream. Each carries
+/// the final `response` object with its `usage`.
+const RESPONSES_TERMINAL_EVENTS: [&str; 3] = [
+    "response.completed",
+    "response.incomplete",
+    "response.failed",
+];
+
+/// The wire format of one upstream response.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Wire {
+    /// `/v1/chat/completions` and `/v1/completions`: usage in
+    /// `prompt_tokens` and `completion_tokens`; a stream ends with
+    /// `data: [DONE]`.
+    Completions,
+    /// `/v1/responses`: usage in `input_tokens` and `output_tokens`; a stream
+    /// ends with a terminal `response.*` event and has no `[DONE]`.
+    Responses,
+}
+
 fn rewrite_value(mut value: Value, model: &str) -> io::Result<Vec<u8>> {
     if let Some(name) = value.get_mut("model") {
         *name = Value::String(model.to_owned());
     }
+    // A Responses API stream event carries the model in its `response`.
+    if let Some(name) = value
+        .get_mut("response")
+        .filter(|response| response.is_object())
+        .and_then(|response| response.get_mut("model"))
+    {
+        *name = Value::String(model.to_owned());
+    }
     serde_json::to_vec(&value).map_err(io::Error::other)
+}
+
+/// The object of a Responses API value that can carry `model` and `usage`:
+/// the `response` of a stream event, or the response body itself.
+fn responses_object(value: &Value) -> &Value {
+    value
+        .get("response")
+        .filter(|response| response.is_object())
+        .unwrap_or(value)
 }
 
 // These flags describe independent wire-format and accounting state.
@@ -23,6 +62,8 @@ pub(crate) struct ModelResponse {
     stream_done: bool,
     expected_model: Option<String>,
     model_mismatch: bool,
+    wire: Wire,
+    stream_failed: bool,
 }
 
 impl ModelResponse {
@@ -36,6 +77,22 @@ impl ModelResponse {
             stream_done: false,
             expected_model: None,
             model_mismatch: false,
+            wire: Wire::Completions,
+            stream_failed: false,
+        }
+    }
+
+    pub(crate) fn wire(mut self, wire: Wire) -> Self {
+        self.wire = wire;
+        self
+    }
+
+    /// The outcome of a stream that reached its end marker.
+    pub(crate) fn done_outcome(&self) -> Outcome {
+        if self.stream_failed {
+            Outcome::Failed
+        } else {
+            Outcome::Completed
         }
     }
 
@@ -56,6 +113,17 @@ impl ModelResponse {
     }
 
     fn observe(&mut self, value: &Value, final_usage: bool) {
+        let value = match self.wire {
+            Wire::Completions => value,
+            Wire::Responses => {
+                let object = responses_object(value);
+                // Delta events carry neither a model nor usage.
+                if object.get("model").is_none() && object.get("usage").is_none() {
+                    return;
+                }
+                object
+            }
+        };
         if self.expected_model.as_ref().is_some_and(|expected| {
             value.get("model").and_then(Value::as_str) != Some(expected.as_str())
         }) {
@@ -73,33 +141,51 @@ impl ModelResponse {
                 usage
                     .get(field)
                     .and_then(Value::as_u64)
-                    .filter(|n| *n <= 9_007_199_254_740_991)
+                    .filter(|n| *n <= MAXIMUM_TOKENS)
             };
             // Replace cumulative observations. A final aggregate supersedes
             // all per-choice intermediate messages.
-            self.observation = Observation {
-                input: number("prompt_tokens"),
-                output: number("completion_tokens"),
-                cached: usage
-                    .get("prompt_tokens_details")
-                    .and_then(|d| {
-                        if d.is_null() {
-                            Some(0)
-                        } else {
-                            d.get("cached_tokens").and_then(Value::as_u64)
-                        }
-                    })
-                    .or_else(|| number("cache_read_input_tokens"))
-                    .filter(|n| *n <= 9_007_199_254_740_991),
-                reasoning: number("reasoning_tokens")
-                    .or_else(|| {
+            self.observation = match self.wire {
+                Wire::Completions => Observation {
+                    input: number("prompt_tokens"),
+                    output: number("completion_tokens"),
+                    cached: usage
+                        .get("prompt_tokens_details")
+                        .and_then(|d| {
+                            if d.is_null() {
+                                Some(0)
+                            } else {
+                                d.get("cached_tokens").and_then(Value::as_u64)
+                            }
+                        })
+                        .or_else(|| number("cache_read_input_tokens"))
+                        .filter(|n| *n <= MAXIMUM_TOKENS),
+                    reasoning: number("reasoning_tokens")
+                        .or_else(|| {
+                            usage
+                                .get("completion_tokens_details")
+                                .and_then(|d| d.get("reasoning_tokens"))
+                                .and_then(Value::as_u64)
+                        })
+                        .filter(|n| *n <= MAXIMUM_TOKENS),
+                    final_usage,
+                },
+                Wire::Responses => {
+                    let detail = |details: &str, field: &str| {
                         usage
-                            .get("completion_tokens_details")
-                            .and_then(|d| d.get("reasoning_tokens"))
+                            .get(details)
+                            .and_then(|d| d.get(field))
                             .and_then(Value::as_u64)
-                    })
-                    .filter(|n| *n <= 9_007_199_254_740_991),
-                final_usage,
+                            .filter(|n| *n <= MAXIMUM_TOKENS)
+                    };
+                    Observation {
+                        input: number("input_tokens"),
+                        output: number("output_tokens"),
+                        cached: detail("input_tokens_details", "cached_tokens"),
+                        reasoning: detail("output_tokens_details", "reasoning_tokens"),
+                        final_usage,
+                    }
+                }
             };
             if self
                 .observation
@@ -169,11 +255,28 @@ impl ModelResponse {
         }
         let value: Value = serde_json::from_slice(payload)
             .map_err(|_| io::Error::other("invalid upstream completion JSON"))?;
-        let final_usage = value
-            .get("choices")
-            .and_then(Value::as_array)
-            .is_some_and(Vec::is_empty)
-            && value.get("usage").is_some_and(Value::is_object);
+        let final_usage = match self.wire {
+            Wire::Completions => {
+                value
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .is_some_and(Vec::is_empty)
+                    && value.get("usage").is_some_and(Value::is_object)
+            }
+            Wire::Responses => {
+                let event = value.get("type").and_then(Value::as_str);
+                let terminal =
+                    event.is_some_and(|event| RESPONSES_TERMINAL_EVENTS.contains(&event));
+                if terminal {
+                    self.stream_done = true;
+                    self.stream_failed = event == Some("response.failed");
+                }
+                terminal
+                    && responses_object(&value)
+                        .get("usage")
+                        .is_some_and(Value::is_object)
+            }
+        };
         self.observe(&value, final_usage);
         if final_usage && self.hide_final_usage {
             return Ok(Vec::new());
@@ -286,6 +389,72 @@ mod tests {
             .expected_model(Some("approved-backend".into()));
         response.push(br#"{"model":"unapproved-backend","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}"#).unwrap();
         response.finish().unwrap();
+        assert!(response.observation().input.is_none());
+        assert!(!response.observation().final_usage);
+    }
+
+    #[test]
+    fn responses_json_usage_uses_input_and_output_tokens() {
+        let mut response = ModelResponse::new("public".into(), false)
+            .wire(Wire::Responses)
+            .expected_model(Some("backend".into()));
+        let body = json!({"id":"resp_1","object":"response","model":"backend","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"private"}]}],"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4},"output_tokens":6,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":18}});
+        response.push(&serde_json::to_vec(&body).unwrap()).unwrap();
+        let actual: Value = serde_json::from_slice(&response.finish().unwrap()).unwrap();
+        assert_eq!(actual["model"], "public");
+        let observation = response.observation();
+        assert_eq!(observation.input, Some(12));
+        assert_eq!(observation.output, Some(6));
+        assert_eq!(observation.cached, Some(4));
+        assert_eq!(observation.reasoning, Some(2));
+        assert!(observation.final_usage);
+    }
+
+    #[test]
+    fn responses_stream_takes_usage_from_the_terminal_event() {
+        let input = "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"model\":\"backend\",\"status\":\"in_progress\",\"usage\":null}}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"delta\":\"日\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"model\":\"backend\",\"status\":\"completed\",\"usage\":{\"input_tokens\":9,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":3,\"output_tokens_details\":{\"reasoning_tokens\":1},\"total_tokens\":12}}}\n\n";
+        let mut response = ModelResponse::new("public".into(), true)
+            .wire(Wire::Responses)
+            .expected_model(Some("backend".into()));
+        let mut output = Vec::new();
+        for byte in input.as_bytes() {
+            output.extend(response.push(&[*byte]).unwrap());
+        }
+        output.extend(response.finish().unwrap());
+        let text = String::from_utf8(output).unwrap();
+        assert!(!text.contains("backend"));
+        assert!(text.contains("日"));
+        assert!(text.contains("event: response.completed\n"));
+        assert_eq!(text.matches("\"model\":\"public\"").count(), 2);
+        assert!(text.contains("\"output_tokens\":3"));
+        assert!(response.stream_done());
+        assert_eq!(response.done_outcome(), Outcome::Completed);
+        let observation = response.observation();
+        assert_eq!(observation.input, Some(9));
+        assert_eq!(observation.output, Some(3));
+        assert_eq!(observation.cached, Some(0));
+        assert_eq!(observation.reasoning, Some(1));
+        assert!(observation.final_usage);
+    }
+
+    #[test]
+    fn a_failed_responses_stream_ends_as_failed() {
+        let input = "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"model\":\"backend\",\"status\":\"failed\",\"usage\":{\"input_tokens\":9,\"output_tokens\":0}}}\n\n";
+        let mut response = ModelResponse::new("public".into(), true).wire(Wire::Responses);
+        response.push(input.as_bytes()).unwrap();
+        response.finish().unwrap();
+        assert!(response.stream_done());
+        assert_eq!(response.done_outcome(), Outcome::Failed);
+        assert_eq!(response.observation().input, Some(9));
+    }
+
+    #[test]
+    fn an_unapproved_backend_model_cannot_supply_responses_usage() {
+        let input = "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"unapproved\",\"usage\":{\"input_tokens\":9,\"output_tokens\":3}}}\n\n";
+        let mut response = ModelResponse::new("public".into(), true)
+            .wire(Wire::Responses)
+            .expected_model(Some("approved".into()));
+        response.push(input.as_bytes()).unwrap();
         assert!(response.observation().input.is_none());
         assert!(!response.observation().final_usage);
     }
