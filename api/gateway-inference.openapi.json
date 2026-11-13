@@ -645,7 +645,7 @@
         }
       },
       "RequestTooLarge": {
-        "description": "The request body exceeded the maximum body size (2097152 bytes by default; `GATEWAY_MAXIMUM_BODY_BYTES`).",
+        "description": "The request body exceeded the maximum body size (2097152 bytes by default; `GATEWAY_MAXIMUM_BODY_BYTES`; at most 67108864 bytes). The C8s front door can reject a smaller body first.",
         "content": {
           "application/json": {
             "schema": {"$ref": "#/components/schemas/GatewayError"},

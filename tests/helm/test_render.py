@@ -441,12 +441,20 @@ def main() -> None:
     assert not any(name.startswith(('GATEWAY_C8S_', 'GATEWAY_RELEASE_')) for name in gateway_environment)
     production_settings = json.loads(gateway_environment['GATEWAY_RUNTIME_CONFIG'])
     assert production_settings['maximumBodyBytes'] == 2097152
-    # Refuse a chart value that the published gateway cannot start with.
-    too_large = subprocess.run(['helm', 'template', 'body-limit-test', str(CHART),
-        '--set', 'inference.mode=simulator',
-        '--set', 'gateway.protection.maximumBodyBytes=8388609'],
-        capture_output=True, text=True)
-    assert too_large.returncode != 0 and 'maximumBodyBytes' in too_large.stderr
+    # Refuse a chart value that the published gateway cannot start with: the
+    # gateway accepts 1024 to 67108864 bytes (64 MiB).
+    def render_body_limit(value):
+        return subprocess.run(['helm', 'template', 'body-limit-test', str(CHART),
+            '--set', 'inference.mode=simulator',
+            '--set', f'gateway.protection.maximumBodyBytes={value}'],
+            capture_output=True, text=True)
+    for value in (1023, 67108865):
+        rejected = render_body_limit(value)
+        assert rejected.returncode != 0 and 'maximumBodyBytes' in rejected.stderr, value
+    # The 1M-token context value (32 MiB) and the ceiling render as set.
+    for value in (33554432, 67108864):
+        accepted = Gateway(render('--set', f'gateway.protection.maximumBodyBytes={value}'))
+        assert accepted.settings['maximumBodyBytes'] == value
     assert production_settings['bodyTimeoutSeconds'] == 10
     assert production_settings['upstreamTimeoutSeconds'] == 900
     assert production_settings['streamIdleTimeoutSeconds'] == 60

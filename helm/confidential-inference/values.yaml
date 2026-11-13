@@ -125,6 +125,10 @@ gateway:
     maximumHeaders: 64
     maximumHeaderBytes: 16384
     maximumUriBytes: 2048
+    # The largest request body, in bytes (at most 67108864, 64 MiB). For a
+    # 1M-token context, use 33554432 (32 MiB), bodyTimeoutSeconds 60, and
+    # more gateway memory. The C8s front door has its own limit, which the
+    # worker launch file sets. See docs/request-body-limit.md.
     maximumBodyBytes: 2097152
     headerTimeoutSeconds: 5
     bodyTimeoutSeconds: 10
