@@ -534,6 +534,10 @@ class BetaCompatibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, 'no digest-pinned C8s chart'):
             release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)
         del statement['chart']
+        statement['cli'] = {'linux-amd64': {'asset': 'c8s-linux-amd64', 'sha256': 'd' * 64}}
+        self.assertEqual(release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)['releaseSignature'],
+                         'verified')
+        del statement['cli']
         statement['extra'] = True
         with self.assertRaisesRegex(release.ReleaseError, 'does not name'):
             release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)
