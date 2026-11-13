@@ -26,6 +26,7 @@ use uuid::Uuid;
 pub mod admin_auth;
 pub mod admin_client;
 pub mod api_keys;
+pub mod key_limits;
 pub mod key_registry;
 pub mod metrics;
 mod model_response;
@@ -53,6 +54,19 @@ pub trait ApiKeyVerifier: Send + Sync + 'static {
     fn is_ready(&self) -> bool {
         true
     }
+
+    /// Admit or refuse one request of an authenticated key before it goes
+    /// upstream (`crate::key_limits`). The default has no limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns the limit that refused the request.
+    fn admit(&self, _key_id: &str) -> Result<(), key_limits::LimitRejection> {
+        Ok(())
+    }
+
+    /// Count the tokens of one finished request against the key's budget.
+    fn record_tokens(&self, _key_id: &str, _tokens: u64) {}
 }
 
 pub trait AuditSink: Send + Sync + 'static {
@@ -272,6 +286,9 @@ async fn proxy_inference(
         Authentication::Revoked(key_id) => return revoked_key(&state, &key_id),
         Authentication::Invalid => return unauthorized(&state),
     };
+    if let Err(rejection) = state.keys.admit(&key_id) {
+        return limit_rejected(&state, &key_id, rejection);
+    }
     let client_routing_key = request.headers().get(&routing_key::HEADER).cloned();
     let started = Instant::now();
     let router_request = state.metrics.router_request(&state.router_label);
@@ -313,7 +330,7 @@ async fn proxy_inference(
         .and_then(|keys| keys.derive(&key_id, route, client_routing_key.as_ref(), &payload));
     let mut usage_request = match &state.usage {
         Some(recorder) => match recorder.reserve(&key_id, model) {
-            Some(guard) => Some(guard),
+            Some(guard) => Some(guard.charge_to(state.keys.clone())),
             None => return protection::overload("usage_capacity"),
         },
         None => None,
@@ -716,6 +733,44 @@ fn revoked_key(state: &AppState, key_id: &str) -> Response<Body> {
         .metrics
         .record_key_rejection("revoked_api_key", key_id);
     client_error(StatusCode::UNAUTHORIZED, "invalid_api_key")
+}
+
+/// A per-key limit refused the request. The body names only the limit
+/// kind: no key ID, no limit value and no spend.
+fn limit_rejected(
+    state: &AppState,
+    key_id: &str,
+    rejection: key_limits::LimitRejection,
+) -> Response<Body> {
+    let (code, message, retry_after_seconds) = match rejection {
+        key_limits::LimitRejection::RateLimited {
+            retry_after_seconds,
+        } => (
+            "rate_limit_exceeded",
+            "The API key sent too many requests. Wait, then try again.",
+            retry_after_seconds,
+        ),
+        key_limits::LimitRejection::TokenBudgetExhausted {
+            retry_after_seconds,
+        } => (
+            "insufficient_quota",
+            "The API key used its token budget for this period.",
+            retry_after_seconds,
+        ),
+    };
+    state.metrics.record_key_rejection(code, key_id);
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({"error":{"code":code,"message":message}})),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from(retry_after_seconds));
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 fn client_error(status: StatusCode, code: &'static str) -> Response<Body> {

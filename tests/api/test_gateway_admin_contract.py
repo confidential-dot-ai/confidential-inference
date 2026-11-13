@@ -168,6 +168,35 @@ class GatewayAdminContractTests(unittest.TestCase):
             self.assertIn(field, status["required"])
         self.assertNotIn("mode", status["properties"])
 
+    def test_key_limits_are_optional_and_bounded(self):
+        schemas = self.contract["components"]["schemas"]
+        key = schemas["KeyRegistrySnapshotKey"]
+        snapshot = schemas["KeyRegistrySnapshot"]
+        # An older snapshot without limits stays valid: absent means no limit.
+        for field in ("rateLimit", "tokenBudget"):
+            self.assertNotIn(field, key["required"])
+            self.assertIn({"type": "null"}, key["properties"][field]["oneOf"])
+        self.assertNotIn("tokenUsage", snapshot["required"])
+        rate = schemas["RateLimit"]
+        self.assertFalse(rate["additionalProperties"])
+        self.assertEqual(rate["required"], ["requestsPerMinute"])
+        self.assertEqual(rate["properties"]["requestsPerMinute"]["minimum"], 1)
+        # The contract states the per-replica scope of the rate limit.
+        self.assertIn("on each gateway replica", rate["description"])
+        budget = schemas["TokenBudget"]
+        self.assertFalse(budget["additionalProperties"])
+        self.assertEqual(budget["properties"]["window"]["enum"], ["day", "month"])
+        self.assertLessEqual(budget["properties"]["tokens"]["maximum"], 2**53 - 1)
+        usage = schemas["TokenUsage"]
+        self.assertEqual(set(usage["required"]), {"asOf", "keys"})
+        self.assertEqual(usage["properties"]["keys"]["maxItems"], 10000)
+
+    def test_key_limit_fields_match_the_gateway_source(self):
+        source = (ROOT / "services" / "gateway" / "src" / "key_registry.rs").read_text(encoding="utf-8")
+        for field in ("pub rate_limit: Option<RateLimit>", "pub token_budget: Option<TokenBudget>",
+                      "pub token_usage: Option<TokenUsage>"):
+            self.assertIn(field, source)
+
     def test_no_response_schema_leaks_secrets(self):
         validate_response_secret_boundaries(self.contract)
 

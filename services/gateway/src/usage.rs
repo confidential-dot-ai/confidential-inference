@@ -21,6 +21,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    ApiKeyVerifier,
     admin_client::{AdminClient, SendError},
     metrics::GatewayMetrics,
 };
@@ -133,6 +134,7 @@ impl Recorder {
             observation: Observation::default(),
             outcome: Outcome::Cancelled,
             ended_at: None,
+            charge: None,
         })
     }
 
@@ -266,12 +268,22 @@ pub struct RequestUsage {
     pub observation: Observation,
     outcome: Outcome,
     ended_at: Option<u64>,
+    /// Counts the request's tokens against the key's token budget.
+    charge: Option<Arc<dyn ApiKeyVerifier>>,
 }
 
 impl RequestUsage {
     #[must_use]
     pub fn served_model(&self) -> &str {
         &self.model.served_model
+    }
+
+    /// Count this request's input and output tokens against the key's
+    /// token budget when the record drops.
+    #[must_use]
+    pub fn charge_to(mut self, keys: Arc<dyn ApiKeyVerifier>) -> Self {
+        self.charge = Some(keys);
+        self
     }
 
     pub fn finish(&mut self, outcome: Outcome) {
@@ -283,6 +295,13 @@ impl RequestUsage {
 impl Drop for RequestUsage {
     fn drop(&mut self) {
         let observation = self.observation;
+        if let Some(keys) = self.charge.take() {
+            let tokens = observation
+                .input
+                .unwrap_or(0)
+                .saturating_add(observation.output.unwrap_or(0));
+            keys.record_tokens(&self.key_id, tokens);
+        }
         self.recorder.push(Event {
             request_id: uuid::Uuid::new_v4().to_string(),
             key_id: std::mem::take(&mut self.key_id),
