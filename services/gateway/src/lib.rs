@@ -107,8 +107,14 @@ struct AppState {
     routing_keys: Option<Arc<routing_key::RoutingKeys>>,
 }
 
-/// The largest `maximum_body_bytes` a deployment can configure.
-pub const MAXIMUM_BODY_BYTES_CEILING: usize = 8 * 1024 * 1024;
+/// The largest `maximum_body_bytes` a deployment can configure: 64 MiB.
+///
+/// A 1M-token (1,048,576-token) text request needs about 12 MiB of JSON in a
+/// realistic worst case, and the recommended limit for a 1M-token context is
+/// 32 MiB. The ceiling leaves room for image input. A request can use about
+/// four times its body size in gateway memory, so size the memory before you
+/// raise the limit. See `docs/request-body-limit.md`.
+pub const MAXIMUM_BODY_BYTES_CEILING: usize = 64 * 1024 * 1024;
 
 pub fn router(
     config: GatewayConfig,
