@@ -20,6 +20,7 @@ use confidential_gateway::{
     },
     admin_client::{self, AdminClient},
     api_keys::{KeyStore, admin_router},
+    log_privacy,
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
     router_with_usage,
@@ -170,16 +171,19 @@ async fn main() -> Result<()> {
         .map(otlp_log_export)
         .transpose()?;
     {
-        use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+        use tracing_subscriber::{Layer as _, layer::SubscriberExt, util::SubscriberInitExt};
         tracing_subscriber::registry()
             .with(
                 tracing_subscriber::EnvFilter::try_from_default_env()
                     .unwrap_or_else(|_| "info".into()),
             )
-            .with(tracing_subscriber::fmt::layer())
+            // RUST_LOG cannot open the HTTP libraries' debug output, which can
+            // print headers and request text (`log_privacy`).
+            .with(tracing_subscriber::fmt::layer().with_filter(log_privacy::log_filter()))
             .with(log_export.as_ref().map(otlp_log_layer))
             .init();
     }
+    log_privacy::install_panic_hook();
     let mut args = Args::parse();
     // The HTTP/2 stream limit keeps the startup argument; the settings do not
     // change it.
@@ -199,6 +203,7 @@ async fn main() -> Result<()> {
     let secret_wait = Duration::from_secs(args.secret_wait_seconds);
     let metrics = Arc::new(GatewayMetrics::new(args.environment.clone()));
     let pepper = wait_for_bounded_file(&args.api_key_pepper_file, 4_096, secret_wait)?;
+    let key_pseudonyms = log_privacy::KeyPseudonyms::from_pepper(&pepper);
     let keys = Arc::new(
         KeyStore::new(pepper, &args.environment)
             .map_err(|_| anyhow::anyhow!("the API key pepper must be at least 32 bytes"))?
@@ -253,7 +258,7 @@ async fn main() -> Result<()> {
             protection,
         },
         keys.clone(),
-        Arc::new(TracingAuditSink),
+        Arc::new(TracingAuditSink::new(key_pseudonyms)),
         metrics.clone(),
         http,
         usage.clone(),
@@ -351,10 +356,19 @@ where
 {
     use tracing_subscriber::Layer;
     opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(provider).with_filter(
+        // No HTTP library event leaves through OTLP, at any level.
         tracing_subscriber::filter::filter_fn(|metadata| {
-            !["opentelemetry", "reqwest", "hyper", "h2", "tower"]
-                .iter()
-                .any(|target| metadata.target().starts_with(target))
+            ![
+                "opentelemetry",
+                "reqwest",
+                "hyper",
+                "h2",
+                "tower",
+                "axum",
+                "rustls",
+            ]
+            .iter()
+            .any(|target| metadata.target().starts_with(target))
         }),
     )
 }
@@ -1006,14 +1020,16 @@ mod otlp_log_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn reviewed_audit_metadata_reaches_the_otlp_body() -> Result<()> {
-        use confidential_gateway::{AuditEvent, AuditSink, TracingAuditSink};
+        use confidential_gateway::{
+            AuditEvent, AuditSink, TracingAuditSink, log_privacy::KeyPseudonyms,
+        };
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         let endpoint = format!("http://{}/v1/logs", listener.local_addr()?);
         let server = std::thread::spawn(move || receive_one(&listener));
         let provider = super::otlp_log_export(endpoint)?;
         let subscriber = tracing_subscriber::registry().with(super::otlp_log_layer(&provider));
         tracing::subscriber::with_default(subscriber, || {
-            TracingAuditSink.record(AuditEvent {
+            TracingAuditSink::new(KeyPseudonyms::from_pepper(&[9; 32])).record(AuditEvent {
                 request_id: "c0ffee00-cafe-4000-8000-deadbeef0002".to_owned(),
                 route: "/v1/chat/completions",
                 status: 503,
@@ -1024,17 +1040,28 @@ mod otlp_log_tests {
         let (_, body) = server
             .join()
             .map_err(|_| anyhow!("the OTLP test server panicked"))??;
+        let pseudonym = KeyPseudonyms::from_pepper(&[9; 32]).pseudonym("nonsecret_key_record");
         for field in [
             "gateway_request_completed",
             "c0ffee00-cafe-4000-8000-deadbeef0002",
-            "nonsecret_key_record",
+            pseudonym.as_str(),
             "request_id",
-            "key_id",
+            "key_ref",
             "503",
         ] {
             assert!(
                 body.windows(field.len())
-                    .any(|window| window == field.as_bytes())
+                    .any(|window| window == field.as_bytes()),
+                "{field} is missing"
+            );
+        }
+        // The raw key record ID never leaves in a log record.
+        for field in ["nonsecret_key_record", "key_id"] {
+            assert!(
+                !body
+                    .windows(field.len())
+                    .any(|window| window == field.as_bytes()),
+                "{field} reached the OTLP body"
             );
         }
         Ok(())
