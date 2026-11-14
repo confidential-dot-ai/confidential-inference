@@ -3,6 +3,13 @@
 This chart installs the gateway, router, inference workers, and optional
 metrics components in a C8s Kubernetes cluster.
 
+The chart owns worker/router orchestration even when images are published by
+confidential-sglang. It does not need a second integration chart or a host
+Docker Compose launcher. The current aggregated and PD layouts have different
+dependency and restart boundaries; preserve those requirements when changing
+images. See the [inference serving interface](../../api/inference-serving.md)
+and [image-build cleanup plan](../../docs/sglang-separation.md).
+
 The default values form a small GPU-free simulator deployment. An operator
 must supply an external values file for a real environment. The file must pin
 every image by its Linux AMD64 digest. `scripts/render-allowlist.py` sets

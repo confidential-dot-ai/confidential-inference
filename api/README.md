@@ -19,6 +19,9 @@ the exact active bytes.
 
 ## Gateway APIs
 
+- `inference-serving.md`: inference engine integration requirements, lifecycle,
+  metrics, and confidentiality checks. The existing SGLang image-build migration
+  is tracked in [SGLang separation](../docs/sglang-separation.md).
 - `gateway-inference.openapi.json`: public inference, model catalog, health,
   and native C8s routes served by the C8s router.
 - `gateway-admin.openapi.json`: the key registry snapshot. The gateway pulls
