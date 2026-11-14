@@ -6,4 +6,5 @@ python3 "$repo_root/tests/helm/test_render.py"
 python3 "$repo_root/tests/helm/test_staging_validation_agent.py"
 python3 "$repo_root/tests/helm/test_pd_layout.py"
 python3 -m unittest discover -s "$repo_root/tests/helm" -p test_vanilla_v41.py
+python3 -m unittest discover -s "$repo_root/tests/helm" -p test_qwen35_staging.py
 exit 0

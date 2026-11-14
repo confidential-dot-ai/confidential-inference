@@ -89,7 +89,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: sglang
-          image: {{ $.Values.images.sglangWorker }}
+          image: {{ include "confidential-inference.workerImage" $ }}
           imagePullPolicy: IfNotPresent
           {{- if and $simulatorMode (not $modelMount) }}
           command: ["python3"]

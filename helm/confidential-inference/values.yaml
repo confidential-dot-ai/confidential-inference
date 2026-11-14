@@ -162,6 +162,11 @@ inference:
   # file that omits the field would silently take the default and run the
   # wrong backend. values.schema.json lists mode as required, so an omitted
   # field now fails the render with "inference: mode is required".
+  # The key of `images` that the worker containers run. The framework release
+  # names every image; an environment only chooses among them. sglangWorker is
+  # the production SGLang image; sglangStagingWorker is the 1-GPU
+  # Qwen3.5-0.8B staging worker from confidential-sglang.
+  workerImage: sglangWorker
   replicas: 2
   gpusPerReplica: 0
   # Required when GPUs are enabled. This policy is copied into the release

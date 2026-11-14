@@ -201,3 +201,10 @@ hostAliases:
   configMap:
     name: model-manifest
 {{- end }}
+
+{{/* The image of the worker containers: the `images` entry that
+inference.workerImage names. The framework release sets every image. */}}
+{{- define "confidential-inference.workerImage" -}}
+{{- $key := .Values.inference.workerImage | default "sglangWorker" -}}
+{{- required (printf "inference.workerImage names images.%s, which is not set" $key) (index .Values.images $key) -}}
+{{- end }}
