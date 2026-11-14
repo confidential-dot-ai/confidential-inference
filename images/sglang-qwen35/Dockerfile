@@ -5,7 +5,8 @@
 # stages up to "FROM base" and the SGLang install step are copied unchanged
 # from images/sglang/Dockerfile and read the same pinned inputs
 # (images/sglang/source.lock, requirements.lock, fetch_source.py,
-# harden_http.py, harden_media.py, harden_dist.py, wait_for_model.py, fetch_model.py, dcgm-counters.csv).
+# harden_http.py, harden_media.py, harden_dist.py, wait_for_model.py,
+# fetch_model.py, dcgm-counters.csv).
 # tests/images/sglang/test_qwen35_recipe.py checks that they stay identical,
 # so the shared layers have the same bytes as the production image's layers.
 #

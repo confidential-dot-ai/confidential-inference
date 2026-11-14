@@ -57,8 +57,10 @@ listeners on loopback for single-node runs:
   `--forward-pass-metrics-ipc-name`. Each of these opens another
   rendezvous, control or publisher listener.
 
-`Dockerfile.gpu-test` applies the listener policy too. It skips the media
-policy, whose hash pins cover only the release source.
+The Qwen3.5-0.8B staging image (`images/sglang-qwen35`) applies all three
+policies in the same build step. `harden_dist.py` still accepts the old
+diagnostic fork source (`diagnostic-fork`), which only the removed GPU-test
+image built.
 
 For the plain deployment, `--private-server-output` discards native server
 stdout and stderr. It exports only a fixed worker-exit event with a numeric
