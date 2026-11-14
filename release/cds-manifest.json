@@ -1,0 +1,109 @@
+{
+  "version": 3,
+  "build": {
+    "timestamp": "2026-11-12T21:56:40Z",
+    "memory": "4G",
+    "format": "raw",
+    "platform": "multi"
+  },
+  "inputs": {
+    "kernel": {
+      "linux_version": "6.18.60",
+      "vmlinuz_sha256": "faa1e8509e22bc942c9c5b244f49f315e273b2049fee173fa3afb1247944a170",
+      "required_config_sha256": "07bbcb7595dd93462c82b160f8ee0c27f352b90c3e1fd8ff3bb9713a3a10c530",
+      "hardening_config_sha256": "0114a50e7b2695170be396b3820f2dbce940f84e7421414985197de17e4746ee",
+      "kernel_extra_config_sha256": "",
+      "snapshot_config_sha256": "ac86f754e728d63e09e75568b81729c7caf1ba5e17b8b8ebf0fa125302a876ea",
+      "module_signing_cert_sha256": "7c9f63b0206dc794e5be126b86ce50c68cd33d1c22ecd5979984614c476a986e",
+      "randstruct_seed_sha256": "7d6b81e63586f80ea22920623630caee43ec2eeab3113be606ab75da779ce317",
+      "trusted_dsdt_sha256": "ab8f158398fbaabe180f9a5fecae4916764f22ef135ef8db456e7bad213799f3",
+      "trusted_aml_patch_sha256": "4bbbec506a0fa1d70c24b1117ecda165acab0b2cf8947a84532bac500736e5c6",
+      "snp_mr_patch_sha256": "116fe3820d40473c7aa943c7cde4006ad9f62a33f96dbccf66e48e89c391df8b"
+    },
+    "initrd": {
+      "path": "initrd.img",
+      "sha256": "ec4510c2619ffd718a09846ea30e1275096487e9fb1ae5dc06b67b6e38654d58"
+    },
+    "firmware": {
+      "path": "OVMF.fd",
+      "sha256": "53c3bdc6654708a7b23f5db36c0548de4975322e5838e90bd258e082394bf8c0"
+    },
+    "base_image": {
+      "path": "image.raw",
+      "sha256": "d8efee2e193d4fbb816a01b291ebdc40106a0d54877917c6aece50d975cafff7"
+    }
+  },
+  "outputs": {
+    "disk_image": {
+      "path": "disk.raw",
+      "sha256": "d8efee2e193d4fbb816a01b291ebdc40106a0d54877917c6aece50d975cafff7"
+    },
+    "uki": {
+      "path": "uki.efi",
+      "sha256": "ac427a341b4ca7585bd328b8024f5463783309fbd1867e24c346807c7bd1ee75"
+    }
+  },
+  "snp_variants": [
+    {
+      "smp": 2,
+      "igvm": {
+        "path": "guest-smp2.igvm",
+        "sha256": "dfb0ab4f0d8ef9967ccb12195cde984f7dbbcb38817a72b5dc473ddb2b13a6a4"
+      },
+      "measurement": {
+        "snp_launch_digest": "3fc9fad317c3b4a2a819dcd749f490ec34053eb7a961f19e439ac771ac7cab53f413e3d917973dfb05d9761e9e692e09",
+        "algorithm": "sha384",
+        "page_count": 12062,
+        "vmsa_count": 2
+      }
+    },
+    {
+      "smp": 4,
+      "igvm": {
+        "path": "guest-smp4.igvm",
+        "sha256": "39581a79f1a013b62f3753f4165d3b6729ec03aaf829576a949568cbe73d9283"
+      },
+      "measurement": {
+        "snp_launch_digest": "36cde6660a2f3b3f18848846655e86f0ae855e27ebb68fe11e11e8162dd22ea82e493b14360cf067a0147c70020860b5",
+        "algorithm": "sha384",
+        "page_count": 12064,
+        "vmsa_count": 4
+      }
+    },
+    {
+      "smp": 8,
+      "igvm": {
+        "path": "guest-smp8.igvm",
+        "sha256": "a2292c0d70d4dd4d602ee1b3c1336c1c9a7cbb9071b2f8ec27485c39b6c8195c"
+      },
+      "measurement": {
+        "snp_launch_digest": "2f161ce5b20d2383929d496b3a26ad0f3e1ac1d4720fa3f9dd8748668c78df57b6c67292d9ea1096922621b69abeb825",
+        "algorithm": "sha384",
+        "page_count": 12068,
+        "vmsa_count": 8
+      }
+    },
+    {
+      "smp": 16,
+      "igvm": {
+        "path": "guest-smp16.igvm",
+        "sha256": "4c5cdba215ed967d191e93193c5dd6993625416284987b61699a75ed31ef510e"
+      },
+      "measurement": {
+        "snp_launch_digest": "d1b3d9c6f313b294a078fa49a8a800b478ec96e64f2bde3c15154dcf728e2aacf01531de047bf4283fb29950763c89f8",
+        "algorithm": "sha384",
+        "page_count": 12076,
+        "vmsa_count": 16
+      }
+    }
+  ],
+  "tdx": {
+    "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
+    "rtmr1": "e9745e3ddf44ad49a781811b7c88bf076003589bf05cd06bd6771c55e7d7f32597f81d2051093264658f3b5aed7ac04b",
+    "rtmr2": "17ba45d67ee76d56e7350a9cd241192c69aa123ee4202c0f0cfd006f3d12bb89d0a66be10ce584d4ba4303983999dcee",
+    "firmware": {
+      "path": "OVMF.tdx.fd",
+      "sha256": "a7edaeff6fc4bef8924461cb0fb68a194c3595d08ccad2720cca926dea12f7cf"
+    }
+  }
+}

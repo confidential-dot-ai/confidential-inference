@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import release_profiles
+import release_spec
 
 
 @dataclass(frozen=True)
@@ -43,10 +43,11 @@ RUST_IMAGE_INPUTS = (
     "services/maintenance-gateway/Cargo.toml",
     "services/maintenance-gateway/src/**",
 )
-# A base is a commit, a release tag, or a legacy release candidate tag.
+# A base is a commit, a release tag (also of the earlier -staging and
+# -transition forms), or a legacy release candidate tag.
 BASE_REF = re.compile(
-    f"[0-9a-f]{{40}}|{release_profiles.tag_pattern().pattern}"
-    f"|{release_profiles.VERSION}-rc\\.[1-9][0-9]*"
+    f"[0-9a-f]{{40}}|{release_spec.HISTORICAL_TAG.pattern}"
+    f"|{release_spec.VERSION}-rc\\.[1-9][0-9]*"
 )
 IMAGES = (
     Image(

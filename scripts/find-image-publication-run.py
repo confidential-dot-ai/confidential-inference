@@ -3,9 +3,8 @@
 
 The evidence of a release is the publication artifact of the nearest
 first-parent ancestor of the release commit, the commit itself included,
-that a successful release-images run on main published. An unsigned branch
-build (release-bundle.yml by workflow_dispatch) also trusts the runs on its
-own branch (--branch); a signed release trusts main only. The walk stops at a
+that a successful release-images run on main published. A signed release
+trusts main only. The walk stops at a
 commit that changes an image build input: older evidence cannot hold the
 images of the release. build-release-manifest.py checks the same boundary.
 The selector of the release commit decides what an input is, so a change of
@@ -163,13 +162,11 @@ def main() -> int:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--release-commit", required=True)
     parser.add_argument("--tag", help="The release tag, whose annotation can name the run")
-    parser.add_argument("--branch", help="An unsigned branch build: also trust the release-images runs on this branch")
     args = parser.parse_args()
     try:
         selected = named_run(args.repository, args.tag) if args.tag else None
         commit, run_id = find_nearest(
             args.repository, args.release_commit, selected_run=selected,
-            branches=("main", args.branch) if args.branch else ("main",),
         )
     except LookupError as error:
         print(f"find-image-publication-run: {error}", file=sys.stderr)

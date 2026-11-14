@@ -1,82 +1,3 @@
-{{- if .Values.dcgmExporter.enabled }}
-apiVersion: v1
-kind: Service
-metadata:
-  name: dcgm-exporter
-  labels:
-    {{- include "confidential-inference.labels" . | nindent 4 }}
-    app.kubernetes.io/component: dcgm-exporter
-spec:
-  type: ClusterIP
-  selector:
-    {{- include "confidential-inference.selector" (dict "root" . "component" "dcgm-exporter") | nindent 4 }}
-  ports:
-    - name: metrics
-      port: {{ .Values.dcgmExporter.port }}
-      targetPort: metrics
----
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: dcgm-exporter
-  labels:
-    {{- include "confidential-inference.labels" . | nindent 4 }}
-    app.kubernetes.io/component: dcgm-exporter
-spec:
-  selector:
-    matchLabels:
-      {{- include "confidential-inference.selector" (dict "root" . "component" "dcgm-exporter") | nindent 6 }}
-  template:
-    metadata:
-      labels:
-        {{- include "confidential-inference.selector" (dict "root" . "component" "dcgm-exporter") | nindent 8 }}
-        confidential.ai/environment: {{ .Values.environment | quote }}
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: {{ .Values.dcgmExporter.port | quote }}
-    spec:
-      enableServiceLinks: false
-      serviceAccountName: confidential-inference
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: kubernetes.io/hostname
-                    operator: In
-                    values:
-                      {{- range (include "confidential-inference.inferenceNodeNames" . | fromJsonArray) }}
-                      - {{ . | quote }}
-                      {{- end }}
-      securityContext:
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: dcgm-exporter
-          image: {{ .Values.images.dcgmExporter }}
-          imagePullPolicy: IfNotPresent
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              add: ["SYS_ADMIN"]
-              drop: ["ALL"]
-          ports:
-            - name: metrics
-              containerPort: {{ .Values.dcgmExporter.port }}
-          resources:
-            requests:
-              cpu: {{ .Values.dcgmExporter.resources.cpu | quote }}
-              memory: {{ .Values.dcgmExporter.resources.memory }}
-          readinessProbe:
-            httpGet:
-              path: /metrics
-              port: metrics
-          livenessProbe:
-            httpGet:
-              path: /metrics
-              port: metrics
-{{- end }}
----
 {{- if .Values.kubeStateMetrics.enabled }}
 apiVersion: v1
 kind: Service
@@ -213,6 +134,9 @@ spec:
               drop: ["ALL"]
             readOnlyRootFilesystem: true
             runAsNonRoot: true
+            # The image's user is `nobody`, which runAsNonRoot cannot verify.
+            runAsUser: 65534
+            runAsGroup: 65534
           ports:
             - name: metrics
               containerPort: {{ .Values.nodeExporter.port }}

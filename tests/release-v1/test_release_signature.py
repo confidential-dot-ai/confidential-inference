@@ -24,6 +24,13 @@ environment_for_tag = SIGNATURE_MODULE["environment_for_tag"]
 validate_policy = SIGNATURE_MODULE["validate_policy"]
 
 
+def framework_release() -> dict:
+    """A v2 framework release manifest with the trust fields of the v1 fixture."""
+    v1 = json.loads(MANIFEST.read_text())
+    return {"schema": "confidential.ai/release-manifest/v2", "release": {"name": "v0.17.0"},
+            "releaseTrust": v1["releaseTrust"], "source": v1["source"]}
+
+
 class ReleaseSignatureTests(unittest.TestCase):
     def test_current_and_historical_tags_map_to_their_signed_environment(self) -> None:
         self.assertEqual(environment_for_tag("v0.14.0"), "production")
@@ -36,7 +43,6 @@ class ReleaseSignatureTests(unittest.TestCase):
         self.assertNotIn("--prerelease", workflow)
         self.assertNotIn("-rc.", workflow)
         self.assertNotIn("--candidate-bundle", workflow)
-        self.assertIn('release_profiles.py resolve --tag "$RELEASE_TAG"', workflow)
         self.assertIn('--tag "$RELEASE_TAG"', workflow)
         self.assertIn("scripts/build-release-manifest.py", workflow)
         self.assertIn('--source-commit "$(git rev-parse HEAD)"', workflow)
@@ -96,16 +102,9 @@ class ReleaseSignatureTests(unittest.TestCase):
     def test_workflow_uses_keyless_oidc_and_refuses_asset_replacement(self) -> None:
         workflow = WORKFLOW.read_text()
         self.assertIn("id-token: write", workflow)
-        # The signing environment (and its protection rules) applies to tag
-        # pushes only; a dispatched unsigned branch build runs without it.
-        self.assertIn(
-            "name: ${{ github.event_name == 'push' && "
-            "needs.select-profile.outputs.signing_environment || '' }}",
-            workflow,
-        )
-        profiles = (ROOT / "release/profiles.json").read_text(encoding="utf-8")
-        self.assertIn('"signed-release-production"', profiles)
-        self.assertIn('"signed-release-staging"', profiles)
+        # One signing environment, with its protection rules, signs every release.
+        self.assertIn("    environment:\n      name: signed-release-production\n", workflow)
+        self.assertNotIn("workflow_dispatch", workflow)
         self.assertNotIn("environment: signed-release\n", workflow)
         self.assertIn("group: signed-release-${{ github.ref_name }}", workflow)
         self.assertIn("cosign-release: v3.1.2", workflow)
@@ -237,6 +236,17 @@ class ReleaseSignatureTests(unittest.TestCase):
                         SIGNATURE_MODULE["validate_release_schema"](release)
                 else:
                     SIGNATURE_MODULE["validate_release_schema"](release)
+
+    def test_a_framework_release_has_no_environment(self) -> None:
+        release = framework_release()
+        validate_policy(release)
+        release["release"]["environment"] = "production"
+        with self.assertRaisesRegex(ValueError, "no environment"):
+            validate_policy(release)
+        release = framework_release()
+        release["release"]["name"] = "v0.17.0-staging"
+        with self.assertRaisesRegex(ValueError, "vX.Y.Z"):
+            validate_policy(release)
 
     def test_a_release_in_another_format_is_refused(self) -> None:
         release = json.loads(MANIFEST.read_text())

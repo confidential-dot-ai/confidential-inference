@@ -4,3 +4,7 @@ images:
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809
   sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang-router@sha256:7440bead8020d969b5ebe69c0689ba894edb2d2fd2a406bb16d346a86770918f
+  telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849
+  nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
+  kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:4f7c7a31190f79c90de48a699fb71e4b9c017ce7c61f9179058d78e24a360518
