@@ -32,7 +32,8 @@ Usage:
 6. fetches the node and CDS manifests and refreshes the image config;
 7. regenerates the allowlist test fixture
    (tests/release-v1/fixtures/staging-allowlist.json) with the c8s CLI
-   (--c8s, or a build of --c8s-repo);
+   (--c8s, else the binary of the signed release statement, else a build
+   of --c8s-repo; --c8s-source-build forces the build);
 8. runs the release checks.
 
 A deployment renders its allowlist with a c8s CLI built from the pinned
@@ -615,8 +616,17 @@ def regenerate() -> None:
     run([sys.executable, "scripts/generate-release-allowlist.py", "--refresh-image-config"], cwd=ROOT)
 
 
-def c8s_cli(binary: Path | None, c8s_repo: Path, commit: str, tag: str, directory: Path) -> Path:
-    """The c8s CLI of the commit: --c8s, or a build of the checkout into directory."""
+def c8s_cli(binary: Path | None, c8s_repo: Path, commit: str, tag: str, directory: Path,
+            source_build: bool = False) -> Path:
+    """The c8s CLI of the commit: --c8s; else the binary of the signed release
+    statement when the release has one; else (or with --c8s-source-build) a
+    build of the checkout into directory."""
+    if binary is None and not source_build:
+        try:
+            _entry, binary = c8s_release.signed_cli(tag, commit, directory, allow_beta="-beta." in tag, download=True)
+        except c8s_release.ReleaseError as error:
+            print(f"bump-c8s: no signed c8s CLI ({error}); building it from the checkout", file=sys.stderr)
+            binary = None
     if binary is None:
         binary = directory / "c8s"
         run(["go", "build", "-o", str(binary), "./cmd/c8s"], cwd=c8s_repo, env=go_env())
@@ -654,7 +664,8 @@ def write_bump(args: argparse.Namespace, c8s_repo: Path, commit: str,
                old: dict[str, Any], new: dict[str, Any]) -> None:
     """Check the CLI and render the seed, then write every tracked input, or none."""
     with tempfile.TemporaryDirectory(prefix="bump-c8s-") as directory:
-        binary = c8s_cli(args.c8s.resolve() if args.c8s else None, c8s_repo, commit, args.tag, Path(directory))
+        binary = c8s_cli(args.c8s.resolve() if args.c8s else None, c8s_repo, commit, args.tag, Path(directory),
+                        getattr(args, "c8s_source_build", False))
         seed_inputs, seed = render_core_seed(binary, c8s_repo, new)
         try:
             pin_spec(new)
@@ -677,7 +688,10 @@ def main() -> int:
     parser.add_argument("--tag", required=True, help="the c8s release tag, for example v0.33.8")
     parser.add_argument("--c8s-repo", required=True, type=Path, help="a clean c8s checkout at the tag")
     parser.add_argument("--c8s", type=Path,
-                        help="the c8s CLI built from the tag (default: go build ./cmd/c8s in --c8s-repo)")
+                        help="the c8s CLI of the tag (default: the binary of the signed release statement, "
+                             "else go build ./cmd/c8s in --c8s-repo)")
+    parser.add_argument("--c8s-source-build", action="store_true",
+                        help="build the c8s CLI from --c8s-repo instead of downloading the signed release binary")
     parser.add_argument("--confos-repo", type=Path, help="a confidential-os-builder checkout")
     parser.add_argument("--protocol-review", action="store_true",
                         help="share the protocol manifest also when its source files changed, for review")
