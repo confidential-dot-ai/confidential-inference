@@ -93,8 +93,9 @@
     "schema",
     "workloads"
   ],
-  "capturedFromNote": "Read from the C8s v0.99.29 source. Against v0.80.10 (cd68ff62), the cds-attest route table, the attest-pq request, the bundle fields and the identity proof fields are unchanged. CDS no longer routes PUT and DELETE /allowlist/workloads/{name}: an allowlist write replaces the whole document (PUT /allowlist). The other changes in internal/cmds/cds/routes.go add routes outside this manifest (pod secret release, CDS replica routes) and serve /measurements from the admitted node image set. c8s v0.99.38 commit ad27c221dde2f8394d37c105de7bd21cb6331a5e differs from commit e0e4fd3c37361a6984069f9ebb6d8258026d7d66 in pkg/types/discovery.go, pkg/types/discovery_test.go. It shares this manifest only after a person reviews that diff in the pull request that adds it and merges it.",
+  "capturedFromNote": "Read from the C8s v0.99.29 source. Against v0.80.10 (cd68ff62), the cds-attest route table, the attest-pq request, the bundle fields and the identity proof fields are unchanged. CDS no longer routes PUT and DELETE /allowlist/workloads/{name}: an allowlist write replaces the whole document (PUT /allowlist). The other changes in internal/cmds/cds/routes.go add routes outside this manifest (pod secret release, CDS replica routes) and serve /measurements from the admitted node image set. c8s v0.99.38 commit ad27c221dde2f8394d37c105de7bd21cb6331a5e differs from commit e0e4fd3c37361a6984069f9ebb6d8258026d7d66 in pkg/types/discovery.go, pkg/types/discovery_test.go. It shares this manifest only after a person reviews that diff in the pull request that adds it and merges it. c8s v0.101.5 commit 6999f2728452867d63cddb10b68cc57a73a2a43b differs from commit ad27c221dde2f8394d37c105de7bd21cb6331a5e in internal/cmds/cds/routes.go, internal/cmds/cdsattest/server.go, pkg/types/error_codes.go. It shares this manifest only after a person reviews that diff in the pull request that adds it and merges it.",
   "sharedWithCommits": [
-    "ad27c221dde2f8394d37c105de7bd21cb6331a5e"
+    "ad27c221dde2f8394d37c105de7bd21cb6331a5e",
+    "6999f2728452867d63cddb10b68cc57a73a2a43b"
   ]
 }
