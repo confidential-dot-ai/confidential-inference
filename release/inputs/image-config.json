@@ -44,7 +44,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/sglang-dsv41-flash@sha256:9bce0015d17a68e5f112f94d6b45430b8fbb568c8858fd58fc240f9964dfd4af": {
+  "ghcr.io/confidential-dot-ai/sglang-dsv41-flash@sha256:6b88c16cb796293d62fa855c7f47c64f7a68af749715ffa4248c873a1416aaae": {
     "cmd": [
       "/opt/dsv41/bin/python",
       "-m",
