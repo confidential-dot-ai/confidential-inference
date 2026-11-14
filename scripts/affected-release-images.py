@@ -82,13 +82,35 @@ IMAGES = (
             "images/sglang/harden_http.py",
             "images/sglang/harden_media.py",
             "images/sglang/harden_dist.py",
-            "images/sglang/pair_supervisor.py",
-            "images/sglang/pair_diagnostics.py",
             "images/sglang-router/private_log_sink.py",
             "images/sglang/wait_for_model.py",
             "images/sglang/fetch_model.py",
             "images/sglang/patches/**",
             "images/sglang/simulator-upstream/**",
+        ),
+    ),
+    # The Qwen3.5-0.8B staging worker: the production engine inputs above
+    # (not the simulator), plus the model pin and its docker-run helper.
+    Image(
+        "sglang-qwen35",
+        ".",
+        "images/sglang-qwen35/Dockerfile",
+        "Confidential Inference SGLang Qwen3.5-0.8B staging",
+        (
+            "images/sglang-qwen35/Dockerfile",
+            "images/sglang-qwen35/Dockerfile.dockerignore",
+            "images/sglang-qwen35/model-manifest.json",
+            "images/sglang-qwen35/serve.sh",
+            "images/sglang/source.lock",
+            "images/sglang/requirements.lock",
+            "images/sglang/dcgm-counters.csv",
+            "images/sglang/fetch_source.py",
+            "images/sglang/harden_http.py",
+            "images/sglang/harden_media.py",
+            "images/sglang/harden_dist.py",
+            "images/sglang-router/private_log_sink.py",
+            "images/sglang/wait_for_model.py",
+            "images/sglang/fetch_model.py",
         ),
     ),
     Image(
@@ -115,6 +137,10 @@ IMAGES = (
         ("images/rollout-client/Dockerfile",),
     ),
 )
+
+
+# The images that need the large-runner build and publish jobs.
+LARGE_IMAGES = ("sglang", "sglang-qwen35")
 
 
 def affected_images(paths: list[str]) -> list[Image]:
@@ -186,7 +212,8 @@ def main() -> int:
         {**image.matrix_entry(), **dict(zip(("revision", "epoch"), input_revision(image, args.head)))}
         for image in selected
     ]
-    large = [entry for entry in matrix if entry["image"] == "sglang"]
+    # Both SGLang worker images hold the ~20 GB engine environment.
+    large = [entry for entry in matrix if entry["image"] in LARGE_IMAGES]
     standard = [entry for entry in matrix if entry not in large]
     print("matrix=" + json.dumps({"include": matrix}, separators=(",", ":")))
     print("standard_matrix=" + json.dumps({"include": standard}, separators=(",", ":")))

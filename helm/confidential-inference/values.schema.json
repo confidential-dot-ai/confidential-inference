@@ -38,6 +38,7 @@
         "gateway": {"$ref": "#/definitions/image"},
         "sglang": {"$ref": "#/definitions/image"},
         "sglangWorker": {"$ref": "#/definitions/image"},
+        "sglangStagingWorker": {"$ref": "#/definitions/image"},
         "sglangRouter": {"$ref": "#/definitions/image"},
         "rolloutClient": {"$ref": "#/definitions/image"},
         "telemetryCollector": {"$ref": "#/definitions/image"},
@@ -106,6 +107,7 @@
       "properties": {
         "enabled": {"type": "boolean"},
         "mode": {"enum": ["model", "simulator"]},
+        "workerImage": {"enum": ["sglangWorker", "sglangStagingWorker"]},
         "replicas": {"type": "integer", "minimum": 0},
         "gpusPerReplica": {"type": "integer", "minimum": 0},
         "attestedGpuCount": {"type": "integer", "minimum": 0},
@@ -226,136 +228,12 @@
           }
         },
         "pd": {
+          "description": "Prefill/decode disaggregation was removed. Only enabled: false is accepted, for existing environment values.",
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "attestedWorkload", "python", "workers", "engramHolder", "cacheDirectory", "cacheSizeLimit", "shmSizeLimit", "routerArgs"],
           "properties": {
-            "enabled": {"type": "boolean"},
-            "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
-            "paired": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "enabled",
-                "transport",
-                "pairs",
-                "statusPort",
-                "progressTimeoutSeconds",
-                "startupTimeoutSeconds",
-                "shutdownTimeoutSeconds"
-              ],
-              "properties": {
-                "enabled": {
-                  "type": "boolean"
-                },
-                "transport": {
-                  "type": "string",
-                  "enum": ["tcp", "nvlink"]
-                },
-                "pairs": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                      "name",
-                      "prefill",
-                      "decode"
-                    ],
-                    "properties": {
-                      "name": {
-                        "type": "string",
-                        "pattern": "^[a-z][a-z0-9-]{0,19}$"
-                      },
-                      "prefill": {
-                        "type": "string"
-                      },
-                      "decode": {
-                        "type": "string"
-                      },
-                      "modelVolumeName": {
-                        "type": "string",
-                        "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
-                      }
-                    }
-                  }
-                },
-                "statusPort": {
-                  "type": "integer",
-                  "minimum": 1024,
-                  "maximum": 65534
-                },
-                "progressTimeoutSeconds": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 86400
-                },
-                "startupTimeoutSeconds": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 86400
-                },
-                "shutdownTimeoutSeconds": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 86400
-                }
-              },
-              "if": {
-                "properties": {
-                  "enabled": {
-                    "const": true
-                  }
-                }
-              },
-              "then": {
-                "properties": {
-                  "pairs": {
-                    "minItems": 2,
-                    "maxItems": 2
-                  }
-                }
-              }
-            },
-            "python": {"type": "string", "pattern": "^/[^\\s]+$"},
-            "workers": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["name", "role", "gpus", "port", "args", "env", "resources"],
-                "properties": {
-                  "name": {"type": "string", "maxLength": 40, "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"},
-                  "role": {"enum": ["prefill", "decode"]},
-                  "gpus": {"type": "integer", "minimum": 1, "maximum": 8},
-                  "port": {"type": "integer", "minimum": 1024, "maximum": 65534},
-                  "bootstrapPort": {"type": "integer", "minimum": 1024, "maximum": 65534},
-                  "args": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
-                  "env": {"type": "object", "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"}, "additionalProperties": {"type": "string"}},
-                  "resources": {"$ref": "#/definitions/resources"}
-                },
-                "if": {"properties": {"role": {"const": "prefill"}}},
-                "then": {"required": ["bootstrapPort"]},
-                "else": {"not": {"required": ["bootstrapPort"]}}
-              }
-            },
-            "engramHolder": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["script", "resources"],
-              "properties": {
-                "script": {"type": "string", "pattern": "^/[^\\s]+\\.py$"},
-                "mlock": {"type": "boolean"},
-                "resources": {"$ref": "#/definitions/resources"}
-              }
-            },
-            "cacheDirectory": {"type": "string", "pattern": "^/var/cache/[A-Za-z0-9._-]+$"},
-            "cacheSizeLimit": {"type": "string", "minLength": 1},
-            "shmSizeLimit": {"type": "string", "minLength": 1},
-            "routerArgs": {"type": "array", "items": {"type": "string", "minLength": 1}}
-          },
-          "if": {"properties": {"enabled": {"const": true}}},
-          "then": {"properties": {"workers": {"minItems": 2}}}
+            "enabled": {"const": false}
+          }
         }
       }
     },

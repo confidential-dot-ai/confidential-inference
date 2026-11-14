@@ -145,14 +145,6 @@ jobs:
         with:
           version: v3.14.4
 
-      # These tests cover the retained pair diagnostics. Their historical
-      # fixture is separate from the official upstream image build input.
-      - name: fetch pinned legacy SGLang diagnostic fixtures
-        run: |
-          python3 images/sglang/fetch_source.py --recipe tests/images/sglang/fixtures/legacy-diagnostics \
-            --out "$RUNNER_TEMP/sglang-diagnostic-source"
-          echo "SGLANG_FORK_ROOT=$RUNNER_TEMP/sglang-diagnostic-source" >> "$GITHUB_ENV"
-
       - name: test python suites
         env:
           PYTHONDONTWRITEBYTECODE: "1"

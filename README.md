@@ -25,8 +25,10 @@ receipts in a separate private deployment repository.
 ## Components
 
 - `services/gateway`: API-key checks, request limits, and routing.
-- `images/sglang`: the pinned SGLang worker build. It can also run a GPU-free
-  simulator for tests.
+- `images/sglang`: the plain upstream SGLang worker build (DeepSeek-V4.1).
+  It can also run a GPU-free simulator for tests.
+- `images/sglang-qwen35`: a small-model worker build: the same engine with the
+  Qwen3.5-0.8B model pin, one worker on one GPU.
 - `images/sglang-router`: the separate router image and build inputs.
 - `services/maintenance-gateway`: the fallback API.
 - `helm/confidential-inference`: the generic Kubernetes application chart.
