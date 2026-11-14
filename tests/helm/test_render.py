@@ -320,6 +320,46 @@ def collector_config(documents: list[dict]) -> dict:
     return json.loads(argument.removeprefix("--config=yaml:"))
 
 
+def check_log_privacy(config: dict) -> None:
+    """Logs leave with no attribute, no body that is not a reviewed record, no address, and whole-second times.
+
+    tests/telemetry/test_collector.py runs the same statements in the pinned
+    collector; this check needs no container.
+    """
+    statements = config["processors"]["transform/logs"]["log_statements"]
+    expected = [
+        'keep_keys(resource.attributes, ["service.name"])',
+        "keep_keys(log.attributes, [])",
+        "keep_keys(instrumentation_scope.attributes, [])",
+        'set(log.body, "[body dropped: not text]") where not IsString(log.body)',
+    ]
+    assert statements[:4] == expected, statements
+    keep, drop = statements[4:6]
+    assert keep.startswith('set(log.cache["keep"], true) where resource.attributes["service.name"] == "gateway" and ')
+    assert drop == ('set(log.body, "[body dropped: not a reviewed gateway record]") where '
+                    'resource.attributes["service.name"] == "gateway" and log.cache["keep"] != true')
+    # The keep rule holds only exact messages and the audit record pattern.
+    alternatives = keep.split(" and (", 1)[1].removesuffix(")").split(" or ")
+    assert alternatives[0].startswith('IsMatch(log.body, "^[{]') and alternatives[0].endswith('[}]$")')
+    assert all(re.fullmatch(r'log\.body == "[a-z][A-Za-z0-9 ,;:]*"', item) for item in alternatives[1:]), alternatives
+    assert '\\"key_ref\\":(\\"kp_[0-9a-f]{24}\\"|null)' in alternatives[0], alternatives[0]
+    assert "key_id" not in keep and "prompt" not in keep
+    assert any(item.startswith("replace_pattern(log.body, \"(?i)bearer") for item in statements)
+    assert sum(item.endswith('"[ip]")') for item in statements) == 2
+    assert statements[-2:] == ['set(log.time, TruncateTime(log.time, Duration("1s")))',
+                               'set(log.observed_time, TruncateTime(log.observed_time, Duration("1s")))']
+    logs = config["service"]["pipelines"]["logs"]
+    assert logs["receivers"] == ["otlp"] and logs["exporters"] == ["otlphttp/loki"]
+    assert logs["processors"].index("transform/logs") < logs["processors"].index("batch")
+    # No processor adds Kubernetes or peer attributes, and the receiver keeps no client metadata.
+    assert not any(name.startswith(("k8sattributes", "resourcedetection")) for name in config["processors"])
+    assert "include_metadata" not in json.dumps(config["receivers"]["otlp"])
+    assert config["connectors"]["spanmetrics"]["dimensions"] == []
+    # No metric label that names an address or a client leaves.
+    labels = config["processors"]["transform/metrics"]["metric_statements"][0]
+    assert not re.search(r'"[^"]*(addr|address|client|peer|_ip|ip_|forwarded)[^"]*"', labels, re.I), labels
+
+
 def check_telemetry_collector() -> None:
     """One stock collector is the only pod with an exit, and its argument pins what leaves."""
     assert not any(item["metadata"]["name"].startswith("telemetry-") for item in render())
@@ -382,7 +422,7 @@ def check_telemetry_collector() -> None:
     processors = config["processors"]
     assert "keep_keys(spanevent.attributes, [])" in processors["transform/traces"]["trace_statements"]
     assert not any("gen_ai.request.id" in statement for statement in processors["transform/traces"]["trace_statements"])
-    assert "keep_keys(log.attributes, [])" in processors["transform/logs"]["log_statements"]
+    check_log_privacy(config)
     assert config["service"]["pipelines"]["traces"]["exporters"] == ["spanmetrics"]
 
     # C8s's platform kube-state-metrics: off without a target, then one job

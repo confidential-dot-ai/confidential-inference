@@ -23,15 +23,53 @@ struct Args {
     trusted_proxy_cidrs: Vec<ipnet::IpNet>,
 }
 
+/// `RUST_LOG` cannot open the HTTP libraries' debug output: at `debug` and
+/// `trace` they can print headers and request text.
+fn log_allowed(metadata: &tracing::Metadata<'_>) -> bool {
+    let http = [
+        "hyper",
+        "hyper_util",
+        "h2",
+        "tower",
+        "axum",
+        "axum_server",
+        "rustls",
+    ]
+    .iter()
+    .any(|prefix| {
+        metadata
+            .target()
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with("::"))
+    });
+    !http || *metadata.level() <= tracing::Level::WARN
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_target(false)
-        .compact()
-        .init();
+    {
+        use tracing_subscriber::{Layer as _, layer::SubscriberExt, util::SubscriberInitExt};
+        tracing_subscriber::registry()
+            .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_target(false)
+                    .compact()
+                    .with_filter(tracing_subscriber::filter::filter_fn(log_allowed)),
+            )
+            .init();
+    }
+    // The default hook prints the panic message, which can quote a request.
+    std::panic::set_hook(Box::new(|info| {
+        let location = info
+            .location()
+            .map(|location| format!("{}:{}", location.file(), location.line()))
+            .unwrap_or_default();
+        tracing::error!(
+            location,
+            "the maintenance gateway panicked; the message is not logged"
+        );
+    }));
     let args = Args::parse();
     if args.listen.port() != 9443 {
         bail!("the maintenance gateway must listen on port 9443");

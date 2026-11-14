@@ -27,6 +27,7 @@ pub mod admin_auth;
 pub mod admin_client;
 pub mod api_keys;
 pub mod key_registry;
+pub mod log_privacy;
 pub mod metrics;
 mod model_response;
 pub mod protection;
@@ -67,7 +68,21 @@ pub struct AuditEvent {
     pub key_id: Option<String>,
 }
 
-pub struct TracingAuditSink;
+/// The audit sink of the running gateway: one log record per request.
+///
+/// The record holds only the fields below. Each value is a fixed route, a
+/// status code, a gateway-made UUID, or a key pseudonym. The raw key record
+/// ID never goes into a log record (`crate::log_privacy::KeyPseudonyms`).
+pub struct TracingAuditSink {
+    pseudonyms: log_privacy::KeyPseudonyms,
+}
+
+impl TracingAuditSink {
+    #[must_use]
+    pub fn new(pseudonyms: log_privacy::KeyPseudonyms) -> Self {
+        Self { pseudonyms }
+    }
+}
 
 impl AuditSink for TracingAuditSink {
     fn record(&self, event: AuditEvent) {
@@ -78,7 +93,7 @@ impl AuditSink for TracingAuditSink {
             "request_id": event.request_id,
             "route": event.route,
             "status": event.status,
-            "key_id": event.key_id,
+            "key_ref": event.key_id.as_deref().map(|key_id| self.pseudonyms.pseudonym(key_id)),
         });
         tracing::info!("{record}");
     }
@@ -397,6 +412,36 @@ async fn proxy_inference(
             key_id: Some(key_id),
         });
         return inference_unavailable();
+    }
+    if !status.is_success() {
+        // An error body of the inference server can quote the request, for
+        // example a validation error with the offending input. The gateway
+        // never reads, logs, or forwards it: the caller gets the status and a
+        // fixed error body.
+        if let Some(usage) = &mut usage_request {
+            usage.finish(usage::Outcome::Failed);
+        }
+        let retry_after = safe_retry_after(upstream.headers());
+        drop(upstream);
+        state
+            .metrics
+            .record_request(model, &key_id, status.as_u16());
+        state.metrics.observe_request_duration(
+            model,
+            status.as_u16(),
+            started.elapsed().as_secs_f64(),
+        );
+        state.audit.record(AuditEvent {
+            request_id,
+            route,
+            status: status.as_u16(),
+            key_id: Some(key_id),
+        });
+        let mut response = upstream_error(status);
+        if let Some(value) = retry_after {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        return response;
     }
     let content_type = upstream.headers().get(header::CONTENT_TYPE).cloned();
     let is_event_stream = content_type
@@ -722,6 +767,36 @@ fn client_error(status: StatusCode, code: &'static str) -> Response<Body> {
     (
         status,
         Json(json!({"error":{"code":code,"message":status.canonical_reason().unwrap_or("Request failed.")}})),
+    )
+        .into_response()
+}
+
+/// The fixed error body for a non-success status of the inference server.
+/// The code tells the caller the class of the failure; the upstream text is
+/// dropped.
+fn upstream_error(status: StatusCode) -> Response<Body> {
+    let code = match status.as_u16() {
+        400 | 422 => "invalid_request",
+        404 => "not_found",
+        408 => "request_timeout",
+        413 => "request_too_large",
+        429 => "rate_limited",
+        400..=499 => "request_rejected",
+        _ => "inference_error",
+    };
+    let kind = if status.is_client_error() {
+        "invalid_request_error"
+    } else {
+        "server_error"
+    };
+    (
+        status,
+        Json(json!({"error":{
+            "code": code,
+            "type": kind,
+            "param": null,
+            "message": "The inference server did not accept the request. The gateway does not return its error text.",
+        }})),
     )
         .into_response()
 }

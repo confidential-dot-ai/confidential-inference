@@ -12,6 +12,34 @@ destination.
 {{- $relay := printf "https://%s" $t.relay.serverName -}}
 {{- $ns := .Release.Namespace -}}
 {{- $auth := "/mnt/c8s-data/telemetry-relay" -}}
+{{- /*
+The gateway log bodies that may leave. Each is fixed text from the gateway
+source; services/gateway/tests/log_privacy.rs fails when a gateway message is
+not on this list. The audit record is one JSON object of fixed keys: a route,
+a status code, a gateway-made UUID, and a key pseudonym (kp_ and 24 hex
+digits) or null.
+*/ -}}
+{{- $gatewayMessages := list
+  "gateway configuration validated"
+  "no admin API key file; admin requests need the v1 signature"
+  "the metrics listener stopped"
+  "the gateway is ready"
+  "the gateway started endpoint drain"
+  "the gateway started graceful shutdown"
+  "the gateway panicked; the panic message is not logged"
+  "no routing key secret: the router routes requests at random"
+  "refused the pulled key snapshot"
+  "the key snapshot pull failed"
+  "applied a key registry snapshot"
+  "refused a key registry snapshot: the pepper does not match"
+  "usage model identity did not match its approved binding"
+  "the usage queue is full; dropped the oldest event"
+  "the admin refused a usage event; dropped it"
+  "usage delivery delayed"
+  "usage events were not delivered before shutdown" -}}
+{{- $auditRecord := `^[{]"event":"gateway_request_completed","key_ref":("kp_[0-9a-f]{24}"|null),"request_id":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}","route":"/v1/(models|chat/completions|completions)","status":[1-5][0-9][0-9][}]$` -}}
+{{- $gatewayKeep := list (printf "IsMatch(log.body, %s)" (toJson $auditRecord)) -}}
+{{- range $gatewayMessages }}{{ $gatewayKeep = append $gatewayKeep (printf "log.body == %s" (toJson .)) }}{{ end -}}
 extensions:
   health_check:
     endpoint: 0.0.0.0:{{ $t.healthPort }}
@@ -133,12 +161,31 @@ processors:
       - 'keep_keys(resource.attributes, ["service.name"])'
       - {{ printf "keep_keys(span.attributes, %s)" (toJson $t.spanAttributes) | quote }}
       - 'keep_keys(spanevent.attributes, [])'
+  # Logs carry no request or response text and no client address
+  # (docs/telemetry-egress.md). The senders write only reviewed records; these
+  # statements are a second gate:
+  # - Every attribute goes, except service.name. Loki keeps no structured
+  #   metadata, so a value that must leave is in the body.
+  # - A body that is not text goes.
+  # - A gateway body leaves only when it is one of the fixed gateway messages
+  #   or the audit record. The keep mark is set first, so a statement that
+  #   fails drops the body.
+  # - Bearer tokens and IP addresses in a body are replaced.
+  # - Times are cut to whole seconds.
   transform/logs:
     error_mode: ignore
     log_statements:
       - 'keep_keys(resource.attributes, ["service.name"])'
       - 'keep_keys(log.attributes, [])'
+      - 'keep_keys(instrumentation_scope.attributes, [])'
+      - 'set(log.body, "[body dropped: not text]") where not IsString(log.body)'
+      - {{ printf "set(log.cache[\"keep\"], true) where resource.attributes[\"service.name\"] == \"gateway\" and (%s)" (join " or " $gatewayKeep) | toJson }}
+      - 'set(log.body, "[body dropped: not a reviewed gateway record]") where resource.attributes["service.name"] == "gateway" and log.cache["keep"] != true'
       - 'replace_pattern(log.body, "(?i)bearer\\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]")'
+      - 'replace_pattern(log.body, "\\b([0-9]{1,3}\\.){3}[0-9]{1,3}\\b", "[ip]")'
+      - 'replace_pattern(log.body, "(?i)\\b[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}\\b", "[ip]")'
+      - 'set(log.time, TruncateTime(log.time, Duration("1s")))'
+      - 'set(log.observed_time, TruncateTime(log.observed_time, Duration("1s")))'
 connectors:
   spanmetrics:
     histogram:

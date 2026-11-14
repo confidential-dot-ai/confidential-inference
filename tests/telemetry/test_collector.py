@@ -42,6 +42,35 @@ VALUES = {
     "telemetry.metrics.dataCollectionRule": "dcr-" + "0" * 32,
 }
 SECRET = "do-not-leak-7f3a"
+CLIENT_ADDRESS = "198.51.100.77"
+# What the gateway writes: the audit record and fixed messages. They leave.
+GATEWAY_KEPT = [
+    '{"event":"gateway_request_completed","key_ref":"kp_0123456789abcdef01234567",'
+    '"request_id":"c0ffee00-cafe-4000-8000-deadbeef0002","route":"/v1/chat/completions","status":400}',
+    '{"event":"gateway_request_completed","key_ref":null,"request_id":"c0ffee00-cafe-4000-8000-deadbeef0003",'
+    '"route":"/v1/models","status":200}',
+    "the key snapshot pull failed",
+    "no admin API key file; admin requests need the v1 signature",
+]
+# Gateway bodies that are not reviewed records. The collector drops them.
+GATEWAY_DROPPED = [
+    '{"event":"gateway_request_completed","prompt":"%s"}' % SECRET,
+    '{"event":"x","request":{"messages":[{"content":"%s"}]}}' % SECRET,
+    'invalid request: {"messages":[{"role":"user","content":"%s"}]}' % SECRET,
+    "upstream answered 400: %s at line 1" % SECRET.replace("-", " "),
+    "client %s sent a request" % CLIENT_ADDRESS,
+    "panicked at 'index out of bounds' with \"%s\"" % SECRET,
+]
+GATEWAY_BODIES = GATEWAY_KEPT + GATEWAY_DROPPED
+# Bodies of other services: addresses are replaced, a structured body goes,
+# and a reviewed router record with an ISO time is unchanged.
+ROUTER_RECORD = ('{"timestamp":"2026-11-13T10:00:00.123456+00:00","source_revision":"unknown",'
+                 '"event":"worker_request_failed","role":"router","status":502}')
+OTHER_BODIES = [
+    {"stringValue": "peer %s and 2001:db8::1 and fe80::1:2 failed" % CLIENT_ADDRESS},
+    {"kvlistValue": {"values": [{"key": "prompt", "value": {"stringValue": SECRET}}]}},
+    {"stringValue": ROUTER_RECORD},
+]
 METRICS = (
     "# TYPE gateway_requests counter\n"
     'gateway_requests{model="m",key_id="k1",status="200",prompt="%s"} 3\n' % SECRET
@@ -157,7 +186,16 @@ class CollectorTests(unittest.TestCase):
                     "timeUnixNano": now, "severityText": "INFO",
                     "body": {"stringValue": f"auth Bearer {SECRET} done"},
                     "attributes": [attribute("prompt", SECRET)],
-                }]}]}]})
+                }, *[{"timeUnixNano": now, "body": body} for body in OTHER_BODIES]]}]}, {
+                    "resource": {"attributes": [attribute("service.name", "gateway"),
+                                                attribute("k8s.pod.ip", CLIENT_ADDRESS)]},
+                    "scopeLogs": [{"scope": {"name": "gateway", "attributes": [attribute("client", SECRET)]},
+                                   "logRecords": [{
+                        "timeUnixNano": now, "observedTimeUnixNano": now, "severityText": "INFO",
+                        "body": {"stringValue": body},
+                        "attributes": [attribute("client.address", CLIENT_ADDRESS),
+                                       attribute("http.request.body", SECRET)],
+                    } for body in GATEWAY_BODIES]}]}]})
                 time.sleep(8)
             finally:
                 logs = subprocess.run([RUNTIME, "logs", name], text=True, capture_output=True)
@@ -167,7 +205,9 @@ class CollectorTests(unittest.TestCase):
             outputs = {path.name: path.read_text() for path in out.iterdir()}
             self.assertEqual(set(outputs), {"metrics.json", "logs.json", "spans.json"}, logs.stdout + logs.stderr)
             for name, text in outputs.items():
-                self.assertFalse(SECRET in text, f"{name} carries the secret")
+                self.assertFalse(SECRET in text, f"{name} carries the secret: {text}")
+                self.assertFalse(CLIENT_ADDRESS in text, f"{name} carries a client address")
+            self.check_logs(outputs["logs.json"])
             for name, expected in (("metrics.json", "gateway_requests"), ("metrics.json", '"key_id"'),
                                    ("metrics.json", '"owner_kind"'),
                                    ("metrics.json", "otelcol_receiver_accepted_metric_points"),
@@ -175,6 +215,32 @@ class CollectorTests(unittest.TestCase):
                                    ("metrics.json", "traces.span.metrics.duration"),
                                    ("spans.json", "gen_ai.usage.prompt_tokens"), ("logs.json", "Bearer [REDACTED]")):
                 self.assertTrue(expected in outputs[name], f"{expected} missing from {name}")
+
+
+    def check_logs(self, text: str) -> None:
+        """Gateway logs keep only reviewed records; times are whole seconds; no attribute leaves."""
+        bodies: dict[str, list[str]] = {}
+        for line in text.splitlines():
+            for resource in json.loads(line)["resourceLogs"]:
+                attributes = {item["key"] for item in resource["resource"].get("attributes", [])}
+                self.assertLessEqual(attributes, {"service.name", "deployment.environment", "service.namespace"})
+                service = next(item["value"]["stringValue"] for item in resource["resource"]["attributes"]
+                               if item["key"] == "service.name")
+                for scope in resource["scopeLogs"]:
+                    self.assertFalse(scope.get("scope", {}).get("attributes"))
+                    for record in scope["logRecords"]:
+                        self.assertFalse(record.get("attributes"), record)
+                        for field in ("timeUnixNano", "observedTimeUnixNano"):
+                            if record.get(field):
+                                self.assertEqual(int(record[field]) % 1_000_000_000, 0, record)
+                        bodies.setdefault(service, []).append(record["body"].get("stringValue"))
+        gateway = bodies["gateway"]
+        self.assertEqual(gateway[:len(GATEWAY_KEPT)], GATEWAY_KEPT)
+        self.assertEqual(set(gateway[len(GATEWAY_KEPT):]), {"[body dropped: not a reviewed gateway record]"})
+        other = bodies["sglang"]
+        self.assertIn("peer [ip] and [ip] and [ip] failed", other)
+        self.assertIn("[body dropped: not text]", other)
+        self.assertIn(ROUTER_RECORD, other)
 
 
 if __name__ == "__main__":
