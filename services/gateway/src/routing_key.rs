@@ -13,7 +13,11 @@
 //!   bytes;
 //! - otherwise, for `/v1/chat/completions`, the model and the messages up to
 //!   and including the first user message, which every later turn of the
-//!   conversation repeats unchanged.
+//!   conversation repeats unchanged;
+//! - otherwise, for `/v1/responses`, the model, the `instructions`, and the
+//!   `input` items up to and including the first user message. The gateway
+//!   accepts only stateless Responses requests, so each turn sends the full
+//!   input again. A string `input` counts as one user message.
 //!
 //! `/v1/completions` gets a key only from the caller's header: its prompt
 //! grows with each turn, and no fixed part of it identifies a conversation.
@@ -71,12 +75,13 @@ impl RoutingKeys {
         if let Some(value) = client_key.filter(|value| valid_client_key(value)) {
             return Some(self.sign(key_id, b"client", value.as_bytes()));
         }
-        if route != "/v1/chat/completions" {
-            return None;
-        }
-        let opening = conversation_opening(payload)?;
+        let (kind, opening): (&[u8], _) = match route {
+            "/v1/chat/completions" => (b"chat", conversation_opening(payload)?),
+            "/v1/responses" => (b"responses", responses_opening(payload)?),
+            _ => return None,
+        };
         let material = serde_json::to_vec(&opening).ok()?;
-        Some(self.sign(key_id, b"chat", &material))
+        Some(self.sign(key_id, kind, &material))
     }
 
     fn sign(&self, key_id: &str, kind: &[u8], material: &[u8]) -> HeaderValue {
@@ -110,6 +115,30 @@ fn conversation_opening(payload: &Value) -> Option<Value> {
         opening.push(json!({"role": role, "content": content}));
         if role == "user" {
             return Some(json!({"model": model, "messages": opening}));
+        }
+    }
+    None
+}
+
+/// The model, the instructions, and each input item's role and content, up
+/// to and including the first user message of a Responses API request.
+fn responses_opening(payload: &Value) -> Option<Value> {
+    let model = payload.get("model")?.as_str()?;
+    let instructions = payload.get("instructions").cloned().unwrap_or(Value::Null);
+    let first_user = |opening: Vec<Value>| {
+        Some(json!({"model": model, "instructions": instructions, "input": opening}))
+    };
+    let input = payload.get("input")?;
+    if let Some(text) = input.as_str() {
+        return first_user(vec![json!({"role": "user", "content": text})]);
+    }
+    let mut opening = Vec::new();
+    for item in input.as_array()? {
+        let role = item.get("role")?.as_str()?;
+        let content = item.get("content").cloned().unwrap_or(Value::Null);
+        opening.push(json!({"role": role, "content": content}));
+        if role == "user" {
+            return first_user(opening);
         }
     }
     None
@@ -277,5 +306,34 @@ mod tests {
         let key = derive(None, CHAT, &base);
         assert_ne!(key, derive(None, CHAT, &other_model));
         assert_ne!(key, derive(None, CHAT, &other_system));
+    }
+
+    #[test]
+    fn every_turn_of_a_responses_conversation_gets_one_key() {
+        const RESPONSES: &str = "/v1/responses";
+        let first =
+            json!({"model": "deepseek", "instructions": "Be terse.", "input": "Name a prime."});
+        let second = json!({"model": "deepseek", "instructions": "Be terse.", "input": [
+            {"role": "user", "content": "Name a prime."},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "7"}]},
+            {"role": "user", "content": "Another."}
+        ]});
+        let key = derive(None, RESPONSES, &first);
+        assert!(key.is_some());
+        assert_eq!(key, derive(None, RESPONSES, &second));
+        let other =
+            json!({"model": "deepseek", "instructions": "Be verbose.", "input": "Name a prime."});
+        assert_ne!(key, derive(None, RESPONSES, &other));
+        // The kind keeps a Responses key apart from a chat key.
+        let chat = turn(&json!([{"role": "user", "content": "Name a prime."}]));
+        assert_ne!(key, derive(None, CHAT, &chat));
+        for payload in [
+            json!({"model": "deepseek"}),
+            json!({"model": "deepseek", "input": []}),
+            json!({"model": "deepseek", "input": [{"type": "function_call_output", "output": "x"}]}),
+            json!({"input": "no model"}),
+        ] {
+            assert_eq!(derive(None, RESPONSES, &payload), None, "{payload}");
+        }
     }
 }
