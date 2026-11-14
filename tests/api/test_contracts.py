@@ -73,6 +73,17 @@ class GatewayInferenceContractTests(unittest.TestCase):
         self.assertEqual(self.contract["openapi"], "3.1.0")
         self.assertIn("paths", self.contract)
 
+    def test_key_limit_errors_are_documented(self):
+        """The 429 response lists the per-key limit codes that lib.rs emits."""
+        capacity = self.contract["components"]["responses"]["InferenceCapacity"]
+        codes = {
+            example["value"]["error"]["code"]
+            for example in capacity["content"]["application/json"]["examples"].values()
+        }
+        for code in ("rate_limit_exceeded", "insufficient_quota"):
+            self.assertIn(code, codes)
+            self.assertIn(f'"{code}"', self.gateway_source)
+
     def test_expected_paths_are_present(self):
         self.assertEqual(set(self.contract["paths"]), self.EXPECTED_PATHS)
 

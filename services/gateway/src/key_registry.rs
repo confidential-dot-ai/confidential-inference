@@ -23,8 +23,20 @@
 //!   fingerprint. `gateway_key_registry_pepper_mismatch` reads 1 until a
 //!   matching snapshot arrives.
 //! - It is empty: the snapshot is applied and each row is judged alone.
+//!
+//! ## Per-key limits
+//!
+//! A row may carry `rateLimit` and `tokenBudget`; the envelope may carry
+//! `tokenUsage`, the spend the admin measured. Each is optional and an
+//! absent or `null` value means "no limit", so an older snapshot stays
+//! valid. A value out of range refuses the whole snapshot. The gateway
+//! applies `tokenUsage` from every snapshot it does not refuse, also from
+//! one that repeats the held revision, when its `asOf` is newer than the
+//! spend it holds. `crate::key_limits` holds the rules.
 
 use serde::{Deserialize, Serialize};
+
+use crate::key_limits::{RateLimit, TokenBudget, TokenUsage};
 
 /// The schema this gateway build understands.
 pub const SNAPSHOT_SCHEMA: &str = "confidential.ai/key-registry-snapshot/v1";
@@ -44,10 +56,14 @@ pub struct RegistrySnapshotKey {
     pub pepper_fingerprint: String,
     #[serde(default)]
     pub tags: Vec<String>,
-    /// Reserved. Always `null` in this release; the gateway accepts and
-    /// ignores it.
+    /// The request rate limit of this key on each gateway replica.
+    /// Absent or `null`: no limit.
     #[serde(default)]
-    pub rate_limit: Option<serde_json::Value>,
+    pub rate_limit: Option<RateLimit>,
+    /// The token budget of this key in one UTC calendar window. Absent or
+    /// `null`: no limit.
+    #[serde(default)]
+    pub token_budget: Option<TokenBudget>,
     pub created_at: String,
     pub created_by: String,
     #[serde(default)]
@@ -73,6 +89,10 @@ pub struct SnapshotPush {
     #[serde(default)]
     pub pepper_fingerprint: String,
     pub keys: Vec<RegistrySnapshotKey>,
+    /// The tokens each key with a budget used in its current window, as the
+    /// admin measured them. Absent: the gateway keeps the spend it holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<TokenUsage>,
 }
 
 /// The result of applying one snapshot; the body of a successful push.
@@ -152,6 +172,10 @@ pub fn validate_push(push: &SnapshotPush, gateway_environment: &str) -> Result<(
         || (!gateway_environment.is_empty() && push.environment != gateway_environment)
         || push.revision < 1
         || push.keys.len() > MAX_SNAPSHOT_KEYS
+        || push
+            .token_usage
+            .as_ref()
+            .is_some_and(|usage| usage.keys.len() > MAX_SNAPSHOT_KEYS)
     {
         return Err(SnapshotError::Invalid);
     }
@@ -478,6 +502,7 @@ mod tests {
             generated_at: "2026-09-18T10:00:00Z".to_owned(),
             pepper_fingerprint: String::new(),
             keys: Vec::new(),
+            token_usage: None,
         };
         assert!(validate_push(&push, "integration-staging").is_ok());
         assert_eq!(

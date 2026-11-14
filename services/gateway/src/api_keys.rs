@@ -10,8 +10,12 @@
 //!
 //! A restarted gateway holds no keys until the first snapshot: it is not
 //! ready, and inference answers 503 `key_registry_not_ready`.
+//!
+//! The store also holds the per-key limits of the snapshot
+//! (`crate::key_limits`).
 
 use std::{
+    collections::HashMap,
     sync::{Arc, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -31,6 +35,7 @@ use subtle::ConstantTimeEq;
 
 use crate::{
     ApiKeyVerifier,
+    key_limits::{KeyLimits, KeyPolicy, LimitRejection, ParsedTokenUsage, TokenUsage},
     key_registry::{
         RevisionDecision, SnapshotError, SnapshotPush, SnapshotPushResult, revision_decision,
         validate_push,
@@ -64,6 +69,7 @@ pub struct KeyStore {
     environment: String,
     metrics: Option<Arc<GatewayMetrics>>,
     snapshot: RwLock<Option<Snapshot>>,
+    limits: KeyLimits,
 }
 
 /// The body of `GET /admin/v1/api-keys/source`.
@@ -99,6 +105,7 @@ impl KeyStore {
             environment: environment.to_owned(),
             metrics: None,
             snapshot: RwLock::new(None),
+            limits: KeyLimits::new(),
         })
     }
 
@@ -149,6 +156,7 @@ impl KeyStore {
     fn apply_inner(&self, push: &SnapshotPush) -> Result<SnapshotPushResult, SnapshotError> {
         validate_push(push, &self.environment)?;
         self.check_snapshot_pepper(push)?;
+        let usage = push.token_usage.as_ref().map(parse_usage).transpose()?;
         let mut guard = self
             .snapshot
             .write()
@@ -160,6 +168,9 @@ impl KeyStore {
                 if let Some(snapshot) = guard.as_mut() {
                     snapshot.applied_at_unix = unix_time();
                 }
+                if let Some(usage) = &usage {
+                    self.limits.apply_usage(usage);
+                }
                 Ok(SnapshotPushResult {
                     revision: push.revision,
                     cached_revision: push.revision,
@@ -169,7 +180,7 @@ impl KeyStore {
                 })
             }
             RevisionDecision::Apply => {
-                let snapshot = self.parse(push)?;
+                let (snapshot, policies) = self.parse(push)?;
                 let accepted = i64::try_from(snapshot.keys.len()).unwrap_or(i64::MAX);
                 let skipped = snapshot.pepper_mismatch_count;
                 if let Some(metrics) = &self.metrics {
@@ -177,6 +188,10 @@ impl KeyStore {
                         .set_key_registry_pepper_mismatch_rows(u64::try_from(skipped).unwrap_or(0));
                 }
                 *guard = Some(snapshot);
+                self.limits.replace_policies(policies);
+                if let Some(usage) = &usage {
+                    self.limits.apply_usage(usage);
+                }
                 tracing::info!(
                     revision = push.revision,
                     accepted,
@@ -197,8 +212,12 @@ impl KeyStore {
     /// Parse every row before anything is replaced, so one bad row refuses
     /// the whole snapshot. A row that names another pepper is skipped and
     /// counted: a rotation can leave one old row behind.
-    fn parse(&self, push: &SnapshotPush) -> Result<Snapshot, SnapshotError> {
+    fn parse(
+        &self,
+        push: &SnapshotPush,
+    ) -> Result<(Snapshot, HashMap<String, KeyPolicy>), SnapshotError> {
         let mut keys = Vec::with_capacity(push.keys.len());
+        let mut policies = HashMap::new();
         let mut pepper_mismatch_count = 0;
         for key in &push.keys {
             parse_timestamp(&key.created_at)?;
@@ -208,6 +227,13 @@ impl KeyStore {
             let hash = URL_SAFE_NO_PAD
                 .decode(&key.key_hash)
                 .map_err(|_| SnapshotError::Invalid)?;
+            let policy = KeyPolicy {
+                rate_limit: key.rate_limit,
+                token_budget: key.token_budget,
+            };
+            if !policy.is_valid() {
+                return Err(SnapshotError::Invalid);
+            }
             if !bool::from(
                 self.pepper_fingerprint
                     .as_bytes()
@@ -216,18 +242,31 @@ impl KeyStore {
                 pepper_mismatch_count += 1;
                 continue;
             }
+            if key.revoked_at.is_none() {
+                policies.insert(key.id.clone(), policy);
+            }
             keys.push(CachedKey {
                 id: key.id.clone(),
                 hash,
                 revoked: key.revoked_at.is_some(),
             });
         }
-        Ok(Snapshot {
-            revision: push.revision,
-            applied_at_unix: unix_time(),
-            keys,
-            pepper_mismatch_count,
-        })
+        Ok((
+            Snapshot {
+                revision: push.revision,
+                applied_at_unix: unix_time(),
+                keys,
+                pepper_mismatch_count,
+            },
+            policies,
+        ))
+    }
+
+    /// The tokens `key_id` used in its current budget window, as this
+    /// replica sees them. `None` for a key without a budget.
+    #[must_use]
+    pub fn spent_tokens(&self, key_id: &str) -> Option<u64> {
+        self.limits.spent_tokens(key_id, crate::usage::now_ms())
     }
 
     /// Refuse a snapshot whose envelope names another pepper: none of its
@@ -316,6 +355,15 @@ impl ApiKeyVerifier for KeyStore {
     fn is_ready(&self) -> bool {
         self.cached_revision().is_some()
     }
+
+    fn admit(&self, key_id: &str) -> Result<(), LimitRejection> {
+        self.limits.admit(key_id, crate::usage::now_ms())
+    }
+
+    fn record_tokens(&self, key_id: &str, tokens: u64) {
+        self.limits
+            .record_tokens(key_id, tokens, crate::usage::now_ms());
+    }
 }
 
 /// The admin routes of the key store. They must be wrapped in the gateway's
@@ -382,6 +430,26 @@ fn fingerprint_prefix(fingerprint: &str) -> &str {
         .nth(FINGERPRINT_PREFIX_CHARACTERS)
         .map_or(fingerprint.len(), |(index, _)| index);
     &fingerprint[..end]
+}
+
+/// Parse the admin spend before anything changes, so a bad value refuses
+/// the whole snapshot.
+fn parse_usage(usage: &TokenUsage) -> Result<ParsedTokenUsage, SnapshotError> {
+    let keys = usage
+        .keys
+        .iter()
+        .map(|key| {
+            Ok((
+                key.id.clone(),
+                parse_timestamp(&key.window_start)?,
+                key.tokens,
+            ))
+        })
+        .collect::<Result<_, SnapshotError>>()?;
+    Ok(ParsedTokenUsage {
+        as_of_unix: parse_timestamp(&usage.as_of)?,
+        keys,
+    })
 }
 
 fn parse_timestamp(value: &str) -> Result<i64, SnapshotError> {

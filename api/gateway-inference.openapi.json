@@ -654,11 +654,11 @@
         }
       },
       "InferenceCapacity": {
-        "description": "The gateway rejected the request because a concurrency, queue, or per-key limit was full (`inference_capacity`), or because the usage configuration does not name the requested model (`usage_capacity`).",
+        "description": "The gateway rejected the request because a concurrency, queue, or per-key limit was full (`inference_capacity`), or because the usage configuration does not name the requested model (`usage_capacity`), or because a limit the admin set on the API key refused it: the request rate limit (`rate_limit_exceeded`) or the token budget of the current UTC day or month (`insufficient_quota`). The gateway refuses a key limit before it forwards the request. The body never names the key, a limit value, or the spend. The status for `insufficient_quota` is 429, as in the OpenAI API, so OpenAI clients handle it.",
         "headers": {
           "Retry-After": {
-            "description": "The number of seconds to wait before a retry.",
-            "schema": {"const": "1"}
+            "description": "The number of seconds to wait before a retry: `1` for capacity, the time until the next request is allowed for `rate_limit_exceeded`, and the time until the budget window ends for `insufficient_quota`.",
+            "schema": {"type": "string", "pattern": "^[1-9][0-9]*$"}
           }
         },
         "content": {
@@ -666,7 +666,9 @@
             "schema": {"$ref": "#/components/schemas/GatewayError"},
             "examples": {
               "inferenceCapacity": {"value": {"error": {"code": "inference_capacity", "message": "Too Many Requests"}}},
-              "usageCapacity": {"value": {"error": {"code": "usage_capacity", "message": "Too Many Requests"}}}
+              "usageCapacity": {"value": {"error": {"code": "usage_capacity", "message": "Too Many Requests"}}},
+              "rateLimitExceeded": {"value": {"error": {"code": "rate_limit_exceeded", "message": "The API key sent too many requests. Wait, then try again."}}},
+              "insufficientQuota": {"value": {"error": {"code": "insufficient_quota", "message": "The API key used its token budget for this period."}}}
             }
           }
         }

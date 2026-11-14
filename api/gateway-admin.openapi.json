@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Confidential Inference Gateway Admin API",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "description": "The gateway keeps no state on disk. The admin key registry is the only key store. The gateway pulls the key snapshot from the admin (GET /api/gateway/key-snapshot, served by the admin) and holds it in memory. The admin may also push the same snapshot to the gateway as a fast path. Every route under /admin/v1 is served by the gateway through c8s tls-lb and requires an admin API key or the v1 request signature."
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
@@ -352,11 +352,26 @@
             }
           },
           "rateLimit": {
-            "type": [
-              "object",
-              "null"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RateLimit"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "description": "Reserved. Always null in this release. The gateway accepts and ignores it."
+            "description": "The request rate limit of the key. Absent or null: no limit."
+          },
+          "tokenBudget": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TokenBudget"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The token budget of the key. Absent or null: no limit."
           },
           "createdAt": {
             "type": "string",
@@ -426,6 +441,9 @@
             "items": {
               "$ref": "#/components/schemas/KeyRegistrySnapshotKey"
             }
+          },
+          "tokenUsage": {
+            "$ref": "#/components/schemas/TokenUsage"
           }
         }
       },
@@ -477,6 +495,94 @@
               "gateway_credentials_disabled",
               "registry_unavailable"
             ]
+          }
+        }
+      },
+      "RateLimit": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestsPerMinute"
+        ],
+        "description": "A token bucket for one key on each gateway replica. The bucket holds at most `burst` requests and refills at `requestsPerMinute / 60` requests per second. The gateway keeps no shared state, so N replicas admit up to N times this rate. A gateway restart refills the bucket. A refused request gets `429 rate_limit_exceeded` with `Retry-After`.",
+        "properties": {
+          "requestsPerMinute": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "burst": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000,
+            "description": "The largest number of requests at once after an idle period. Absent: `requestsPerMinute`."
+          }
+        }
+      },
+      "TokenBudget": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tokens",
+          "window"
+        ],
+        "description": "The largest number of tokens (input tokens plus output tokens of the usage events) one key may use in one UTC calendar window. The gateway refuses a new request when the spend is at or above `tokens` (`429 insufficient_quota`, `Retry-After` until the window ends). It does not stop a request in flight, so the spend can go over the budget by the requests in flight and by the spend the gateway does not see yet (see `tokenUsage`).",
+        "properties": {
+          "tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000000000000
+          },
+          "window": {
+            "enum": [
+              "day",
+              "month"
+            ],
+            "description": "`day`: from 00:00 UTC. `month`: from 00:00 UTC on the first day of the month."
+          }
+        }
+      },
+      "TokenUsage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "asOf",
+          "keys"
+        ],
+        "description": "The spend the admin measured from the stored usage events of all gateways. The gateway applies it from every snapshot it does not refuse, also from one that repeats the held revision, when `asOf` is newer than the spend it holds. The gateway adds the tokens it counted itself after `asOf` minus 30 seconds. A key with a budget and no entry has a spend of 0 from the admin. An entry for another window counts nothing.",
+        "properties": {
+          "asOf": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The admin's time of the count. The count holds every usage event the admin stored before this time."
+          },
+          "keys": {
+            "type": "array",
+            "maxItems": 10000,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "windowStart",
+                "tokens"
+              ],
+              "properties": {
+                "id": {
+                  "$ref": "#/components/schemas/Identifier"
+                },
+                "windowStart": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "The start of the budget window of the count."
+                },
+                "tokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "The sum of input and output tokens of the key's usage events that ended in the window."
+                }
+              }
+            }
           }
         }
       }
