@@ -87,8 +87,8 @@ def validate_security(document):
 
 def validate_response_secret_boundaries(document):
     """No response carries a plaintext key, the pepper or another secret. The
-    snapshot rows carry `keyHash`, the peppered HMAC the gateway verifies
-    against; it is not a secret on its own."""
+    snapshot rows carry `keyHash`, the digest the gateway verifies against;
+    it is not a secret on its own."""
     forbidden = {"apikey", "plaintext", "plaintextkey", "secret", "pepper", "token", "salt"}
     for path, method, operation in operations(document):
         for status, raw_response in operation["responses"].items():
@@ -161,6 +161,16 @@ class GatewayAdminContractTests(unittest.TestCase):
         self.assertNotIn("apiKey", key["properties"])
         self.assertNotIn("plaintextKey", key["properties"])
         self.assertIn("keyHash", key["required"])
+
+    def test_a_row_names_no_pepper_only_under_sha256(self):
+        key = self.contract["components"]["schemas"]["KeyRegistrySnapshotKey"]
+        self.assertEqual(key["properties"]["hashAlgorithm"]["enum"], ["hmac-sha256", "sha256"])
+        self.assertEqual(key["properties"]["hashAlgorithm"]["default"], "hmac-sha256")
+        # A gateway built before `hashAlgorithm` needs `pepperFingerprint` present to
+        # read the row at all, and skips the row when it is empty.
+        self.assertNotIn("hashAlgorithm", key["required"])
+        self.assertIn("pepperFingerprint", key["required"])
+        self.assertEqual(key["properties"]["pepperFingerprint"]["pattern"], "^([0-9a-f]{64})?$")
 
     def test_the_source_route_reports_the_drift_probe_fields(self):
         status = self.contract["components"]["schemas"]["RegistrySourceStatus"]

@@ -32,8 +32,8 @@ use subtle::ConstantTimeEq;
 use crate::{
     ApiKeyVerifier,
     key_registry::{
-        RevisionDecision, SnapshotError, SnapshotPush, SnapshotPushResult, revision_decision,
-        validate_push,
+        KeyHashAlgorithm, RevisionDecision, SnapshotError, SnapshotPush, SnapshotPushResult,
+        revision_decision, validate_push,
     },
     metrics::GatewayMetrics,
 };
@@ -46,6 +46,7 @@ const FINGERPRINT_PREFIX_CHARACTERS: usize = 12;
 
 struct CachedKey {
     id: String,
+    algorithm: KeyHashAlgorithm,
     hash: Vec<u8>,
     revoked: bool,
 }
@@ -195,8 +196,8 @@ impl KeyStore {
     }
 
     /// Parse every row before anything is replaced, so one bad row refuses
-    /// the whole snapshot. A row that names another pepper is skipped and
-    /// counted: a rotation can leave one old row behind.
+    /// the whole snapshot. An `hmac-sha256` row that names another pepper is
+    /// skipped and counted: a rotation can leave one old row behind.
     fn parse(&self, push: &SnapshotPush) -> Result<Snapshot, SnapshotError> {
         let mut keys = Vec::with_capacity(push.keys.len());
         let mut pepper_mismatch_count = 0;
@@ -208,16 +209,27 @@ impl KeyStore {
             let hash = URL_SAFE_NO_PAD
                 .decode(&key.key_hash)
                 .map_err(|_| SnapshotError::Invalid)?;
-            if !bool::from(
-                self.pepper_fingerprint
-                    .as_bytes()
-                    .ct_eq(key.pepper_fingerprint.as_bytes()),
-            ) {
-                pepper_mismatch_count += 1;
-                continue;
+            match key.hash_algorithm {
+                KeyHashAlgorithm::HmacSha256 => {
+                    if !bool::from(
+                        self.pepper_fingerprint
+                            .as_bytes()
+                            .ct_eq(key.pepper_fingerprint.as_bytes()),
+                    ) {
+                        pepper_mismatch_count += 1;
+                        continue;
+                    }
+                }
+                // A digest made under no pepper names none.
+                KeyHashAlgorithm::Sha256 => {
+                    if !key.pepper_fingerprint.is_empty() {
+                        return Err(SnapshotError::Invalid);
+                    }
+                }
             }
             keys.push(CachedKey {
                 id: key.id.clone(),
+                algorithm: key.hash_algorithm,
                 hash,
                 revoked: key.revoked_at.is_some(),
             });
@@ -273,12 +285,18 @@ impl KeyStore {
     fn find(&self, value: &str, revoked: bool) -> Option<String> {
         let mut mac = HmacSha256::new_from_slice(&self.pepper).ok()?;
         mac.update(value.as_bytes());
-        let hash = mac.finalize().into_bytes();
+        let peppered = mac.finalize().into_bytes();
+        let plain = Sha256::digest(value.as_bytes());
         let guard = self.read();
         guard.as_ref()?.keys.iter().find_map(|key| {
+            // Each row is compared only with the digest of its own algorithm.
+            let hash = match key.algorithm {
+                KeyHashAlgorithm::HmacSha256 => &peppered,
+                KeyHashAlgorithm::Sha256 => &plain,
+            };
             (key.revoked == revoked
                 && key.hash.len() == hash.len()
-                && bool::from(key.hash.ct_eq(&hash)))
+                && bool::from(key.hash.ct_eq(hash)))
             .then(|| key.id.clone())
         })
     }
