@@ -166,6 +166,25 @@ from the digest of the worker's launch file. A measured worker takes the
 operator keys from the CDS configuration that this file pins, and the guards
 are the measured worker's admission and runtime controls.
 
+## Request media
+
+The worker accepts request images, audio and video only as inline data. It
+refuses media URLs, `file://` URLs and paths before any network or file
+access. Pillow decodes only JPEG, PNG, WEBP and GIF. FFmpeg receives only
+bytes that start with an allowlisted binary container and contain no
+playlist or manifest marker. FFmpeg and Pillow still parse request bytes in
+the worker process, so a decoder defect remains in scope for review.
+
+## Worker listeners
+
+A single-node worker listens off loopback only on its HTTP serving port and
+the metrics port. The image binds the `torch.distributed` store, Gloo and
+NCCL bootstrap sockets, the prefill/decode KV bootstrap server and other
+internal SGLang listeners to `127.0.0.1`, and the launcher refuses
+multi-node and other options that open further rendezvous, control or
+publisher listeners. Decode workers contact the KV bootstrap server on
+`127.0.0.1` only, whatever host a request names.
+
 ## Verification limits
 
 - Quote signatures alone do not establish current revocation or accepted TCB

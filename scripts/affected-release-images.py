@@ -80,6 +80,8 @@ IMAGES = (
             "images/sglang/requirements.lock",
             "images/sglang/fetch_source.py",
             "images/sglang/harden_http.py",
+            "images/sglang/harden_media.py",
+            "images/sglang/harden_dist.py",
             "images/sglang/pair_supervisor.py",
             "images/sglang/pair_diagnostics.py",
             "images/sglang-router/private_log_sink.py",
