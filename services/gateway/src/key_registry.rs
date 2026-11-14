@@ -23,6 +23,16 @@
 //!   fingerprint. `gateway_key_registry_pepper_mismatch` reads 1 until a
 //!   matching snapshot arrives.
 //! - It is empty: the snapshot is applied and each row is judged alone.
+//!
+//! ## The hash of a row
+//!
+//! A row states how its `keyHash` was made (`KeyHashAlgorithm`). A row
+//! without `hashAlgorithm` is `hmac-sha256` under the pepper, and the pepper
+//! rule above applies to it. A `sha256` row is the digest of the key alone:
+//! it names no pepper, and it leaves its `pepperFingerprint` empty, so a
+//! gateway built before `hashAlgorithm` skips and counts the row rather than
+//! compare it under the wrong rule. A key matches only a row of the
+//! algorithm its digest was made with.
 
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +41,18 @@ pub const SNAPSHOT_SCHEMA: &str = "confidential.ai/key-registry-snapshot/v1";
 
 /// The largest number of keys one snapshot may carry.
 pub const MAX_SNAPSHOT_KEYS: usize = 10_000;
+
+/// How a row's `keyHash` was made from the plaintext key.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeyHashAlgorithm {
+    /// HMAC-SHA-256 under the gateway's pepper.
+    #[default]
+    HmacSha256,
+    /// SHA-256 of the key. Enough for a key drawn at random from 256 bits,
+    /// which no search of the digest recovers.
+    Sha256,
+}
 
 /// One key row inside a snapshot body.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -41,6 +63,10 @@ pub struct RegistrySnapshotKey {
     pub owner: String,
     pub prefix: String,
     pub key_hash: String,
+    /// Absent in a row made before the field existed: `hmac-sha256`.
+    #[serde(default)]
+    pub hash_algorithm: KeyHashAlgorithm,
+    /// The pepper of an `hmac-sha256` row. Empty in a `sha256` row.
     pub pepper_fingerprint: String,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -176,6 +202,7 @@ mod tests {
     use super::*;
 
     const KEY_ID: &str = "key_0123456789abcdef0123456789abcdef";
+    const PLAIN_KEY_ID: &str = "key_fedcba9876543210fedcba9876543210";
 
     fn gateway_pepper() -> Vec<u8> {
         vec![7_u8; 32]
@@ -380,6 +407,97 @@ mod tests {
         apply(&store, &revoked).unwrap_or_else(|error| panic!("{error:?}"));
         assert_eq!(store.verify("ci_example"), None);
         assert_eq!(store.verify_revoked("ci_example"), Some(KEY_ID.to_owned()));
+    }
+
+    fn plain_key_hash(plaintext: &str) -> String {
+        URL_SAFE_NO_PAD.encode(Sha256::digest(plaintext.as_bytes()))
+    }
+
+    /// The snapshot of `snapshot`, with a second row: the SHA-256 of
+    /// `plaintext`, under no pepper.
+    fn snapshot_with_plain_row(revision: i64, plaintext: &str) -> serde_json::Value {
+        let mut body = snapshot(revision);
+        let mut plain = body["keys"][0].clone();
+        plain["id"] = serde_json::json!(PLAIN_KEY_ID);
+        plain["hashAlgorithm"] = serde_json::json!("sha256");
+        plain["keyHash"] = serde_json::json!(plain_key_hash(plaintext));
+        plain["pepperFingerprint"] = serde_json::json!("");
+        body["keys"] = serde_json::json!([body["keys"][0].clone(), plain]);
+        body
+    }
+
+    #[test]
+    fn a_sha256_row_admits_its_key_beside_a_peppered_row() {
+        let store = store();
+        let result = apply(&store, &snapshot_with_plain_row(1, "ci_plain"))
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(result.accepted, 2);
+        assert_eq!(result.skipped_pepper_mismatch, 0);
+        assert_eq!(store.verify("ci_plain"), Some(PLAIN_KEY_ID.to_owned()));
+        assert_eq!(store.verify("ci_example"), Some(KEY_ID.to_owned()));
+        assert_eq!(store.verify("ci_other"), None);
+    }
+
+    #[test]
+    fn a_row_is_compared_only_under_its_own_algorithm() {
+        let store = store();
+        // The peppered digest of a key, stated as a plain one, and the plain
+        // digest of a key, stated as a peppered one: neither admits the key.
+        let mut body = snapshot_with_plain_row(1, "ci_plain");
+        body["keys"][0]["keyHash"] = serde_json::json!(plain_key_hash("ci_example"));
+        body["keys"][1]["keyHash"] =
+            serde_json::json!(plaintext_key_hash(&gateway_pepper(), "ci_plain"));
+        let result = apply(&store, &body).unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(result.accepted, 2);
+        assert_eq!(store.verify("ci_example"), None);
+        assert_eq!(store.verify("ci_plain"), None);
+    }
+
+    #[test]
+    fn a_sha256_row_that_names_a_pepper_refuses_the_whole_snapshot() {
+        let store = store();
+        apply(&store, &snapshot(1)).unwrap_or_else(|error| panic!("{error:?}"));
+        let mut body = snapshot_with_plain_row(2, "ci_plain");
+        body["keys"][1]["pepperFingerprint"] =
+            serde_json::json!(pepper_fingerprint_hex(&gateway_pepper()));
+        assert_eq!(apply(&store, &body), Err(SnapshotError::Invalid));
+        assert_eq!(store.cached_revision(), Some(1));
+        assert_eq!(store.verify("ci_plain"), None);
+    }
+
+    #[test]
+    fn a_revoked_sha256_row_rejects_the_key_and_reports_it_revoked() {
+        let store = store();
+        let mut body = snapshot_with_plain_row(1, "ci_plain");
+        body["keys"][1]["revokedAt"] = serde_json::json!("2026-09-18T10:00:00Z");
+        apply(&store, &body).unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(store.verify("ci_plain"), None);
+        assert_eq!(
+            store.verify_revoked("ci_plain"),
+            Some(PLAIN_KEY_ID.to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_row_of_an_unknown_algorithm_refuses_the_whole_snapshot() -> Result<(), Box<dyn Error>>
+    {
+        let store = store();
+        apply(&store, &snapshot(1)).unwrap_or_else(|error| panic!("{error:?}"));
+        let mut body = snapshot_with_plain_row(2, "ci_plain");
+        body["keys"][1]["hashAlgorithm"] = serde_json::json!("md5");
+        let response = admin_router(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/admin/v1/api-keys/snapshot")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body)?))?,
+            )
+            .await?;
+        assert!(response.status().is_client_error());
+        assert_eq!(store.cached_revision(), Some(1));
+        assert_eq!(store.verify("ci_example"), Some(KEY_ID.to_owned()));
+        Ok(())
     }
 
     #[tokio::test]

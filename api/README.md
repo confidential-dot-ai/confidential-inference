@@ -28,8 +28,9 @@ the exact active bytes.
 - `maintenance-gateway.openapi.json`: public responses during an outage.
 
 The gateway keeps no state on disk. The admin key registry is the only key
-store. A snapshot carries peppered key hashes and a pepper fingerprint, never
-the pepper or a plaintext API key.
+store. A snapshot carries key hashes, never a plaintext API key or the
+pepper: each row is either an HMAC under the pepper, with the pepper's
+fingerprint, or the SHA-256 of a key drawn at random.
 
 ## Maintenance
 
