@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Focused tests for the DeepSeek-V4.1 prefill/decode worker image recipe."""
+"""Focused tests for the production SGLang worker image recipe (plain upstream DeepSeek-V4.1)."""
 
 from __future__ import annotations
 
@@ -190,10 +190,6 @@ class RecipeTests(unittest.TestCase):
         self.assertIn("source=images/sglang/harden_dist.py,target=/run-src/harden-dist.py", DOCKERFILE)
         self.assertIn("python /run-src/harden-dist.py --root /opt/sglang/python/sglang", DOCKERFILE)
         ignore = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
-        self.assertIn("!images/sglang/harden_dist.py", ignore)
-        gpu_test = (RECIPE / "Dockerfile.gpu-test").read_text(encoding="utf-8")
-        self.assertIn("python /tmp/harden-dist.py --root /opt/sglang/python/sglang", gpu_test)
-        ignore = (RECIPE / "Dockerfile.gpu-test.dockerignore").read_text(encoding="utf-8")
         self.assertIn("!images/sglang/harden_dist.py", ignore)
 
 

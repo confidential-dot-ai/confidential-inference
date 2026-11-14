@@ -153,8 +153,7 @@ def staging_allowlist(c8s: Path) -> bytes:
 
 def rendered_workers(deployment) -> list[dict]:
     return [item for item in rendered(deployment) if item.get("kind") == "StatefulSet"
-            and (item.get("metadata", {}).get("name", "").startswith("inference-worker-")
-                 or item.get("metadata", {}).get("name", "").startswith("inference-pd"))]
+            and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
 
 DIGEST = "sha256:" + "a" * 64
 IMAGE = f"ghcr.io/example/app@{DIGEST}"
@@ -1122,10 +1121,8 @@ class RenderTests(unittest.TestCase):
             raise AssertionError("the deployment must render inference workers")
         for worker in workers:
             container = next(c for c in worker["spec"]["template"]["spec"]["containers"]
-                             if c["name"] in ("sglang", "engram-holder", "sglang-pair"))
+                             if c["name"] == "sglang")
             args = container["args"]
-            if container["name"] == "sglang-pair":
-                args = json.loads(args[1])["modelGate"]
             result.append([arg.removeprefix("--expected-file=") for arg in args
                            if arg.startswith("--expected-file=")])
         return result
