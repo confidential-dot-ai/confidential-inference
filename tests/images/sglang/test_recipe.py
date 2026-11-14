@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Focused tests for the DeepSeek-V4.1 prefill/decode worker image recipe."""
+"""Focused tests for the production SGLang worker image recipe (plain upstream DeepSeek-V4.1)."""
 
 from __future__ import annotations
 

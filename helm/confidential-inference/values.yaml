@@ -162,6 +162,11 @@ inference:
   # file that omits the field would silently take the default and run the
   # wrong backend. values.schema.json lists mode as required, so an omitted
   # field now fails the render with "inference: mode is required".
+  # The key of `images` that the worker containers run. The framework release
+  # names every image; an environment only chooses among them. sglangWorker
+  # is the production SGLang image (images/sglang); sglangStagingWorker is the
+  # 1-GPU Qwen3.5-0.8B staging image (images/sglang-qwen35).
+  workerImage: sglangWorker
   replicas: 2
   gpusPerReplica: 0
   # Required when GPUs are enabled. This policy is copied into the release
@@ -252,61 +257,11 @@ inference:
     maxTotalTokens: 8192
     maxRunningRequests: 48
     chatTemplate: chatml
-  # Prefill/decode disaggregation (templates/inference-pd.yaml). Off keeps
-  # the aggregated inference-worker-N StatefulSets above. On replaces them
-  # with one StatefulSet, inference-pd, whose single pod holds the Engram
-  # page-cache holder and one container per prefill or decode worker, and
-  # switches the router to PD mode. Its workers share the pod's model mount,
-  # page cache, /dev/shm and IPC namespace, as on one host. The README of
-  # this chart ("Prefill/decode layout") lists what it requires of the node.
+  # Prefill/decode disaggregation was removed: the chart runs aggregated
+  # workers only. The key stays so that existing environment values, which
+  # set `pd: {enabled: false}`, still render; true fails the render.
   pd:
     enabled: false
-    # The pod's c8s workload (confidential.ai/cw).
-    attestedWorkload: inference-pd-0
-    # Two independent pairs. Each pair runs both workers in one application
-    # container; C8s support containers keep their own process namespaces.
-    paired:
-      enabled: false
-      transport: tcp
-      pairs: []
-      statusPort: 8050
-      progressTimeoutSeconds: 90
-      startupTimeoutSeconds: 7200
-      shutdownTimeoutSeconds: 30
-    # The interpreter of images.sglangWorker that runs every PD container.
-    python: /opt/dsv41/bin/python
-    # The workers, in start order. A worker starts after the previous one
-    # answers /health, as the launcher starts them. args is the worker's
-    # exact argv after `python -m sglang.launch_server`; the chart checks
-    # its --model-path, --host, --port, --served-model-name and (prefill)
-    # --disaggregation-bootstrap-port against the fields below.
-    #   - name: prefill-0          # container name
-    #     role: prefill            # prefill or decode
-    #     gpus: 2
-    #     port: 8041
-    #     bootstrapPort: 8999      # prefill only
-    #     args: [--model-path, /mnt/c8s-data/models/dsv41, ...]
-    #     env: {SGLANG_PP_LAYER_PARTITION: "8,13"}
-    #     resources: {cpu: "16", memory: 96Gi}
-    workers: []
-    # Verifies the model mount (wait-for-model), then keeps the checkpoint's
-    # Engram shards locked in the page cache that every worker reads. The
-    # workers start after its ready file exists.
-    engramHolder:
-      script: /opt/sglang/recipes/deepseek-v41/launcher/hold_engram_cache.py
-      # mlock the Engram shards (needs RLIMIT_MEMLOCK above their size, ~189
-      # GiB for DeepSeek-V4.1). false leaves them unlocked in the page cache.
-      mlock: true
-      resources:
-        cpu: "2"
-        memory: 200Gi
-    # One writable JIT kernel cache for the pod's workers (an emptyDir: it
-    # never outlives the pod and is never shared with the host).
-    cacheDirectory: /var/cache/dsv41
-    cacheSizeLimit: 128Gi
-    shmSizeLimit: 64Gi
-    # Router arguments after --pd-disaggregation and the worker URLs.
-    routerArgs: []
 
 router:
   # This is the exact c8s policy entry for this workload.

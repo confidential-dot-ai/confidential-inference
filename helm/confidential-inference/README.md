@@ -101,8 +101,7 @@ each boot. The chart does this:
    places it under `/var/lib/kubelet`, on the scratch disk. The C8s node
    classifies the mount as encrypted storage, so an `emptyDir` allowlist rule
    admits it.
-2. The container that verifies the model (`sglang`, the PD `engram-holder`, or
-   `sglang-pair`) runs `fetch-model` first. It writes to
+2. The container that verifies the model (`sglang`) runs `fetch-model` first. It writes to
    `/mnt/c8s-data/model-download`. It checks each file against the byte
    manifest (`inference.model.download.manifest`, from the `model-manifest`
    ConfigMap). The argv pins the SHA-256 of the manifest. That SHA-256 must be
@@ -130,8 +129,8 @@ Limits:
 
 - Each start downloads the whole model. A container restart keeps the
   `emptyDir`, and `fetch-model` keeps the files that match. A new pod or a
-  reboot downloads all files again. The startup probe and the pair's
-  `startupTimeoutSeconds` must include the download time.
+  reboot downloads all files again. The startup probe must include the
+  download time.
 - `sizeLimit` (512Gi by default) must hold the model. The kubelet evicts the
   pod above it. The scratch disk must hold the model and the other node state.
 - The scratch disk encryption has no integrity protection. The checks before
@@ -139,112 +138,39 @@ Limits:
   to random data without detection. With the C8s model volume, dm-verity
   checks every read.
 
-## Prefill/decode layout
+## Worker image
 
-`inference.pd.enabled: true` replaces the aggregated `inference-worker-N`
-StatefulSets with one StatefulSet, `inference-pd`, and puts the router in PD
-mode. It is off by default. With it off, the chart renders exactly what it
-rendered before the setting existed.
+The framework release names every image the chart can run. An environment
+chooses the worker image among them with `inference.workerImage`:
 
-The `inference-pd` pod holds one container per prefill or decode worker and
-an `engram-holder` container. They share one pod because the workers
-depend on each other the way processes on one host do:
+- `sglangWorker` (the default): the production SGLang image
+  (`images/sglang`, plain upstream SGLang, DeepSeek-V4.1).
+- `sglangStagingWorker`: the 1-GPU Qwen3.5-0.8B staging image
+  (`images/sglang-qwen35`). It runs the production engine, built from the
+  same pinned inputs. Its environment layer is
+  `tests/fixtures/deployments/qwen35-staging-values.yaml`: one worker on one
+  GPU, the model download pinned by its byte manifest, and the Qwen parsers.
 
-- Prefill writes KV cache straight into decode GPU memory through CUDA IPC
-  handles (Mooncake intra-node NVLink). Containers of one pod share an IPC
-  namespace; separate pods do not.
-- The holder locks the checkpoint's Engram shards in the page cache, and
-  every worker reads those pages. The pod's C8s model volume is one mount,
-  so the cache is shared. Separate pods would each open their own volume.
-- `/dev/shm` is one Memory emptyDir for the pod.
+The render fails if the chosen `images` entry is not set.
 
-Each worker's `args` are the launcher's exact argv. The chart checks that the
-argv sets `--model-path` to the C8s volume path, `--host 0.0.0.0` (the router
-is another pod), `--port`, `--served-model-name` (`inference.model.name`),
-`--disaggregation-mode`, and a prefill worker's
-`--disaggregation-bootstrap-port`. A worker must not set
-`CUDA_VISIBLE_DEVICES`: the device plugin assigns each container its GPUs,
-numbered from 0. `tests/helm/test_pd_layout.py` compares the render with a
-launcher plan and lists every difference.
+## Prefill/decode layout (removed)
 
-The workers start one at a time, as the launcher starts them. Each one waits
-for the holder's ready file and for every earlier worker's `/health`. The
-holder first runs `wait-for-model`, so no worker starts before the model
-files match the release.
+The chart runs aggregated workers only (`inference-worker-N`, one complete
+SGLang server each, behind the router). The prefill/decode layout
+(`inference-pd`) and its pairs (`sglang-pair`) were removed: neither the
+production recipe nor the staging recipe uses them. `inference.pd.enabled`
+stays in the schema so that existing environment values still render; only
+`false` is accepted.
 
-Every container runs as uid 1001, with no capability and no privilege
-escalation. The pod sets no host namespace. The C8s webhook refuses
-`shareProcessNamespace`, so the chart does not set it. The layout needs these
-things from the node, which the chart cannot grant:
-
-- `RLIMIT_MEMLOCK` large enough for the holder's mlock of the Engram shards
-  (about 189 GiB for DeepSeek-V4.1), inherited from the container runtime.
-- Free order-9 pages for each confidential-compute `cuInit`. The launcher
-  compacts host memory before each worker starts (`/proc/sys/vm`, root
-  only). In Kubernetes the node image must provide proactive compaction.
-- CUDA IPC between containers that each see only their own GPUs. This is
-  not yet verified on a GPU node.
-
-The chart sets `SGLANG_HOST_IP=127.0.0.1` for every PD worker. The prefill and
-decode KV transfer ZMQ sockets then bind to loopback, and Mooncake advertises
-loopback. Two listeners still bind every address, and only the NetworkPolicy
-keeps other pods out: the KV bootstrap server shares the worker's `--host`
-(`0.0.0.0`, which the router needs), and Mooncake's handshake listener always
-binds `INADDR_ANY`.
-
-The plain model cache (`inference.model.cache`) is not supported with this
-layout; the render fails if it is enabled. With `inference.model.download`,
-the holder (or, in a pair, the model gate of `sglang-pair`) downloads the
-model before it verifies it, and every worker reads the same read-only
-mount ("Model download"). With telemetry on, the collector
-scrapes one job per PD worker (`inference-pd-<name>`, the worker's port: add
-`--enable-metrics` to its args) besides the gateway, the router and
-kube-state-metrics. The PD pod has no GPU exporter. SGLang serves
-`/metrics` on the worker's serving port and has no separate metrics
-listener, so the collector's NetworkPolicy rule admits it to that port and a
-port rule cannot limit it to `/metrics`. The ordinary workers have the same
-rule.
-
-### Separate model disks for pairs
-
-Each `inference.pd.paired.pairs` entry can set `modelVolumeName`. Without it,
-the pair uses the first `inference.model.volumeNames` entry. With it, the
-chart selects that disk and updates the model gate and both worker paths.
-Other pairs retain their own disk selection. The key source is unchanged,
-so an exact copy of the encrypted image can use the existing key grant.
-
-The normal release selects `dsv41-a` for Pair A and `dsv41` for Pair B.
-Attach both encrypted disks to the inference CVM, with distinct serials
-`c8s-vol-dsv41-a` and `c8s-vol-dsv41`. Each pair can then reopen its disk
-without a shared mapping. The signed release policy must include each exact
-model mount path. This changes disk storage, not the transport within a pair.
-
-### Gateway admission and routing
-
-PD routing uses the ordinary worker profile's two-second health interval and
-connection timeout, two-failure circuit breaker and ten-second breaker reset.
-The health timeout remains five seconds, with three failed checks required.
-These settings shorten failed-pair withdrawal without changing generation
-timeouts or the existing retry budget. A health check can consume its full
-timeout, so the interval is not a strict bound on withdrawal time.
+## Gateway admission
 
 The gateway admits at most `gateway.protection.inferenceConcurrency`
 inference requests, holds up to `gateway.protection.inferenceQueue` more for
 `queueTimeoutSeconds`, and answers the rest with 503 at once. The chart
-default of 48 with no queue leaves most decode slots idle, so a PD deployment
-must set `inferenceConcurrency` to at least the total `--max-running-requests`
-of its decode workers. The render fails below that total. The example values
-in `tests/helm/fixtures/dsv41-pd-values.yaml` set 128 with a queue of 64.
+default is 48 with no queue.
 `perKeyConcurrency` (128 by default) still bounds one API key.
 
-The router's `manual` policy (in `routerArgs`) keeps each `X-SMG-Routing-Key`
-on one worker, so a conversation's next turn reuses the prefix cache of the
-prefill worker that served its last turn. Without the header the router picks
-a worker at random for each request. The gateway sends the header on every
-request it can identify a conversation for (`services/gateway/src/routing_key.rs`):
-an HMAC of the API key's record ID and either the caller's own
-`X-SMG-Routing-Key` or a chat completion's opening messages. A legacy
-completion without a caller key gets none. The secret is drawn at gateway
-start, so a restart assigns every conversation a worker again, and more than
-one gateway replica (`gateway.replicas`, 1 by default) would split a
-conversation across the replicas' keys.
+The gateway sends an `X-SMG-Routing-Key` header on every request it can
+identify a conversation for (`services/gateway/src/routing_key.rs`). The
+removed PD router's `manual` policy read it. The aggregated router's
+`cache_aware` policy does not: it picks a worker by prefix match and load.

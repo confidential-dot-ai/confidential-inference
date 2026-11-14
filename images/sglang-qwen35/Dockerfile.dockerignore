@@ -1,0 +1,16 @@
+# Allowlist: the build context is the repository root. The engine inputs are
+# the production worker's (images/sglang); this recipe adds two files.
+*
+!images/sglang-qwen35/Dockerfile
+!images/sglang-qwen35/model-manifest.json
+!images/sglang-qwen35/serve.sh
+!images/sglang/source.lock
+!images/sglang/requirements.lock
+!images/sglang/dcgm-counters.csv
+!images/sglang/fetch_source.py
+!images/sglang/wait_for_model.py
+!images/sglang/harden_http.py
+!images/sglang/harden_media.py
+!images/sglang/harden_dist.py
+!images/sglang/fetch_model.py
+!images/sglang-router/private_log_sink.py

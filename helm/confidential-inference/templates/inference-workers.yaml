@@ -1,6 +1,8 @@
 {{- define "confidential-inference.source.inference-workers" -}}
-{{- /* inference.pd replaces these workers (templates/inference-pd.yaml). */}}
-{{- if and .Values.inference.enabled (not .Values.inference.pd.enabled) }}
+{{- if .Values.inference.enabled }}
+{{- if dig "pd" "enabled" false .Values.inference }}
+{{- fail "inference.pd was removed: the chart runs aggregated workers only (inference-worker-N)" }}
+{{- end }}
 {{- if and (gt (int .Values.inference.gpusPerReplica) 0) (eq (len .Values.inference.gpuArchitectures) 0) }}
 {{- fail "inference.gpuArchitectures is required when inference.gpusPerReplica is greater than zero" }}
 {{- end }}
@@ -89,7 +91,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: sglang
-          image: {{ $.Values.images.sglangWorker }}
+          image: {{ include "confidential-inference.workerImage" $ }}
           imagePullPolicy: IfNotPresent
           {{- if and $simulatorMode (not $modelMount) }}
           command: ["python3"]

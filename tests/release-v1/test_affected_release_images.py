@@ -64,6 +64,17 @@ class AffectedReleaseImagesTests(unittest.TestCase):
             ["sglang"],
         )
 
+    def test_engine_input_selects_both_worker_images(self) -> None:
+        self.assertEqual(names(["images/sglang/requirements.lock"]), ["sglang", "sglang-qwen35"])
+        self.assertEqual(names(["images/sglang/harden_http.py"]), ["sglang", "sglang-qwen35"])
+
+    def test_staging_model_pin_selects_only_the_staging_image(self) -> None:
+        self.assertEqual(names(["images/sglang-qwen35/model-manifest.json"]), ["sglang-qwen35"])
+        self.assertEqual(names(["images/sglang-qwen35/Dockerfile"]), ["sglang-qwen35"])
+
+    def test_both_worker_images_use_the_large_runners(self) -> None:
+        self.assertEqual(("sglang", "sglang-qwen35"), MODULE["LARGE_IMAGES"])
+
     def test_base_ref_accepts_only_release_tags_or_full_commits(self) -> None:
         self.assertIsNotNone(BASE_REF.fullmatch("v0.14.3"))
         self.assertIsNotNone(BASE_REF.fullmatch("v0.14.3-staging"))

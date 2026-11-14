@@ -32,6 +32,10 @@ images:
   gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway
   sglang: ghcr.io/confidential-dot-ai/confidential-inference/sglang
   sglangWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang
+  # The 1-GPU Qwen3.5-0.8B staging worker (images/sglang-qwen35): the
+  # production engine with the staging model pin. An environment selects it
+  # with inference.workerImage: sglangStagingWorker.
+  sglangStagingWorker: ghcr.io/confidential-dot-ai/confidential-inference/sglang-qwen35
   sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang-router
   telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a

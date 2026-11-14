@@ -70,8 +70,15 @@ exporter used by the older worker. Its compatibility must be tested in the
 confidential GPU VM. Metrics labels are restricted by the telemetry collector.
 
 The CPU simulator remains outside the production Python import path. It is
-used only by the staging profile. The local GPU-test Dockerfile belongs to
-the earlier fork experiment and is not an input to this release.
+used only by the simulator staging profile (`inference.mode: simulator`).
+
+The Qwen3.5-0.8B staging image (`images/sglang-qwen35`) builds the same
+engine from the same inputs in this directory: `source.lock`,
+`requirements.lock`, `fetch_source.py`, the `harden_*.py` build steps,
+`wait_for_model.py`, `fetch_model.py` and `dcgm-counters.csv`. A change to one
+of them rebuilds both images. When you add a build step here, add it to
+`images/sglang-qwen35/Dockerfile` too; `tests/images/sglang/test_qwen35_recipe.py`
+fails until both Dockerfiles match.
 
 Build and publication use the existing Image Preparation workflow, including
 its independent rebuild audit. Deploy only published images with verified
