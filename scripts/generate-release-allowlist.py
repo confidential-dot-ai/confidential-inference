@@ -51,6 +51,7 @@ from typing import Any
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import c8s_release as c8s_releases
 import release_spec
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -394,22 +395,53 @@ def read_cdi(policy: dict[str, Any], node_image: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
+def signed_c8s_cli(release: str, commit: str) -> dict[str, str]:
+    """The host CLI entry of the cosign-verified statement of the pinned c8s release."""
+    with tempfile.TemporaryDirectory(prefix="c8s-statement-") as directory:
+        try:
+            entry, _ = c8s_releases.signed_cli(release, commit, Path(directory), allow_beta="-beta." in release)
+        except c8s_releases.ReleaseError as error:
+            raise GenerationError(str(error)) from error
+    return entry
+
+
 def verify_c8s_binary(executable: Path, commit: str, release: str) -> None:
     """Require a c8s CLI built from the pinned commit.
 
     A build in a checkout records the commit and whether the tree was
     modified; a module build (`go install …@<release>`) records the release.
+    A binary of the C8s release carries neither: its SHA-256 must equal the
+    host platform entry of the signed statement of the release, and cosign
+    must verify that statement (scripts/c8s_release.py) and it must name the
+    C8s repository, the release tag and the commit.
     """
-    lines = run(["go", "version", "-m", str(executable)]).decode().splitlines()
+    try:
+        lines = run(["go", "version", "-m", str(executable)]).decode().splitlines()
+    except GenerationError:
+        lines = []
     fields = [line.strip().split("\t") for line in lines]
-    if ["path", C8S_MODULE] not in fields:
+    if ["path", C8S_MODULE] in fields:
+        settings = {field[1].partition("=")[0]: field[1].partition("=")[2] for field in fields
+                    if len(field) == 2 and field[0] == "build"}
+        checkout = settings.get("vcs.revision") == commit and settings.get("vcs.modified") == "false"
+        module = any(field[:3] == ["mod", C8S_ROOT_MODULE, release] for field in fields)
+        if checkout or module:
+            return
+    elif any(field[0] == "path" for field in fields if field):
         raise GenerationError("--c8s is not the c8s command binary")
-    settings = {field[1].partition("=")[0]: field[1].partition("=")[2] for field in fields
-                if len(field) == 2 and field[0] == "build"}
-    checkout = settings.get("vcs.revision") == commit and settings.get("vcs.modified") == "false"
-    module = any(field[:3] == ["mod", C8S_ROOT_MODULE, release] for field in fields)
-    if not (checkout or module):
-        raise GenerationError(f"--c8s was not built from the pinned c8s source commit {commit} ({release})")
+    try:
+        actual = c8s_releases.file_sha256(executable)
+    except OSError as error:
+        raise GenerationError(f"--c8s was not built from the pinned c8s source commit {commit} ({release}), "
+                              f"and it cannot be read: {error}") from error
+    try:
+        entry = signed_c8s_cli(release, commit)
+    except GenerationError as error:
+        raise GenerationError(f"--c8s was not built from the pinned c8s source commit {commit} ({release}), "
+                              f"and the signed release does not admit it: {error}") from error
+    if actual != entry["sha256"]:
+        raise GenerationError(f"--c8s was not built from the pinned c8s source commit {commit} ({release}), "
+                              f"and its SHA-256 differs from {entry['asset']} of the signed release statement")
 
 
 def argv0(container: dict[str, Any]) -> str | None:

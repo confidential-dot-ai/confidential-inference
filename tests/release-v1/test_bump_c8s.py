@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import io
 import json
 import shutil
 import tempfile
@@ -445,7 +446,10 @@ class BumpTests(unittest.TestCase):
         checked = []
         generator = {"verify_c8s_binary": lambda binary, commit, tag: checked.append((binary, commit, tag)),
                      "GenerationError": ValueError}
-        with mock.patch.object(BUMP, "run") as run, mock.patch.object(BUMP.runpy, "run_path", return_value=generator):
+        no_signed = mock.patch.object(BUMP.c8s_release, "signed_cli",
+                                      side_effect=BUMP.c8s_release.ReleaseError("no statement"))
+        with mock.patch.object(BUMP, "run") as run, mock.patch.object(BUMP.runpy, "run_path", return_value=generator), \
+                no_signed, contextlib.redirect_stderr(io.StringIO()):
             binary = BUMP.c8s_cli(None, Path("c8s"), "a" * 40, "v0.99.29", Path("build"))
             self.assertEqual(binary, Path("build/c8s"))
             self.assertEqual(run.call_args.args[0], ["go", "build", "-o", "build/c8s", "./cmd/c8s"])
@@ -454,6 +458,27 @@ class BumpTests(unittest.TestCase):
             self.assertEqual(BUMP.c8s_cli(Path("given"), Path("c8s"), "a" * 40, "v0.99.29", Path("build")), Path("given"))
             run.assert_not_called()
         self.assertEqual(checked, [(Path("build/c8s"), "a" * 40, "v0.99.29"), (Path("given"), "a" * 40, "v0.99.29")])
+
+
+    def test_the_bump_uses_the_signed_release_cli_by_default(self):
+        checked = []
+        generator = {"verify_c8s_binary": lambda binary, commit, tag: checked.append((binary, commit, tag)),
+                     "GenerationError": ValueError}
+        signed = mock.patch.object(BUMP.c8s_release, "signed_cli",
+                                   return_value=({"asset": "c8s-linux-amd64"}, Path("build/c8s-linux-amd64")))
+        with mock.patch.object(BUMP, "run") as run, mock.patch.object(BUMP.runpy, "run_path", return_value=generator), \
+                signed as signed_cli:
+            self.assertEqual(BUMP.c8s_cli(None, Path("c8s"), "a" * 40, "v0.101.5", Path("build")),
+                             Path("build/c8s-linux-amd64"))
+            run.assert_not_called()
+            self.assertTrue(signed_cli.call_args.kwargs["download"])
+            signed_cli.reset_mock()
+            self.assertEqual(BUMP.c8s_cli(None, Path("c8s"), "a" * 40, "v0.101.5", Path("build"), source_build=True),
+                             Path("build/c8s"))
+            signed_cli.assert_not_called()
+            self.assertEqual(run.call_args.args[0], ["go", "build", "-o", "build/c8s", "./cmd/c8s"])
+        self.assertEqual(checked, [(Path("build/c8s-linux-amd64"), "a" * 40, "v0.101.5"),
+                                   (Path("build/c8s"), "a" * 40, "v0.101.5")])
 
 
 if __name__ == "__main__":
