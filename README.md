@@ -25,8 +25,8 @@ receipts in a separate private deployment repository.
 ## Components
 
 - `services/gateway`: API-key checks, request limits, and routing.
-- `images/sglang`: the pinned SGLang worker build. The same image
-  runs a real model in production and a GPU-free simulator in staging.
+- `images/sglang`: the pinned SGLang worker build. It can also run a GPU-free
+  simulator for tests.
 - `images/sglang-router`: the separate router image and build inputs.
 - `services/maintenance-gateway`: the fallback API.
 - `helm/confidential-inference`: the generic Kubernetes application chart.
