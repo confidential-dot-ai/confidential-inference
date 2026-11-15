@@ -11,8 +11,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
-FETCH = ROOT / "images/sglang-dsv41-flash/fetch_model.py"
-GATE = ROOT / "images/sglang-dsv41-flash/wait_for_model.py"
+FETCH = ROOT / "images/sglang-confidential/fetch_model.py"
+GATE = ROOT / "images/sglang-confidential/wait_for_model.py"
 REPOSITORY = "example/tiny"
 REVISION = "9fb191250dd56d0ba7ec9785a025ed29c03d5998"
 METADATA = ".model-lock-local-manifest.json"
@@ -148,6 +148,25 @@ class FetchModelTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn(b"does not match the manifest", result.stderr)
         self.assertFalse((self.cache / "model.safetensors").exists())
+
+
+    def test_plain_http_model_server_cannot_change_a_byte(self) -> None:
+        # The chart allows a plain HTTP model server (inference.model.download.scheme: http):
+        # the pinned byte manifest, not TLS, is what pins the model bytes. A server or a
+        # network attacker that changes bytes, even at the same size, is refused, and
+        # no changed file is left for the server to read.
+        self.assertTrue(self.endpoint.startswith("http://"))
+        body = FILES["model.safetensors"]
+        FakeHub.files["model.safetensors"] = b"W" + body[1:]
+        result = self.fetch()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(b"model.safetensors: the download does not match the manifest", result.stderr)
+        self.assertFalse((self.cache / "model.safetensors").exists())
+        self.assertFalse((self.cache / "model.safetensors.partial").exists())
+        self.assertFalse((self.cache / METADATA).exists())
+        FakeHub.files["model.safetensors"] = body
+        self.assertEqual(0, self.fetch().returncode)
+        self.assertEqual(body, (self.cache / "model.safetensors").read_bytes())
 
 
 if __name__ == "__main__":

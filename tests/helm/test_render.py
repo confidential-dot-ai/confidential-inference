@@ -223,6 +223,36 @@ def check_model_download() -> None:
         assert error in render_values(values, success=False), name
 
 
+def check_model_download_scheme() -> None:
+    """A plain HTTP model server: the byte manifest, not TLS, pins the model bytes.
+
+    The scheme and port set the fetch-model endpoint and the port of the
+    model-download NetworkPolicy (the allowlist exit port)."""
+    for download, endpoint, port in (
+            ({}, "https://models.example.invalid", 443),
+            ({"scheme": "https", "port": 8443}, "https://models.example.invalid:8443", 8443),
+            ({"scheme": "http"}, "http://models.example.invalid", 80),
+            ({"scheme": "http", "port": 80}, "http://models.example.invalid", 80),
+            ({"scheme": "http", "port": 8080}, "http://models.example.invalid:8080", 8080)):
+        documents = render_values(download_values(**download), "--set", "inference.mode=model",
+                                  "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
+        worker = next(item for item in documents if item["kind"] == "StatefulSet"
+                      and item["metadata"]["name"] == "inference-worker-0")
+        container = worker["spec"]["template"]["spec"]["containers"][0]
+        script = container["command"][2]
+        assert f"/usr/local/bin/fetch-model --endpoint={endpoint} fetch " in script, (download, script)
+        # The manifest pin and the second byte check stay whatever the scheme.
+        assert "--manifest-sha256=" in script
+        assert "--plain-cache" in container["args"]
+        policy = next(item for item in documents if item["kind"] == "NetworkPolicy"
+                      and item["metadata"]["name"] == "inference-worker-model-download")["spec"]
+        assert policy["egress"][0]["ports"] == [{"protocol": "TCP", "port": port}], download
+    for name, download, error in (
+            ("scheme", {"scheme": "ftp"}, "scheme"),
+            ("port", {"port": 70000}, "port")):
+        assert error in render_values(download_values(**download), success=False), name
+
+
 def check_front_door_namespace() -> None:
     # From c8s v0.66.0 the router runs in its own namespace, c8s-router.
     documents = [item for item in yaml.safe_load_all(helm('template', 'confidential-inference', str(CHART),
@@ -810,6 +840,7 @@ def main() -> None:
     check_override_replaces_strategy()
     check_model_cache()
     check_model_download()
+    check_model_download_scheme()
     check_front_door_namespace()
     check_c8s_admission()
     check_telemetry_collector()

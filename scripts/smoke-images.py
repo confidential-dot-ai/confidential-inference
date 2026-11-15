@@ -170,7 +170,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("rendered", type=Path)
     parser.add_argument("--image", action="append", default=[],
-                        help="only this repository image (gateway, sglang, ...); repeatable; default: all")
+                        help="only this repository image (gateway, sglang-confidential, ...); repeatable; default: all")
     parser.add_argument("--secret-key", action="append", default=[], metavar="SECRET/KEY",
                         help="a key of a Secret volume, written as a placeholder file; repeatable")
     parser.add_argument("--seconds", type=int, default=20)
