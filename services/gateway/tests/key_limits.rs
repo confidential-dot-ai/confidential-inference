@@ -327,3 +327,27 @@ async fn an_out_of_range_limit_refuses_the_whole_snapshot() -> Result<(), Box<dy
     assert!(unknown_window.is_err());
     Ok(())
 }
+
+/// The admin of the previous release sends rows without `rateLimit` and
+/// `tokenBudget` and an envelope without `tokenUsage`. The gateway applies
+/// that snapshot and sets no limit.
+#[tokio::test]
+async fn a_snapshot_without_the_limit_fields_applies_and_sets_no_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut legacy = row(LIMITED_ID, "limited-key", &Value::Null, &Value::Null);
+    let fields = legacy.as_object_mut().ok_or("row is not an object")?;
+    fields.remove("rateLimit");
+    fields.remove("tokenBudget");
+    let keys = store()?;
+    keys.apply(&snapshot(1, vec![legacy], None))
+        .map_err(|error| format!("{error:?}"))?;
+    assert_eq!(keys.spent_tokens(LIMITED_ID), None);
+    let (upstream, received) = start_upstream().await?;
+    let app = app(keys, upstream, Arc::new(GatewayMetrics::new("staging")));
+
+    for _ in 0..20 {
+        assert_eq!(send(&app, "limited-key").await?.0, StatusCode::OK);
+    }
+    assert_eq!(received.load(Ordering::SeqCst), 20);
+    Ok(())
+}
