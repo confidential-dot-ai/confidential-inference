@@ -466,8 +466,9 @@ class ProcessTests(unittest.TestCase):
             "ldflags version only": (built(f"build\t-ldflags=\"-X {GEN.C8S_ROOT_MODULE}/internal/version.Version={commit}\""),
                                      False),
         }
+        no_signed_cli = mock.patch.object(GEN, "signed_c8s_cli", side_effect=GEN.GenerationError("no statement"))
         for name, (info, accepted) in cases.items():
-            with self.subTest(name), mock.patch.object(GEN, "run", return_value=info):
+            with self.subTest(name), mock.patch.object(GEN, "run", return_value=info), no_signed_cli:
                 if accepted:
                     GEN.verify_c8s_binary(Path("c8s"), commit, release)
                 else:
@@ -476,6 +477,56 @@ class ProcessTests(unittest.TestCase):
         with mock.patch.object(GEN, "run", return_value=b"helm: go1.22\n\tpath\thelm.sh/helm/v3/cmd/helm\n"), \
                 self.assertRaisesRegex(GEN.GenerationError, "not the c8s command"):
             GEN.verify_c8s_binary(Path("helm"), commit, release)
+
+    def test_the_c8s_cli_of_the_signed_release_statement_is_accepted(self):
+        commit, release = "a" * 40, "v0.101.5"
+        release_module = sys.modules["c8s_release"]
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "c8s-linux-amd64"
+            binary.write_bytes(b"signed c8s cli")
+            digest = release_module.file_sha256(binary)
+            statement = {"repository": "confidential-dot-ai/C8s", "tag": release, "commit": commit,
+                         "cli": {"linux-amd64": {"asset": "c8s-linux-amd64", "sha256": digest}}}
+            calls = []
+
+            def fake(cosign_ok=True, signed=None):
+                def run(argv, **_kwargs):
+                    calls.append(argv)
+                    if argv[:3] == ["gh", "release", "download"]:
+                        target = Path(argv[argv.index("--dir") + 1])
+                        (target / "release-statement.json").write_text(json.dumps(signed or statement))
+                        (target / "release-statement.sigstore.json").write_text("{}")
+                        return subprocess.CompletedProcess(argv, 0, "", "")
+                    if argv[1] == "verify-blob":
+                        self.assertIn("https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml"
+                                      "@refs/heads/main", argv)
+                        return subprocess.CompletedProcess(argv, 0 if cosign_ok else 1, "", "bad signature")
+                    raise AssertionError(argv)
+                return run
+
+            def verify(path, *, run, release=release, commit=commit):
+                original = release_module.signed_cli
+                def signed_cli(tag, sha, target_dir, **kwargs):
+                    return original(tag, sha, target_dir, run=run, cosign="cosign", target="linux-amd64",
+                                    allow_beta=kwargs.get("allow_beta", False))
+                with mock.patch.object(GEN, "run", side_effect=GEN.GenerationError("no build info")), \
+                        mock.patch.object(GEN.c8s_releases, "signed_cli", side_effect=signed_cli):
+                    GEN.verify_c8s_binary(path, commit, release)
+
+            verify(binary, run=fake())
+            self.assertTrue(any(argv[1:2] == ["verify-blob"] for argv in calls))
+            tampered = Path(directory) / "tampered"
+            tampered.write_bytes(b"other c8s cli")
+            with self.assertRaisesRegex(GEN.GenerationError, "SHA-256 differs"):
+                verify(tampered, run=fake())
+            with self.assertRaisesRegex(GEN.GenerationError, "release signature does not verify"):
+                verify(binary, run=fake(cosign_ok=False))
+            with self.assertRaisesRegex(GEN.GenerationError, "does not name"):
+                verify(binary, run=fake(), release="v0.101.4")
+            with self.assertRaisesRegex(GEN.GenerationError, "does not name commit"):
+                verify(binary, run=fake(), commit="b" * 40)
+            with self.assertRaisesRegex(GEN.GenerationError, "names no c8s CLI"):
+                verify(binary, run=fake(signed={k: v for k, v in statement.items() if k != "cli"}))
 
     def test_process_contract_accepts_canonical_order_but_refuses_duplicates_and_changes(self):
         main = {"name": "main", "image": IMAGE, "command": ["/entry"], "args": ["--x"]}

@@ -24,7 +24,9 @@ def signer(tag, allow_beta=False):
     branch = channel(tag, allow_beta)
     return f"https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/{branch}"
 
+import hashlib
 import json
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -37,6 +39,7 @@ C8S_SIGNED_REPOSITORY = "confidential-dot-ai/C8s"
 C8S_STATEMENT = "release-statement.json"
 C8S_BUNDLE = "release-statement.sigstore.json"
 C8S_SIGNER_ISSUER = "https://token.actions.githubusercontent.com"
+SHA256 = re.compile(r"[0-9a-f]{64}")
 CHART = re.compile(r"ghcr\.io/confidential-dot-ai/charts/c8s-cloud@sha256:[0-9a-f]{64}")
 
 
@@ -149,3 +152,51 @@ def signed_statement(tag: str, directory: Path, run: Callable[..., subprocess.Co
         raise ReleaseError(f"the signed c8s {tag} statement names no digest-pinned C8s chart: {signed['chart']}")
     return signed
 
+
+
+def host_platform() -> str:
+    """The C8s release platform name of this host, for example linux-amd64."""
+    machine = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(
+        platform.machine().lower(), platform.machine().lower())
+    return f"{platform.system().lower()}-{machine}"
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def signed_cli(tag: str, commit: str, directory: Path,
+               run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+               cosign: str | None = None, allow_beta: bool = False, target: str | None = None,
+               download: bool = False) -> tuple[dict[str, str], Path | None]:
+    """Return the CLI entry of the signed statement of the c8s tag for the platform.
+
+    cosign verifies the statement against the release workflow identity
+    (signed_statement), and the statement must name the C8s repository, the
+    tag and `commit`. From C8s #1685 it names each CLI binary with its SHA-256.
+    With `download`, also download the binary into `directory` and require
+    its SHA-256 to equal the signed one; return its path.
+    """
+    target = target or host_platform()
+    signed = signed_statement(tag, directory, run, cosign, allow_beta)
+    if signed["commit"] != commit:
+        raise ReleaseError(f"the signed c8s {tag} statement does not name commit {commit}")
+    entry = (signed.get("cli") or {}).get(target) if isinstance(signed.get("cli"), dict) else None
+    if (not isinstance(entry, dict) or entry.get("asset") != f"c8s-{target}"
+            or SHA256.fullmatch(str(entry.get("sha256"))) is None):
+        raise ReleaseError(f"the signed c8s {tag} statement names no c8s CLI for {target}")
+    if not download:
+        return entry, None
+    fetched = run(["gh", "release", "download", tag, "--repo", C8S_REPOSITORY, "--dir", str(directory),
+                   "--pattern", entry["asset"]], text=True, capture_output=True, check=False)
+    if fetched.returncode:
+        raise ReleaseError(f"cannot download the c8s {tag} CLI {entry['asset']}: {fetched.stderr.strip()}")
+    binary = directory / entry["asset"]
+    if file_sha256(binary) != entry["sha256"]:
+        raise ReleaseError(f"the c8s {tag} CLI {entry['asset']} does not match the SHA-256 of the signed statement")
+    binary.chmod(0o755)
+    return entry, binary
