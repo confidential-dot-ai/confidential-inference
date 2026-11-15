@@ -32,12 +32,11 @@
     },
     "images": {
       "type": "object",
-      "required": ["gateway", "sglangDsv41Flash", "telemetryCollector", "nodeExporter", "kubeStateMetrics", "c8sOperator"],
+      "required": ["gateway", "sglangConfidential", "telemetryCollector", "nodeExporter", "kubeStateMetrics", "c8sOperator"],
       "additionalProperties": false,
       "properties": {
         "gateway": {"$ref": "#/definitions/image"},
-        "sglangDsv41Flash": {"$ref": "#/definitions/image"},
-        "sglangQwen35": {"$ref": "#/definitions/image"},
+        "sglangConfidential": {"$ref": "#/definitions/image"},
         "sglangRouter": {"$ref": "#/definitions/image"},
         "rolloutClient": {"$ref": "#/definitions/image"},
         "telemetryCollector": {"$ref": "#/definitions/image"},
@@ -106,7 +105,6 @@
       "properties": {
         "enabled": {"type": "boolean"},
         "mode": {"enum": ["model", "simulator"]},
-        "workerImage": {"enum": ["sglangDsv41Flash", "sglangQwen35"]},
         "replicas": {"type": "integer", "minimum": 0},
         "gpusPerReplica": {"type": "integer", "minimum": 0},
         "attestedGpuCount": {"type": "integer", "minimum": 0},
@@ -144,8 +142,6 @@
           "properties": {
             "name": {"type": "string", "minLength": 1},
             "revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
-            "source": {"enum": ["mount", "image"]},
-            "imagePath": {"type": "string", "pattern": "^(?:|/opt(?:/[A-Za-z0-9_-][A-Za-z0-9._-]*)+)$"},
             "c8sVolumeSource": {"type": "string", "pattern": "^/[^=]+$"},
             "volumeNames": {
               "type": "array",
@@ -208,20 +204,13 @@
                     }
                   }
                 },
+                "scheme": {"enum": ["https", "http"]},
+                "port": {"type": "integer", "minimum": 0, "maximum": 65535},
                 "manifest": {"type": "string"},
                 "sizeLimit": {"type": "string", "pattern": "^[1-9][0-9]*(?:Gi|Ti)$"}
               },
               "if": {"properties": {"enabled": {"const": true}}},
               "then": {"properties": {"hosts": {"minItems": 1}, "manifest": {"minLength": 1}}}
-            }
-          },
-          "if": {"required": ["source"], "properties": {"source": {"const": "image"}}},
-          "then": {
-            "required": ["imagePath"],
-            "properties": {
-              "imagePath": {"minLength": 1},
-              "download": {"properties": {"enabled": {"const": false}}},
-              "cache": {"properties": {"enabled": {"const": false}}}
             }
           }
         },

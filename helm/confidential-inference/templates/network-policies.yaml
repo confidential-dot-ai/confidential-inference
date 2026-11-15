@@ -301,5 +301,5 @@ spec:
         - ipBlock: {cidr: {{ printf "%s/32" .address | quote }}}
         {{- end }}
       ports:
-        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: {{ include "confidential-inference.modelDownloadPort" . }}}
 {{- end }}

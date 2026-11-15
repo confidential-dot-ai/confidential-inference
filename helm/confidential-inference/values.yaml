@@ -18,7 +18,7 @@ scheduling:
 
 images:
   gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:13334810afe09f9ec722eed6fc19c4a64e87b406e926ce383a54dd2ede01fea1
-  sglangDsv41Flash: ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41-flash@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
+  sglangConfidential: ghcr.io/confidential-dot-ai/confidential-inference/sglang-confidential@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
   telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849  # 0.163.2
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: ghcr.io/confidential-dot-ai/confidential-inference/kube-state-metrics@sha256:89c1fe0bbd01800eb7475825467b29d0268273e7c5be7b574c72b3370b5fc3f0
@@ -161,11 +161,6 @@ inference:
   # file that omits the field would silently take the default and run the
   # wrong backend. values.schema.json lists mode as required, so an omitted
   # field now fails the render with "inference: mode is required".
-  # The key of `images` that the worker containers run. The framework release
-  # names every image; an environment only chooses among them. sglangDsv41Flash
-  # is the production SGLang image (images/sglang-dsv41-flash); sglangQwen35 is the
-  # 1-GPU Qwen3.5-0.8B staging image (images/sglang-qwen35-0.8b).
-  workerImage: sglangDsv41Flash
   replicas: 2
   gpusPerReplica: 0
   # Required when GPUs are enabled. This policy is copied into the release
@@ -188,14 +183,6 @@ inference:
   model:
     name: example/model
     revision: "0000000000000000000000000000000000000000"
-    # Where the worker reads the model. "mount": the C8s model volume
-    # (c8sVolumeSource), or model.download when it is enabled. "image": the
-    # model files are a layer of the worker image at imagePath (staging only,
-    # for example images/sglang-qwen35-0.8b). No download, no egress, no
-    # volume; wait-for-model --image-files checks every byte against the
-    # byte manifest (mountVerification) before the server starts.
-    source: mount
-    imagePath: ""
     c8sVolumeSource: /example/volumes/model
     volumeNames:
       - model
@@ -220,15 +207,25 @@ inference:
     # wait-for-model. The README of this chart ("Model download") explains it.
     download:
       enabled: false
-      # The HTTPS model source, in the order fetch-model meets them: the first
+      # The model server, in the order fetch-model meets them: the first
       # serves <repository>/resolve/<revision>/<file>, the others are hosts it
       # redirects to. Each address is pinned with hostAliases and is one
-      # allowlist exit on port 443, so the deployment's allowlist policy must
-      # declare `egress: {port: 443}` for every inference workload. C8s
+      # allowlist exit on `port`, so the deployment's allowlist policy must
+      # declare `egress: {port: <port>}` for every inference workload. C8s
       # admits at most 8 exits.
       #   - serverName: models.example.invalid
       #     address: 192.0.2.20
       hosts: []
+      # "https" or "http". Plain HTTP is safe for the model bytes: fetch-model
+      # checks every file against the byte manifest, whose SHA-256 the release
+      # pins, and wait-for-model checks every file again before the server
+      # starts. A changed byte stops the worker. The weights are public, so
+      # plain HTTP discloses nothing secret. Use it for a model server on an
+      # internal address.
+      scheme: https
+      # The port of the model server and of the allowlist exits. 0 means the
+      # scheme's default: 443 for https, 80 for http.
+      port: 0
       # The byte manifest (`fetch-model manifest`). Its SHA-256 must be the
       # mountVerification pin of revisionMetadata.
       manifest: ""

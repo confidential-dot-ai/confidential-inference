@@ -29,7 +29,7 @@ def validate(instance: dict, schema: dict) -> None:
 class ContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source_lock = load(ROOT / "images/sglang-dsv41-flash/source.lock")
+        cls.source_lock = load(ROOT / "images/sglang-confidential/source.lock")
 
     def test_source_lock_has_required_immutable_pins(self):
         lock = self.source_lock
@@ -38,10 +38,10 @@ class ContractTests(unittest.TestCase):
         for image in (lock["image"], lock["uv"]):
             self.assertRegex(image["digest"], r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(lock["deploymentImage"], {
-            "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41-flash",
+            "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang-confidential",
         })
         self.assertEqual(lock["python"]["requirementsLockSha256"], hashlib.sha256(
-            (ROOT / "images/sglang-dsv41-flash/requirements.lock").read_bytes()).hexdigest())
+            (ROOT / "images/sglang-confidential/requirements.lock").read_bytes()).hexdigest())
 
 
 class GatewayInferenceContractTests(unittest.TestCase):

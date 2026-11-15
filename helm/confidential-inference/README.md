@@ -80,14 +80,13 @@ done
 
 ## Model download
 
-A worker gets its model in one of three ways:
+No model is in an image. A worker gets its model in one of two ways:
 
 - The C8s model volume (the default): an encrypted volume that CDS opens for
   the pod (`inference.model.c8sVolumeSource`, the `confidential.ai/c8s-volumes`
   annotation).
-- A download at each start (`inference.model.download.enabled`).
-- The model files in the worker image (`inference.model.source: image`;
-  staging only, see below).
+- A download at each start from a model server
+  (`inference.model.download.enabled`).
 
 The plain model cache (`inference.model.cache`) is refused. The C8s v0.99.29
 worker mounts its models disk (`/var/lib/models`) read-only, so `fetch-model`
@@ -117,14 +116,15 @@ A C8s v0.99.29 worker drops all outbound traffic of a pod, except to the
 exits of its allowlist entry. The node gives a pod its exits only when all
 its main containers run. Thus the download runs in a main container, not in
 an init container. Each `inference.model.download.hosts` entry is one exit on
-port 443. Its address goes into `hostAliases`, so no DNS answer can move it.
+the model server port (443 by default; see "Plain HTTP model server"). Its
+address goes into `hostAliases`, so no DNS answer can move it.
 The first host is the endpoint. The other hosts are the hosts that it
 redirects to. C8s accepts at most 8 exits, each a fixed address. The CDN of
 Hugging Face has no fixed addresses, so use a model mirror at a fixed address.
-Its TLS certificate must chain to a CA in the image. The deployment's
-allowlist policy must declare `"egress": {"port": 443}` for each inference
-workload. `scripts/render-allowlist.py` refuses a pod with `hostAliases` and
-no declared egress. The `inference-worker-model-download` NetworkPolicy
+With `https`, its TLS certificate must chain to a CA in the image. The
+deployment's allowlist policy must declare `"egress": {"port": <port>}` for
+each inference workload. `scripts/render-allowlist.py` refuses a pod with
+`hostAliases` and no declared egress. The `inference-worker-model-download` NetworkPolicy
 admits the same addresses.
 
 Limits:
@@ -140,36 +140,47 @@ Limits:
   to random data without detection. With the C8s model volume, dm-verity
   checks every read.
 
-## Model in the image (staging)
+## Plain HTTP model server
 
-With `inference.model.source: image`, the model files are a layer of the
-worker image, at `inference.model.imagePath`. `images/sglang-qwen35-0.8b` is
-such an image: the build downloads the pinned revision and checks every file
-against the byte manifest. It is for staging, and temporary, until a model
-mirror or persistent model disks exist.
+`inference.model.download.scheme` is `https` (the default) or `http`.
+`inference.model.download.port` is the port of the model server; 0 (the
+default) means 443 for `https` and 80 for `http`. The port is also the port
+of the `inference-worker-model-download` NetworkPolicy and of the allowlist
+exits, so the allowlist policy must declare `"egress": {"port": <port>}` for
+each inference workload.
 
-The worker then has no model download, no model egress, no init container,
-no `confidential.ai/c8s-volumes` annotation and no model volume. The model
-path is the image directory, and `wait-for-model --image-files` checks every
-byte against the manifest (`inference.model.mountVerification`) before the
-server starts. It refuses the path if a volume is mounted over it or if the
-worker can write to it. The setting needs `inference.mode: model` and
-excludes `inference.model.download`.
+Plain HTTP on an internal address is safe for the model bytes:
+
+- `fetch-model` checks every downloaded file against the byte manifest. The
+  release pins the SHA-256 of the manifest (`mountVerification`), and the
+  render fails if the manifest does not match the pin.
+- `wait-for-model --plain-cache` checks every file again, on a read-only
+  mount, before the server starts. A changed, missing or extra byte stops the
+  worker.
+- The weights are public, so plain HTTP discloses nothing secret. An observer
+  on the path can see which model the workers download.
+
+TLS adds no integrity that the manifest does not give. Without TLS, a
+network attacker can still stop the download (as with TLS), but cannot make
+a worker serve other bytes.
 
 ## Worker image
 
-The framework release names every image the chart can run. An environment
-chooses the worker image among them with `inference.workerImage`:
+Every worker runs the one engine image, `images.sglangConfidential`
+(`images/sglang-confidential`, plain upstream SGLang). The image holds no
+model. The values choose the model, its parsers and its source. A model is a
+recipe in values only, for example:
 
-- `sglangDsv41Flash` (the default): the production SGLang image
-  (`images/sglang-dsv41-flash`, plain upstream SGLang, DeepSeek-V4.1).
-- `sglangQwen35`: the 1-GPU Qwen3.5-0.8B staging image
-  (`images/sglang-qwen35-0.8b`). It runs the production engine, built from the
-  same pinned inputs. Its environment layer is
-  `tests/fixtures/deployments/qwen35-staging-values.yaml`: one worker on one
-  GPU, the model download pinned by its byte manifest, and the Qwen parsers.
+- `tests/fixtures/deployments/production-values.yaml`: DeepSeek-V4.1 on a C8s
+  model volume.
+- `tests/fixtures/deployments/qwen35-staging-values.yaml`: Qwen3.5-0.8B,
+  two workers with one GPU each, downloaded over plain HTTP from a model
+  server, pinned by its byte manifest
+  (`tests/fixtures/deployments/qwen35-0.8b-model-manifest.json`), with the
+  Qwen parsers.
 
-The render fails if the chosen `images` entry is not set.
+`inference.workerImage`, `inference.model.source` and
+`inference.model.imagePath` were removed; the render fails if they are set.
 
 ## Prefill/decode layout (removed)
 

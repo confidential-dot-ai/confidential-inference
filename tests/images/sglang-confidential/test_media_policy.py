@@ -24,7 +24,7 @@ except ImportError:
     Image = None
 
 ROOT = Path(__file__).resolve().parents[3]
-spec = importlib.util.spec_from_file_location("harden_media", ROOT / "images/sglang-dsv41-flash/harden_media.py")
+spec = importlib.util.spec_from_file_location("harden_media", ROOT / "images/sglang-confidential/harden_media.py")
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
 PIN = "a7fd2e1158c389c33077bae67fb797efa8dd09bd"

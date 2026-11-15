@@ -57,10 +57,8 @@ listeners on loopback for single-node runs:
   `--forward-pass-metrics-ipc-name`. Each of these opens another
   rendezvous, control or publisher listener.
 
-The Qwen3.5-0.8B staging image (`images/sglang-qwen35-0.8b`) applies all three
-policies in the same build step. `harden_dist.py` still accepts the old
-diagnostic fork source (`diagnostic-fork`), which only the removed GPU-test
-image built.
+`harden_dist.py` still accepts the old diagnostic fork source
+(`diagnostic-fork`), which only the removed GPU-test image built.
 
 For the plain deployment, `--private-server-output` discards native server
 stdout and stderr. It exports only a fixed worker-exit event with a numeric
@@ -74,13 +72,12 @@ confidential GPU VM. Metrics labels are restricted by the telemetry collector.
 The CPU simulator remains outside the production Python import path. It is
 used only by the simulator staging profile (`inference.mode: simulator`).
 
-The Qwen3.5-0.8B staging image (`images/sglang-qwen35-0.8b`) builds the same
-engine from the same inputs in this directory: `source.lock`,
-`requirements.lock`, `fetch_source.py`, the `harden_*.py` build steps,
-`wait_for_model.py`, `fetch_model.py` and `dcgm-counters.csv`. A change to one
-of them rebuilds both images. When you add a build step here, add it to
-`images/sglang-qwen35-0.8b/Dockerfile` too; `tests/images/sglang-qwen35-0.8b/test_recipe.py`
-fails until both Dockerfiles match.
+This is the one engine image. It holds no model. A worker gets its model
+files at start from a model server (`inference.model.download`) or from an
+attached C8s model volume (`inference.model.c8sVolumeSource`); the chart
+selects the model with values only. Every model, for example the Qwen3.5-0.8B
+staging recipe (`tests/fixtures/deployments/qwen35-staging-values.yaml`), runs
+on this image.
 
 Build and publication use the existing Image Preparation workflow, including
 its independent rebuild audit. Deploy only published images with verified

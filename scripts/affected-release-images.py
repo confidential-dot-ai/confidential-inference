@@ -43,21 +43,21 @@ RUST_IMAGE_INPUTS = (
     "services/maintenance-gateway/Cargo.toml",
     "services/maintenance-gateway/src/**",
 )
-SGLANG_DSV41_FLASH_INPUTS = (
-    "images/sglang-dsv41-flash/Dockerfile",
-    "images/sglang-dsv41-flash/Dockerfile.dockerignore",
-    "images/sglang-dsv41-flash/source.lock",
-    "images/sglang-dsv41-flash/requirements.lock",
-    "images/sglang-dsv41-flash/dcgm-counters.csv",
-    "images/sglang-dsv41-flash/fetch_source.py",
-    "images/sglang-dsv41-flash/harden_http.py",
-    "images/sglang-dsv41-flash/harden_media.py",
-    "images/sglang-dsv41-flash/harden_dist.py",
+SGLANG_CONFIDENTIAL_INPUTS = (
+    "images/sglang-confidential/Dockerfile",
+    "images/sglang-confidential/Dockerfile.dockerignore",
+    "images/sglang-confidential/source.lock",
+    "images/sglang-confidential/requirements.lock",
+    "images/sglang-confidential/dcgm-counters.csv",
+    "images/sglang-confidential/fetch_source.py",
+    "images/sglang-confidential/harden_http.py",
+    "images/sglang-confidential/harden_media.py",
+    "images/sglang-confidential/harden_dist.py",
     "images/sglang-router/private_log_sink.py",
-    "images/sglang-dsv41-flash/wait_for_model.py",
-    "images/sglang-dsv41-flash/fetch_model.py",
-    "images/sglang-dsv41-flash/patches/**",
-    "images/sglang-dsv41-flash/simulator-upstream/**",
+    "images/sglang-confidential/wait_for_model.py",
+    "images/sglang-confidential/fetch_model.py",
+    "images/sglang-confidential/patches/**",
+    "images/sglang-confidential/simulator-upstream/**",
 )
 # A base is a commit, a release tag (also of the earlier -staging and
 # -transition forms), or a legacy release candidate tag.
@@ -85,28 +85,11 @@ IMAGES = (
         (*RUST_IMAGE_INPUTS, "images/maintenance-gateway/Dockerfile"),
     ),
     Image(
-        "sglang-dsv41-flash",
+        "sglang-confidential",
         ".",
-        "images/sglang-dsv41-flash/Dockerfile",
+        "images/sglang-confidential/Dockerfile",
         "Confidential Inference SGLang",
-        SGLANG_DSV41_FLASH_INPUTS,
-    ),
-    # The Qwen3.5-0.8B staging worker: the production image (its Dockerfile
-    # holds the production Dockerfile verbatim and builds FROM its last
-    # stage), plus the model weights the build downloads. Every production
-    # input is an input here too.
-    Image(
-        "sglang-qwen35-0.8b",
-        ".",
-        "images/sglang-qwen35-0.8b/Dockerfile",
-        "Confidential Inference SGLang Qwen3.5-0.8B staging",
-        (
-            *SGLANG_DSV41_FLASH_INPUTS,
-            "images/sglang-qwen35-0.8b/Dockerfile",
-            "images/sglang-qwen35-0.8b/Dockerfile.dockerignore",
-            "images/sglang-qwen35-0.8b/model-manifest.json",
-            "images/sglang-qwen35-0.8b/serve.sh",
-        ),
+        SGLANG_CONFIDENTIAL_INPUTS,
     ),
     Image(
         "sglang-router",
@@ -134,8 +117,9 @@ IMAGES = (
 )
 
 
-# The images that need the large-runner build and publish jobs.
-LARGE_IMAGES = ("sglang-dsv41-flash", "sglang-qwen35-0.8b")
+# The images that need the large-runner build and publish jobs: the one
+# SGLang engine image. It holds no model; workers get the model at start.
+LARGE_IMAGES = ("sglang-confidential",)
 
 
 def affected_images(paths: list[str]) -> list[Image]:
@@ -207,7 +191,7 @@ def main() -> int:
         {**image.matrix_entry(), **dict(zip(("revision", "epoch"), input_revision(image, args.head)))}
         for image in selected
     ]
-    # Both SGLang worker images hold the ~20 GB engine environment.
+    # The SGLang engine image holds the ~20 GB engine environment.
     large = [entry for entry in matrix if entry["image"] in LARGE_IMAGES]
     standard = [entry for entry in matrix if entry not in large]
     print("matrix=" + json.dumps({"include": matrix}, separators=(",", ":")))
