@@ -53,6 +53,7 @@ class GatewayInferenceContractTests(unittest.TestCase):
         "/v1/models",
         "/v1/chat/completions",
         "/v1/completions",
+        "/v1/responses",
         "/v1/discovery",
         "/.well-known/cds-cert.pem",
         "/.well-known/mesh-ca.pem",

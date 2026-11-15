@@ -157,6 +157,7 @@ pub fn router_with_usage(
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/completions", post(completions))
+        .route("/v1/responses", post(responses))
         // The handler enforces the configured limit with the API error body.
         // This layer only bounds the largest limit the settings accept.
         .layer(RequestBodyLimitLayer::new(MAXIMUM_BODY_BYTES_CEILING))
@@ -251,6 +252,75 @@ async fn completions(State(state): State<Arc<AppState>>, request: Request) -> Re
     proxy_inference(state, request, "/v1/completions").await
 }
 
+/// The `OpenAI` Responses API. The `SGLang` worker serves it natively and the
+/// router forwards it, so the gateway proxies it like the completion routes. The
+/// gateway keeps no response state, so it accepts only stateless requests
+/// (`stateless_responses_request`).
+async fn responses(State(state): State<Arc<AppState>>, request: Request) -> Response<Body> {
+    proxy_inference(state, request, "/v1/responses").await
+}
+
+fn wire_of(route: &str) -> model_response::Wire {
+    if route == "/v1/responses" {
+        model_response::Wire::Responses
+    } else {
+        model_response::Wire::Completions
+    }
+}
+
+/// Refuse each Responses API request field that needs server-side state, and
+/// tell the upstream not to store the response.
+///
+/// No component of this service may keep a conversation: a stored response
+/// would hold prompt and output text after the request ends, and a later
+/// request could reach a different worker. The caller sends the full input
+/// with each request instead. A `null` value counts as absent.
+///
+/// Returns the refused field. A body that is not a JSON object passes
+/// unchanged; the upstream rejects it.
+fn stateless_responses_request(payload: &mut Value) -> Result<(), &'static str> {
+    let Some(object) = payload.as_object_mut() else {
+        return Ok(());
+    };
+    for field in ["previous_response_id", "conversation"] {
+        if object.get(field).is_some_and(|value| !value.is_null()) {
+            return Err(field);
+        }
+    }
+    for field in ["store", "background"] {
+        match object.get(field) {
+            None | Some(Value::Null | Value::Bool(false)) => {}
+            Some(_) => return Err(field),
+        }
+    }
+    // OpenAI and SGLang both default `store` to true.
+    object.insert("store".to_owned(), Value::Bool(false));
+    // The router's typed request turns an absent `stream` into `null`.
+    if object.get("stream").is_none_or(Value::is_null) {
+        object.insert("stream".to_owned(), Value::Bool(false));
+    }
+    Ok(())
+}
+
+fn stateful_responses_request(field: &'static str) -> Response<Body> {
+    let or_false = if matches!(field, "store" | "background") {
+        " or set it to false"
+    } else {
+        ""
+    };
+    let message = format!(
+        "The gateway keeps no response state. Remove `{field}`{or_false}, and send the full input with each request."
+    );
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"error":{
+            "code":"stateful_responses_not_supported",
+            "message":message,
+        }})),
+    )
+        .into_response()
+}
+
 #[allow(clippy::too_many_lines)]
 async fn proxy_inference(
     state: Arc<AppState>,
@@ -307,6 +377,15 @@ async fn proxy_inference(
         return client_error(StatusCode::UNAUTHORIZED, "model_not_authorized");
     }
     let model = model.as_str();
+    let wire = wire_of(route);
+    if wire == model_response::Wire::Responses
+        && let Err(field) = stateless_responses_request(&mut payload)
+    {
+        state
+            .metrics
+            .record_key_rejection("stateful_responses_request", &key_id);
+        return stateful_responses_request(field);
+    }
     let routing_key = state
         .routing_keys
         .as_ref()
@@ -318,19 +397,24 @@ async fn proxy_inference(
         },
         None => None,
     };
-    let internal_stream_usage =
-        usage_request.is_some() && payload.get("stream").and_then(Value::as_bool) == Some(true);
+    // A Responses API stream always ends with its usage, in the terminal
+    // `response.*` event; only the completion routes need `stream_options`.
+    let internal_stream_usage = wire == model_response::Wire::Completions
+        && usage_request.is_some()
+        && payload.get("stream").and_then(Value::as_bool) == Some(true);
     let hide_final_usage = internal_stream_usage
         && payload
             .get("stream_options")
             .and_then(|v| v.get("include_usage"))
             .and_then(Value::as_bool)
             != Some(true);
-    let body = if internal_stream_usage {
-        if !payload.get("stream_options").is_some_and(Value::is_object) {
-            payload["stream_options"] = json!({});
+    let body = if internal_stream_usage || wire == model_response::Wire::Responses {
+        if internal_stream_usage {
+            if !payload.get("stream_options").is_some_and(Value::is_object) {
+                payload["stream_options"] = json!({});
+            }
+            payload["stream_options"]["include_usage"] = json!(true);
         }
-        payload["stream_options"]["include_usage"] = json!(true);
         match serde_json::to_vec(&payload) {
             Ok(body) => axum::body::Bytes::from(body),
             Err(_) => return client_error(StatusCode::BAD_REQUEST, "invalid_json"),
@@ -420,11 +504,11 @@ async fn proxy_inference(
         let _active_request = active_request;
         let _router_request = router_request;
         let mut upstream_stream = upstream.bytes_stream();
-        let mut stream_metrics = StreamMetrics::default();
+        let mut stream_metrics = StreamMetrics { wire, ..StreamMetrics::default() };
         let mut json_metrics = Vec::new();
         let mut json_metrics_overflow = false;
         let expected_model = usage_request.as_ref().map(|usage| usage.served_model().to_owned());
-        let mut model_response = model_response::ModelResponse::new(metric_model.clone(), is_event_stream).hide_final_usage(hide_final_usage).expected_model(expected_model);
+        let mut model_response = model_response::ModelResponse::new(metric_model.clone(), is_event_stream).hide_final_usage(hide_final_usage).expected_model(expected_model).wire(wire);
         loop {
             match tokio::time::timeout(idle_timeout, upstream_stream.next()).await {
                 Ok(Some(Ok(chunk))) => {
@@ -447,7 +531,7 @@ async fn proxy_inference(
                     if rewrite_model {
                         match model_response.push(&chunk) {
                             Ok(output) => {
-                                if let Some(usage) = &mut usage_request { usage.observation = model_response.observation(); if model_response.stream_done() { usage.finish(usage::Outcome::Completed); } }
+                                if let Some(usage) = &mut usage_request { usage.observation = model_response.observation(); if model_response.stream_done() { usage.finish(model_response.done_outcome()); } }
                                 if !output.is_empty() { yield Ok::<_, std::io::Error>(axum::body::Bytes::from(output)); }
                             },
                             Err(error) => { if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); } yield Err(error); break; }
@@ -467,7 +551,7 @@ async fn proxy_inference(
                             Ok(output) => {
                                 if let Some(usage) = &mut usage_request {
                                     usage.observation = model_response.observation();
-                                    usage.finish(if !is_event_stream || model_response.stream_done() { usage::Outcome::Completed } else { usage::Outcome::Interrupted });
+                                    usage.finish(if !is_event_stream || model_response.stream_done() { model_response.done_outcome() } else { usage::Outcome::Interrupted });
                                 }
                                 if !output.is_empty() { yield Ok(axum::body::Bytes::from(output)); }
                             },
@@ -486,7 +570,7 @@ async fn proxy_inference(
             }
         }
         if !is_event_stream && !json_metrics_overflow {
-            record_safe_openai_metrics(&metrics, &metric_model, &metric_key_id, &json_metrics);
+            record_safe_openai_metrics(&metrics, &metric_model, &metric_key_id, wire, &json_metrics);
         } else if is_event_stream {
             stream_metrics.finish(&metrics, &metric_model, &metric_key_id);
         }
@@ -518,11 +602,86 @@ async fn proxy_inference(
 
 /// Read only bounded numeric usage fields from an OpenAI-compatible response.
 /// Prompt text, output text, tool arguments, and headers are never retained.
-fn record_safe_openai_metrics(metrics: &GatewayMetrics, model: &str, key_id: &str, body: &[u8]) {
+fn record_safe_openai_metrics(
+    metrics: &GatewayMetrics,
+    model: &str,
+    key_id: &str,
+    wire: model_response::Wire,
+    body: &[u8],
+) {
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
         return;
     };
-    record_safe_openai_value(metrics, model, key_id, &value);
+    match wire {
+        model_response::Wire::Completions => {
+            record_safe_openai_value(metrics, model, key_id, &value);
+        }
+        model_response::Wire::Responses => {
+            record_safe_responses_value(metrics, model, key_id, &value);
+        }
+    }
+}
+
+/// Read only bounded numeric usage fields and the status of one Responses API
+/// response object: a JSON body, or the `response` of a terminal stream event.
+fn record_safe_responses_value(
+    metrics: &GatewayMetrics,
+    model: &str,
+    key_id: &str,
+    response: &Value,
+) {
+    if let Some(usage) = response.get("usage") {
+        if let Some(tokens) = usage.get("input_tokens").and_then(Value::as_u64) {
+            metrics.add_token_usage(model, key_id, "input", tokens);
+        }
+        if let Some(tokens) = usage.get("output_tokens").and_then(Value::as_u64) {
+            metrics.add_token_usage(model, key_id, "output", tokens);
+        }
+        if let Some(tokens) = responses_cached_input_tokens(usage) {
+            metrics.add_cache_read_input_tokens(model, key_id, tokens);
+        }
+    }
+    if let Some(reason) = responses_finish_reason(response) {
+        metrics.record_finish_reason(model, reason);
+    }
+}
+
+fn responses_cached_input_tokens(usage: &Value) -> Option<u64> {
+    usage
+        .get("input_tokens_details")
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(Value::as_u64)
+}
+
+/// Map a Responses API status onto the chat-completions finish reasons the
+/// finish-reason metric counts.
+fn responses_finish_reason(response: &Value) -> Option<&'static str> {
+    match response.get("status").and_then(Value::as_str)? {
+        "completed" => {
+            let calls_a_tool = response
+                .get("output")
+                .and_then(Value::as_array)
+                .is_some_and(|items| {
+                    items.iter().any(|item| {
+                        matches!(
+                            item.get("type").and_then(Value::as_str),
+                            Some("function_call" | "custom_tool_call")
+                        )
+                    })
+                });
+            Some(if calls_a_tool { "tool_calls" } else { "stop" })
+        }
+        "incomplete" => match response
+            .get("incomplete_details")
+            .and_then(|details| details.get("reason"))
+            .and_then(Value::as_str)
+        {
+            Some("max_output_tokens") => Some("length"),
+            Some("content_filter") => Some("content_filter"),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn record_safe_openai_value(metrics: &GatewayMetrics, model: &str, key_id: &str, value: &Value) {
@@ -564,14 +723,28 @@ fn record_finish_reasons(metrics: &GatewayMetrics, model: &str, value: &Value) {
     }
 }
 
-#[derive(Default)]
 struct StreamMetrics {
+    wire: model_response::Wire,
     pending: String,
     first_output_at: Option<Instant>,
     last_output_at: Option<Instant>,
     output_tokens: Option<u64>,
     cached_input_tokens: Option<u64>,
     ttft_seconds: Option<f64>,
+}
+
+impl Default for StreamMetrics {
+    fn default() -> Self {
+        Self {
+            wire: model_response::Wire::Completions,
+            pending: String::new(),
+            first_output_at: None,
+            last_output_at: None,
+            output_tokens: None,
+            cached_input_tokens: None,
+            ttft_seconds: None,
+        }
+    }
 }
 
 impl StreamMetrics {
@@ -599,20 +772,31 @@ impl StreamMetrics {
             let Ok(value) = serde_json::from_str::<Value>(data) else {
                 continue;
             };
-            record_safe_openai_value(metrics, model, key_id, &value);
-            if let Some(usage) = value.get("usage")
-                && let Some(tokens) = cached_input_tokens(usage)
-            {
-                self.cached_input_tokens = Some(tokens);
+            match self.wire {
+                model_response::Wire::Completions => {
+                    record_safe_openai_value(metrics, model, key_id, &value);
+                    if let Some(usage) = value.get("usage")
+                        && let Some(tokens) = cached_input_tokens(usage)
+                    {
+                        self.cached_input_tokens = Some(tokens);
+                    }
+                    if let Some(tokens) = value
+                        .get("usage")
+                        .and_then(|usage| usage.get("completion_tokens"))
+                        .and_then(Value::as_u64)
+                    {
+                        self.output_tokens = Some(tokens);
+                    }
+                }
+                model_response::Wire::Responses => {
+                    self.observe_responses_event(&value, metrics, model, key_id);
+                }
             }
-            if let Some(tokens) = value
-                .get("usage")
-                .and_then(|usage| usage.get("completion_tokens"))
-                .and_then(Value::as_u64)
-            {
-                self.output_tokens = Some(tokens);
-            }
-            if has_output_delta(&value) {
+            let output_delta = match self.wire {
+                model_response::Wire::Completions => has_output_delta(&value),
+                model_response::Wire::Responses => has_responses_output_delta(&value),
+            };
+            if output_delta {
                 let now = Instant::now();
                 match self.last_output_at.replace(now) {
                     None => {
@@ -627,6 +811,37 @@ impl StreamMetrics {
                         now.duration_since(previous).as_secs_f64(),
                     ),
                 }
+            }
+        }
+    }
+
+    /// Only a terminal event carries the usage of a Responses API stream.
+    fn observe_responses_event(
+        &mut self,
+        value: &Value,
+        metrics: &GatewayMetrics,
+        model: &str,
+        key_id: &str,
+    ) {
+        let terminal = value
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|event| {
+                matches!(
+                    event,
+                    "response.completed" | "response.incomplete" | "response.failed"
+                )
+            });
+        let Some(response) = value.get("response").filter(|_| terminal) else {
+            return;
+        };
+        record_safe_responses_value(metrics, model, key_id, response);
+        if let Some(usage) = response.get("usage") {
+            if let Some(tokens) = responses_cached_input_tokens(usage) {
+                self.cached_input_tokens = Some(tokens);
+            }
+            if let Some(tokens) = usage.get("output_tokens").and_then(Value::as_u64) {
+                self.output_tokens = Some(tokens);
             }
         }
     }
@@ -676,6 +891,21 @@ fn has_output_delta(value: &Value) -> bool {
                     })
             })
         })
+}
+
+/// A Responses API text or reasoning delta with text in it.
+fn has_responses_output_delta(value: &Value) -> bool {
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some(
+            "response.output_text.delta"
+                | "response.reasoning_text.delta"
+                | "response.reasoning_summary_text.delta"
+        )
+    ) && value
+        .get("delta")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty())
 }
 
 enum Authentication {
@@ -1047,6 +1277,7 @@ mod tests {
             &metrics,
             "deepseek",
             "key_safe_1",
+            model_response::Wire::Completions,
             br#"{"choices":[{"message":{"content":"private"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":3}}}"#,
         );
         let rendered = metrics.render_prometheus();
