@@ -823,6 +823,20 @@ mod tests {
     }
 
     #[test]
+    fn body_limit_accepts_the_1m_context_value_and_the_ceiling_only() {
+        let mut value = args();
+        // The documented limit for a 1M-token context.
+        value.maximum_body_bytes = 32 * 1024 * 1024;
+        assert!(validate_args(&value).is_ok());
+        value.maximum_body_bytes = confidential_gateway::MAXIMUM_BODY_BYTES_CEILING;
+        assert!(validate_args(&value).is_ok());
+        value.maximum_body_bytes = confidential_gateway::MAXIMUM_BODY_BYTES_CEILING + 1;
+        assert!(validate_args(&value).is_err());
+        value.maximum_body_bytes = 1_023;
+        assert!(validate_args(&value).is_err());
+    }
+
+    #[test]
     fn unsafe_secret_wait_fails() {
         let mut value = args();
         value.secret_wait_seconds = 0;
