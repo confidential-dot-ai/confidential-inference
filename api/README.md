@@ -32,6 +32,10 @@ store. A snapshot carries key hashes, never a plaintext API key or the
 pepper: each row is either an HMAC under the pepper, with the pepper's
 fingerprint, or the SHA-256 of a key drawn at random.
 
+`sha256` is only for keys of at least 256 random bits that the admin
+generates. The gateway cannot check how a key was made; the admin must
+enforce this.
+
 ### Per-key limits
 
 The admin can set two optional limits on each key row of the snapshot. An

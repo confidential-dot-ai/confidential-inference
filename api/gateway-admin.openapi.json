@@ -344,7 +344,7 @@
               "sha256"
             ],
             "default": "hmac-sha256",
-            "description": "How `keyHash` was made. `hmac-sha256` is HMAC-SHA256(pepper, plaintext). `sha256` is SHA-256(plaintext), for a key drawn at random from at least 256 bits. A key matches only a row of the algorithm its digest was made with. The gateway refuses a snapshot that names another algorithm."
+            "description": "How `keyHash` was made. `hmac-sha256` is HMAC-SHA256(pepper, plaintext). `sha256` is SHA-256(plaintext), for a key drawn at random from at least 256 bits. A key matches only a row of the algorithm its digest was made with. The gateway refuses a snapshot that names another algorithm. `sha256` is only for keys of at least 256 random bits that the admin generates. The gateway cannot check how a key was made; the admin must enforce this."
           },
           "pepperFingerprint": {
             "type": "string",
