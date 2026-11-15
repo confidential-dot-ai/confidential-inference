@@ -56,16 +56,16 @@ class ImagePublicationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             records = []
-            for name, character in (("gateway", "a"), ("sglang", "c")):
+            for name, character in (("gateway", "a"), ("sglang-dsv41-flash", "c")):
                 path = root / f"{name}.json"
                 path.write_text(json.dumps(self.record(name, "sha256:" + character * 64)))
                 records.append(path)
-            merged = MODULE.merge(records, ["gateway", "sglang"])
+            merged = MODULE.merge(records, ["gateway", "sglang-dsv41-flash"])
             self.assertEqual(
                 [entry["name"] for entry in merged["images"]],
                 [
                     "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
-                    "ghcr.io/confidential-dot-ai/confidential-inference/sglang",
+                    "ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41-flash",
                 ],
             )
             with self.assertRaisesRegex(MODULE.PublicationError, "image set"):

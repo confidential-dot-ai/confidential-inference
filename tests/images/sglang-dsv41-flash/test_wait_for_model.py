@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
-SCRIPT = ROOT / "images/sglang/wait_for_model.py"
+SCRIPT = ROOT / "images/sglang-dsv41-flash/wait_for_model.py"
 REVISION = "9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
 REPOSITORY = "deepseek-ai/DeepSeek-V4-Flash-0731"
 
@@ -94,7 +94,8 @@ class ModelMountGateTests(unittest.TestCase):
         )
 
     def run_gate(self, digests: dict[str, str], timeout: int = 1,
-                 private: bool = False, child_code: str = "print('server-started')") -> subprocess.CompletedProcess[str]:
+                 private: bool = False, child_code: str = "print('server-started')",
+                 flags: tuple[str, ...] = ()) -> subprocess.CompletedProcess[str]:
         command = [
             "python3", str(SCRIPT), "--path", str(self.model),
             "--timeout-seconds", str(timeout), "--poll-seconds", "0.05",
@@ -102,6 +103,7 @@ class ModelMountGateTests(unittest.TestCase):
             "--expected-revision", REVISION,
             "--revision-metadata", ".model-lock-local-manifest.json",
             "--mountinfo", str(self.mountinfo),
+            *flags,
         ]
         for name in sorted(digests):
             command.extend(["--expected-file", f"{name}={digests[name]}"])
@@ -152,6 +154,52 @@ class ModelMountGateTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("not a mount point", result.stderr)
         self.assertNotIn("server-started", result.stdout)
+
+    def test_image_files_start_the_server_without_a_mount(self) -> None:
+        digests = self.create_model()
+        result = self.run_gate(digests, flags=("--image-files",))
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("server-started\n", result.stdout)
+        self.assertIn("model-mount: every model file matches the manifest", result.stderr)
+
+    def test_image_files_under_a_mount_fail_closed(self) -> None:
+        # A volume over the image path hides the image files.
+        digests = self.create_model()
+        self.set_mount()
+        result = self.run_gate(digests, flags=("--image-files",))
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("is a mount point", result.stderr)
+        self.assertNotIn("server-started", result.stdout)
+
+    def test_image_files_check_every_byte(self) -> None:
+        digests = self.create_model()
+        weight = self.model / "model-00001-of-00001.safetensors"
+        self.model.chmod(0o755)
+        weight.chmod(0o644)
+        weight.write_bytes(b"WEIGHTS")
+        weight.chmod(0o444)
+        self.model.chmod(0o555)
+        result = self.run_gate(digests, flags=("--image-files",))
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("wrong digest", result.stderr)
+
+    def test_writable_image_files_fail_closed(self) -> None:
+        digests = self.create_model(writable=True)
+        result = self.run_gate(digests, flags=("--image-files",))
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("permits writes", result.stderr)
+
+    def test_missing_image_path_fails_closed(self) -> None:
+        digests = self.create_model(target=self.base / "elsewhere")
+        result = self.run_gate(digests, timeout=5, flags=("--image-files",))
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("not a directory", result.stderr)
+
+    def test_image_files_and_plain_cache_exclude_each_other(self) -> None:
+        digests = self.create_model()
+        result = self.run_gate(digests, flags=("--image-files", "--plain-cache"))
+        self.assertEqual(2, result.returncode)
+        self.assertIn("exclude each other", result.stderr)
 
     def test_late_mount_starts_before_the_timeout(self) -> None:
         staged = self.base / "staged"

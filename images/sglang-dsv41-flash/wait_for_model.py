@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wait for a verified model mount (c8s dm-verity volume or plain cache), then supervise the server process."""
+"""Wait for a verified model mount (c8s dm-verity volume or plain cache), or check model files in the image, then supervise the server process."""
 
 from __future__ import annotations
 
@@ -244,6 +244,17 @@ def verify_no_write(path: Path) -> None:
 def verify_once(args: argparse.Namespace) -> None:
     path = args.path.resolve()
     record = mount_record(path, args.mountinfo)
+    if args.image_files:
+        # The model files are a layer of the container image: no mount and no
+        # dm-verity source. Their integrity is the full byte check below, on
+        # every start. A volume mounted over the path would hide the image
+        # files, so it fails closed.
+        if record is not None:
+            raise ModelMountError("the image model path is a mount point, not the image files")
+        if not path.is_dir():
+            raise ModelMountError("the image model path is not a directory")
+        verify_files(path, args)
+        return
     if record is None:
         raise MountUnavailable("the model path is not a mount point")
     _mount_options, _filesystem, source, _super_options = record
@@ -257,6 +268,10 @@ def verify_once(args: argparse.Namespace) -> None:
             "the c8s dm-verity mapping is not attached yet "
             f"(filesystem={_filesystem}, source={source})"
         )
+    verify_files(path, args)
+
+
+def verify_files(path: Path, args: argparse.Namespace) -> None:
     verify_no_write(path)
     for name, expected in args.expected_file:
         candidate = path / name
@@ -306,6 +321,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-file", action="append", type=parse_expected_file, default=[])
     parser.add_argument("--plain-cache", action="store_true",
                         help="the path is a read-only plain cache that fetch-model filled, not a c8s dm-verity volume")
+    parser.add_argument("--image-files", action="store_true",
+                        help="the path is a read-only directory of the container image, not a mount")
     parser.add_argument("--gpu-metrics-port", type=int)
     parser.add_argument("--private-server-output", action="store_true",
                         help="discard native server output; export no unreviewed request or exception text")
@@ -318,6 +335,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("the expected revision must be a lowercase 40-character commit")
     if not args.expected_repository or "@" in args.expected_repository or args.expected_repository.startswith("/"):
         parser.error("the expected repository is invalid")
+    if args.image_files and args.plain_cache:
+        parser.error("--image-files and --plain-cache exclude each other")
     if len(args.expected_file) < 3:
         parser.error("at least three expected model files are required")
     if args.gpu_metrics_port is not None and not 1024 <= args.gpu_metrics_port <= 65535:

@@ -1,0 +1,15 @@
+# Allowlist: the build context is the repository root.
+*
+!images/sglang-dsv41-flash/Dockerfile
+!images/sglang-dsv41-flash/source.lock
+!images/sglang-dsv41-flash/requirements.lock
+!images/sglang-dsv41-flash/dcgm-counters.csv
+!images/sglang-dsv41-flash/fetch_source.py
+!images/sglang-dsv41-flash/wait_for_model.py
+!images/sglang-dsv41-flash/harden_http.py
+!images/sglang-dsv41-flash/harden_media.py
+!images/sglang-dsv41-flash/harden_dist.py
+!images/sglang-dsv41-flash/fetch_model.py
+!images/sglang-dsv41-flash/simulator-upstream/**
+!images/sglang-dsv41-flash/patches/sglang-simulator-*.patch
+!images/sglang-router/private_log_sink.py

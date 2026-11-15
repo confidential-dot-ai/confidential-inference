@@ -153,8 +153,7 @@ def staging_allowlist(c8s: Path) -> bytes:
 
 def rendered_workers(deployment) -> list[dict]:
     return [item for item in rendered(deployment) if item.get("kind") == "StatefulSet"
-            and (item.get("metadata", {}).get("name", "").startswith("inference-worker-")
-                 or item.get("metadata", {}).get("name", "").startswith("inference-pd"))]
+            and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
 
 DIGEST = "sha256:" + "a" * 64
 IMAGE = f"ghcr.io/example/app@{DIGEST}"
@@ -719,7 +718,7 @@ class FrameworkReleaseTests(unittest.TestCase):
         return base
 
     def test_an_unchanged_image_keeps_the_digest_of_the_signed_base_release(self):
-        sglang = "ghcr.io/confidential-dot-ai/confidential-inference/sglang"
+        sglang = "ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41-flash"
         evidence = publication({sglang: published_release_images()[sglang]}, base_ref="v0.16.9")
         manifest = json.loads(build_framework(evidence, self.base_release())["release-bundle.json"])
         self.assertEqual(manifest["images"]["gateway"], RELEASE_IMAGES["gateway"])
@@ -1173,10 +1172,8 @@ class RenderTests(unittest.TestCase):
             raise AssertionError("the deployment must render inference workers")
         for worker in workers:
             container = next(c for c in worker["spec"]["template"]["spec"]["containers"]
-                             if c["name"] in ("sglang", "engram-holder", "sglang-pair"))
+                             if c["name"] == "sglang")
             args = container["args"]
-            if container["name"] == "sglang-pair":
-                args = json.loads(args[1])["modelGate"]
             result.append([arg.removeprefix("--expected-file=") for arg in args
                            if arg.startswith("--expected-file=")])
         return result

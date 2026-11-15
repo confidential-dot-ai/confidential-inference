@@ -1,0 +1,50 @@
+# Staging with a real model: Qwen3.5-0.8B, one worker on one GPU behind the
+# SGLang router, on the staging image that this repository builds
+# (images/sglang-qwen35-0.8b), with the model weights inside the image. Helm
+# applies it after production-values.yaml and staging-values.yaml. It is a
+# test fixture: a staging environment copies it and sets its own nodes.
+# Adapted from confidential-inference#299.
+#
+# The worker argv equals `qwen35-serve args` in the image. Flags follow
+# SGLang's Qwen3.5 cookbook page: qwen3_coder tool calls, the qwen3 reasoning
+# parser, the model's default context. production-values.yaml sets the
+# DeepSeek-V4 parsers and workerExtraArgs; this layer replaces them.
+inference:
+  mode: model
+  workerImage: sglangQwen35
+  replicas: 1
+  gpusPerReplica: 1
+  gpuArchitectures:
+  - BLACKWELL
+  resources:
+    cpu: '8'
+    memory: 32Gi
+  model:
+    name: Qwen/Qwen3.5-0.8B
+    revision: 2fc06364715b967f1860aea9cf38778875588b17
+    mountVerification:
+      expectedFileList:
+      - path: .model-lock-local-manifest.json
+        sha256: 625963f6a7f159fd2a3e8ad97642a11ac275d1735adaadca8df39452b9fbd8fa
+      - path: config.json
+        sha256: b90b86f35c8e6925ef74ee04d0e758f0a845c83a42089ad82bbaa948de9b4204
+      - path: tokenizer_config.json
+        sha256: 49e2b6e395f959f077f1e992b338919c0d4a9732fc6e613995e06557f843500c
+    # The model files are in the staging image (images/sglang-qwen35-0.8b):
+    # no download, no egress, no model volume. wait-for-model checks every
+    # byte against the byte manifest that mountVerification pins.
+    source: image
+    imagePath: /opt/confidential-inference/models/qwen35-0.8b
+    download:
+      enabled: false
+  toolCallParser: qwen3_coder
+  reasoningParser: qwen3
+  speculativeAlgorithm: ""
+  moeRunnerBackend: auto
+  workerExtraArgs: []
+gateway:
+  usage:
+    models:
+      Qwen/Qwen3.5-0.8B:
+        served_model: Qwen/Qwen3.5-0.8B
+        model_revision: 2fc06364715b967f1860aea9cf38778875588b17

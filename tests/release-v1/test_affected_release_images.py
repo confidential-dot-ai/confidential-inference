@@ -28,7 +28,6 @@ class AffectedReleaseImagesTests(unittest.TestCase):
 
     def test_image_change_selects_only_its_image(self) -> None:
         self.assertEqual(names(["images/gateway/Dockerfile"]), ["gateway"])
-        self.assertEqual(names(["images/sglang/Dockerfile"]), ["sglang"])
         self.assertEqual(names(["images/rollout-client/Dockerfile"]), ["rollout-client"])
 
     def test_router_patch_and_source_pin_do_not_select_workers(self) -> None:
@@ -49,7 +48,7 @@ class AffectedReleaseImagesTests(unittest.TestCase):
                     "README.md",
                     "images/gateway/README.md",
                     "images/gateway/build.sh",
-                    "images/sglang/README.md",
+                    "images/sglang-dsv41-flash/README.md",
                     "services/gateway/tests/fake_upstream.rs",
                     "helm/confidential-inference/values.yaml",
                     ".github/workflows/release-images.yml",
@@ -58,11 +57,23 @@ class AffectedReleaseImagesTests(unittest.TestCase):
             [],
         )
 
-    def test_sglang_build_mount_selects_sglang(self) -> None:
-        self.assertEqual(
-            names(["images/sglang/simulator-upstream/src/usercustomize.py"]),
-            ["sglang"],
-        )
+    def test_production_input_selects_both_worker_images(self) -> None:
+        # The staging image is the production image plus one weights layer.
+        for path in ("images/sglang-dsv41-flash/Dockerfile",
+                     "images/sglang-dsv41-flash/simulator-upstream/src/usercustomize.py",
+                     "images/sglang-dsv41-flash/dcgm-counters.csv"):
+            self.assertEqual(names([path]), ["sglang-dsv41-flash", "sglang-qwen35-0.8b"], path)
+
+    def test_engine_input_selects_both_worker_images(self) -> None:
+        self.assertEqual(names(["images/sglang-dsv41-flash/requirements.lock"]), ["sglang-dsv41-flash", "sglang-qwen35-0.8b"])
+        self.assertEqual(names(["images/sglang-dsv41-flash/harden_http.py"]), ["sglang-dsv41-flash", "sglang-qwen35-0.8b"])
+
+    def test_staging_model_pin_selects_only_the_staging_image(self) -> None:
+        self.assertEqual(names(["images/sglang-qwen35-0.8b/model-manifest.json"]), ["sglang-qwen35-0.8b"])
+        self.assertEqual(names(["images/sglang-qwen35-0.8b/Dockerfile"]), ["sglang-qwen35-0.8b"])
+
+    def test_both_worker_images_use_the_large_runners(self) -> None:
+        self.assertEqual(("sglang-dsv41-flash", "sglang-qwen35-0.8b"), MODULE["LARGE_IMAGES"])
 
     def test_base_ref_accepts_only_release_tags_or_full_commits(self) -> None:
         self.assertIsNotNone(BASE_REF.fullmatch("v0.14.3"))

@@ -1,0 +1,21 @@
+# Allowlist: the build context is the repository root. The production
+# worker's context (images/sglang-dsv41-flash/Dockerfile.dockerignore, below
+# verbatim) plus the two files of this recipe. No model file is in the context:
+# the build downloads the weights.
+*
+!images/sglang-dsv41-flash/Dockerfile
+!images/sglang-dsv41-flash/source.lock
+!images/sglang-dsv41-flash/requirements.lock
+!images/sglang-dsv41-flash/dcgm-counters.csv
+!images/sglang-dsv41-flash/fetch_source.py
+!images/sglang-dsv41-flash/wait_for_model.py
+!images/sglang-dsv41-flash/harden_http.py
+!images/sglang-dsv41-flash/harden_media.py
+!images/sglang-dsv41-flash/harden_dist.py
+!images/sglang-dsv41-flash/fetch_model.py
+!images/sglang-dsv41-flash/simulator-upstream/**
+!images/sglang-dsv41-flash/patches/sglang-simulator-*.patch
+!images/sglang-router/private_log_sink.py
+!images/sglang-qwen35-0.8b/Dockerfile
+!images/sglang-qwen35-0.8b/model-manifest.json
+!images/sglang-qwen35-0.8b/serve.sh
