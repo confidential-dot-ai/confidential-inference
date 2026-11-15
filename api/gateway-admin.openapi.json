@@ -336,12 +336,20 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 512,
-            "description": "Base64url, no padding, of HMAC-SHA256(pepper, plaintext). It never discloses the plaintext key or the pepper."
+            "description": "Base64url, no padding, of the digest `hashAlgorithm` names. It never discloses the plaintext key or the pepper."
+          },
+          "hashAlgorithm": {
+            "enum": [
+              "hmac-sha256",
+              "sha256"
+            ],
+            "default": "hmac-sha256",
+            "description": "How `keyHash` was made. `hmac-sha256` is HMAC-SHA256(pepper, plaintext). `sha256` is SHA-256(plaintext), for a key drawn at random from at least 256 bits. A key matches only a row of the algorithm its digest was made with. The gateway refuses a snapshot that names another algorithm. `sha256` is only for keys of at least 256 random bits that the admin generates. The gateway cannot check how a key was made; the admin must enforce this."
           },
           "pepperFingerprint": {
             "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "description": "Binds this hash to one pepper. The gateway skips and counts a row whose fingerprint differs from its own."
+            "pattern": "^([0-9a-f]{64})?$",
+            "description": "Binds an `hmac-sha256` hash to one pepper. The gateway skips and counts a row whose fingerprint differs from its own. A `sha256` row names no pepper and leaves this empty: the gateway refuses a snapshot whose `sha256` row names one, and a gateway built before `hashAlgorithm` skips and counts the row."
           },
           "tags": {
             "type": "array",
