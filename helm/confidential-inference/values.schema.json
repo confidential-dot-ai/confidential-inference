@@ -144,6 +144,8 @@
           "properties": {
             "name": {"type": "string", "minLength": 1},
             "revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+            "source": {"enum": ["mount", "image"]},
+            "imagePath": {"type": "string", "pattern": "^(?:|/opt(?:/[A-Za-z0-9_-][A-Za-z0-9._-]*)+)$"},
             "c8sVolumeSource": {"type": "string", "pattern": "^/[^=]+$"},
             "volumeNames": {
               "type": "array",
@@ -211,6 +213,15 @@
               },
               "if": {"properties": {"enabled": {"const": true}}},
               "then": {"properties": {"hosts": {"minItems": 1}, "manifest": {"minLength": 1}}}
+            }
+          },
+          "if": {"required": ["source"], "properties": {"source": {"const": "image"}}},
+          "then": {
+            "required": ["imagePath"],
+            "properties": {
+              "imagePath": {"minLength": 1},
+              "download": {"properties": {"enabled": {"const": false}}},
+              "cache": {"properties": {"enabled": {"const": false}}}
             }
           }
         },

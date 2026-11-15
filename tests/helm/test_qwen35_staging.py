@@ -19,6 +19,7 @@ SERVE = ROOT / "images/sglang-qwen35-0.8b/serve.sh"
 MODEL = "Qwen/Qwen3.5-0.8B"
 REVISION = "2fc06364715b967f1860aea9cf38778875588b17"
 MANIFEST_SHA256 = "625963f6a7f159fd2a3e8ad97642a11ac275d1735adaadca8df39452b9fbd8fa"
+IMAGE_MODEL_PATH = "/opt/confidential-inference/models/qwen35-0.8b"
 STAGING_WORKER = yaml.safe_load(RELEASE_VALUES.read_text())["images"]["sglangQwen35"]
 
 
@@ -67,7 +68,7 @@ class Qwen35StagingTests(unittest.TestCase):
         self.assertEqual("1", template["metadata"]["annotations"]["confidential.ai/attested-gpu-count"])
         self.assertEqual(1, int(container["resources"]["limits"]["nvidia.com/gpu"]))
         args = container["args"]
-        self.assertEqual("/usr/local/bin/wait-for-model", args[0])
+        self.assertEqual(["/usr/local/bin/wait-for-model"], container["command"])
         self.assertIn(f"--expected-repository={MODEL}", args)
         self.assertIn(f"--expected-revision={REVISION}", args)
         self.assertIn(f"--expected-file=.model-lock-local-manifest.json={MANIFEST_SHA256}", args)
@@ -92,12 +93,63 @@ class Qwen35StagingTests(unittest.TestCase):
         urls = args[args.index("--worker-urls") + 1:args.index("--policy=cache_aware")]
         self.assertEqual(["http://inference-worker-0-0.inference-workers:30000"], urls)
 
-    def test_download_manifest_is_the_image_manifest(self):
-        config = next(item for item in self.documents if item["kind"] == "ConfigMap"
-                      and item["metadata"]["name"] == "model-manifest")
-        manifest = config["data"]["manifest.json"].encode()
+    def test_model_files_are_in_the_image(self):
+        worker = workers(self.documents)[0]
+        template = worker["spec"]["template"]
+        container = sglang(worker)
+        args = container["args"]
+        self.assertEqual(["/usr/local/bin/wait-for-model"], container["command"])
+        self.assertIn(f"--path={IMAGE_MODEL_PATH}", args)
+        self.assertIn("--image-files", args)
+        self.assertNotIn("--plain-cache", args)
+        self.assertIn(f"--model-path={IMAGE_MODEL_PATH}", args)
+        # No download, no egress, no init container, no model volume.
+        self.assertNotIn("confidential.ai/c8s-volumes", template["metadata"]["annotations"])
+        self.assertNotIn("confidential.ai/c8s-volume-dir", template["metadata"]["annotations"])
+        self.assertNotIn("hostAliases", template["spec"])
+        self.assertNotIn("initContainers", template["spec"])
+        self.assertEqual(["shm"], [volume["name"] for volume in template["spec"]["volumes"]])
+        self.assertEqual(["shm"], [mount["name"] for mount in container["volumeMounts"]])
+        self.assertFalse(any("fetch-model" in part for part in container["command"] + args))
+        names = {(item["kind"], item["metadata"]["name"]) for item in self.documents}
+        self.assertNotIn(("ConfigMap", "model-manifest"), names)
+        self.assertNotIn(("NetworkPolicy", "inference-worker-model-download"), names)
+
+    def test_wait_for_model_pins_the_image_manifest(self):
+        args = sglang(workers(self.documents)[0])["args"]
+        manifest = (ROOT / "images/sglang-qwen35-0.8b/model-manifest.json").read_bytes()
         self.assertEqual(MANIFEST_SHA256, hashlib.sha256(manifest).hexdigest())
-        self.assertEqual((ROOT / "images/sglang-qwen35-0.8b/model-manifest.json").read_bytes(), manifest)
+        self.assertIn(f"--expected-file=.model-lock-local-manifest.json={MANIFEST_SHA256}", args)
+        files = {entry["path"]: entry["content_sha256"] for entry in json.loads(manifest)["files"]}
+        self.assertIn(f"--expected-file=config.json={files['config.json']}", args)
+        self.assertIn(f"--expected-file=tokenizer_config.json={files['tokenizer_config.json']}", args)
+
+    def test_image_model_path_is_the_image_layer(self):
+        dockerfile = (ROOT / "images/sglang-qwen35-0.8b/Dockerfile").read_text()
+        self.assertIn(f'LABEL ai.confidential.model.path="{IMAGE_MODEL_PATH}"', dockerfile)
+
+    def test_image_model_excludes_download(self):
+        result = render("qwen35-staging-values.yaml", extra=("--set", "inference.model.download.enabled=true"),
+                        check=False)
+        self.assertNotEqual(0, result.returncode)
+
+    def test_image_model_needs_model_mode(self):
+        result = render("qwen35-staging-values.yaml", extra=("--set", "inference.mode=simulator",
+                                                              "--set", "inference.gpusPerReplica=0"), check=False)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("inference.mode=model", result.stderr)
+
+    def test_image_model_needs_an_image_path(self):
+        for value in ("", "/mnt/c8s-data/models/qwen", "/opt/../etc"):
+            result = render("qwen35-staging-values.yaml", extra=("--set", f"inference.model.imagePath={value}"),
+                            check=False)
+            self.assertNotEqual(0, result.returncode, value)
+
+    def test_default_source_is_the_mount(self):
+        found = workers(documents(render()))
+        self.assertTrue(found)
+        for worker in found:
+            self.assertNotIn("--image-files", sglang(worker)["args"])
 
     def test_gateway_serves_the_model(self):
         gateway = next(item for item in self.documents if item["kind"] == "Deployment"

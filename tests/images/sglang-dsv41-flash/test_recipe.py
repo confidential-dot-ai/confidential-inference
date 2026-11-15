@@ -52,7 +52,7 @@ class RecipeTests(unittest.TestCase):
                 f"FROM {LOCK['gpuMetrics']['reference']}@{LOCK['gpuMetrics']['digest']} AS dcgm-exporter",
                 f"FROM {LOCK['image']['reference']}@{LOCK['image']['digest']} AS base",
                 "FROM base AS source",
-                "FROM base",
+                "FROM base AS engine",
             ],
             from_lines,
         )

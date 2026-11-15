@@ -26,6 +26,18 @@ spec:
 {{- fail "inference.model.cache is unsupported on C8s v0.99.29: the worker mounts /var/lib/models read-only; use inference.model.download or the c8s model volume" }}
 {{- end }}
 {{- $download := .Values.inference.model.download.enabled }}
+{{- $imageModel := eq (.Values.inference.model.source | default "mount") "image" }}
+{{- if $imageModel }}
+{{- if ne .Values.inference.mode "model" }}
+{{- fail "inference.model.source=image needs inference.mode=model: the model files are in the worker image" }}
+{{- end }}
+{{- if $download }}
+{{- fail "inference.model.source=image excludes inference.model.download: the model files are in the worker image" }}
+{{- end }}
+{{- if not .Values.inference.model.imagePath }}
+{{- fail "inference.model.source=image needs inference.model.imagePath, the model directory in the worker image" }}
+{{- end }}
+{{- end }}
 {{- range $index := until (int .Values.inference.replicas) }}
 {{- $simulatorMode := eq $.Values.inference.mode "simulator" }}
 {{- $modelMount := or (not $simulatorMode) $.Values.inference.simulator.validateModelMount }}
@@ -34,6 +46,9 @@ spec:
 {{- if $modelMount }}
 {{- $volumeName = index $.Values.inference.model.volumeNames $index }}
 {{- $modelPath = printf "%s/%s" $.Values.inference.model.volumeDirectory $volumeName }}
+{{- if $imageModel }}
+{{- $modelPath = $.Values.inference.model.imagePath }}
+{{- end }}
 {{- end }}
 {{- $attestedWorkload := index $.Values.inference.attestedWorkloads $index }}
 {{- $fetch := and $modelMount $download }}
@@ -64,7 +79,7 @@ spec:
         confidential.ai/environment: {{ $.Values.environment | quote }}
       annotations:
         confidential.ai/cw: inference-worker-{{ $index }}
-        {{- if and $modelMount (not $download) }}
+        {{- if and $modelMount (not $download) (not $imageModel) }}
         confidential.ai/c8s-volumes: {{ printf "%s=%s" $volumeName $.Values.inference.model.c8sVolumeSource | quote }}
         confidential.ai/c8s-volume-dir: {{ $.Values.inference.model.volumeDirectory | quote }}
         {{- end }}
@@ -152,6 +167,9 @@ spec:
             - --path={{ $modelPath }}
             {{- if $fetch }}
             - --plain-cache
+            {{- end }}
+            {{- if $imageModel }}
+            - --image-files
             {{- end }}
             - --timeout-seconds={{ $.Values.inference.model.mountVerification.timeoutSeconds }}
             - --poll-seconds={{ $.Values.inference.model.mountVerification.pollSeconds }}

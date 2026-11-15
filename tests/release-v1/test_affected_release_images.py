@@ -28,7 +28,6 @@ class AffectedReleaseImagesTests(unittest.TestCase):
 
     def test_image_change_selects_only_its_image(self) -> None:
         self.assertEqual(names(["images/gateway/Dockerfile"]), ["gateway"])
-        self.assertEqual(names(["images/sglang-dsv41-flash/Dockerfile"]), ["sglang-dsv41-flash"])
         self.assertEqual(names(["images/rollout-client/Dockerfile"]), ["rollout-client"])
 
     def test_router_patch_and_source_pin_do_not_select_workers(self) -> None:
@@ -58,11 +57,12 @@ class AffectedReleaseImagesTests(unittest.TestCase):
             [],
         )
 
-    def test_sglang_build_mount_selects_sglang(self) -> None:
-        self.assertEqual(
-            names(["images/sglang-dsv41-flash/simulator-upstream/src/usercustomize.py"]),
-            ["sglang-dsv41-flash"],
-        )
+    def test_production_input_selects_both_worker_images(self) -> None:
+        # The staging image is the production image plus one weights layer.
+        for path in ("images/sglang-dsv41-flash/Dockerfile",
+                     "images/sglang-dsv41-flash/simulator-upstream/src/usercustomize.py",
+                     "images/sglang-dsv41-flash/dcgm-counters.csv"):
+            self.assertEqual(names([path]), ["sglang-dsv41-flash", "sglang-qwen35-0.8b"], path)
 
     def test_engine_input_selects_both_worker_images(self) -> None:
         self.assertEqual(names(["images/sglang-dsv41-flash/requirements.lock"]), ["sglang-dsv41-flash", "sglang-qwen35-0.8b"])

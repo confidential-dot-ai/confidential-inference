@@ -75,7 +75,9 @@ FROM base AS source
 RUN --mount=type=bind,source=images/sglang-dsv41-flash,target=/inputs/recipe,readonly \
     python3.12 -I /inputs/recipe/fetch_source.py --recipe /inputs/recipe --out /src
 
-FROM base
+# The production image. images/sglang-qwen35-0.8b/Dockerfile holds this file
+# verbatim and builds its staging image FROM this stage.
+FROM base AS engine
 RUN --mount=type=bind,from=dcgm-exporter,source=/,target=/run-dcgm,readonly \
     --mount=type=bind,source=images/sglang-dsv41-flash/dcgm-counters.csv,target=/run-src/dcgm-counters.csv,readonly \
     install -D -m 0555 /run-dcgm/usr/bin/dcgm-exporter /usr/local/bin/dcgm-exporter \

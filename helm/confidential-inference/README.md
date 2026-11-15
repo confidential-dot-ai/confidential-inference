@@ -80,12 +80,14 @@ done
 
 ## Model download
 
-A worker gets its model in one of two ways:
+A worker gets its model in one of three ways:
 
 - The C8s model volume (the default): an encrypted volume that CDS opens for
   the pod (`inference.model.c8sVolumeSource`, the `confidential.ai/c8s-volumes`
   annotation).
 - A download at each start (`inference.model.download.enabled`).
+- The model files in the worker image (`inference.model.source: image`;
+  staging only, see below).
 
 The plain model cache (`inference.model.cache`) is refused. The C8s v0.99.29
 worker mounts its models disk (`/var/lib/models`) read-only, so `fetch-model`
@@ -137,6 +139,22 @@ Limits:
   the start find a changed byte. After the start, the host can change blocks
   to random data without detection. With the C8s model volume, dm-verity
   checks every read.
+
+## Model in the image (staging)
+
+With `inference.model.source: image`, the model files are a layer of the
+worker image, at `inference.model.imagePath`. `images/sglang-qwen35-0.8b` is
+such an image: the build downloads the pinned revision and checks every file
+against the byte manifest. It is for staging, and temporary, until a model
+mirror or persistent model disks exist.
+
+The worker then has no model download, no model egress, no init container,
+no `confidential.ai/c8s-volumes` annotation and no model volume. The model
+path is the image directory, and `wait-for-model --image-files` checks every
+byte against the manifest (`inference.model.mountVerification`) before the
+server starts. It refuses the path if a volume is mounted over it or if the
+worker can write to it. The setting needs `inference.mode: model` and
+excludes `inference.model.download`.
 
 ## Worker image
 
