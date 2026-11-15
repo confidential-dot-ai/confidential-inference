@@ -69,48 +69,48 @@ IMAGES = (
         (*RUST_IMAGE_INPUTS, "images/maintenance-gateway/Dockerfile"),
     ),
     Image(
-        "sglang",
+        "sglang-dsv41-flash",
         ".",
-        "images/sglang/Dockerfile",
+        "images/sglang-dsv41-flash/Dockerfile",
         "Confidential Inference SGLang",
         (
-            "images/sglang/Dockerfile",
-            "images/sglang/Dockerfile.dockerignore",
-            "images/sglang/source.lock",
-            "images/sglang/requirements.lock",
-            "images/sglang/fetch_source.py",
-            "images/sglang/harden_http.py",
-            "images/sglang/harden_media.py",
-            "images/sglang/harden_dist.py",
+            "images/sglang-dsv41-flash/Dockerfile",
+            "images/sglang-dsv41-flash/Dockerfile.dockerignore",
+            "images/sglang-dsv41-flash/source.lock",
+            "images/sglang-dsv41-flash/requirements.lock",
+            "images/sglang-dsv41-flash/fetch_source.py",
+            "images/sglang-dsv41-flash/harden_http.py",
+            "images/sglang-dsv41-flash/harden_media.py",
+            "images/sglang-dsv41-flash/harden_dist.py",
             "images/sglang-router/private_log_sink.py",
-            "images/sglang/wait_for_model.py",
-            "images/sglang/fetch_model.py",
-            "images/sglang/patches/**",
-            "images/sglang/simulator-upstream/**",
+            "images/sglang-dsv41-flash/wait_for_model.py",
+            "images/sglang-dsv41-flash/fetch_model.py",
+            "images/sglang-dsv41-flash/patches/**",
+            "images/sglang-dsv41-flash/simulator-upstream/**",
         ),
     ),
     # The Qwen3.5-0.8B staging worker: the production engine inputs above
     # (not the simulator), plus the model pin and its docker-run helper.
     Image(
-        "sglang-qwen35",
+        "sglang-qwen35-0.8b",
         ".",
-        "images/sglang-qwen35/Dockerfile",
+        "images/sglang-qwen35-0.8b/Dockerfile",
         "Confidential Inference SGLang Qwen3.5-0.8B staging",
         (
-            "images/sglang-qwen35/Dockerfile",
-            "images/sglang-qwen35/Dockerfile.dockerignore",
-            "images/sglang-qwen35/model-manifest.json",
-            "images/sglang-qwen35/serve.sh",
-            "images/sglang/source.lock",
-            "images/sglang/requirements.lock",
-            "images/sglang/dcgm-counters.csv",
-            "images/sglang/fetch_source.py",
-            "images/sglang/harden_http.py",
-            "images/sglang/harden_media.py",
-            "images/sglang/harden_dist.py",
+            "images/sglang-qwen35-0.8b/Dockerfile",
+            "images/sglang-qwen35-0.8b/Dockerfile.dockerignore",
+            "images/sglang-qwen35-0.8b/model-manifest.json",
+            "images/sglang-qwen35-0.8b/serve.sh",
+            "images/sglang-dsv41-flash/source.lock",
+            "images/sglang-dsv41-flash/requirements.lock",
+            "images/sglang-dsv41-flash/dcgm-counters.csv",
+            "images/sglang-dsv41-flash/fetch_source.py",
+            "images/sglang-dsv41-flash/harden_http.py",
+            "images/sglang-dsv41-flash/harden_media.py",
+            "images/sglang-dsv41-flash/harden_dist.py",
             "images/sglang-router/private_log_sink.py",
-            "images/sglang/wait_for_model.py",
-            "images/sglang/fetch_model.py",
+            "images/sglang-dsv41-flash/wait_for_model.py",
+            "images/sglang-dsv41-flash/fetch_model.py",
         ),
     ),
     Image(
@@ -140,7 +140,7 @@ IMAGES = (
 
 
 # The images that need the large-runner build and publish jobs.
-LARGE_IMAGES = ("sglang", "sglang-qwen35")
+LARGE_IMAGES = ("sglang-dsv41-flash", "sglang-qwen35-0.8b")
 
 
 def affected_images(paths: list[str]) -> list[Image]:

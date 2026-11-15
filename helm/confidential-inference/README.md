@@ -143,10 +143,10 @@ Limits:
 The framework release names every image the chart can run. An environment
 chooses the worker image among them with `inference.workerImage`:
 
-- `sglangWorker` (the default): the production SGLang image
-  (`images/sglang`, plain upstream SGLang, DeepSeek-V4.1).
-- `sglangStagingWorker`: the 1-GPU Qwen3.5-0.8B staging image
-  (`images/sglang-qwen35`). It runs the production engine, built from the
+- `sglangDsv41Flash` (the default): the production SGLang image
+  (`images/sglang-dsv41-flash`, plain upstream SGLang, DeepSeek-V4.1).
+- `sglangQwen35`: the 1-GPU Qwen3.5-0.8B staging image
+  (`images/sglang-qwen35-0.8b`). It runs the production engine, built from the
   same pinned inputs. Its environment layer is
   `tests/fixtures/deployments/qwen35-staging-values.yaml`: one worker on one
   GPU, the model download pinned by its byte manifest, and the Qwen parsers.

@@ -57,7 +57,7 @@ listeners on loopback for single-node runs:
   `--forward-pass-metrics-ipc-name`. Each of these opens another
   rendezvous, control or publisher listener.
 
-The Qwen3.5-0.8B staging image (`images/sglang-qwen35`) applies all three
+The Qwen3.5-0.8B staging image (`images/sglang-qwen35-0.8b`) applies all three
 policies in the same build step. `harden_dist.py` still accepts the old
 diagnostic fork source (`diagnostic-fork`), which only the removed GPU-test
 image built.
@@ -74,12 +74,12 @@ confidential GPU VM. Metrics labels are restricted by the telemetry collector.
 The CPU simulator remains outside the production Python import path. It is
 used only by the simulator staging profile (`inference.mode: simulator`).
 
-The Qwen3.5-0.8B staging image (`images/sglang-qwen35`) builds the same
+The Qwen3.5-0.8B staging image (`images/sglang-qwen35-0.8b`) builds the same
 engine from the same inputs in this directory: `source.lock`,
 `requirements.lock`, `fetch_source.py`, the `harden_*.py` build steps,
 `wait_for_model.py`, `fetch_model.py` and `dcgm-counters.csv`. A change to one
 of them rebuilds both images. When you add a build step here, add it to
-`images/sglang-qwen35/Dockerfile` too; `tests/images/sglang/test_qwen35_recipe.py`
+`images/sglang-qwen35-0.8b/Dockerfile` too; `tests/images/sglang-qwen35-0.8b/test_recipe.py`
 fails until both Dockerfiles match.
 
 Build and publication use the existing Image Preparation workflow, including

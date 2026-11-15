@@ -1,7 +1,7 @@
 """The Qwen3.5-0.8B staging layer runs the staging image: one worker, one GPU.
 
 Adapted from confidential-inference#299, for the image that this repository
-builds (images/sglang-qwen35).
+builds (images/sglang-qwen35-0.8b).
 """
 import hashlib
 import json
@@ -15,11 +15,11 @@ ROOT = Path(__file__).resolve().parents[2]
 CHART = ROOT / "helm/confidential-inference"
 DEPLOYMENTS = ROOT / "tests/fixtures/deployments"
 RELEASE_VALUES = ROOT / "tests/release-v1/fixtures/release-values.yaml"
-SERVE = ROOT / "images/sglang-qwen35/serve.sh"
+SERVE = ROOT / "images/sglang-qwen35-0.8b/serve.sh"
 MODEL = "Qwen/Qwen3.5-0.8B"
 REVISION = "2fc06364715b967f1860aea9cf38778875588b17"
 MANIFEST_SHA256 = "625963f6a7f159fd2a3e8ad97642a11ac275d1735adaadca8df39452b9fbd8fa"
-STAGING_WORKER = yaml.safe_load(RELEASE_VALUES.read_text())["images"]["sglangStagingWorker"]
+STAGING_WORKER = yaml.safe_load(RELEASE_VALUES.read_text())["images"]["sglangQwen35"]
 
 
 def render(*layers: str, extra: tuple[str, ...] = (), check: bool = True) -> subprocess.CompletedProcess:
@@ -51,11 +51,11 @@ class Qwen35StagingTests(unittest.TestCase):
     def test_release_names_the_repository_image(self):
         spec = yaml.safe_load((ROOT / "release/spec.yaml").read_text())["images"]
         # The release build adds the digest that the Release images run published.
-        self.assertEqual("ghcr.io/confidential-dot-ai/confidential-inference/sglang-qwen35",
-                         spec["sglangStagingWorker"])
-        self.assertTrue(STAGING_WORKER.startswith(spec["sglangStagingWorker"] + "@sha256:"))
+        self.assertEqual("ghcr.io/confidential-dot-ai/confidential-inference/sglang-qwen35-0.8b",
+                         spec["sglangQwen35"])
+        self.assertTrue(STAGING_WORKER.startswith(spec["sglangQwen35"] + "@sha256:"))
         configs = json.loads((ROOT / "release/inputs/image-config.json").read_text())
-        self.assertFalse(any("sglang-qwen35" in image for image in configs))
+        self.assertFalse(any("sglang-qwen35-0.8b" in image for image in configs))
 
     def test_one_worker_runs_qwen_on_one_gpu(self):
         found = workers(self.documents)
@@ -97,7 +97,7 @@ class Qwen35StagingTests(unittest.TestCase):
                       and item["metadata"]["name"] == "model-manifest")
         manifest = config["data"]["manifest.json"].encode()
         self.assertEqual(MANIFEST_SHA256, hashlib.sha256(manifest).hexdigest())
-        self.assertEqual((ROOT / "images/sglang-qwen35/model-manifest.json").read_bytes(), manifest)
+        self.assertEqual((ROOT / "images/sglang-qwen35-0.8b/model-manifest.json").read_bytes(), manifest)
 
     def test_gateway_serves_the_model(self):
         gateway = next(item for item in self.documents if item["kind"] == "Deployment"
@@ -109,14 +109,14 @@ class Qwen35StagingTests(unittest.TestCase):
 
     def test_default_worker_image_is_the_production_image(self):
         found = workers(documents(render()))
-        expected = yaml.safe_load(RELEASE_VALUES.read_text())["images"]["sglangWorker"]
+        expected = yaml.safe_load(RELEASE_VALUES.read_text())["images"]["sglangDsv41Flash"]
         self.assertTrue(found)
         self.assertEqual({expected}, {sglang(worker)["image"] for worker in found})
 
     def test_selecting_an_unset_image_fails(self):
-        result = render("qwen35-staging-values.yaml", extra=("--set", "images.sglangStagingWorker=null"), check=False)
+        result = render("qwen35-staging-values.yaml", extra=("--set", "images.sglangQwen35=null"), check=False)
         self.assertNotEqual(0, result.returncode)
-        self.assertIn("sglangStagingWorker", result.stderr)
+        self.assertIn("sglangQwen35", result.stderr)
 
     def test_pd_cannot_be_enabled(self):
         result = render(extra=("--set", "inference.pd.enabled=true"), check=False)

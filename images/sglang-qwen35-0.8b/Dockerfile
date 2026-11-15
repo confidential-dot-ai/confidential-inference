@@ -1,16 +1,24 @@
-# Build context: the repository root (Dockerfile.dockerignore keeps only this
-# recipe, images/sglang/wait_for_model.py and the images/sglang/harden_*.py
-# build steps). Every input is pinned: base
-# images by linux/amd64 digest, Ubuntu packages by one snapshot timestamp,
-# Python wheels by SHA-256, and the SGLang source by one commit of the
-# official upstream repository with no inference source patches.
-# images/sglang/harden_http.py then removes the non-serving HTTP routes.
-# images/sglang/harden_media.py limits request media to inline data.
-# images/sglang/harden_dist.py keeps internal distributed listeners on loopback.
-# The image bakes no JIT cache: FlashInfer, Triton and the SGLang JIT kernels
-# compile at run time into the pod's emptyDir. FlashInfer's precompiled
-# TRT-LLM-gen cubins come from the flashinfer-cubin wheel (requirements.lock):
-# the pod has no egress to download them.
+# The Qwen3.5-0.8B staging worker: one GPU, behind the SGLang router.
+#
+# Build context: the repository root (Dockerfile.dockerignore keeps only the
+# files named below). The engine is the production worker's engine: the
+# stages up to "FROM base" and the SGLang install step are copied unchanged
+# from images/sglang-dsv41-flash/Dockerfile and read the same pinned inputs
+# (images/sglang-dsv41-flash/source.lock, requirements.lock, fetch_source.py,
+# harden_http.py, harden_media.py, harden_dist.py, wait_for_model.py,
+# fetch_model.py, dcgm-counters.csv).
+# tests/images/sglang-qwen35-0.8b/test_recipe.py checks that they stay identical,
+# so the shared layers have the same bytes as the production image's layers.
+#
+# What this image adds: the byte manifest of the pinned model revision and
+# qwen35-serve, a helper for `docker run` outside Kubernetes. The chart does
+# not use the helper; it renders the same worker argv itself
+# (tests/fixtures/deployments/qwen35-staging-values.yaml). What it drops: the
+# CPU simulator, which only the simulator staging profile uses.
+#
+# The model weights are not in the image. The worker downloads them at start
+# (inference.model.download) or reads a C8s model volume, and wait-for-model
+# checks every byte against model-manifest.json before SGLang starts.
 
 FROM ghcr.io/astral-sh/uv@sha256:265d074d08ed8080bc578087ca68a8e94611f9c7be671d40e18b3d3b1ad0dad4 AS uv
 FROM nvcr.io/nvidia/k8s/dcgm-exporter@sha256:148b0c025e5f2850256816fa33754fbf4733b7a086697a95613fc0ba3db5b003 AS dcgm-exporter
@@ -58,7 +66,7 @@ ENV PATH=/opt/dsv41/bin:${PATH}
 # time); uv installs wheels in parallel, so which copy survives varies between
 # builds. The file and both RECORD lines are removed to keep the layer
 # reproducible.
-RUN --mount=type=bind,source=images/sglang,target=/inputs/recipe,readonly \
+RUN --mount=type=bind,source=images/sglang-dsv41-flash,target=/inputs/recipe,readonly \
     python3.12 -I -c 'import json,hashlib; d=json.load(open("/inputs/recipe/source.lock")); assert hashlib.sha256(open("/inputs/recipe/requirements.lock","rb").read()).hexdigest()==d["python"]["requirementsLockSha256"]' \
     && uv venv --python /usr/bin/python3.12 /opt/dsv41 \
     && uv pip install --no-deps --require-hashes -r /inputs/recipe/requirements.lock \
@@ -72,12 +80,12 @@ ENV LD_LIBRARY_PATH=/opt/dsv41/lib/python3.12/site-packages/nvidia/cuda_runtime/
 
 # The SGLang source: the locked official upstream commit.
 FROM base AS source
-RUN --mount=type=bind,source=images/sglang,target=/inputs/recipe,readonly \
+RUN --mount=type=bind,source=images/sglang-dsv41-flash,target=/inputs/recipe,readonly \
     python3.12 -I /inputs/recipe/fetch_source.py --recipe /inputs/recipe --out /src
 
 FROM base
 RUN --mount=type=bind,from=dcgm-exporter,source=/,target=/run-dcgm,readonly \
-    --mount=type=bind,source=images/sglang/dcgm-counters.csv,target=/run-src/dcgm-counters.csv,readonly \
+    --mount=type=bind,source=images/sglang-dsv41-flash/dcgm-counters.csv,target=/run-src/dcgm-counters.csv,readonly \
     install -D -m 0555 /run-dcgm/usr/bin/dcgm-exporter /usr/local/bin/dcgm-exporter \
     && install -d -m 0755 /opt/dcgm/lib \
     && cp -a /run-dcgm/usr/lib/x86_64-linux-gnu/libdcgm* /run-dcgm/usr/lib/x86_64-linux-gnu/libnvperf_* /opt/dcgm/lib/ \
@@ -88,7 +96,7 @@ RUN --mount=type=bind,from=dcgm-exporter,source=/,target=/run-dcgm,readonly \
 ARG SOURCE_REVISION
 ARG SOURCE_DATE_EPOCH
 ENV CI_DIAGNOSTIC_SOURCE_REVISION=${SOURCE_REVISION}
-LABEL org.opencontainers.image.title="Confidential Inference SGLang"
+LABEL org.opencontainers.image.title="Confidential Inference SGLang Qwen3.5-0.8B staging"
 LABEL org.opencontainers.image.source="https://github.com/confidential-dot-ai/confidential-inference"
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 LABEL org.opencontainers.image.version="sha-${SOURCE_REVISION}"
@@ -101,11 +109,10 @@ LABEL ai.confidential.upstream.source="https://github.com/sgl-project/sglang"
 LABEL ai.confidential.upstream.revision="a7fd2e1158c389c33077bae67fb797efa8dd09bd"
 LABEL ai.confidential.ubuntu.snapshot="20261104T000000Z"
 LABEL ai.confidential.python.requirements.sha256="83e1fd25ca604fd84a9256fef8bbeff7f4ff7651bd42f01a0783bb1c520b1ad9"
-LABEL ai.confidential.sglang.simulator.revision="5e6af31ae3fe8d95f83bab8c78e4db834142b313"
-LABEL ai.confidential.sglang.simulator.patch.sha256="7b9116115b440bcfd6b06ff00e410bc779cabe2e2a86ee75d3d8851a4dbe302e"
-LABEL ai.confidential.sglang.simulator.parser-flags-noop-patch.sha256="9c654801f916b9d57eb3981dacdde5a3624d5b29e4d352c20822a64ae51f9306"
-LABEL ai.confidential.sglang.simulator.prefix-length-patch.sha256="e819be5b7de85d286a10301b1e719dd40c7feaf49a03a1b43dea3b779810e68e"
 LABEL ai.confidential.uv.digest="sha256:265d074d08ed8080bc578087ca68a8e94611f9c7be671d40e18b3d3b1ad0dad4"
+LABEL ai.confidential.model.repository="Qwen/Qwen3.5-0.8B"
+LABEL ai.confidential.model.revision="2fc06364715b967f1860aea9cf38778875588b17"
+LABEL ai.confidential.model.manifest.sha256="625963f6a7f159fd2a3e8ad97642a11ac275d1735adaadca8df39452b9fbd8fa"
 WORKDIR /opt/sglang
 COPY --from=source /src/python /opt/sglang/python
 COPY --from=source /src/SOURCE_RECORD.json /opt/sglang/SOURCE_RECORD.json
@@ -115,10 +122,10 @@ COPY --from=source /src/SOURCE_RECORD.json /opt/sglang/SOURCE_RECORD.json
 # ctime of pyproject.toml (uv's reinstall check, never used in the image), so
 # it leaves the dist-info and its RECORD line. The import check runs with -B:
 # -I ignores PYTHONDONTWRITEBYTECODE.
-RUN --mount=type=bind,source=images/sglang/harden_http.py,target=/run-src/harden-http.py,readonly \
-    --mount=type=bind,source=images/sglang/harden_media.py,target=/run-src/harden-media.py,readonly \
-    --mount=type=bind,source=images/sglang/harden_dist.py,target=/run-src/harden-dist.py,readonly \
-    --mount=type=bind,source=images/sglang/wait_for_model.py,target=/run-src/wait-for-model,readonly \
+RUN --mount=type=bind,source=images/sglang-dsv41-flash/harden_http.py,target=/run-src/harden-http.py,readonly \
+    --mount=type=bind,source=images/sglang-dsv41-flash/harden_media.py,target=/run-src/harden-media.py,readonly \
+    --mount=type=bind,source=images/sglang-dsv41-flash/harden_dist.py,target=/run-src/harden-dist.py,readonly \
+    --mount=type=bind,source=images/sglang-dsv41-flash/wait_for_model.py,target=/run-src/wait-for-model,readonly \
     --mount=type=bind,source=images/sglang-router/private_log_sink.py,target=/run-src/private_log_sink.py,readonly \
     SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 SGLANG_BUILD_RUST_EXTS=none \
         uv pip install --no-deps --no-build-isolation -e /opt/sglang/python \
@@ -132,20 +139,14 @@ RUN --mount=type=bind,source=images/sglang/harden_http.py,target=/run-src/harden
     && install -D -m 0555 /run-src/wait-for-model /usr/local/bin/wait-for-model \
     && install -D -m 0444 /run-src/private_log_sink.py /usr/local/bin/private_log_sink.py \
     && python -I -B -c 'import importlib.util as u; assert u.find_spec("sglang") and u.find_spec("mooncake")'
-# CPU staging uses the same image. Its simulator is outside the production
-# import path and is enabled only by the staging PYTHONPATH.
-RUN --mount=type=bind,source=images/sglang/simulator-upstream,target=/run-src/sglang-simulator,readonly \
-    --mount=type=bind,source=images/sglang/patches,target=/run-src/patches,readonly \
-    --mount=type=bind,source=images/sglang/fetch_model.py,target=/run-src/fetch-model,readonly \
-    install -d -m 0755 /opt/confidential-inference/sglang-simulator \
-    && cp -a /run-src/sglang-simulator/. /opt/confidential-inference/sglang-simulator/ \
-    && cd /opt/confidential-inference/sglang-simulator \
-    && git apply --check /run-src/patches/sglang-simulator-replay-only.patch \
-    && git apply /run-src/patches/sglang-simulator-replay-only.patch \
-    && git apply --check /run-src/patches/sglang-simulator-parser-flags-noop.patch \
-    && git apply /run-src/patches/sglang-simulator-parser-flags-noop.patch \
-    && git apply --check /run-src/patches/sglang-simulator-prefix-length.patch \
-    && git apply /run-src/patches/sglang-simulator-prefix-length.patch \
-    && install -D -m 0555 /run-src/fetch-model /usr/local/bin/fetch-model
+# The model pin and the docker-run helper. fetch-model is the chart's model
+# download tool, as in the production image.
+RUN --mount=type=bind,source=images/sglang-dsv41-flash/fetch_model.py,target=/run-src/fetch-model,readonly \
+    --mount=type=bind,source=images/sglang-qwen35-0.8b/model-manifest.json,target=/run-src/model-manifest.json,readonly \
+    --mount=type=bind,source=images/sglang-qwen35-0.8b/serve.sh,target=/run-src/serve.sh,readonly \
+    install -D -m 0555 /run-src/fetch-model /usr/local/bin/fetch-model \
+    && install -D -m 0444 /run-src/model-manifest.json /opt/confidential-inference/qwen35-0.8b/model-manifest.json \
+    && install -D -m 0555 /run-src/serve.sh /usr/local/bin/qwen35-serve \
+    && python -B -c 'import sglang.srt.models.qwen3_5, sglang.srt.function_call.qwen3_coder_detector'
 ENV HOME=/tmp
 USER 1001:1001

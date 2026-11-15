@@ -718,7 +718,7 @@ class FrameworkReleaseTests(unittest.TestCase):
         return base
 
     def test_an_unchanged_image_keeps_the_digest_of_the_signed_base_release(self):
-        sglang = "ghcr.io/confidential-dot-ai/confidential-inference/sglang"
+        sglang = "ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41-flash"
         evidence = publication({sglang: published_release_images()[sglang]}, base_ref="v0.16.9")
         manifest = json.loads(build_framework(evidence, self.base_release())["release-bundle.json"])
         self.assertEqual(manifest["images"]["gateway"], RELEASE_IMAGES["gateway"])

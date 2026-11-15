@@ -11,8 +11,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
-FETCH = ROOT / "images/sglang/fetch_model.py"
-GATE = ROOT / "images/sglang/wait_for_model.py"
+FETCH = ROOT / "images/sglang-dsv41-flash/fetch_model.py"
+GATE = ROOT / "images/sglang-dsv41-flash/wait_for_model.py"
 REPOSITORY = "example/tiny"
 REVISION = "9fb191250dd56d0ba7ec9785a025ed29c03d5998"
 METADATA = ".model-lock-local-manifest.json"

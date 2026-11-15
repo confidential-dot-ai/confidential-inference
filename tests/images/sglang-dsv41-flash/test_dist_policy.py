@@ -18,10 +18,10 @@ from unittest.mock import patch
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[3]
-spec = importlib.util.spec_from_file_location("harden_dist", ROOT / "images/sglang/harden_dist.py")
+spec = importlib.util.spec_from_file_location("harden_dist", ROOT / "images/sglang-dsv41-flash/harden_dist.py")
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
-FORK = json.loads((ROOT / "tests/images/sglang/fixtures/legacy-diagnostics/source.lock").read_text())["source"]
+FORK = json.loads((ROOT / "tests/images/sglang-dsv41-flash/fixtures/legacy-diagnostics/source.lock").read_text())["source"]
 PINS = {
     "release": ("sgl-project/sglang", "a7fd2e1158c389c33077bae67fb797efa8dd09bd"),
     "diagnostic-fork": (FORK["repository"].removeprefix("https://github.com/"), FORK["commit"]),

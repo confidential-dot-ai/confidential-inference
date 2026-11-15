@@ -32,13 +32,12 @@
     },
     "images": {
       "type": "object",
-      "required": ["gateway", "sglang", "sglangWorker", "telemetryCollector", "nodeExporter", "kubeStateMetrics", "c8sOperator"],
+      "required": ["gateway", "sglangDsv41Flash", "telemetryCollector", "nodeExporter", "kubeStateMetrics", "c8sOperator"],
       "additionalProperties": false,
       "properties": {
         "gateway": {"$ref": "#/definitions/image"},
-        "sglang": {"$ref": "#/definitions/image"},
-        "sglangWorker": {"$ref": "#/definitions/image"},
-        "sglangStagingWorker": {"$ref": "#/definitions/image"},
+        "sglangDsv41Flash": {"$ref": "#/definitions/image"},
+        "sglangQwen35": {"$ref": "#/definitions/image"},
         "sglangRouter": {"$ref": "#/definitions/image"},
         "rolloutClient": {"$ref": "#/definitions/image"},
         "telemetryCollector": {"$ref": "#/definitions/image"},
@@ -107,7 +106,7 @@
       "properties": {
         "enabled": {"type": "boolean"},
         "mode": {"enum": ["model", "simulator"]},
-        "workerImage": {"enum": ["sglangWorker", "sglangStagingWorker"]},
+        "workerImage": {"enum": ["sglangDsv41Flash", "sglangQwen35"]},
         "replicas": {"type": "integer", "minimum": 0},
         "gpusPerReplica": {"type": "integer", "minimum": 0},
         "attestedGpuCount": {"type": "integer", "minimum": 0},

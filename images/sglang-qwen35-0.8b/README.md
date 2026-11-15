@@ -6,10 +6,10 @@ behind the SGLang router. The model loads in minutes, so a change to the
 engine, the chart or C8s goes through the whole staging path before it
 reaches the production model.
 
-The engine is the production worker's engine (`images/sglang`): the same
+The engine is the production worker's engine (`images/sglang-dsv41-flash`): the same
 pinned CUDA base, Ubuntu snapshot, Python wheels, official upstream SGLang
 commit and build-time hardening. The Dockerfile copies those stages
-unchanged, and `tests/images/sglang/test_qwen35_recipe.py` checks that they
+unchanged, and `tests/images/sglang-qwen35-0.8b/test_recipe.py` checks that they
 stay identical. Upstream SGLang at the pinned commit has the Qwen3.5 model
 (`sglang/srt/models/qwen3_5.py`), the `qwen3_coder` tool parser and the
 `qwen3` reasoning parser; the build imports them.
@@ -17,7 +17,7 @@ stay identical. Upstream SGLang at the pinned commit has the Qwen3.5 model
 | File | What it is |
 | --- | --- |
 | `Dockerfile` | The production engine stages, plus the model pin and the helper. No CPU simulator |
-| `Dockerfile.dockerignore` | The build context: these files and the `images/sglang` engine inputs |
+| `Dockerfile.dockerignore` | The build context: these files and the `images/sglang-dsv41-flash` engine inputs |
 | `model-manifest.json` | The byte manifest of the pinned revision (`fetch-model manifest`), SHA-256 `625963f6…` |
 | `serve.sh` | `qwen35-serve` in the image: fetch, verify and serve with `docker run` |
 | `build.sh` | A local build (not a release image) |
@@ -31,15 +31,15 @@ renders the worker argv itself; the staging values layer is
 `qwen35-serve args`.
 
 The Release images workflow builds and publishes this image as
-`ghcr.io/confidential-dot-ai/confidential-inference/sglang-qwen35`, with the
+`ghcr.io/confidential-dot-ai/confidential-inference/sglang-qwen35-0.8b`, with the
 same two-build reproducibility audit as `sglang`. `release/spec.yaml` names it
-as `images.sglangStagingWorker`; the release build adds the published digest.
-An environment selects it with `inference.workerImage: sglangStagingWorker`.
+as `images.sglangQwen35`; the release build adds the published digest.
+An environment selects it with `inference.workerImage: sglangQwen35`.
 
 ## Run with Docker
 
 ```sh
-img=ghcr.io/confidential-dot-ai/confidential-inference/sglang-qwen35@sha256:<digest>
+img=ghcr.io/confidential-dot-ai/confidential-inference/sglang-qwen35-0.8b@sha256:<digest>
 mkdir -p /data/models/qwen35-0.8b
 docker run --rm --user 0 -v /data/models/qwen35-0.8b:/models/qwen35-0.8b "$img" qwen35-serve fetch
 docker run -d --gpus device=0 --shm-size 8g -p 30000:30000 \
@@ -52,6 +52,6 @@ Change the revision and the hashes in `serve.sh`, the Dockerfile labels and
 the staging values layer, and regenerate the manifest:
 
 ```sh
-python3 images/sglang/fetch_model.py manifest \
-  --repository Qwen/Qwen3.5-0.8B --revision <sha> > images/sglang-qwen35/model-manifest.json
+python3 images/sglang-dsv41-flash/fetch_model.py manifest \
+  --repository Qwen/Qwen3.5-0.8B --revision <sha> > images/sglang-qwen35-0.8b/model-manifest.json
 ```

@@ -13,8 +13,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
-PRODUCTION = (ROOT / "images/sglang/Dockerfile").read_text(encoding="utf-8")
-RECIPE = ROOT / "images/sglang-qwen35"
+PRODUCTION = (ROOT / "images/sglang-dsv41-flash/Dockerfile").read_text(encoding="utf-8")
+RECIPE = ROOT / "images/sglang-qwen35-0.8b"
 DOCKERFILE = (RECIPE / "Dockerfile").read_text(encoding="utf-8")
 IGNORE = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
 affected = runpy.run_path(str(ROOT / "scripts" / "affected-release-images.py"))
@@ -46,14 +46,14 @@ class Qwen35RecipeTests(unittest.TestCase):
         self.assertEqual(run_block(PRODUCTION, marker), run_block(DOCKERFILE, marker))
         self.assertEqual(run_block(PRODUCTION, "/run-dcgm/usr/bin/dcgm-exporter"),
                          run_block(DOCKERFILE, "/run-dcgm/usr/bin/dcgm-exporter"))
-        for name in re.findall(r"images/sglang/(harden_\w+\.py)", PRODUCTION):
-            self.assertIn(f"!images/sglang/{name}", IGNORE)
+        for name in re.findall(r"images/sglang-dsv41-flash/(harden_\w+\.py)", PRODUCTION):
+            self.assertIn(f"!images/sglang-dsv41-flash/{name}", IGNORE)
 
     def test_build_context_holds_every_mounted_input(self) -> None:
         for source in re.findall(r"source=(images/[^,\s]+)", DOCKERFILE):
-            if source == "images/sglang":
+            if source == "images/sglang-dsv41-flash":
                 for name in ("source.lock", "requirements.lock", "fetch_source.py"):
-                    self.assertIn(f"!images/sglang/{name}", IGNORE)
+                    self.assertIn(f"!images/sglang-dsv41-flash/{name}", IGNORE)
             else:
                 self.assertIn(f"!{source}", IGNORE)
 
@@ -86,18 +86,18 @@ class Qwen35RecipeTests(unittest.TestCase):
         self.assertIn("--tp=1", argv)
 
     def test_release_build_tracks_every_input(self) -> None:
-        image = next(i for i in affected["IMAGES"] if i.image == "sglang-qwen35")
+        image = next(i for i in affected["IMAGES"] if i.image == "sglang-qwen35-0.8b")
         self.assertEqual("Confidential Inference SGLang Qwen3.5-0.8B staging", image.title)
         self.assertIn(f'LABEL org.opencontainers.image.title="{image.title}"', DOCKERFILE)
-        self.assertIn("sglang-qwen35", affected["LARGE_IMAGES"])
-        mounted = set(re.findall(r"source=(images/[^,\s]+)", DOCKERFILE)) - {"images/sglang"}
-        mounted |= {"images/sglang/source.lock", "images/sglang/requirements.lock", "images/sglang/fetch_source.py",
-                    "images/sglang-qwen35/Dockerfile", "images/sglang-qwen35/Dockerfile.dockerignore"}
+        self.assertIn("sglang-qwen35-0.8b", affected["LARGE_IMAGES"])
+        mounted = set(re.findall(r"source=(images/[^,\s]+)", DOCKERFILE)) - {"images/sglang-dsv41-flash"}
+        mounted |= {"images/sglang-dsv41-flash/source.lock", "images/sglang-dsv41-flash/requirements.lock", "images/sglang-dsv41-flash/fetch_source.py",
+                    "images/sglang-qwen35-0.8b/Dockerfile", "images/sglang-qwen35-0.8b/Dockerfile.dockerignore"}
         for path in sorted(mounted):
-            self.assertIn("sglang-qwen35", {i.image for i in affected["affected_images"]([path])}, path)
+            self.assertIn("sglang-qwen35-0.8b", {i.image for i in affected["affected_images"]([path])}, path)
         # The simulator is not an input: a simulator change does not rebuild it.
-        self.assertEqual(["sglang"], [i.image for i in affected["affected_images"](
-            ["images/sglang/simulator-upstream/src/usercustomize.py"])])
+        self.assertEqual(["sglang-dsv41-flash"], [i.image for i in affected["affected_images"](
+            ["images/sglang-dsv41-flash/simulator-upstream/src/usercustomize.py"])])
 
 
 if __name__ == "__main__":

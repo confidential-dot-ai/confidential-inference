@@ -9,7 +9,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/confidential-inference/sglang@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809": {
+  "ghcr.io/confidential-dot-ai/confidential-inference/sglang-dsv41-flash@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809": {
     "env": [
       "PATH=/opt/dsv41/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "NVARCH=x86_64",
