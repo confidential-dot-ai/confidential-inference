@@ -8,8 +8,8 @@ pull request 33824 at commit
 
 Source: <https://github.com/sgl-project/sglang/pull/33824>
 
-The simulator is not on the normal Python path. Production continues to use
-the normal SGLang command. The staging manifest adds this directory to
-`PYTHONPATH` and starts the separate simulator entry point.
+The simulator is not on the normal Python path. The normal SGLang command does
+not use it. The chart's simulator mode adds this directory to `PYTHONPATH` and
+starts the separate simulator entry point.
 
 The upstream Apache-2.0 license is in `LICENSE`.
