@@ -43,6 +43,22 @@ RUST_IMAGE_INPUTS = (
     "services/maintenance-gateway/Cargo.toml",
     "services/maintenance-gateway/src/**",
 )
+SGLANG_CONFIDENTIAL_INPUTS = (
+    "images/sglang-confidential/Dockerfile",
+    "images/sglang-confidential/Dockerfile.dockerignore",
+    "images/sglang-confidential/source.lock",
+    "images/sglang-confidential/requirements.lock",
+    "images/sglang-confidential/dcgm-counters.csv",
+    "images/sglang-confidential/fetch_source.py",
+    "images/sglang-confidential/harden_http.py",
+    "images/sglang-confidential/harden_media.py",
+    "images/sglang-confidential/harden_dist.py",
+    "images/sglang-router/private_log_sink.py",
+    "images/sglang-confidential/wait_for_model.py",
+    "images/sglang-confidential/fetch_model.py",
+    "images/sglang-confidential/patches/**",
+    "images/sglang-confidential/simulator-upstream/**",
+)
 # A base is a commit, a release tag (also of the earlier -staging and
 # -transition forms), or a legacy release candidate tag.
 BASE_REF = re.compile(
@@ -69,25 +85,11 @@ IMAGES = (
         (*RUST_IMAGE_INPUTS, "images/maintenance-gateway/Dockerfile"),
     ),
     Image(
-        "sglang",
+        "sglang-confidential",
         ".",
-        "images/sglang/Dockerfile",
+        "images/sglang-confidential/Dockerfile",
         "Confidential Inference SGLang",
-        (
-            "images/sglang/Dockerfile",
-            "images/sglang/Dockerfile.dockerignore",
-            "images/sglang/source.lock",
-            "images/sglang/requirements.lock",
-            "images/sglang/fetch_source.py",
-            "images/sglang/harden_http.py",
-            "images/sglang/pair_supervisor.py",
-            "images/sglang/pair_diagnostics.py",
-            "images/sglang-router/private_log_sink.py",
-            "images/sglang/wait_for_model.py",
-            "images/sglang/fetch_model.py",
-            "images/sglang/patches/**",
-            "images/sglang/simulator-upstream/**",
-        ),
+        SGLANG_CONFIDENTIAL_INPUTS,
     ),
     Image(
         "sglang-router",
@@ -113,6 +115,11 @@ IMAGES = (
         ("images/rollout-client/Dockerfile",),
     ),
 )
+
+
+# The images that need the large-runner build and publish jobs: the one
+# SGLang engine image. It holds no model; workers get the model at start.
+LARGE_IMAGES = ("sglang-confidential",)
 
 
 def affected_images(paths: list[str]) -> list[Image]:
@@ -184,7 +191,8 @@ def main() -> int:
         {**image.matrix_entry(), **dict(zip(("revision", "epoch"), input_revision(image, args.head)))}
         for image in selected
     ]
-    large = [entry for entry in matrix if entry["image"] == "sglang"]
+    # The SGLang engine image holds the ~20 GB engine environment.
+    large = [entry for entry in matrix if entry["image"] in LARGE_IMAGES]
     standard = [entry for entry in matrix if entry not in large]
     print("matrix=" + json.dumps({"include": matrix}, separators=(",", ":")))
     print("standard_matrix=" + json.dumps({"include": standard}, separators=(",", ":")))

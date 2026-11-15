@@ -168,8 +168,35 @@ exec the argv in the container args (wait-for-model). A stop during the
 download stops fetch-model at once. */}}
 {{- define "confidential-inference.modelDownloadCommand" -}}
 {{- $download := .Values.inference.model.download -}}
-{{- $fetch := printf "/usr/local/bin/fetch-model --endpoint=https://%s fetch --path=%s --manifest=%s/manifest.json --manifest-sha256=%s --revision-metadata=%s" (index $download.hosts 0).serverName (include "confidential-inference.modelDownloadDirectory" .) (include "confidential-inference.modelManifestDirectory" .) (include "confidential-inference.modelDownloadManifestSha256" .) .Values.inference.model.mountVerification.revisionMetadata -}}
+{{- $fetch := printf "/usr/local/bin/fetch-model --endpoint=%s fetch --path=%s --manifest=%s/manifest.json --manifest-sha256=%s --revision-metadata=%s" (include "confidential-inference.modelDownloadEndpoint" .) (include "confidential-inference.modelDownloadDirectory" .) (include "confidential-inference.modelManifestDirectory" .) (include "confidential-inference.modelDownloadManifestSha256" .) .Values.inference.model.mountVerification.revisionMetadata -}}
 {{- list "/bin/sh" "-c" (printf "trap 'kill $f 2>/dev/null; wait $f; exit 143' TERM INT; %s & f=$!; wait $f || exit $?; trap - TERM INT; exec \"$@\"" $fetch) "sh" | toJson -}}
+{{- end }}
+
+{{/* The port of the model server and of the allowlist exits: download.port,
+or the scheme's default (443 for https, 80 for http). */}}
+{{- define "confidential-inference.modelDownloadPort" -}}
+{{- $download := .Values.inference.model.download -}}
+{{- $scheme := $download.scheme | default "https" -}}
+{{- if not (has $scheme (list "https" "http")) -}}
+{{- fail "inference.model.download.scheme must be https or http" -}}
+{{- end -}}
+{{- if gt (int ($download.port | default 0)) 0 -}}
+{{- int $download.port -}}
+{{- else -}}
+{{- eq $scheme "http" | ternary 80 443 -}}
+{{- end -}}
+{{- end }}
+
+{{/* The fetch-model endpoint: the first host, on the scheme and port of the
+model server. Plain http is allowed: fetch-model checks every byte against
+the pinned byte manifest, and the weights are public. */}}
+{{- define "confidential-inference.modelDownloadEndpoint" -}}
+{{- $download := .Values.inference.model.download -}}
+{{- $scheme := $download.scheme | default "https" -}}
+{{- $port := include "confidential-inference.modelDownloadPort" . -}}
+{{- $default := eq $scheme "http" | ternary "80" "443" -}}
+{{- printf "%s://%s" $scheme (index $download.hosts 0).serverName -}}
+{{- if ne $port $default }}:{{ $port }}{{ end -}}
 {{- end }}
 
 {{/* The pinned addresses of the model source. Each is one allowlist exit. */}}
@@ -200,4 +227,14 @@ hostAliases:
 - name: model-manifest
   configMap:
     name: model-manifest
+{{- end }}
+
+{{/* The image of the worker containers: the one SGLang engine image. It
+holds no model; the worker gets the model from a model server
+(inference.model.download) or a C8s model volume. */}}
+{{- define "confidential-inference.workerImage" -}}
+{{- if hasKey .Values.inference "workerImage" -}}
+{{- fail "inference.workerImage was removed: every worker runs the one engine image, images.sglangConfidential; choose the model with inference.model" -}}
+{{- end -}}
+{{- required "images.sglangConfidential is required" .Values.images.sglangConfidential -}}
 {{- end }}

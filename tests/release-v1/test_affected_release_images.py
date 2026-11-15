@@ -28,7 +28,6 @@ class AffectedReleaseImagesTests(unittest.TestCase):
 
     def test_image_change_selects_only_its_image(self) -> None:
         self.assertEqual(names(["images/gateway/Dockerfile"]), ["gateway"])
-        self.assertEqual(names(["images/sglang/Dockerfile"]), ["sglang"])
         self.assertEqual(names(["images/rollout-client/Dockerfile"]), ["rollout-client"])
 
     def test_router_patch_and_source_pin_do_not_select_workers(self) -> None:
@@ -49,7 +48,7 @@ class AffectedReleaseImagesTests(unittest.TestCase):
                     "README.md",
                     "images/gateway/README.md",
                     "images/gateway/build.sh",
-                    "images/sglang/README.md",
+                    "images/sglang-confidential/README.md",
                     "services/gateway/tests/fake_upstream.rs",
                     "helm/confidential-inference/values.yaml",
                     ".github/workflows/release-images.yml",
@@ -58,11 +57,23 @@ class AffectedReleaseImagesTests(unittest.TestCase):
             [],
         )
 
-    def test_sglang_build_mount_selects_sglang(self) -> None:
-        self.assertEqual(
-            names(["images/sglang/simulator-upstream/src/usercustomize.py"]),
-            ["sglang"],
-        )
+    def test_engine_input_selects_the_one_engine_image(self) -> None:
+        for path in ("images/sglang-confidential/Dockerfile",
+                     "images/sglang-confidential/simulator-upstream/src/usercustomize.py",
+                     "images/sglang-confidential/dcgm-counters.csv",
+                     "images/sglang-confidential/requirements.lock",
+                     "images/sglang-confidential/harden_http.py"):
+            self.assertEqual(names([path]), ["sglang-confidential"], path)
+
+    def test_a_model_recipe_selects_no_image(self) -> None:
+        # Models are values (a model server or a C8s volume), never image inputs.
+        self.assertEqual(names(["tests/fixtures/deployments/qwen35-staging-values.yaml",
+                                "tests/fixtures/deployments/qwen35-0.8b-model-manifest.json"]), [])
+
+    def test_the_engine_image_uses_the_large_runners(self) -> None:
+        self.assertEqual(("sglang-confidential",), MODULE["LARGE_IMAGES"])
+        self.assertEqual(1, sum(image.image.startswith("sglang-") and image.image != "sglang-router"
+                                for image in MODULE["IMAGES"]))
 
     def test_base_ref_accepts_only_release_tags_or_full_commits(self) -> None:
         self.assertIsNotNone(BASE_REF.fullmatch("v0.14.3"))

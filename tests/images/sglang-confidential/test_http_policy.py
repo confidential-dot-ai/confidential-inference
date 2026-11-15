@@ -22,7 +22,7 @@ except ImportError:
     FastAPI = None
 
 ROOT = Path(__file__).resolve().parents[3]
-spec = importlib.util.spec_from_file_location("harden_http", ROOT / "images/sglang/harden_http.py")
+spec = importlib.util.spec_from_file_location("harden_http", ROOT / "images/sglang-confidential/harden_http.py")
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
 PINS = {

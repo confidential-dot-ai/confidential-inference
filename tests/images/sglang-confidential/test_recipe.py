@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Focused tests for the DeepSeek-V4.1 prefill/decode worker image recipe."""
+"""Focused tests for the production SGLang worker image recipe (plain upstream DeepSeek-V4.1)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
-RECIPE = ROOT / "images" / "sglang"
+RECIPE = ROOT / "images" / "sglang-confidential"
 LOCK = json.loads((RECIPE / "source.lock").read_text(encoding="utf-8"))
 DOCKERFILE = (RECIPE / "Dockerfile").read_text(encoding="utf-8")
 REQUIREMENTS = (RECIPE / "requirements.lock").read_text(encoding="utf-8")
@@ -41,7 +41,7 @@ class RecipeTests(unittest.TestCase):
         self.assertIn(metrics['reference'] + '@' + metrics['digest'], DOCKERFILE)
         self.assertEqual(metrics['countersSha256'], hashlib.sha256(
             (RECIPE / 'dcgm-counters.csv').read_bytes()).hexdigest())
-        self.assertIn('!images/sglang/dcgm-counters.csv',
+        self.assertIn('!images/sglang-confidential/dcgm-counters.csv',
                       (RECIPE / 'Dockerfile.dockerignore').read_text())
 
     def test_base_images_are_the_locked_amd64_digests(self) -> None:
@@ -132,12 +132,14 @@ class RecipeTests(unittest.TestCase):
 
     def test_release_build_tracks_all_worker_inputs(self) -> None:
         self.assertNotIn("status", LOCK)
-        self.assertEqual("ghcr.io/confidential-dot-ai/confidential-inference/sglang", LOCK["deploymentImage"]["reference"])
-        for path in ("images/sglang/Dockerfile", "images/sglang/source.lock",
-                     "images/sglang/requirements.lock", "images/sglang/fetch_source.py",
-                     "images/sglang/simulator-upstream/src/usercustomize.py",
-                     "images/sglang/harden_http.py", "images/sglang/wait_for_model.py"):
-            self.assertIn("sglang", {i.image for i in affected["affected_images"]([path])})
+        self.assertEqual("ghcr.io/confidential-dot-ai/confidential-inference/sglang-confidential", LOCK["deploymentImage"]["reference"])
+        for path in ("images/sglang-confidential/Dockerfile", "images/sglang-confidential/source.lock",
+                     "images/sglang-confidential/requirements.lock", "images/sglang-confidential/fetch_source.py",
+                     "images/sglang-confidential/simulator-upstream/src/usercustomize.py",
+                     "images/sglang-confidential/harden_http.py", "images/sglang-confidential/harden_media.py",
+                     "images/sglang-confidential/harden_dist.py",
+                     "images/sglang-confidential/wait_for_model.py"):
+            self.assertIn("sglang-confidential", {i.image for i in affected["affected_images"]([path])})
 
     def test_staging_simulator_source_and_patches_are_pinned(self) -> None:
         simulator = LOCK["simulator"]
@@ -163,9 +165,9 @@ class RecipeTests(unittest.TestCase):
         self.assertNotRegex(DOCKERFILE, r"(?m)^ENV PYTHONPATH=")
 
     def test_wait_for_model_is_the_public_worker_gate(self) -> None:
-        self.assertIn("source=images/sglang/wait_for_model.py,target=/run-src/wait-for-model", DOCKERFILE)
+        self.assertIn("source=images/sglang-confidential/wait_for_model.py,target=/run-src/wait-for-model", DOCKERFILE)
         ignore = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
-        self.assertIn("!images/sglang/wait_for_model.py", ignore)
+        self.assertIn("!images/sglang-confidential/wait_for_model.py", ignore)
 
     def test_plain_image_has_no_pair_supervisor_or_custom_rank_hooks(self) -> None:
         self.assertIn('chmod -R go-w /opt/sglang/python', DOCKERFILE)
@@ -174,10 +176,21 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(LOCK['source']['commit'], LOCK['source']['upstream']['commit'])
 
     def test_build_removes_non_serving_http_routes(self) -> None:
-        self.assertIn("source=images/sglang/harden_http.py,target=/run-src/harden-http.py", DOCKERFILE)
+        self.assertIn("source=images/sglang-confidential/harden_http.py,target=/run-src/harden-http.py", DOCKERFILE)
         self.assertIn("python /run-src/harden-http.py --root /opt/sglang/python/sglang --variant pd", DOCKERFILE)
         ignore = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
-        self.assertIn("!images/sglang/harden_http.py", ignore)
+        self.assertIn("!images/sglang-confidential/harden_http.py", ignore)
+
+    def test_build_restricts_media_inputs(self) -> None:
+        self.assertIn("source=images/sglang-confidential/harden_media.py,target=/run-src/harden-media.py", DOCKERFILE)
+        self.assertIn("python /run-src/harden-media.py --root /opt/sglang/python/sglang", DOCKERFILE)
+        self.assertIn("!images/sglang-confidential/harden_media.py", (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8"))
+
+    def test_build_keeps_distributed_listeners_on_loopback(self) -> None:
+        self.assertIn("source=images/sglang-confidential/harden_dist.py,target=/run-src/harden-dist.py", DOCKERFILE)
+        self.assertIn("python /run-src/harden-dist.py --root /opt/sglang/python/sglang", DOCKERFILE)
+        ignore = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
+        self.assertIn("!images/sglang-confidential/harden_dist.py", ignore)
 
 
 class FetchSourceLockTests(unittest.TestCase):

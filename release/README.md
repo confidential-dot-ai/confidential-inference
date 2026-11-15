@@ -154,7 +154,7 @@ exact beta workflow and source commit.
 
 It needs `crane`, Go, read access to the C8s Go module, and first on `PATH`
 the Helm version that the worker image build pins (`HELM_VERSION` in its
-`mkosi.sync`; v3.14.4 at C8s v0.99.38). `--c8s` gives a C8s CLI built from the
+`mkosi.sync`; v3.14.4 at C8s v0.101.5). `--c8s` gives a C8s CLI built from the
 tag; without it the script builds one. It changes the C8s pins in `spec.yaml`,
 the source lock, the seed record, the node and CDS manifests, the image
 config, and the allowlist test fixture, and then runs the release checks.
@@ -165,7 +165,7 @@ by hand. Review the full diff before you commit.
 ## Move a deployment to C8s v0.99.29
 
 A release that pins C8s v0.99.29 or later runs only on workers of the
-pinned C8s release with a standalone CDS VM. This release pins C8s v0.99.38.
+pinned C8s release with a standalone CDS VM. This release pins C8s v0.101.5.
 From v0.99.38 each GPU worker runs the NVIDIA device plugin and
 dcgm-exporter as static pods (C8s #1700). The old cluster's CDS state does
 not carry over: a new CDS keeps its secrets in process memory, starts empty,
@@ -220,8 +220,9 @@ Hand traffic over only when all of these hold:
   downloads the model at each start to the worker's encrypted scratch disk
   (`inference.model.download`), or reads a C8s model volume. A download needs
   a model source at fixed addresses, and the allowlist policy must declare
-  `"egress": {"port": 443}` for each inference workload (the chart README,
-  "Model download").
+  `"egress": {"port": <port>}` for each inference workload: 443 for an HTTPS
+  model server, 80 for a plain HTTP one (the chart README, "Model download"
+  and "Plain HTTP model server").
 - Every client and gateway that pins a mesh CA pins the new CDS's mesh CA.
   Leaves issued under the old mesh CA are not trusted by the new deployment.
 

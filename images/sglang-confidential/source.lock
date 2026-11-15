@@ -56,23 +56,23 @@
     "note": "The router runs from images/sglang-router, not from this image."
   },
   "deploymentImage": {
-    "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang"
+    "reference": "ghcr.io/confidential-dot-ai/confidential-inference/sglang-confidential"
   },
   "simulator": {
     "pullRequest": 33824,
     "commit": "5e6af31ae3fe8d95f83bab8c78e4db834142b313",
-    "path": "images/sglang/simulator-upstream",
+    "path": "images/sglang-confidential/simulator-upstream",
     "contentSha256": "1e4f40b001192d5fc07f97ba6626b4c488cc52175c9ea6d443ca762a99860052",
     "patch": {
-      "path": "images/sglang/patches/sglang-simulator-replay-only.patch",
+      "path": "images/sglang-confidential/patches/sglang-simulator-replay-only.patch",
       "sha256": "7b9116115b440bcfd6b06ff00e410bc779cabe2e2a86ee75d3d8851a4dbe302e"
     },
     "parserFlagsNoopPatch": {
-      "path": "images/sglang/patches/sglang-simulator-parser-flags-noop.patch",
+      "path": "images/sglang-confidential/patches/sglang-simulator-parser-flags-noop.patch",
       "sha256": "9c654801f916b9d57eb3981dacdde5a3624d5b29e4d352c20822a64ae51f9306"
     },
     "prefixLengthPatch": {
-      "path": "images/sglang/patches/sglang-simulator-prefix-length.patch",
+      "path": "images/sglang-confidential/patches/sglang-simulator-prefix-length.patch",
       "sha256": "e819be5b7de85d286a10301b1e719dd40c7feaf49a03a1b43dea3b779810e68e"
     }
   },

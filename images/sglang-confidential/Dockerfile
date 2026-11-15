@@ -1,9 +1,12 @@
 # Build context: the repository root (Dockerfile.dockerignore keeps only this
-# recipe, images/sglang/wait_for_model.py and images/sglang/harden_http.py). Every input is pinned: base
+# recipe, images/sglang-confidential/wait_for_model.py and the images/sglang-confidential/harden_*.py
+# build steps). Every input is pinned: base
 # images by linux/amd64 digest, Ubuntu packages by one snapshot timestamp,
 # Python wheels by SHA-256, and the SGLang source by one commit of the
 # official upstream repository with no inference source patches.
-# images/sglang/harden_http.py then removes the non-serving HTTP routes.
+# images/sglang-confidential/harden_http.py then removes the non-serving HTTP routes.
+# images/sglang-confidential/harden_media.py limits request media to inline data.
+# images/sglang-confidential/harden_dist.py keeps internal distributed listeners on loopback.
 # The image bakes no JIT cache: FlashInfer, Triton and the SGLang JIT kernels
 # compile at run time into the pod's emptyDir. FlashInfer's precompiled
 # TRT-LLM-gen cubins come from the flashinfer-cubin wheel (requirements.lock):
@@ -55,7 +58,7 @@ ENV PATH=/opt/dsv41/bin:${PATH}
 # time); uv installs wheels in parallel, so which copy survives varies between
 # builds. The file and both RECORD lines are removed to keep the layer
 # reproducible.
-RUN --mount=type=bind,source=images/sglang,target=/inputs/recipe,readonly \
+RUN --mount=type=bind,source=images/sglang-confidential,target=/inputs/recipe,readonly \
     python3.12 -I -c 'import json,hashlib; d=json.load(open("/inputs/recipe/source.lock")); assert hashlib.sha256(open("/inputs/recipe/requirements.lock","rb").read()).hexdigest()==d["python"]["requirementsLockSha256"]' \
     && uv venv --python /usr/bin/python3.12 /opt/dsv41 \
     && uv pip install --no-deps --require-hashes -r /inputs/recipe/requirements.lock \
@@ -69,12 +72,12 @@ ENV LD_LIBRARY_PATH=/opt/dsv41/lib/python3.12/site-packages/nvidia/cuda_runtime/
 
 # The SGLang source: the locked official upstream commit.
 FROM base AS source
-RUN --mount=type=bind,source=images/sglang,target=/inputs/recipe,readonly \
+RUN --mount=type=bind,source=images/sglang-confidential,target=/inputs/recipe,readonly \
     python3.12 -I /inputs/recipe/fetch_source.py --recipe /inputs/recipe --out /src
 
 FROM base
 RUN --mount=type=bind,from=dcgm-exporter,source=/,target=/run-dcgm,readonly \
-    --mount=type=bind,source=images/sglang/dcgm-counters.csv,target=/run-src/dcgm-counters.csv,readonly \
+    --mount=type=bind,source=images/sglang-confidential/dcgm-counters.csv,target=/run-src/dcgm-counters.csv,readonly \
     install -D -m 0555 /run-dcgm/usr/bin/dcgm-exporter /usr/local/bin/dcgm-exporter \
     && install -d -m 0755 /opt/dcgm/lib \
     && cp -a /run-dcgm/usr/lib/x86_64-linux-gnu/libdcgm* /run-dcgm/usr/lib/x86_64-linux-gnu/libnvperf_* /opt/dcgm/lib/ \
@@ -112,12 +115,16 @@ COPY --from=source /src/SOURCE_RECORD.json /opt/sglang/SOURCE_RECORD.json
 # ctime of pyproject.toml (uv's reinstall check, never used in the image), so
 # it leaves the dist-info and its RECORD line. The import check runs with -B:
 # -I ignores PYTHONDONTWRITEBYTECODE.
-RUN --mount=type=bind,source=images/sglang/harden_http.py,target=/run-src/harden-http.py,readonly \
-    --mount=type=bind,source=images/sglang/wait_for_model.py,target=/run-src/wait-for-model,readonly \
+RUN --mount=type=bind,source=images/sglang-confidential/harden_http.py,target=/run-src/harden-http.py,readonly \
+    --mount=type=bind,source=images/sglang-confidential/harden_media.py,target=/run-src/harden-media.py,readonly \
+    --mount=type=bind,source=images/sglang-confidential/harden_dist.py,target=/run-src/harden-dist.py,readonly \
+    --mount=type=bind,source=images/sglang-confidential/wait_for_model.py,target=/run-src/wait-for-model,readonly \
     --mount=type=bind,source=images/sglang-router/private_log_sink.py,target=/run-src/private_log_sink.py,readonly \
     SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 SGLANG_BUILD_RUST_EXTS=none \
         uv pip install --no-deps --no-build-isolation -e /opt/sglang/python \
     && python /run-src/harden-http.py --root /opt/sglang/python/sglang --variant pd \
+    && python /run-src/harden-media.py --root /opt/sglang/python/sglang \
+    && python /run-src/harden-dist.py --root /opt/sglang/python/sglang \
     && chmod -R go-w /opt/sglang/python \
     && dist=/opt/dsv41/lib/python3.12/site-packages/sglang-0.0.0.dev0.dist-info \
     && rm "$dist/uv_cache.json" \
@@ -127,9 +134,9 @@ RUN --mount=type=bind,source=images/sglang/harden_http.py,target=/run-src/harden
     && python -I -B -c 'import importlib.util as u; assert u.find_spec("sglang") and u.find_spec("mooncake")'
 # CPU staging uses the same image. Its simulator is outside the production
 # import path and is enabled only by the staging PYTHONPATH.
-RUN --mount=type=bind,source=images/sglang/simulator-upstream,target=/run-src/sglang-simulator,readonly \
-    --mount=type=bind,source=images/sglang/patches,target=/run-src/patches,readonly \
-    --mount=type=bind,source=images/sglang/fetch_model.py,target=/run-src/fetch-model,readonly \
+RUN --mount=type=bind,source=images/sglang-confidential/simulator-upstream,target=/run-src/sglang-simulator,readonly \
+    --mount=type=bind,source=images/sglang-confidential/patches,target=/run-src/patches,readonly \
+    --mount=type=bind,source=images/sglang-confidential/fetch_model.py,target=/run-src/fetch-model,readonly \
     install -d -m 0755 /opt/confidential-inference/sglang-simulator \
     && cp -a /run-src/sglang-simulator/. /opt/confidential-inference/sglang-simulator/ \
     && cd /opt/confidential-inference/sglang-simulator \

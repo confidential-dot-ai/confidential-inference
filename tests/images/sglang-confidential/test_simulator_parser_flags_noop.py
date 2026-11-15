@@ -9,11 +9,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
-SOURCE = ROOT / "images" / "sglang" / "simulator-upstream"
+SOURCE = ROOT / "images" / "sglang-confidential" / "simulator-upstream"
 PATCH = (
     ROOT
     / "images"
-    / "sglang"
+    / "sglang-confidential"
     / "patches"
     / "sglang-simulator-parser-flags-noop.patch"
 )
