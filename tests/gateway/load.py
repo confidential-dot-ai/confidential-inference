@@ -77,6 +77,7 @@ async def fixture(args):
                                 if length >= 1024**2
                                 else 5,
                                 "completion_tokens": 20,
+                                "prompt_tokens_details": {"cached_tokens": 0},
                             },
                         }
                     )
