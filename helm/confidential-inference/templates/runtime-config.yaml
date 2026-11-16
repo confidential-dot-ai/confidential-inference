@@ -14,7 +14,7 @@
 {{- if .Values.router.enabled }}
 {{- $_ := set $settings "routerService" (include "confidential-inference.routerService" .) }}
 {{- end }}
-{{- range $key := list "maximumBodyBytes" "upstreamTimeoutSeconds" "bodyTimeoutSeconds" "streamIdleTimeoutSeconds" "globalRequestConcurrency" "perAddressConcurrency" "inferenceConcurrency" "inferenceQueue" "queueTimeoutSeconds" "perKeyConcurrency" "attestationConcurrency" "requestsPerAddressPerSecond" }}
+{{- range $key := list "maximumBodyBytes" "bodyMemoryBytes" "upstreamTimeoutSeconds" "firstTokenTimeoutSeconds" "bodyTimeoutSeconds" "streamIdleTimeoutSeconds" "globalRequestConcurrency" "perAddressConcurrency" "inferenceConcurrency" "inferenceQueue" "queueTimeoutSeconds" "perKeyConcurrency" "attestationConcurrency" "requestsPerAddressPerSecond" }}
 {{- $_ := set $settings $key (index $.Values.gateway.protection $key) }}
 {{- end }}
 {{- toJson $settings }}

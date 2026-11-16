@@ -521,13 +521,26 @@ def main() -> None:
     for value in (1023, 67108865):
         rejected = render_body_limit(value)
         assert rejected.returncode != 0 and 'maximumBodyBytes' in rejected.stderr, value
-    # The 1M-token context value (32 MiB) and the ceiling render as set.
+    # The 1M-token context value (32 MiB) and the ceiling render as set,
+    # with a body memory budget that holds one request of the limit.
     for value in (33554432, 67108864):
-        accepted = Gateway(render('--set', f'gateway.protection.maximumBodyBytes={value}'))
+        accepted = Gateway(render('--set', f'gateway.protection.maximumBodyBytes={value}',
+                                  '--set', 'gateway.protection.bodyMemoryBytes=1073741824'))
         assert accepted.settings['maximumBodyBytes'] == value
+        assert accepted.settings['bodyMemoryBytes'] == 1073741824
+    # The gateway refuses a budget below 5 x the body limit + 64 KiB
+    # (request_body::minimum_budget); the chart refuses it first.
+    small_budget = subprocess.run(['helm', 'template', 'body-limit-test', str(CHART),
+        '--set', 'inference.mode=simulator',
+        '--set', 'gateway.protection.maximumBodyBytes=67108864'],
+        capture_output=True, text=True)
+    assert small_budget.returncode != 0 and 'bodyMemoryBytes' in small_budget.stderr
     assert production_settings['bodyTimeoutSeconds'] == 10
-    assert production_settings['upstreamTimeoutSeconds'] == 900
+    assert production_settings['bodyMemoryBytes'] == 268435456
+    assert production_settings['upstreamTimeoutSeconds'] == 14400
+    assert production_settings['firstTokenTimeoutSeconds'] == 3600
     assert production_settings['streamIdleTimeoutSeconds'] == 60
+    check_long_request_limits(production)
     production_workers = [item for item in production if item['kind'] == 'StatefulSet'
                           and item['metadata']['name'].startswith('inference-worker-')]
     assert len(production_workers) == 2
@@ -893,6 +906,56 @@ def main() -> None:
     check_c8s_admission()
     check_telemetry_collector()
     print("Helm neutral-default and safety tests passed.")
+
+
+def check_long_request_limits(production: list[dict]) -> None:
+    """The router outlasts the gateway, and its admission never sits below
+    the workers (docs/long-context-sizing.md)."""
+    def router_args(documents):
+        router = next(item for item in documents if item['kind'] == 'Deployment'
+                      and item['metadata']['name'] == 'sglang-router')
+        return router['spec']['template']['spec']['containers'][0]['args']
+    args = router_args(production)
+    assert '--request-timeout-secs=14460' in args, args
+    assert not any(arg.startswith(('--max-concurrent-requests', '--queue-size', '--queue-timeout-secs'))
+                   for arg in args), args
+    production_files = ('-f', str(ROOT / 'tests/fixtures/deployments/production-values.yaml'),
+                        '-f', str(ROOT / 'tests/release-v1/fixtures/release-values.yaml'))
+
+    def attempt(*arguments):
+        return subprocess.run(['helm', 'template', 'confidential-inference', str(CHART),
+                               '--namespace', 'confidential-inference', *production_files, *arguments],
+                              capture_output=True, text=True)
+    # A router timeout below the gateway's total time.
+    rejected = attempt('--set', 'router.requestTimeoutSeconds=14399')
+    assert rejected.returncode != 0 and 'router.requestTimeoutSeconds' in rejected.stderr
+    # The production workers run 16 requests each (workerExtraArgs), so a
+    # router ceiling below 2 x 16 would hold requests they could run.
+    rejected = attempt('--set', 'router.maxConcurrentRequests=31')
+    assert rejected.returncode != 0 and 'router.maxConcurrentRequests' in rejected.stderr
+    accepted = attempt('--set', 'router.maxConcurrentRequests=32', '--set', 'router.queueSize=64')
+    assert accepted.returncode == 0, accepted.stderr
+    args = router_args([item for item in yaml.safe_load_all(accepted.stdout) if item])
+    assert {'--max-concurrent-requests=32', '--queue-size=64', '--queue-timeout-secs=60'} <= set(args), args
+    # The first token cannot wait longer than the whole request.
+    rejected = attempt('--set', 'gateway.protection.firstTokenTimeoutSeconds=14401',
+                       '--set', 'router.requestTimeoutSeconds=86400',
+                       '--set', 'gateway.protection.upstreamTimeoutSeconds=14400')
+    assert rejected.returncode != 0
+    # The chart's worker values, and their conflict with workerExtraArgs.
+    rejected = attempt('--set', 'inference.contextLength=1048576')
+    assert rejected.returncode != 0 and '--context-length' in rejected.stderr
+    accepted = attempt('--set', 'inference.contextLength=1048576', '--set', 'inference.maxRunningRequests=8',
+                       '--set-json', 'inference.workerExtraArgs=["--sampling-backend=pytorch"]')
+    assert accepted.returncode == 0, accepted.stderr
+    workers = [item for item in yaml.safe_load_all(accepted.stdout) if item and item['kind'] == 'StatefulSet'
+               and item['metadata']['name'].startswith('inference-worker-')]
+    assert workers
+    for worker in workers:
+        container_args = worker['spec']['template']['spec']['containers'][0]['args']
+        assert [arg for arg in container_args if arg.startswith('--context-length')] == ['--context-length=1048576']
+        assert [arg for arg in container_args if arg.startswith('--max-running-requests')] == [
+            '--max-running-requests=8']
 
 
 if __name__ == "__main__":

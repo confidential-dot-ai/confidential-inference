@@ -238,3 +238,22 @@ holds no model; the worker gets the model from a model server
 {{- end -}}
 {{- required "images.sglangConfidential is required" .Values.images.sglangConfidential -}}
 {{- end }}
+
+{{/* The --max-running-requests of one worker: the simulator value, the
+chart value, or the flag in workerExtraArgs. 0 when the worker uses its own
+default. */}}
+{{- define "confidential-inference.workerMaxRunningRequests" -}}
+{{- if eq .Values.inference.mode "simulator" -}}
+{{- int .Values.inference.simulator.maxRunningRequests -}}
+{{- else if .Values.inference.maxRunningRequests -}}
+{{- int .Values.inference.maxRunningRequests -}}
+{{- else -}}
+{{- $found := 0 -}}
+{{- range .Values.inference.workerExtraArgs -}}
+{{- if hasPrefix "--max-running-requests=" . -}}
+{{- $found = int (trimPrefix "--max-running-requests=" .) -}}
+{{- end -}}
+{{- end -}}
+{{- $found -}}
+{{- end -}}
+{{- end }}

@@ -17,6 +17,12 @@ pub struct GatewaySettings {
     pub upstream_timeout_seconds: u64,
     pub body_timeout_seconds: u64,
     pub stream_idle_timeout_seconds: u64,
+    // Optional, so a settings file of an earlier chart still applies; the
+    // process default stays then.
+    #[serde(default)]
+    pub first_token_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub body_memory_bytes: Option<usize>,
     pub attestation_cache_seconds: u64,
     pub global_request_concurrency: usize,
     pub per_address_concurrency: usize,
@@ -54,6 +60,9 @@ impl GatewaySettings {
                 .iter()
                 .all(|name| self.inference_model_ids.contains(name))
             || self.stream_idle_timeout_seconds > self.upstream_timeout_seconds
+            || self
+                .first_token_timeout_seconds
+                .is_some_and(|seconds| seconds > self.upstream_timeout_seconds)
             || self.router_service.as_ref().is_some_and(|name| {
                 !(name == "sglang-router" || name.starts_with("router-"))
                     || name.len() > 63

@@ -422,6 +422,7 @@ dependencies = [
  "hex",
  "hmac",
  "http",
+ "http-body-util",
  "hyper-util",
  "ipnet",
  "opentelemetry-appender-tracing",

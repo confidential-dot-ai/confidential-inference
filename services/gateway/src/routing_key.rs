@@ -28,7 +28,8 @@
 
 use axum::http::{HeaderName, HeaderValue};
 use hmac::{Hmac, Mac};
-use serde_json::{Value, json};
+use serde::Serialize;
+use serde_json::Value;
 use sha2::Sha256;
 
 /// The header the router's `manual` policy reads.
@@ -75,27 +76,115 @@ impl RoutingKeys {
         if let Some(value) = client_key.filter(|value| valid_client_key(value)) {
             return Some(self.sign(key_id, b"client", value.as_bytes()));
         }
-        let (kind, opening): (&[u8], _) = match route {
-            "/v1/chat/completions" => (b"chat", conversation_opening(payload)?),
-            "/v1/responses" => (b"responses", responses_opening(payload)?),
-            _ => return None,
-        };
-        let material = serde_json::to_vec(&opening).ok()?;
-        Some(self.sign(key_id, kind, &material))
+        match route {
+            "/v1/chat/completions" => {
+                self.sign_opening(key_id, b"chat", &conversation_opening(payload)?)
+            }
+            "/v1/responses" => {
+                self.sign_opening(key_id, b"responses", &responses_opening(payload)?)
+            }
+            _ => None,
+        }
+    }
+
+    /// Sign the JSON of an opening without a copy of it: the opening of a
+    /// 1M-token request can be most of its body. The JSON is written twice,
+    /// first to count its length, which the MAC takes before the bytes.
+    fn sign_opening(
+        &self,
+        key_id: &str,
+        kind: &[u8],
+        opening: &impl Serialize,
+    ) -> Option<HeaderValue> {
+        let mut counter = Counter(0);
+        serde_json::to_writer(&mut counter, opening).ok()?;
+        let mut mac = self.mac(key_id, kind);
+        mac.update(&counter.0.to_be_bytes());
+        serde_json::to_writer(MacWriter(&mut mac), opening).ok()?;
+        Some(Self::key(mac))
     }
 
     fn sign(&self, key_id: &str, kind: &[u8], material: &[u8]) -> HeaderValue {
+        let mut mac = self.mac(key_id, kind);
+        mac.update(&(material.len() as u64).to_be_bytes());
+        mac.update(material);
+        Self::key(mac)
+    }
+
+    // Each field carries its length, so no two inputs share an encoding.
+    fn mac(&self, key_id: &str, kind: &[u8]) -> Hmac<Sha256> {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.secret)
             .unwrap_or_else(|_| unreachable!("HMAC accepts a key of any length"));
-        // Each field carries its length, so no two inputs share an encoding.
-        for field in [CONTEXT, key_id.as_bytes(), kind, material] {
+        for field in [CONTEXT, key_id.as_bytes(), kind] {
             mac.update(&(field.len() as u64).to_be_bytes());
             mac.update(field);
         }
+        mac
+    }
+
+    fn key(mac: Hmac<Sha256>) -> HeaderValue {
         let digest = mac.finalize().into_bytes();
         HeaderValue::from_str(&hex::encode(&digest[..KEY_BYTES]))
             .unwrap_or_else(|_| unreachable!("hex is a valid header value"))
     }
+}
+
+/// Counts the bytes written to it.
+struct Counter(u64);
+
+impl std::io::Write for Counter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Feeds the bytes written to it into a MAC.
+struct MacWriter<'a>(&'a mut Hmac<Sha256>);
+
+impl std::io::Write for MacWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+static NULL: Value = Value::Null;
+
+/// One message of an opening. The fields are in key order, so the JSON is
+/// the JSON `serde_json` writes for a `Value` with these keys.
+#[derive(Serialize)]
+struct Turn<'a> {
+    content: Content<'a>,
+    role: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Content<'a> {
+    Value(&'a Value),
+    Text(&'a str),
+}
+
+#[derive(Serialize)]
+struct ChatOpening<'a> {
+    messages: Vec<Turn<'a>>,
+    model: &'a str,
+}
+
+#[derive(Serialize)]
+struct ResponsesOpening<'a> {
+    input: Vec<Turn<'a>>,
+    instructions: &'a Value,
+    model: &'a str,
 }
 
 fn valid_client_key(value: &HeaderValue) -> bool {
@@ -104,17 +193,21 @@ fn valid_client_key(value: &HeaderValue) -> bool {
 }
 
 /// The model and each message's role and content, up to and including the
-/// first user message. `serde_json` sorts object keys, so the encoding does not
-/// depend on the order of the caller's keys.
-fn conversation_opening(payload: &Value) -> Option<Value> {
+/// first user message. The fields are in key order, like the keys of a
+/// `serde_json` object, so the encoding does not depend on the order of the
+/// caller's keys. It borrows the content: it copies no prompt text.
+fn conversation_opening(payload: &Value) -> Option<ChatOpening<'_>> {
     let model = payload.get("model")?.as_str()?;
     let mut opening = Vec::new();
     for message in payload.get("messages")?.as_array()? {
         let role = message.get("role")?.as_str()?;
-        let content = message.get("content").cloned().unwrap_or(Value::Null);
-        opening.push(json!({"role": role, "content": content}));
+        let content = Content::Value(message.get("content").unwrap_or(&NULL));
+        opening.push(Turn { content, role });
         if role == "user" {
-            return Some(json!({"model": model, "messages": opening}));
+            return Some(ChatOpening {
+                messages: opening,
+                model,
+            });
         }
     }
     None
@@ -122,21 +215,28 @@ fn conversation_opening(payload: &Value) -> Option<Value> {
 
 /// The model, the instructions, and each input item's role and content, up
 /// to and including the first user message of a Responses API request.
-fn responses_opening(payload: &Value) -> Option<Value> {
+fn responses_opening(payload: &Value) -> Option<ResponsesOpening<'_>> {
     let model = payload.get("model")?.as_str()?;
-    let instructions = payload.get("instructions").cloned().unwrap_or(Value::Null);
-    let first_user = |opening: Vec<Value>| {
-        Some(json!({"model": model, "instructions": instructions, "input": opening}))
+    let instructions = payload.get("instructions").unwrap_or(&NULL);
+    let first_user = |input| {
+        Some(ResponsesOpening {
+            input,
+            instructions,
+            model,
+        })
     };
     let input = payload.get("input")?;
     if let Some(text) = input.as_str() {
-        return first_user(vec![json!({"role": "user", "content": text})]);
+        return first_user(vec![Turn {
+            content: Content::Text(text),
+            role: "user",
+        }]);
     }
     let mut opening = Vec::new();
     for item in input.as_array()? {
         let role = item.get("role")?.as_str()?;
-        let content = item.get("content").cloned().unwrap_or(Value::Null);
-        opening.push(json!({"role": role, "content": content}));
+        let content = Content::Value(item.get("content").unwrap_or(&NULL));
+        opening.push(Turn { content, role });
         if role == "user" {
             return first_user(opening);
         }
@@ -146,7 +246,48 @@ fn responses_opening(payload: &Value) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+
+    /// The borrowed openings sign the same JSON as a `Value` of the same
+    /// keys, so the encoding still sorts the keys.
+    #[test]
+    fn the_borrowed_opening_signs_the_sorted_json() {
+        let keys = keys();
+        let sign = |kind: &[u8], value: &Value| {
+            Some(keys.sign("key", kind, &serde_json::to_vec(value).unwrap_or_default()))
+        };
+        let chat = json!({"model": "m", "messages": [
+            {"content": "s", "role": "system", "name": "x"},
+            {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+            {"role": "assistant", "content": "later"},
+        ]});
+        let expected = json!({"model": "m", "messages": [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+        ]});
+        assert_eq!(
+            keys.derive("key", CHAT, None, &chat),
+            sign(b"chat", &expected)
+        );
+        let responses = json!({"model": "m", "input": [{"role": "user"}]});
+        let expected = json!({"model": "m", "instructions": null, "input": [
+            {"role": "user", "content": null},
+        ]});
+        assert_eq!(
+            keys.derive("key", "/v1/responses", None, &responses),
+            sign(b"responses", &expected)
+        );
+        let text = json!({"model": "m", "instructions": "i", "input": "hi"});
+        let expected = json!({"model": "m", "instructions": "i", "input": [
+            {"role": "user", "content": "hi"},
+        ]});
+        assert_eq!(
+            keys.derive("key", "/v1/responses", None, &text),
+            sign(b"responses", &expected)
+        );
+    }
 
     const CHAT: &str = "/v1/chat/completions";
 

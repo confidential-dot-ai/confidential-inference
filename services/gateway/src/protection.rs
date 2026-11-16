@@ -26,7 +26,15 @@ pub struct ProtectionConfig {
     pub maximum_header_bytes: usize,
     pub maximum_uri_bytes: usize,
     pub body_timeout: Duration,
+    /// The longest wait for the first chunk of the response body after the
+    /// router sends its headers: the queue and prefill time of a streaming
+    /// request.
+    pub first_token_timeout: Duration,
+    /// The longest wait for each later chunk of the response body.
     pub stream_idle_timeout: Duration,
+    /// The memory budget of all request bodies in progress together
+    /// (`crate::request_body`).
+    pub body_memory_bytes: usize,
     pub global_request_concurrency: usize,
     pub per_address_concurrency: usize,
     pub inference_concurrency: usize,
@@ -44,7 +52,9 @@ impl Default for ProtectionConfig {
             maximum_header_bytes: 16 * 1_024,
             maximum_uri_bytes: 2 * 1_024,
             body_timeout: Duration::from_secs(10),
+            first_token_timeout: Duration::from_secs(60),
             stream_idle_timeout: Duration::from_secs(60),
+            body_memory_bytes: 256 << 20,
             global_request_concurrency: 256,
             per_address_concurrency: 16,
             inference_concurrency: 64,
@@ -60,6 +70,7 @@ impl Default for ProtectionConfig {
 #[derive(Clone)]
 pub struct ProtectionState {
     pub config: ProtectionConfig,
+    pub body_memory: crate::request_body::BodyMemory,
     inference_slots: Arc<Semaphore>,
     inference_admission: Arc<Semaphore>,
     public_requests: Arc<Semaphore>,
@@ -97,6 +108,7 @@ impl ProtectionState {
             address_slots: Arc::new(Mutex::new(BTreeMap::new())),
             key_slots: Arc::new(Mutex::new(BTreeMap::new())),
             addresses: Arc::new(Mutex::new(BTreeMap::new())),
+            body_memory: crate::request_body::BodyMemory::new(config.body_memory_bytes),
             config,
         }
     }

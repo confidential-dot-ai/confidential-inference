@@ -125,6 +125,8 @@
         "speculativeAlgorithm": {"type": "string"},
         "moeRunnerBackend": {"type": "string"},
         "workerExtraArgs": {"type": "array", "items": {"type": "string"}},
+        "contextLength": {"type": "integer", "minimum": 0, "maximum": 16777216},
+        "maxRunningRequests": {"type": "integer", "minimum": 0, "maximum": 65536},
         "privateServerOutput": {"type": "boolean"},
         "gpuMetricsEnabled": {"type": "boolean"},
         "autoscaling": {
@@ -289,7 +291,7 @@
         "protection": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["maximumHeaders", "maximumHeaderBytes", "maximumUriBytes", "maximumBodyBytes", "headerTimeoutSeconds", "bodyTimeoutSeconds", "upstreamTimeoutSeconds", "streamIdleTimeoutSeconds", "globalRequestConcurrency", "perAddressConcurrency", "inferenceConcurrency", "inferenceQueue", "queueTimeoutSeconds", "perKeyConcurrency", "attestationConcurrency", "requestsPerAddressPerSecond", "trustedProxyCidrs"],
+          "required": ["maximumHeaders", "maximumHeaderBytes", "maximumUriBytes", "maximumBodyBytes", "headerTimeoutSeconds", "bodyTimeoutSeconds", "upstreamTimeoutSeconds", "firstTokenTimeoutSeconds", "streamIdleTimeoutSeconds", "bodyMemoryBytes", "globalRequestConcurrency", "perAddressConcurrency", "inferenceConcurrency", "inferenceQueue", "queueTimeoutSeconds", "perKeyConcurrency", "attestationConcurrency", "requestsPerAddressPerSecond", "trustedProxyCidrs"],
           "properties": {
             "maximumHeaders": {"type": "integer", "minimum": 1, "maximum": 256},
             "maximumHeaderBytes": {"type": "integer", "minimum": 8192, "maximum": 131072},
@@ -297,8 +299,10 @@
             "maximumBodyBytes": {"type": "integer", "minimum": 1024, "maximum": 67108864},
             "headerTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 30},
             "bodyTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 60},
-            "upstreamTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+            "upstreamTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+            "firstTokenTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 14400},
             "streamIdleTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 300},
+            "bodyMemoryBytes": {"type": "integer", "minimum": 70656, "maximum": 1099511627776},
             "globalRequestConcurrency": {"type": "integer", "minimum": 1, "maximum": 4096},
             "perAddressConcurrency": {"type": "integer", "minimum": 1, "maximum": 256},
             "inferenceConcurrency": {"type": "integer", "minimum": 1, "maximum": 1024},
@@ -362,9 +366,13 @@
     },
     "router": {
       "type": "object",
-      "required": ["attestedWorkload"],
+      "required": ["attestedWorkload", "requestTimeoutSeconds", "maxConcurrentRequests", "queueSize", "queueTimeoutSeconds"],
       "properties": {
-        "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"}
+        "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
+        "requestTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 172800},
+        "maxConcurrentRequests": {"type": "integer", "minimum": 0, "maximum": 65536},
+        "queueSize": {"type": "integer", "minimum": 0, "maximum": 65536},
+        "queueTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600}
       }
     },
     "telemetry": {

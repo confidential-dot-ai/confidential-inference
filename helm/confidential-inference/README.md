@@ -195,9 +195,26 @@ stays in the schema so that existing environment values still render; only
 
 The gateway admits at most `gateway.protection.inferenceConcurrency`
 inference requests, holds up to `gateway.protection.inferenceQueue` more for
-`queueTimeoutSeconds`, and answers the rest with 503 at once. The chart
-default is 48 with no queue.
+`queueTimeoutSeconds`, and answers the rest with 429 `inference_capacity` at
+once. The chart default is 48 with no queue.
 `perKeyConcurrency` (128 by default) still bounds one API key.
+
+## Long requests
+
+For 1M-token requests, size the gateway, the router and the workers from the
+GPU capacity with [docs/long-context-sizing.md](../../docs/long-context-sizing.md):
+
+- `gateway.protection.bodyMemoryBytes` bounds the memory of all request
+  bodies together (`docs/request-body-limit.md`).
+- `gateway.protection.firstTokenTimeoutSeconds` (default 3600) is the wait
+  for the first chunk: the queue and the prefill.
+  `upstreamTimeoutSeconds` (default 14400) is the whole request.
+- `router.requestTimeoutSeconds` (default 14460) must be at least
+  `upstreamTimeoutSeconds`.
+- `router.maxConcurrentRequests` (default 0, off) must be at least
+  `inference.replicas` x the worker's `--max-running-requests`.
+- `inference.contextLength` and `inference.maxRunningRequests` (default 0:
+  the model's own value) set the worker flags.
 
 The gateway sends an `X-SMG-Routing-Key` header on every request it can
 identify a conversation for (`services/gateway/src/routing_key.rs`). The
