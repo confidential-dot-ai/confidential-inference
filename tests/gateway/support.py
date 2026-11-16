@@ -306,7 +306,7 @@ class Gateway:
                 "--memory",
                 "8g",
                 "--cpus",
-                "8",
+                str(min(8, os.process_cpu_count() or 1)),
                 "--mount",
                 f"type=bind,src={directory},dst=/run/test-gateway,readonly",
             ]
