@@ -42,6 +42,10 @@
     {
       "name": "sglang-router",
       "controller": "Deployment/sglang-router"
+    },
+    {
+      "name": "node-log-agent",
+      "controller": "DaemonSet/node-log-agent"
     }
   ]
 }

@@ -100,7 +100,10 @@ spec:
             runAsGroup: 1001
             capabilities:
               drop: ["ALL"]
-          command: ["python3", "-m", "sglang_router.launch_router"]
+          # The launcher runs sglang_router.launch_router, keeps its output in
+          # memory, and writes only reviewed JSON events to stdout
+          # (images/sglang-router/README.md).
+          command: ["python3", "/usr/local/bin/ci-sglang-router"]
           args:
             # c8s >= v0.64: a mesh member pod cannot reach the Kubernetes API,
             # so the router gets its workers by name instead of by discovery.

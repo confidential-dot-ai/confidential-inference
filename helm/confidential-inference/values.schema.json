@@ -11,6 +11,7 @@
     "workloadOverrides": {"type": "object"},
     "additionalWorkloads": {"type": "array", "items": {"type": "object"}},
     "environment": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"},
+    "deployment": {"type": "string", "maxLength": 63, "pattern": "^(|[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)$"},
     "imagePullSecret": {
       "type": "object",
       "additionalProperties": false,
@@ -379,7 +380,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["enabled", "attestedWorkload", "deployment", "relay", "metrics", "logs", "secretName", "traces",
-                   "kubeStateMetrics", "scrapeInterval", "otlpGrpcPort", "otlpHttpPort", "healthPort", "metricsPort", "resources", "commonLabels", "labels", "spanAttributes"],
+                   "kubeStateMetrics", "nodeAgent", "scrapeInterval", "otlpGrpcPort", "otlpHttpPort", "healthPort", "metricsPort", "resources", "commonLabels", "labels", "spanAttributes"],
       "properties": {
         "enabled": {"type": "boolean"},
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
@@ -418,6 +419,16 @@
           "properties": {
             "target": {"type": "string", "pattern": "^(|[0-9]+(?:\\.[0-9]+){3}:[0-9]{1,5})$"},
             "metrics": {"type": "string", "minLength": 1}
+          }
+        },
+        "nodeAgent": {
+          "type": "object", "additionalProperties": false,
+          "required": ["attestedWorkload", "healthPort", "metricsPort", "resources"],
+          "properties": {
+            "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
+            "healthPort": {"type": "integer", "minimum": 1024, "maximum": 65535},
+            "metricsPort": {"type": "integer", "minimum": 1024, "maximum": 65535},
+            "resources": {"$ref": "#/definitions/resources"}
           }
         },
         "scrapeInterval": {"type": "string", "pattern": "^[1-9][0-9]*s$"},

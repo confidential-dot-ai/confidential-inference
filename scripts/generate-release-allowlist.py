@@ -21,7 +21,9 @@ internal release runbook describes:
    version in release/inputs/cdi/.
 
 The script never learns a value from a running container. A value that no
-pinned source can give (for example a node IP) is an error.
+pinned source can give (for example a node IP) is an error. One exception: a
+DaemonSet container may read its node name (`spec.nodeName`). Its entry is
+`env: match`, with that variable `present` and every other variable `exact`.
 
 `c8s allowlist derive` from the pinned c8s release builds each entry, so c8s
 itself decides which containers it injects and drops. The c8s core entries
@@ -234,6 +236,20 @@ def pod_name(controller: dict[str, Any]) -> str:
     )
 
 
+# The value of a variable that a DaemonSet reads from spec.nodeName. C8s
+# `match` admits it with `present`; no other variable is left open.
+NODE_NAME_VALUE = object()
+
+
+def env_policy(env: dict[str, Any]) -> dict[str, Any]:
+    """The env policy of a container: `exact`, or `match` when a node name is open."""
+    if not any(value is NODE_NAME_VALUE for value in env.values()):
+        return {"policy": "exact", "values": env}
+    return {"policy": "match", "variables": {
+        name: {"present": True} if value is NODE_NAME_VALUE else {"exact": value}
+        for name, value in env.items()}}
+
+
 def container_env(
     controller: dict[str, Any],
     container: dict[str, Any],
@@ -264,11 +280,17 @@ def container_env(
                 value = pod_name(controller)
             elif field == "metadata.namespace":
                 value = policy["chart"]["namespace"]
+            elif field == "spec.nodeName" and controller["kind"] == "DaemonSet":
+                # A DaemonSet pod runs once on each node, so the node name
+                # differs per pod: the entry requires the variable and admits
+                # any value. Every other variable stays exact.
+                value = NODE_NAME_VALUE
             else:
                 raise GenerationError(f"{label}: env {name} reads {field}, which differs per node or pod")
         else:
             raise GenerationError(f"{label}: env {name} has a value the release does not pin")
-        defined[name] = value
+        if value is not NODE_NAME_VALUE:
+            defined[name] = value
         env[name] = value
     if requests_gpu(container):
         if cdi is None:
@@ -632,10 +654,8 @@ def generate(
                 mount_policies[container_name] = {"policy": "any"}
                 continue
             try:
-                env_policies[container_name] = {
-                    "policy": "exact",
-                    "values": container_env(controller, container, image_env, policy, cdi),
-                }
+                env_policies[container_name] = env_policy(
+                    container_env(controller, container, image_env, policy, cdi))
                 rules = container_mounts(controller, container, cdi, c8s_release=feature_release(c8s))
                 mount_policies[container_name] = {"policy": "exact", "rules": rules} if rules else {"policy": "deny"}
             except GenerationError as error:

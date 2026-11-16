@@ -67,7 +67,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: In
-        values: [gateway, sglang-router, inference-worker, telemetry-collector, kube-state-metrics]
+        values: [gateway, sglang-router, inference-worker, telemetry-collector, kube-state-metrics, node-log-agent]
   policyTypes: [Egress]
   egress:
     # The mesh listens on the node address, which Cilium classifies as a host
@@ -100,14 +100,6 @@ spec:
               app.kubernetes.io/component: sglang-router
       ports:
         - {protocol: TCP, port: {{ .Values.router.port }}}
-    {{- if .Values.telemetry.enabled }}
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/component: telemetry-collector
-      ports:
-        - {protocol: TCP, port: {{ .Values.telemetry.otlpHttpPort }}}
-    {{- end }}
     {{- range .Values.attestationReceipts.evidenceEgressCidrs }}
     - to:
         - ipBlock:
@@ -205,12 +197,11 @@ spec:
       app.kubernetes.io/component: telemetry-collector
   policyTypes: [Ingress, Egress]
   ingress:
+    # The node log agents: logs and their own metrics, over OTLP/HTTP.
     - from:
         - podSelector:
-            matchExpressions:
-              - key: app.kubernetes.io/component
-                operator: In
-                values: [gateway]
+            matchLabels:
+              app.kubernetes.io/component: node-log-agent
       ports:
         - {protocol: TCP, port: {{ .Values.telemetry.otlpHttpPort }}}
     {{- if .Values.telemetry.traces.enabled }}
@@ -247,6 +238,26 @@ spec:
     - ports:
         - {protocol: TCP, port: {{ last (splitList ":" .) }}}
     {{- end }}
+---
+# The node log agent reaches only the telemetry collector (and, through the
+# rules above, the mesh, DNS and its credential clients' CDS). It takes no
+# connection.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: node-log-agent-paths
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: node-log-agent
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: telemetry-collector
+      ports:
+        - {protocol: TCP, port: {{ .Values.telemetry.otlpHttpPort }}}
 ---
 {{- if .Values.telemetry.traces.enabled }}
 apiVersion: networking.k8s.io/v1

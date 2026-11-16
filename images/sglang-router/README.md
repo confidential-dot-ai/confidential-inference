@@ -197,20 +197,39 @@ and arbitrary error text from PD request error logs. Those records use fixed
 event names, fixed worker roles, and HTTP status numbers. Client responses
 keep their existing error behavior.
 
-The PD chart runs `private_router.py`. It reads the child process output in
-memory and constructs new records from approved event names, fixed roles and
-numeric status codes. It does not copy messages, request spans, client request
-IDs, routing keys or credentials. It blocks file logging and raw tracing
+The chart runs the launcher as the router container command:
+`command: ["python3", "/usr/local/bin/ci-sglang-router"]` with the router
+arguments. The router image installs `private_router.py` at that path and uses
+it as its entrypoint. The engine image (`images/sglang-confidential`) installs
+the same file at the same path, because the chart uses the engine image when
+`images.sglangRouter` is not set.
+
+The launcher starts `python3 -m sglang_router.launch_router` with the given
+arguments and `--log-level warn`. It adds `--json-log` only when the installed
+`sglang_router` has that flag: the router image build has it, but the PyPI
+`sglang-router==0.3.2` in the engine image does not. The launcher reads the
+child output in memory and constructs new records from approved event names,
+fixed roles and numeric status codes. It drops every other line, including all
+plain-text lines. It does not copy messages, request spans, client request
+IDs, URLs, routing keys or credentials. It blocks file logging and raw tracing
 options, disables core files, and passes shutdown signals to the child.
 
-The parent adds the image source revision and sends these reviewed records to
-stdout and, when telemetry is enabled, the internal OTLP/HTTP collector. The
-shared sender uses a bounded queue and shutdown wait. It does not read request
-objects, credentials, proxy settings or tracing baggage. Collector delivery
-failure reports counts only. It can lose records during an outage. The chart
-permits this internal path through both source and collector network rules.
+The launcher writes each record as one JSON line to stdout. It has no other
+output and no network path; the node log agent ships container stdout. Each
+record has only these keys:
+
+| Key | Value |
+| --- | --- |
+| `timestamp` | ISO-8601 UTC time when the launcher wrote the record |
+| `source_revision` | 40-hex image source revision (`CI_DIAGNOSTIC_SOURCE_REVISION`), or `unknown` |
+| `event` | A reviewed router event, or `router_started`, `router_exit`, `router_failed`, `router_config_rejected` |
+| `role` | `router`, `prefill` or `decode` |
+| `status` | Optional HTTP status, an integer from 100 to 599 |
+| `code` | Optional integer; `router_exit` uses it for the child exit code |
+
+The launcher writes `{"event":"router_started","role":"router"}` (with
+`timestamp` and `source_revision`) once after the child starts, so each router
+is visible in the logs.
 
 Container stdout writes are nonblocking and at most 4096 bytes. A full pipe
-can lose a record, but it cannot stop router shutdown or the separate bounded
-OTLP submission. The fixed field parser still reviews every native record
-before either output path.
+can lose a record, but it cannot stop router shutdown.

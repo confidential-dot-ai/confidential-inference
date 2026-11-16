@@ -120,7 +120,8 @@ class FetchModelTests(unittest.TestCase):
         self.assertIn("dm-verity mapping is not attached", refused.stderr)
         accepted = subprocess.run(gate + ["--plain-cache"] + command, text=True, capture_output=True, timeout=5)
         self.assertEqual(0, accepted.returncode, accepted.stderr)
-        self.assertEqual("server-started\n", accepted.stdout)
+        # Server output is private: only the fixed exit event reaches stdout.
+        self.assertEqual('{"event":"worker_exit","exit_code":0,"signal":null}\n', accepted.stdout)
 
     def test_second_fetch_keeps_good_files_and_repairs_the_rest(self) -> None:
         self.assertEqual(0, self.fetch().returncode)

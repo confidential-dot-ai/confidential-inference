@@ -1,12 +1,16 @@
 //! Rules that keep request content and personal data out of gateway logs.
 //!
-//! Gateway logs go to the container output and, when telemetry is on, to the
-//! telemetry collector, which sends them out of the cluster
-//! (`docs/telemetry-egress.md`). So a log event must never carry a request or
-//! response body, a header, a client address, or a raw key record ID:
+//! The gateway writes its log events to the container stdout, one JSON object
+//! per line ([`stdout_layer`]). The node log agent reads them from the node,
+//! and it and the telemetry collector keep only reviewed records before logs
+//! leave the cluster (`docs/telemetry-egress.md`). So a log event must never
+//! carry a request or response body, a header, a client address, or a raw
+//! key record ID:
 //!
-//! - Log messages are fixed text. Values go in fields, and the collector
-//!   drops every field.
+//! - Log messages are fixed text, or the audit record of
+//!   `crate::TracingAuditSink`. Values go in fields, and the node log agent
+//!   drops every field. Fields still never carry request or response text,
+//!   headers, client addresses, or raw key record IDs.
 //! - [`log_filter`] holds the HTTP libraries at `warn`, whatever `RUST_LOG`
 //!   says. At `debug` and `trace` they can print headers, frames, and
 //!   rejection texts that quote the request.
@@ -17,7 +21,8 @@
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use tracing::{Level, Metadata};
+use tracing::{Level, Metadata, Subscriber};
+use tracing_subscriber::{Layer, fmt::MakeWriter, registry::LookupSpan};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -39,7 +44,6 @@ const HTTP_TARGETS: &[&str] = &[
     "axum",
     "axum_server",
     "rustls",
-    "opentelemetry",
 ];
 
 /// Keyed pseudonyms for key record IDs in log records.
@@ -96,6 +100,27 @@ fn is_http_target(target: &str) -> bool {
 #[must_use]
 pub fn log_filter() -> tracing_subscriber::filter::FilterFn<fn(&Metadata<'_>) -> bool> {
     tracing_subscriber::filter::filter_fn(allowed as fn(&Metadata<'_>) -> bool)
+}
+
+/// The log output of the gateway: one JSON object per line, written to
+/// `writer`, behind [`log_filter`]. A line has the form
+/// `{"timestamp":"...","level":"INFO","message":"<fixed text>",<fields>}`,
+/// with no span, target, or terminal colour codes. The gateway passes
+/// `std::io::stdout`; the tests pass a capture buffer.
+pub fn stdout_layer<S, W>(writer: W) -> impl Layer<S> + Send + Sync + 'static
+where
+    S: Subscriber + for<'span> LookupSpan<'span>,
+    W: for<'writer> MakeWriter<'writer> + Send + Sync + 'static,
+{
+    tracing_subscriber::fmt::layer()
+        .json()
+        .flatten_event(true)
+        .with_current_span(false)
+        .with_span_list(false)
+        .with_target(false)
+        .with_ansi(false)
+        .with_writer(writer)
+        .with_filter(log_filter())
 }
 
 /// Replace the default panic hook. The new hook logs a fixed message and the

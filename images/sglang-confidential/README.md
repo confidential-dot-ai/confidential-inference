@@ -60,12 +60,36 @@ listeners on loopback for single-node runs:
 `harden_dist.py` still accepts the old diagnostic fork source
 (`diagnostic-fork`), which only the removed GPU-test image built.
 
-For the plain deployment, `--private-server-output` discards native server
-stdout and stderr. It exports only a fixed worker-exit event with a numeric
-code. This prevents request text and arbitrary exception text from entering
-that log path. It also means native CUDA and application error details are
-not available there. Report this diagnostic limit in the deployment receipt.
-Metrics remain separate. The image contains the same pinned NVIDIA DCGM
+Server output is always private. `wait-for-model` reads the SGLang stdout
+and stderr through a pipe, in memory only. It never writes that output to
+stdout, stderr or disk, because prompts, responses and exception messages
+can appear in it. It writes only fixed JSON events to its own stdout, one
+object per line, at most 4096 bytes, with no free text:
+
+| Event | Keys |
+| --- | --- |
+| `worker_ready` | `model_revision`, `gpus`, `load_seconds` (first `GET /health` = 200) |
+| `request_failed` | `error_class`, `http_status`, `phase`, `input_tokens_bucket`, `duration_ms` (always null), `exception`, `location` |
+| `gpu_oom` | `location` |
+| `cuda_error` | `code`, `location` |
+| `nccl_error` | `code`, `location` |
+| `worker_error` | `error_class`, `exception`, `location` |
+| `worker_exit` | `exit_code`, `signal` |
+
+Every event also has the `event` key. `exception` is the exception type name
+only; the message is always discarded. `location` is the last SGLang
+traceback frame, for example `sglang/srt/managers/scheduler.py:1234`.
+`error_class`, `phase`, `code` and `input_tokens_bucket` come from fixed
+lists. The node log agent keeps only these events and keys. A request
+traceback that no failed response line claims within 5 seconds is reported
+as `worker_error`. The supervisor also writes `worker_exit` with exit code 1
+when it stops before the server starts (model check failure or timeout).
+The model-mount progress and rejection messages stay on stderr; they contain
+no request data.
+
+`--private-server-output` is still accepted, but it does nothing: the output
+is always private. Native CUDA and application error text is not available
+in any log; only the event fields above are. Metrics remain separate. The image contains the same pinned NVIDIA DCGM
 exporter used by the older worker. Its compatibility must be tested in the
 confidential GPU VM. Metrics labels are restricted by the telemetry collector.
 

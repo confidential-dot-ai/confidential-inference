@@ -33,11 +33,8 @@ impl Write for Captured {
 fn a_panic_message_is_never_logged() {
     let captured = Captured::default();
     let writer = captured.clone();
-    let subscriber = tracing_subscriber::registry().with(
-        tracing_subscriber::fmt::layer()
-            .with_ansi(false)
-            .with_writer(move || writer.clone()),
-    );
+    let subscriber =
+        tracing_subscriber::registry().with(log_privacy::stdout_layer(move || writer.clone()));
     log_privacy::install_panic_hook();
     tracing::subscriber::with_default(subscriber, || {
         let result = std::panic::catch_unwind(|| {
@@ -54,7 +51,12 @@ fn a_panic_message_is_never_logged() {
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     )
     .into_owned();
-    assert!(logs.contains("the gateway panicked"), "{logs}");
+    let line: serde_json::Value = serde_json::from_str(logs.trim_end())
+        .unwrap_or_else(|_| panic!("not one JSON line: {logs}"));
+    assert_eq!(
+        line["message"], "the gateway panicked; the panic message is not logged",
+        "{logs}"
+    );
     assert!(logs.contains("panic_hook.rs"), "{logs}");
     assert!(!logs.contains(CANARY), "{logs}");
 }

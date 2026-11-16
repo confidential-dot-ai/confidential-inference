@@ -24,9 +24,6 @@ http = "1.4.0"
 http-body-util = "0.1.5"
 hyper-util = { version = "0.1.20", features = ["server-auto", "tokio"] }
 ipnet = "2.11.0"
-opentelemetry-appender-tracing = "0.33.1"
-opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "logs"] }
-opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["logs"] }
 prometheus = { version = "0.14.0", default-features = false, features = ["process"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "stream", "rustls"] }
 ring = "0.17.14"
@@ -42,7 +39,7 @@ tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "net", "s
 tower = { version = "0.5.2", features = ["util"] }
 tower-http = { version = "0.6.11", features = ["cors", "limit"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
 url = "2.5.8"
 uuid = { version = "1.19.0", features = ["v4"] }
 x509-parser = "0.18.1"
@@ -50,6 +47,7 @@ x509-parser = "0.18.1"
 [dev-dependencies]
 axum-server = { version = "0.7.2", features = ["tls-rustls"] }
 rcgen = "0.14.7"
+regex = "1.13.1"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "net", "sync"] }
 
 [lints]

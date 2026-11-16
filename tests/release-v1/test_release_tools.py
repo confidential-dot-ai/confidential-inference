@@ -59,6 +59,8 @@ OVERLAY = FIXTURES / "release-values.yaml"
 # The environment name that each example deployment passes to the render (--environment).
 ENVIRONMENTS = {PRODUCTION: "production", STAGING: "staging"}
 STAGING_ALLOWLIST = FIXTURES / "staging-allowlist.json"
+# The deployment name that the staging example passes to the render (--deployment).
+STAGING_DEPLOYMENT = "staging-0123456789ab"
 REPOSITORY_CONFIGS = json.loads((FIXTURES / "repository-image-config.json").read_text())
 RELEASE_IMAGES = yaml.safe_load(OVERLAY.read_text())["images"]
 # The rollout client uses the same pinned Python base as the router fixture.
@@ -78,7 +80,11 @@ def rendered(deployment) -> list[dict]:
     with tempfile.TemporaryDirectory() as temporary:
         overlay = Path(temporary) / "release-values.yaml"
         overlay.write_text(yaml.safe_dump({**yaml.safe_load(OVERLAY.read_text()),
-                                           "environment": ENVIRONMENTS[deployment]}))
+                                           "environment": ENVIRONMENTS[deployment],
+                                           "deployment": f"{ENVIRONMENTS[deployment]}-0123456789ab",
+                                           # The collector names the framework release in its pipeline.
+                                           "frameworkRelease": {"name": framework_manifest()["release"]["name"],
+                                                                "bundleSha256": MAN.sha256(framework_bytes())}}))
         return REN.render_chart(MAN.CHART, deployment, REN.read_allowlist_policy(deployment.policy)["chart"],
                                 overlay)
 
@@ -130,7 +136,8 @@ def framework_manifest() -> dict:
 
 
 def render_deployment(deployment=STAGING, c8s: Path | None = None, manifest: dict | None = None,
-                      verify_core_seed=None, environment: str = "staging") -> dict[str, bytes]:
+                      verify_core_seed=None, environment: str = "staging",
+                      deployment_name: str = STAGING_DEPLOYMENT) -> dict[str, bytes]:
     """Render a deployment allowlist. Without `c8s`, the fixture allowlist replaces the c8s CLI
     and the seed render check is skipped, unless `verify_core_seed` replaces it."""
     generated = STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")
@@ -139,7 +146,8 @@ def render_deployment(deployment=STAGING, c8s: Path | None = None, manifest: dic
     with mock.patch.dict(REN.ALLOWLIST_GENERATOR, {"generate": generate, "verify_core_seed": verify,
                                                    "image_config": REPOSITORY_CONFIGS.__getitem__}):
         return REN.render(manifest or framework_manifest(), REN.MAN["read_spec"](), deployment,
-                          c8s or Path("c8s"), None, MAN.sha256(framework_bytes()), environment)
+                          c8s or Path("c8s"), None, MAN.sha256(framework_bytes()), environment,
+                          deployment_name)
 
 
 def staging_allowlist(c8s: Path) -> bytes:
@@ -201,6 +209,20 @@ class EnvironmentTests(unittest.TestCase):
             {"name": "HOST_IP", "valueFrom": {"fieldRef": {"fieldPath": "status.hostIP"}}}]}
         with self.assertRaisesRegex(GEN.GenerationError, "differs per node"):
             self.env(controller(container=container))
+
+    def test_only_a_daemonset_may_read_its_node_name_and_only_that_value_is_open(self):
+        container = {"name": "app", "image": IMAGE, "env": [
+            {"name": "NODE_NAME", "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}}}]}
+        with self.assertRaisesRegex(GEN.GenerationError, "differs per node"):
+            self.env(controller(container=container))
+        values = self.env(controller(kind="DaemonSet", hostname="agent", container=container))
+        self.assertIs(values["NODE_NAME"], GEN.NODE_NAME_VALUE)
+        policy = GEN.env_policy(values)
+        self.assertEqual(policy["policy"], "match")
+        self.assertEqual(policy["variables"]["NODE_NAME"], {"present": True})
+        self.assertEqual({name for name, rule in policy["variables"].items() if "exact" not in rule}, {"NODE_NAME"})
+        self.assertEqual(policy["variables"]["HOSTNAME"], {"exact": "agent"})
+        self.assertEqual(GEN.env_policy({"A": "1"}), {"policy": "exact", "values": {"A": "1"}})
 
     def test_service_links_and_random_pod_names_are_refused(self):
         obj = controller()
@@ -1050,10 +1072,12 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(sorted(files), ["allowlist.json", "release-values.yaml", "render.json"])
         self.assertEqual(files["allowlist.json"], STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n"))
         self.assertEqual(yaml.safe_load(files["release-values.yaml"]),
-                         {"environment": "staging", "images": RELEASE_IMAGES, "frameworkRelease": {
+                         {"environment": "staging", "deployment": STAGING_DEPLOYMENT,
+                          "images": RELEASE_IMAGES, "frameworkRelease": {
                              "name": "v0.17.0", "bundleSha256": MAN.sha256(framework_bytes())}})
         record = json.loads(files["render.json"])
         self.assertEqual(record["environment"], "staging")
+        self.assertEqual(record["deployment"], STAGING_DEPLOYMENT)
         self.assertEqual(record["frameworkRelease"], {"name": "v0.17.0", "sourceCommit": "d" * 40,
                                                       "bundleSha256": MAN.sha256(framework_bytes())})
         self.assertEqual([item["path"] for item in record["values"]],
@@ -1076,7 +1100,7 @@ class RenderTests(unittest.TestCase):
         for name in ("staging", "production", "eu-west-2"):
             with self.subTest(name=name):
                 self.assertEqual(yaml.safe_load(REN.release_overlay(framework_manifest(), "sha256:" + "0" * 64,
-                                                                    name))["environment"], name)
+                                                                    name, STAGING_DEPLOYMENT))["environment"], name)
         for name in ("", "Staging", "-staging", "staging-", "stag_ing", "a" * 64):
             with self.subTest(name=name), self.assertRaisesRegex(REN.ManifestError, "environment name"):
                 render_deployment(environment=name)
@@ -1088,12 +1112,29 @@ class RenderTests(unittest.TestCase):
                                         "sets environment; the render sets it from the environment name"):
                 render_deployment(deployment)
 
+    def test_the_render_sets_the_deployment_from_its_name(self):
+        for name in ("staging-0123456789ab", "production-fedcba987654"):
+            with self.subTest(name=name):
+                self.assertEqual(yaml.safe_load(REN.release_overlay(framework_manifest(), "sha256:" + "0" * 64,
+                                                                    "staging", name))["deployment"], name)
+        for name in ("", "Staging-1", "-staging", "staging-", "stag_ing", "a" * 64):
+            with self.subTest(name=name), self.assertRaisesRegex(REN.ManifestError, "deployment name"):
+                render_deployment(deployment_name=name)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "values.yaml"
+            path.write_text(yaml.safe_dump({"deployment": "staging-0123456789ab"}))
+            deployment = SPEC.Deployment((*STAGING.values_files, path), STAGING.policy, STAGING.accepted_findings)
+            with self.assertRaisesRegex(REN.ManifestError,
+                                        "sets deployment; the render sets it from the deployment name"):
+                render_deployment(deployment)
+
     def test_the_chart_can_render_only_framework_images(self):
         manifest = framework_manifest()
         changed = copy.deepcopy(manifest)
         changed["images"]["gateway"] = changed["images"]["gateway"].split("@")[0] + "@sha256:" + "1" * 64
         with mock.patch.object(REN, "release_overlay", return_value=yaml.safe_dump(
-                {"environment": "staging", "images": manifest["images"], "frameworkRelease": {
+                {"environment": "staging", "deployment": STAGING_DEPLOYMENT,
+                 "images": manifest["images"], "frameworkRelease": {
                     "name": "v0.17.0", "bundleSha256": MAN.sha256(framework_bytes())}}).encode()), \
                 mock.patch.dict(REN.MAN, {}):
             with self.assertRaisesRegex(REN.ManifestError, "does not name"):
