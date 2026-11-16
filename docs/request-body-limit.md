@@ -94,8 +94,8 @@ One shared `gateway.protection.bodyMemoryBytes` budget covers these phases:
 
 | Phase | Reservation |
 | --- | --- |
-| Receive a body over 32 KiB | 4 x declared body bytes; use the maximum when length is unknown |
-| Parse a body up to 32 KiB in the main process | 64 x declared body bytes |
+| Receive a body over 64 KiB | 4 x declared body bytes; use the maximum when length is unknown |
+| Parse a body up to 64 KiB in the main process | 64 x declared body bytes |
 | Start large-body inspection | 12 x received body bytes |
 | Construct large JSON objects | 5 x body bytes plus the estimated Python object tree; duplicate keys, wide objects, and large integers use a conservative 128 x bound |
 | Wait for upstream headers after a complete upload | 1 x the forwarded body bytes |

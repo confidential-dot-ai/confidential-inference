@@ -18,14 +18,14 @@ import orjson
 import psutil
 from aiohttp import web
 from prometheus_client.parser import text_string_to_metric_families
-from support import API_KEY, MODEL, Gateway
+from support import API_KEY, MODEL, AdminPeer, Gateway
 
 
 def percentile(values, fraction):
     return sorted(values)[min(len(values) - 1, int((len(values) - 1) * fraction))] if values else None
 
 
-async def fixture():
+async def fixture(args):
     async def upstream(request):
         length = 0
         digest = hashlib.sha256()
@@ -41,6 +41,10 @@ async def fixture():
                     value["_request_sha256"] = digest.hexdigest()
                 await response.write(b"data: " + orjson.dumps(value) + b"\n\n")
                 await asyncio.sleep(.02)
+            if args.usage:
+                await response.write(b"data: " + orjson.dumps({"model": MODEL, "choices": [], "usage": {
+                    "prompt_tokens": args.fixture_input_tokens if length >= 1024**2 else 5,
+                    "completion_tokens": 20}}) + b"\n\n")
             await response.write(b"data: [DONE]\n\n")
         except ConnectionError:
             pass
@@ -68,13 +72,24 @@ async def measure(args):
             corpus.append(data)
         if len(corpus) != args.requests:
             raise ValueError("the corpus must contain exactly --requests bodies")
-    peer = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--fixture"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    command = [sys.executable, str(Path(__file__).resolve()), "--fixture"]
+    if args.usage:
+        command += ["--usage", "--fixture-input-tokens", str(corpus_metadata["input_tokens"] if corpus_metadata else 1000)]
+    peer = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # Fixture readiness is one small line, not a timing assumption.
     line = await asyncio.to_thread(peer.stdout.readline)
     if not line:
         raise RuntimeError("upstream fixture failed")
     upstream = "http://127.0.0.1:" + line.decode().strip()
-    gateway = Gateway(args.gateway, upstream)
+    admin, settings = None, {}
+    if args.usage:
+        admin = AdminPeer()
+        await admin.start()
+        settings = {"SSL_CERT_FILE": str(admin.ca_file), "GATEWAY_ADMIN_ENDPOINT": admin.endpoint,
+            "GATEWAY_USAGE_ENABLED": "true",
+            "GATEWAY_USAGE_MODELS": json.dumps({MODEL: {"served_model": MODEL, "model_revision": "transport-fixture"}})}
+    gateway = Gateway(args.gateway, upstream, settings)
+    gateway_closed = False
     sampler = None
     try:
         await gateway.start()
@@ -100,14 +115,29 @@ async def measure(args):
         headers = {"Authorization": "Bearer " + API_KEY, "Content-Type": "application/json"}
         prefix = b'{"model":"model-a","stream":true,"messages":[{"role":"user","content":"'
         suffix = b'"}]}'
+        if args.small_body_bytes < len(prefix) + len(suffix):
+            raise ValueError("--small-body-bytes is too small for the request envelope")
+        small_body = prefix + b"x" * (args.small_body_bytes - len(prefix) - len(suffix)) + suffix
         size = args.body_mib * 1024**2
         slab = b"x" * 262_144
         if corpus:
             sizes = [len(data) for data in corpus]
-            expected_digests = [hashlib.sha256(data).hexdigest() for data in corpus]
+            expected_inputs = corpus
         else:
             sizes = [size] * args.requests
-            expected_digests = [hashlib.sha256(prefix + b"x" * (size-len(prefix)-len(suffix)) + suffix).hexdigest()] * args.requests
+            expected_inputs = [prefix + b"x" * (size-len(prefix)-len(suffix)) + suffix]
+        expected_digests = []
+        for data in expected_inputs:
+            if args.usage:
+                value = orjson.loads(data)
+                value["stream_options"] = {"include_usage": True}
+                # Object key order is not part of the forwarding contract.
+                variants = (orjson.dumps(value), orjson.dumps(value, option=orjson.OPT_SORT_KEYS))
+            else:
+                variants = (data,)
+            expected_digests.append({hashlib.sha256(value).hexdigest() for value in variants})
+        if not corpus:
+            expected_digests *= args.requests
         large_index = 0
         async def body(identifier, data=None):
             if data is not None:
@@ -139,7 +169,7 @@ async def measure(args):
                         options = {"data": body(identifier, corpus[slot] if corpus else None),
                             "headers": {**headers, "Content-Length": str(sizes[slot])}}
                     else:
-                        options = {"json": {"model": MODEL, "stream": True, "messages": [{"role": "user", "content": "hello"}]}, "headers": headers}
+                        options = {"data": small_body, "headers": headers}
                     async with client.post("http://127.0.0.1:9443/v1/chat/completions", **options) as response:
                         if response.status != 200:
                             errors.append({"status": response.status, "body": (await response.text())[:200]})
@@ -160,7 +190,7 @@ async def measure(args):
                                     probes.append(now - started)
                                 if large:
                                     observed = orjson.loads(line[5:])["_request_sha256"]
-                                    if observed != expected_digests[slot]:
+                                    if observed not in expected_digests[slot]:
                                         raise ValueError("the upstream received a different body")
                                     firsts.append(now - started)
                                     if identifier in upload_finished:
@@ -209,19 +239,21 @@ async def measure(args):
                     count = next(sample.value for sample in family.samples if sample.name.endswith("_count"))
                     forwarding_bound = min(float(sample.labels["le"]) for sample in family.samples
                         if sample.name.endswith("_bucket") and sample.value >= .99 * count)
-                if family.name == "gateway_request_processing_seconds":
+                if family.name in ("gateway_small_request_processing_seconds", "gateway_large_request_processing_seconds"):
                     for sample in family.samples:
                         if sample.name.endswith("_count"):
                             count = sample.value
-                            size_class = sample.labels["size"]
+                            size_class = family.name.split("_")[1]
                             bounds = [float(bucket.labels["le"]) for bucket in family.samples
-                                if bucket.name.endswith("_bucket") and bucket.labels["size"] == size_class and bucket.value >= .99 * count]
+                                if bucket.name.endswith("_bucket") and bucket.value >= .99 * count]
                             processing_bounds[size_class] = min(bounds)
         sampling = False
         await sampler
         final_cpu = process.cpu_times()
         child_cpu = sum(p.cpu_times().user + p.cpu_times().system for p in process.children(recursive=True) if p.is_running())
         result = {"gateway": args.gateway, "requests": args.requests, "batches": args.batches, "body_bytes": max(sizes), "background": args.background, "body_memory_budget_bytes": 32 * 1024**3,
+                  "usage_enabled": args.usage,
+                  "small_body_bytes": len(small_body),
                   "peak_client_concurrency": peak, "completed_large": len(durations), "errors": errors,
                   "large_elapsed_seconds": elapsed, "input_mib_per_second": sum(sizes) * args.batches / 1024**2 / elapsed,
                   "body_bytes_by_request": sizes, "corpus": corpus_metadata,
@@ -242,6 +274,15 @@ async def measure(args):
                   "main_cpu_seconds": final_cpu.user + final_cpu.system - initial_cpu.user - initial_cpu.system,
                   "worker_cpu_seconds": child_cpu - initial_children_cpu,
                   "sample_elapsed_seconds": time.monotonic() - initial_time, "transport_only": True}
+        if admin:
+            await gateway.close()
+            gateway_closed = True
+            input_tokens = corpus_metadata["input_tokens"] if corpus_metadata else 1000
+            completed = [event for event in admin.events if event["outcome"] == "completed" and event["input_tokens"] == input_tokens]
+            result["completed_large_usage_events"] = len(completed)
+            result["usage_events_received"] = len(admin.events)
+            if len(completed) != args.requests * args.batches or any(not event["final_usage"] or event["output_tokens"] != 20 for event in completed):
+                errors.append({"error": "incomplete usage accounting"})
         summary = {key: value for key, value in result.items() if key not in ("corpus", "body_bytes_by_request")}
         if corpus_metadata:
             summary["corpus"] = {key: value for key, value in corpus_metadata.items() if key != "requests"}
@@ -253,7 +294,10 @@ async def measure(args):
     finally:
         if sampler and not sampler.done():
             sampler.cancel()
-        await gateway.close()
+        if not gateway_closed:
+            await gateway.close()
+        if admin:
+            await admin.close()
         peer.terminate()
         try:
             await asyncio.to_thread(peer.wait, 3)
@@ -267,10 +311,13 @@ if __name__ == "__main__":
     parser.add_argument("--gateway", choices=["rust", "python"], default="python")
     parser.add_argument("--requests", type=int, default=64)
     parser.add_argument("--body-mib", type=int, default=32)
+    parser.add_argument("--small-body-bytes", type=int, default=65536)
     parser.add_argument("--background", type=int, default=16)
     parser.add_argument("--batches", type=int, default=1)
     parser.add_argument("--corpus", help="Directory made by tests/gateway/context.py")
     parser.add_argument("--output")
     parser.add_argument("--fixture", action="store_true")
+    parser.add_argument("--usage", action="store_true", help="Exercise HTTPS key pulls and usage delivery")
+    parser.add_argument("--fixture-input-tokens", type=int, default=1000, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    asyncio.run(fixture() if args.fixture else measure(args))
+    asyncio.run(fixture(args) if args.fixture else measure(args))

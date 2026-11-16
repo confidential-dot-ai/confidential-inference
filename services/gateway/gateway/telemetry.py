@@ -80,7 +80,8 @@ class Metrics:
             "gateway_key_registry_pepper_mismatch", "gateway_usage_events_pending", "confidential_gateway_process_configured")}
         gauges["gateway_router_requests_active"] = ("router",)
         histograms = {
-            "gateway_request_processing_seconds": ("size",),
+            "gateway_small_request_processing_seconds": (),
+            "gateway_large_request_processing_seconds": (),
             "gateway_stream_forward_seconds": (),
             "gateway_queue_duration": (), "gateway_request_duration": ("model", "status"),
             "gen_ai_server_time_to_first_token": ("model", "key_id"),
@@ -94,7 +95,7 @@ class Metrics:
                 options = {}
                 if kind is Histogram:
                     options["buckets"] = TOKEN_BUCKETS if "tokens_per_request" in name else RATE_BUCKETS if name == "gateway_tokens_per_second" else LATENCY_BUCKETS
-                    if name == "gateway_request_processing_seconds":
+                    if name.endswith("_request_processing_seconds"):
                         options["buckets"] = sorted((*LATENCY_BUCKETS, 2))
                 self.values[name] = kind(name, name.replace("_", " "), ("env", *dimensions), registry=self.registry, **options)
                 self.dimensions[name] = dimensions

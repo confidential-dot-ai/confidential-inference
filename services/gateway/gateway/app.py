@@ -27,6 +27,7 @@ from .telemetry import Audit, Metrics, StreamTiming
 from .usage import AdminClient, Recorder
 
 ADMIN_ROUTES = ("/admin/v1/health", "/admin/v1/api-keys/source", "/admin/v1/api-keys/snapshot")
+INLINE_BODY_BYTES = 65536
 
 
 def json_response(value, status=200, headers=None):
@@ -103,7 +104,7 @@ async def inference(request):
     declared = request.content_length
     if declared is not None and declared > config.maximum_body:
         raise Rejected(413, "request_too_large")
-    factor = 64 if declared is not None and declared <= 32768 else 4
+    factor = 64 if declared is not None and declared <= INLINE_BODY_BYTES else 4
     held = await admission.memory.reserve(factor * (declared if declared is not None else config.maximum_body) + 65536, config.queue_timeout)
     body, usage = None, None
     router = urlsplit(config.upstream).hostname or "fixed-router"
@@ -122,8 +123,8 @@ async def inference(request):
         except TimeoutError as error:
             raise Rejected(408, "request_body_timeout") from error
         request["body_complete"] = time.monotonic()
-        request["body_size"] = "small" if body.length <= 65536 else "large"
-        if body.length <= 32768:
+        request["body_size"] = "small" if body.length <= INLINE_BODY_BYTES else "large"
+        if body.length <= INLINE_BODY_BYTES:
             raw = body.mapping[:body.length]
             outgoing, model, affinity, hidden = prepare(raw, request.path, identifier,
                 request.headers.get("X-SMG-Routing-Key"), config, routing)
@@ -195,7 +196,8 @@ async def forward(request, body, model, affinity, hidden, usage, release_body):
         headers["x-smg-routing-key"] = affinity
     response = None
     request["audit"] = True
-    metrics.observe("gateway_request_processing_seconds", time.monotonic() - request["body_complete"], size=request["body_size"])
+    metrics.observe("gateway_" + request["body_size"] + "_request_processing_seconds",
+        time.monotonic() - request["body_complete"])
     try:
         async with asyncio.timeout(config.upstream_timeout):
             async with request.app["http"].post(config.upstream.rstrip("/") + request.path,

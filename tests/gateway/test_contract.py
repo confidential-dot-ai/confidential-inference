@@ -161,6 +161,13 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.status, 200)
             raw = await result.text()
         samples = [sample for family in text_string_to_metric_families(raw) for sample in family.samples]
+        values = (ROOT / "helm/confidential-inference/values.yaml").read_text()
+        # Read the two flat default allowlists without adding a YAML dependency.
+        allowed_labels = set()
+        for prefix in ("  commonLabels: [", "    gateway: ["):
+            allowed_labels.update(label.strip() for label in values.split(prefix, 1)[1].split("]", 1)[0].split(","))
+        for sample in samples:
+            self.assertLessEqual(set(sample.labels), allowed_labels, sample.name)
         def metric(name, **labels):
             return next(sample.value for sample in samples if sample.name == name and
                 all(sample.labels.get(key) == value for key, value in labels.items()))
