@@ -62,9 +62,14 @@ async def measure(args):
     sampler = None
     try:
         await gateway.start()
-        process = psutil.Process(gateway.process.pid)
+        pid = gateway.process.pid
+        if gateway.container:
+            pid = int(await asyncio.to_thread(subprocess.check_output,
+                ["docker", "inspect", "--format", "{{.State.Pid}}", gateway.container]))
+        process = psutil.Process(pid)
         rss, sampling = [], True
         initial_cpu = process.cpu_times()
+        initial_children_cpu = sum(p.cpu_times().user + p.cpu_times().system for p in process.children(recursive=True) if p.is_running())
         initial_time = time.monotonic()
         async def sample():
             while sampling:
@@ -195,7 +200,7 @@ async def measure(args):
                   "small_probe_first_chunk_p99_seconds": percentile(probes, .99),
                   "chunk_delay_p95_seconds": percentile(delays, .95), "chunk_delay_p99_seconds": percentile(delays, .99),
                   "chunk_delay_max_seconds": max(delays, default=None), "peak_rss_mib": max(rss, default=0) / 1024**2,
-                  "cpu_seconds": final_cpu.user + final_cpu.system - initial_cpu.user - initial_cpu.system + child_cpu,
+                  "cpu_seconds": final_cpu.user + final_cpu.system - initial_cpu.user - initial_cpu.system + child_cpu - initial_children_cpu,
                   "sample_elapsed_seconds": time.monotonic() - initial_time, "transport_only": True}
         print(json.dumps(result, indent=2))
         if args.output:
