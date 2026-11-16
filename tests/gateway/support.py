@@ -92,6 +92,7 @@ class AdminPeer:
     def __init__(self):
         self.directory = tempfile.TemporaryDirectory(prefix="gateway-admin-test-")
         self.value, self.events, self.batches = snapshot(), [], []
+        self.accepted_by_id, self.duplicate_deliveries = {}, 0
         self.gets, self.fail_usage, self.unavailable = 0, 0, False
         self.reject_input_tokens = None
         self.authorizations = []
@@ -193,7 +194,15 @@ class AdminPeer:
         if self.fail_usage:
             self.fail_usage -= 1
             raise web.HTTPServiceUnavailable()
-        self.events.extend(batch)
+        for event in batch:
+            identifier = event["request_id"]
+            if identifier in self.accepted_by_id:
+                if self.accepted_by_id[identifier] != event:
+                    raise web.HTTPUnprocessableEntity()
+                self.duplicate_deliveries += 1
+            else:
+                self.accepted_by_id[identifier] = event
+                self.events.append(event)
         return web.json_response({"accepted": len(batch)})
 
     async def close(self):

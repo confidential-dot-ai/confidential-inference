@@ -882,6 +882,11 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all(1 <= len(batch) <= 500 for batch in self.admin_peer.batches)
         )
+        print(
+            "Queue acceptance: 100000 unique retained events; duplicate deliveries:",
+            self.admin_peer.duplicate_deliveries,
+            flush=True,
+        )
 
     async def test_usage_batch_splitting_drops_only_the_refused_event(self):
         """B2: retain accepted usage when the admin permanently refuses one event."""
