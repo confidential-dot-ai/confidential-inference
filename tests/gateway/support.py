@@ -277,6 +277,7 @@ class Gateway:
             "GATEWAY_SHUTDOWN_GRACE_SECONDS": "1",
             **self.settings,
         }
+        self.endpoint = "http://" + env["GATEWAY_LISTEN"]
         command = (
             [self.rust] if self.kind == "rust" else [sys.executable, "-m", "gateway"]
         )
@@ -338,7 +339,7 @@ class Gateway:
                 if self.process.poll() is not None:
                     raise RuntimeError("gateway exited: " + self.logs())
                 try:
-                    async with client.get("http://127.0.0.1:9443/health") as response:
+                    async with client.get(self.endpoint + "/health") as response:
                         if response.status == 200:
                             break
                 except aiohttp.ClientError:
@@ -348,7 +349,7 @@ class Gateway:
                 raise RuntimeError("gateway start timeout")
             if apply_snapshot:
                 async with client.put(
-                    "http://127.0.0.1:9443/admin/v1/api-keys/snapshot",
+                    self.endpoint + "/admin/v1/api-keys/snapshot",
                     json=snapshot(),
                     headers={"Authorization": "Bearer " + ADMIN_KEY},
                 ) as response:

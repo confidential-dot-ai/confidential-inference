@@ -1366,6 +1366,146 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.02)
         self.assertEqual(self.gateway.process.returncode, 0)
 
+    async def test_rolling_replacement_through_a_frontdoor_peer(self):
+        """V2: a proxy moves new work while the old process drains a stream."""
+        self.admin_peer = AdminPeer()
+        await self.admin_peer.start()
+        settings = {
+            "SSL_CERT_FILE": str(self.admin_peer.ca_file),
+            "GATEWAY_ADMIN_ENDPOINT": self.admin_peer.endpoint,
+            "GATEWAY_USAGE_ENABLED": "true",
+            "GATEWAY_USAGE_MODELS": orjson.dumps(
+                {MODEL: {"served_model": "backend", "model_revision": "rollout-test"}}
+            ).decode(),
+            "GATEWAY_SHUTDOWN_GRACE_SECONDS": "8",
+            "GATEWAY_UPSTREAM_TIMEOUT_SECONDS": "3",
+            "GATEWAY_BODY_TIMEOUT_SECONDS": "1",
+            "GATEWAY_QUEUE_TIMEOUT_SECONDS": "1",
+            "GATEWAY_FIRST_TOKEN_TIMEOUT_SECONDS": "1",
+            "GATEWAY_STREAM_IDLE_TIMEOUT_SECONDS": "3",
+        }
+        await self.start(settings, apply=False)
+        replacement = Gateway(
+            self.gateway.kind,
+            self.upstream,
+            {
+                **settings,
+                "GATEWAY_LISTEN": "127.0.0.2:9443",
+                "GATEWAY_METRICS_LISTEN": "127.0.0.2:9090",
+            },
+        )
+        frontdoor = None
+        release = asyncio.Event()
+
+        async def reply(request, value):
+            usage = {"prompt_tokens": 8, "completion_tokens": 2}
+            if not value.get("stream"):
+                return web.json_response(
+                    {"model": "backend", "choices": [], "usage": usage}
+                )
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            await response.write(b": admitted\n\n")
+            await release.wait()
+            await response.write(
+                b"data: "
+                + orjson.dumps({"model": "backend", "choices": [], "usage": usage})
+                + b"\n\ndata: [DONE]\n\n"
+            )
+            return response
+
+        self.reply = reply
+        target = self.gateway.endpoint
+
+        async def forward(request):
+            destination = target
+            async with self.client.request(
+                request.method,
+                destination + request.raw_path,
+                data=request.content,
+                headers={
+                    name: request.headers[name]
+                    for name in ("Authorization", "Content-Type")
+                    if name in request.headers
+                },
+            ) as upstream:
+                response = web.StreamResponse(
+                    status=upstream.status,
+                    headers={
+                        "Content-Type": upstream.headers["Content-Type"],
+                        "x-ci-request-id": upstream.headers["x-ci-request-id"],
+                    },
+                )
+                await response.prepare(request)
+                async for chunk in upstream.content.iter_any():
+                    await response.write(chunk)
+                return response
+
+        try:
+            await replacement.start(apply_snapshot=False)
+            async with asyncio.timeout(5):
+                for gateway in (self.gateway, replacement):
+                    while True:
+                        async with self.client.get(
+                            gateway.endpoint + "/ready"
+                        ) as ready:
+                            if ready.status == 200:
+                                break
+                        await asyncio.sleep(0.02)
+            app = web.Application()
+            app.router.add_post("/v1/chat/completions", forward)
+            frontdoor = web.AppRunner(app, access_log=None)
+            await frontdoor.setup()
+            site = web.TCPSite(frontdoor, "127.0.0.1", 0)
+            await site.start()
+            endpoint = (
+                f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
+                "/v1/chat/completions"
+            )
+            headers = {"Authorization": "Bearer " + API_KEY}
+            async with self.client.post(
+                endpoint, json={"model": MODEL, "stream": True}, headers=headers
+            ) as old_response:
+                self.assertEqual(old_response.status, 200)
+                self.assertEqual(await old_response.content.readline(), b": admitted\n")
+                old_id = old_response.headers["x-ci-request-id"]
+                target = replacement.endpoint
+                self.gateway.process.terminate()
+                async with self.client.post(
+                    endpoint, json={"model": MODEL}, headers=headers
+                ) as new_response:
+                    self.assertEqual(new_response.status, 200)
+                    self.assertEqual((await new_response.json())["model"], MODEL)
+                    new_id = new_response.headers["x-ci-request-id"]
+                self.assertNotEqual(old_id, new_id)
+                self.assertIsNone(self.gateway.process.poll())
+                release.set()
+                self.assertTrue(
+                    (await old_response.read()).endswith(b"data: [DONE]\n\n")
+                )
+            async with asyncio.timeout(6):
+                while self.gateway.process.poll() is None:
+                    await asyncio.sleep(0.02)
+            self.assertEqual(self.gateway.process.returncode, 0)
+            await replacement.close()
+            self.assertEqual(len(self.admin_peer.events), 2)
+            self.assertEqual(
+                len({event["request_id"] for event in self.admin_peer.events}), 2
+            )
+            self.assertTrue(
+                all(
+                    event["outcome"] == "completed"
+                    and event["input_tokens"] == 8
+                    and event["output_tokens"] == 2
+                    for event in self.admin_peer.events
+                )
+            )
+        finally:
+            release.set()
+            if frontdoor:
+                await frontdoor.cleanup()
+            await replacement.close()
+
     async def test_body_timeout_does_not_retain_execution_capacity(self):
         """L1/L2: a stalled upload times out before it can reach inference."""
         await self.start(
