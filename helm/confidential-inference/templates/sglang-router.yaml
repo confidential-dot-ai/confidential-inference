@@ -1,5 +1,17 @@
 {{- define "confidential-inference.source.sglang-router" -}}
 {{- if .Values.router.enabled }}
+{{- if lt (int .Values.router.requestTimeoutSeconds) (int .Values.gateway.protection.upstreamTimeoutSeconds) }}
+{{- fail "router.requestTimeoutSeconds must be at least gateway.protection.upstreamTimeoutSeconds: the router would end a long request first" }}
+{{- end }}
+{{- if gt (int .Values.router.maxConcurrentRequests) 0 }}
+{{- $perWorker := int (include "confidential-inference.workerMaxRunningRequests" .) }}
+{{- if eq $perWorker 0 }}
+{{- fail "router.maxConcurrentRequests needs inference.maxRunningRequests: the chart cannot check the ceiling against the model's own value" }}
+{{- end }}
+{{- if lt (int .Values.router.maxConcurrentRequests) (mul $perWorker (int .Values.inference.replicas)) }}
+{{- fail "router.maxConcurrentRequests must be at least inference.replicas x the worker's maxRunningRequests: the router would hold requests that the workers can run" }}
+{{- end }}
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -120,6 +132,14 @@ spec:
             - --cb-failure-threshold=2
             - --cb-timeout-duration-secs=10
             - --connect-timeout-secs=2
+            # The total time of one worker request, its stream included. The
+            # gateway's upstreamTimeoutSeconds ends a request first.
+            - --request-timeout-secs={{ .Values.router.requestTimeoutSeconds }}
+            {{- if gt (int .Values.router.maxConcurrentRequests) 0 }}
+            - --max-concurrent-requests={{ .Values.router.maxConcurrentRequests }}
+            - --queue-size={{ .Values.router.queueSize }}
+            - --queue-timeout-secs={{ .Values.router.queueTimeoutSeconds }}
+            {{- end }}
             {{- if .Values.inference.enabled }}
             # Production workers can need more than 30 minutes to load and tune the model.
             - --worker-startup-timeout-secs=3600

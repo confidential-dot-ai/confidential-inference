@@ -32,6 +32,7 @@ pub mod log_privacy;
 pub mod metrics;
 mod model_response;
 pub mod protection;
+pub mod request_body;
 pub mod routing_key;
 pub mod settings;
 pub mod usage;
@@ -383,18 +384,48 @@ async fn proxy_inference(
     let client_routing_key = request.headers().get(&routing_key::HEADER).cloned();
     let started = Instant::now();
     let router_request = state.metrics.router_request(&state.router_label);
+    let declared = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok());
+    if declared.is_some_and(|length| length > config.maximum_body_bytes) {
+        return client_error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
+    }
+    // The body's share of the memory budget, held until the router answers
+    // (`crate::request_body`).
+    let body_memory = &state.protection.body_memory;
+    let mut body_reservation = match body_memory
+        .reserve(
+            request_body::read_cost(declared.unwrap_or(config.maximum_body_bytes)),
+            config.protection.queue_timeout,
+        )
+        .await
+    {
+        Ok(reservation) => reservation,
+        Err(error) => return body_memory_refused(&state, &error),
+    };
     let body = match tokio::time::timeout(
         config.protection.body_timeout,
-        axum::body::to_bytes(request.into_body(), config.maximum_body_bytes),
+        request_body::read(request.into_body(), declared, config.maximum_body_bytes),
     )
     .await
     {
         Ok(Ok(body)) => body,
-        Ok(Err(_)) => {
+        Ok(Err(request_body::ReadError::TooLarge)) => {
             return client_error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
+        }
+        Ok(Err(request_body::ReadError::Failed)) => {
+            return client_error(StatusCode::BAD_REQUEST, "request_body_failed");
         }
         Err(_) => return client_error(StatusCode::REQUEST_TIMEOUT, "request_body_timeout"),
     };
+    if let Err(error) = body_reservation.resize(
+        request_body::parse_cost(body.len(), request_body::shape(&body)),
+        body_memory,
+    ) {
+        return body_memory_refused(&state, &error);
+    }
     let mut payload: Value = match serde_json::from_slice(&body) {
         Ok(payload) => payload,
         Err(_) => return client_error(StatusCode::BAD_REQUEST, "invalid_json"),
@@ -453,13 +484,23 @@ async fn proxy_inference(
             }
             payload["stream_options"]["include_usage"] = json!(true);
         }
-        match serde_json::to_vec(&payload) {
-            Ok(body) => axum::body::Bytes::from(body),
+        // Drop the read body before the new one exists: the parsed value
+        // holds the text.
+        let capacity = body.len().saturating_add(256);
+        drop(body);
+        let mut written = Vec::with_capacity(capacity);
+        match serde_json::to_writer(&mut written, &payload) {
+            Ok(()) => axum::body::Bytes::from(written),
             Err(_) => return client_error(StatusCode::BAD_REQUEST, "invalid_json"),
         }
     } else {
         body
     };
+    // Only the body to send stays: the parsed value goes before the queue.
+    drop(payload);
+    // A shrink cannot fail. A body that grew in the rewrite keeps the parse
+    // share, which is larger than it.
+    let _ = body_reservation.resize(body.len(), body_memory);
     let queue_started = Instant::now();
     state.metrics.enter_queue();
     let permits = state.protection.inference_permits(&key_id).await;
@@ -484,6 +525,8 @@ async fn proxy_inference(
         upstream = upstream.header(routing_key::HEADER.clone(), value);
     }
     let upstream = upstream.body(body).send().await;
+    // The router has the whole body once it answers.
+    drop(body_reservation);
     let Ok(upstream) = upstream else {
         if let Some(usage) = &mut usage_request {
             usage.finish(usage::Outcome::Failed);
@@ -562,6 +605,7 @@ async fn proxy_inference(
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.starts_with("application/json")));
     let retry_after = safe_retry_after(upstream.headers());
+    let first_token_timeout = config.protection.first_token_timeout;
     let idle_timeout = config.protection.stream_idle_timeout;
     let metrics = Arc::clone(&state.metrics);
     let metric_model = model.to_owned();
@@ -577,9 +621,13 @@ async fn proxy_inference(
         let mut json_metrics_overflow = false;
         let expected_model = usage_request.as_ref().map(|usage| usage.served_model().to_owned());
         let mut model_response = model_response::ModelResponse::new(metric_model.clone(), is_event_stream).hide_final_usage(hide_final_usage).expected_model(expected_model).wire(wire);
+        // The first chunk of a stream comes after the queue and the prefill
+        // of the whole prompt, so it has its own, longer timeout.
+        let mut wait = first_token_timeout;
         loop {
-            match tokio::time::timeout(idle_timeout, upstream_stream.next()).await {
+            match tokio::time::timeout(wait, upstream_stream.next()).await {
                 Ok(Some(Ok(chunk))) => {
+                    wait = idle_timeout;
                     if is_event_stream {
                         stream_metrics.observe(
                             &chunk,
@@ -666,6 +714,18 @@ async fn proxy_inference(
         key_id: Some(key_id),
     });
     response
+}
+
+fn body_memory_refused(state: &AppState, error: &request_body::ReserveError) -> Response<Body> {
+    match error {
+        request_body::ReserveError::TooLarge => {
+            client_error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large")
+        }
+        request_body::ReserveError::Busy => {
+            state.metrics.record_rejection("body_memory_capacity");
+            protection::overload("body_memory_capacity")
+        }
+    }
 }
 
 /// Read only bounded numeric usage fields from an OpenAI-compatible response.

@@ -86,32 +86,53 @@ Assumptions and limits of this number:
 
 The C8s front door streams the body, so its memory does not increase.
 
-The gateway reads the full body into memory before it sends it to the
-router. For each request it holds:
+The gateway reads the full body into memory, parses it as JSON, and sends
+the body to the router. One budget, `gateway.protection.bodyMemoryBytes`,
+bounds the memory of all bodies in progress together
+(`services/gateway/src/request_body.rs`):
 
-- the body bytes (1 x the body),
-- the parsed JSON value (about 1 to 3 x the body; more for many small
-  values),
-- a new copy of the body when it adds the `stream_options` field for usage
-  records (1 x the body).
+1. Before the read, a request reserves 4 x its `Content-Length` (4 x
+   `maximumBodyBytes` when the length is not known). When the budget does
+   not have this space, the request waits up to `queueTimeoutSeconds`, then
+   gets 429 `body_memory_capacity` with `Retry-After: 1`.
+2. After the read, the gateway counts the JSON items of the body and
+   changes the reservation to the cost of the parse: 2 x the body, plus
+   2 x the longest string with an escape, plus 96 bytes for each JSON item
+   and 768 bytes for each object. It returns the excess, or takes the
+   difference without a wait or gets 429. A body whose cost is more than
+   the whole budget gets 413 `request_too_large`.
+3. After the parse, the reservation is 1 x the body until the router sends
+   the response headers. A non-streaming response sends its headers at the
+   end, so this part stays for the whole request.
 
-Thus use about 4 x `maximumBodyBytes` for each request in progress. At
-32 MiB this is about 128 MiB for each request.
+The budget must be at least 5 x `maximumBodyBytes` + 64 KiB, so that one
+request of the largest body fits. The chart and the gateway refuse a
+smaller budget.
 
-The gateway reads the body after it checks the API key, and before it takes
-an inference slot. Thus `globalRequestConcurrency` and
-`perAddressConcurrency` limit the number of bodies in memory, not
-`inferenceConcurrency`. Only a client with a valid API key can make the
-gateway hold a body.
+Measured peak heap of one request through the gateway (a counting
+allocator, the body in 64 KiB chunks with a `Content-Length`, the chat
+route with a routing key):
 
-Set the gateway memory to this value or more:
+| Body | Before this change | Now | Reserved after the read (cost) |
+| --- | --- | --- | --- |
+| 31 MiB of plain text in one message | 5.0 x | 2.0 x | 2.0 x |
+| 29 MiB of source code (escapes `\n`, `\"`) | 4.5 x | 3.4 x | 3.8 x |
+| 27 MiB of CJK text as `\uXXXX` escapes | 3.0 x | 2.1 x | 3.0 x |
+| 31 MiB agent transcript (2 KiB tool results) | 3.2 x | 3.2 x | 4.5 x |
+| 31 MiB of 80-byte chat messages | 8.2 x | 8.2 x | 13.5 x |
+| 8 MiB array of `0` (not realistic) | 17 x | 17 x | 50 x |
+| 8 MiB array of `{"a":"b"}` (not realistic) | 68 x | 68 x | 108 x |
 
-    512 MiB + (number of large requests at the same time) x 4 x maximumBodyBytes
+The gateway no longer copies the first user message to make the routing
+key, and it drops the read body before it writes the changed body. The
+reservation is at least the measured peak for each body in the table.
 
-Example: 16 large requests at the same time at 32 MiB need
-512 MiB + 16 x 128 MiB = 2.5 GiB. The chart default is `512Mi`, which is
-not sufficient. Set `gateway.resources.memory` (for example `4Gi`) when you
-set 32 MiB.
+Size the gateway memory as:
+
+    gateway.resources.memory >= 256 MiB + bodyMemoryBytes
+
+`docs/long-context-sizing.md` gives the budget for a number of concurrent
+large requests.
 
 ## Time
 
@@ -120,6 +141,23 @@ full body. A 32 MiB body in 10 seconds needs about 27 Mbit/s from the
 client. Set `bodyTimeoutSeconds: 60` for a 1M-token context. At 60 seconds
 the client needs about 4.5 Mbit/s.
 
+The prefill of a 1M-token prompt and the wait in the worker queue come
+before the first token. Three gateway timeouts apply after the gateway sends
+the body:
+
+| Value | Default | Maximum | Applies to |
+| --- | --- | --- | --- |
+| `upstreamTimeoutSeconds` | 14400 | 86400 | The whole request, its stream included |
+| `firstTokenTimeoutSeconds` | 3600 | 14400 | The first chunk of the response body after the router's headers |
+| `streamIdleTimeoutSeconds` | 60 | 300 | Each later chunk |
+
+`router.requestTimeoutSeconds` (default 14460) must be at least
+`upstreamTimeoutSeconds`. In C8s v0.101.5 the front door nginx
+(`proxy_read_timeout 3600s`) and the routing listener (`--backend-timeout`,
+1 hour) end a request with no data for 1 hour. Thus the first token of a
+streaming request, and all of a non-streaming request, must come within
+1 hour, whatever the gateway values are.
+
 ## Steps for a 1M-token deployment
 
 1. In the deployment values, set:
@@ -127,13 +165,16 @@ the client needs about 4.5 Mbit/s.
    ```yaml
    gateway:
      resources:
-       memory: 4Gi
+       memory: 9Gi
      protection:
        maximumBodyBytes: 33554432
        bodyTimeoutSeconds: 60
+       # 64 large requests at the same time: 64 x 4 x 32 MiB.
+       bodyMemoryBytes: 8589934592
    ```
 
-   Also set the worker context length to 1,048,576 tokens.
+   Also set the worker context length to 1,048,576 tokens, and size the
+   concurrency from the GPUs (`docs/long-context-sizing.md`).
 2. Write the worker launch file with
    `c8s worker new --router-max-request-body-bytes 33554432`. This needs a
    `node-images` decree and a new launch of the worker VM. Plan this with the

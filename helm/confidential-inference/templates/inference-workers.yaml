@@ -6,6 +6,15 @@
 {{- if and (gt (int .Values.inference.gpusPerReplica) 0) (eq (len .Values.inference.gpuArchitectures) 0) }}
 {{- fail "inference.gpuArchitectures is required when inference.gpusPerReplica is greater than zero" }}
 {{- end }}
+{{- range $flag, $value := dict "--context-length" .Values.inference.contextLength "--max-running-requests" .Values.inference.maxRunningRequests }}
+{{- if $value }}
+{{- range $.Values.inference.workerExtraArgs }}
+{{- if or (eq . $flag) (hasPrefix (printf "%s=" $flag) .) }}
+{{- fail (printf "inference.workerExtraArgs sets %s, which the chart value sets too: remove it from workerExtraArgs" $flag) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -185,6 +194,12 @@ spec:
             {{- end }}
             {{- range $.Values.inference.workerExtraArgs }}
             - {{ . | quote }}
+            {{- end }}
+            {{- if $.Values.inference.contextLength }}
+            - --context-length={{ int $.Values.inference.contextLength }}
+            {{- end }}
+            {{- if $.Values.inference.maxRunningRequests }}
+            - --max-running-requests={{ int $.Values.inference.maxRunningRequests }}
             {{- end }}
             - --mem-fraction-static=0.90
             - --chunked-prefill-size=4096

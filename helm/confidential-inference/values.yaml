@@ -126,12 +126,28 @@ gateway:
     maximumUriBytes: 2048
     # The largest request body, in bytes (at most 67108864, 64 MiB). For a
     # 1M-token context, use 33554432 (32 MiB), bodyTimeoutSeconds 60, and
-    # more gateway memory. The C8s front door has its own limit, which the
-    # worker launch file sets. See docs/request-body-limit.md.
+    # a larger bodyMemoryBytes and gateway memory. The C8s front door has its
+    # own limit, which the worker launch file sets. See
+    # docs/request-body-limit.md.
     maximumBodyBytes: 2097152
+    # The memory budget of all request bodies in progress together, in
+    # bytes. A request reserves 4 x its body before the read, and 1 x after
+    # the parse until the router answers; above the budget it waits up to
+    # queueTimeoutSeconds, then gets 429 body_memory_capacity. At least
+    # 5 x maximumBodyBytes. Set gateway.resources.memory to 256Mi plus this
+    # value or more. See docs/long-context-sizing.md.
+    bodyMemoryBytes: 268435456
     headerTimeoutSeconds: 5
     bodyTimeoutSeconds: 10
-    upstreamTimeoutSeconds: 900
+    # The total time of one upstream request, its stream included (at most
+    # 86400). router.requestTimeoutSeconds must be at least this value.
+    upstreamTimeoutSeconds: 14400
+    # The wait for the first response chunk after the router's headers: the
+    # router and worker queues and the prefill of the whole prompt (at most
+    # 14400, and not more than upstreamTimeoutSeconds). The C8s front door
+    # (v0.101.5) ends a request with no data for 3600 seconds first.
+    firstTokenTimeoutSeconds: 3600
+    # The wait for each later chunk of a stream.
     streamIdleTimeoutSeconds: 60
     globalRequestConcurrency: 256
     perAddressConcurrency: 256
@@ -256,6 +272,15 @@ inference:
   resources:
     cpu: "2"
     memory: 8Gi
+  # The model worker's --context-length, in tokens. 0 renders no flag: the
+  # worker uses the context length of the model's configuration. Do not also
+  # put --context-length in workerExtraArgs.
+  contextLength: 0
+  # The model worker's --max-running-requests: the requests one worker
+  # decodes at the same time. 0 renders no flag: SGLang sizes it from the
+  # KV cache. Size gateway.protection.inferenceConcurrency from replicas x
+  # this value (docs/long-context-sizing.md).
+  maxRunningRequests: 0
   simulator:
     # Mount and verify the release model before the CPU simulator starts.
     # Staging enables this to exercise the model path of the deployment (the
@@ -278,6 +303,21 @@ router:
   replicas: 1
   port: 30000
   metricsPort: 29000
+  # --request-timeout-secs: the total time of one request to a worker, its
+  # stream included. It must be at least
+  # gateway.protection.upstreamTimeoutSeconds, so the gateway, not the
+  # router, ends a long request. The upstream default is 1800.
+  requestTimeoutSeconds: 14460
+  # Router admission (images/sglang-router, admission-caps.patch). 0 renders
+  # no flag: the router admits every request and the workers queue them.
+  # A value above 0 is a concurrency ceiling (429 above it, after a wait in a
+  # queue of queueSize for up to queueTimeoutSeconds); the chart refuses a
+  # value below inference.replicas x the worker's maxRunningRequests.
+  maxConcurrentRequests: 0
+  queueSize: 100
+  queueTimeoutSeconds: 60
+  # The router parses each request body: size its memory like the gateway's
+  # bodyMemoryBytes (docs/long-context-sizing.md).
   resources:
     cpu: "1"
     memory: 1Gi

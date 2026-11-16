@@ -21,6 +21,7 @@ getrandom = "0.3.4"
 hex = "0.4.3"
 hmac = "0.12.1"
 http = "1.4.0"
+http-body-util = "0.1.5"
 hyper-util = { version = "0.1.20", features = ["server-auto", "tokio"] }
 ipnet = "2.11.0"
 opentelemetry-appender-tracing = "0.33.1"

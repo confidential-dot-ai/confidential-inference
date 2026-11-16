@@ -120,7 +120,12 @@ the router rehearsal and deployment checks.
 
 `admission-caps.patch` adds these `launch_router` flags. Each is off by
 default, so a router started without them behaves as before. The chart's
-aggregated router command sets none of them.
+aggregated router command sets none of them. It sets `--max-concurrent-requests`
+(below) only when `router.maxConcurrentRequests` is above 0, and then it
+refuses a value below `inference.replicas` x the worker's
+`--max-running-requests`. It always sets `--request-timeout-secs` from
+`router.requestTimeoutSeconds`, which must be at least the gateway's
+`upstreamTimeoutSeconds`.
 
 | Flag | Effect |
 | --- | --- |

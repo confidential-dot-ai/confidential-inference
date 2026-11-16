@@ -34,6 +34,11 @@ use hyper_util::rt::{TokioExecutor, TokioTimer};
 const INFERENCE_UPSTREAM_URL: &str = "http://127.0.0.1:30001";
 // Inside the termination grace the chart leaves after the HTTP drain.
 const USAGE_FLUSH_TIMEOUT: Duration = Duration::from_secs(20);
+/// The longest total time of one upstream request, its stream included: 24 h.
+const MAXIMUM_UPSTREAM_TIMEOUT_SECONDS: u64 = 86_400;
+/// The longest wait for the first response chunk: 4 h. The C8s front door
+/// closes a request with no data for 1 h (v0.101.5), which applies first.
+const MAXIMUM_FIRST_TOKEN_TIMEOUT_SECONDS: u64 = 14_400;
 
 /// The only field of the admin client secret the gateway reads.
 #[derive(serde::Deserialize)]
@@ -117,6 +122,10 @@ struct Args {
     maximum_body_bytes: usize,
     #[arg(long, env = "GATEWAY_UPSTREAM_TIMEOUT_SECONDS", default_value_t = 900)]
     upstream_timeout_seconds: u64,
+    // The memory budget of all request bodies in progress together
+    // (`confidential_gateway::request_body`).
+    #[arg(long, env = "GATEWAY_BODY_MEMORY_BYTES", default_value_t = 268_435_456)]
+    body_memory_bytes: usize,
     #[arg(long, env = "GATEWAY_MAXIMUM_HEADERS", default_value_t = 64)]
     maximum_headers: usize,
     #[arg(long, env = "GATEWAY_MAXIMUM_HEADER_BYTES", default_value_t = 16_384)]
@@ -133,6 +142,14 @@ struct Args {
         default_value_t = 60
     )]
     stream_idle_timeout_seconds: u64,
+    // The wait for the first response chunk: the router queue and the
+    // prefill of the prompt.
+    #[arg(
+        long,
+        env = "GATEWAY_FIRST_TOKEN_TIMEOUT_SECONDS",
+        default_value_t = 60
+    )]
+    first_token_timeout_seconds: u64,
     #[arg(
         long,
         env = "GATEWAY_GLOBAL_REQUEST_CONCURRENCY",
@@ -441,7 +458,9 @@ fn protection_config(args: &Args) -> ProtectionConfig {
         maximum_header_bytes: args.maximum_header_bytes,
         maximum_uri_bytes: args.maximum_uri_bytes,
         body_timeout: Duration::from_secs(args.body_timeout_seconds),
+        first_token_timeout: Duration::from_secs(args.first_token_timeout_seconds),
         stream_idle_timeout: Duration::from_secs(args.stream_idle_timeout_seconds),
+        body_memory_bytes: args.body_memory_bytes,
         global_request_concurrency: args.global_request_concurrency,
         per_address_concurrency: args.per_address_concurrency,
         inference_concurrency: args.inference_concurrency,
@@ -538,12 +557,21 @@ fn validate_args(args: &Args) -> Result<()> {
     {
         bail!("GATEWAY_MAXIMUM_BODY_BYTES is outside the safe range");
     }
+    // One request of the largest body must fit in the body memory budget.
+    if !(confidential_gateway::request_body::minimum_budget(args.maximum_body_bytes)
+        ..=confidential_gateway::request_body::MAXIMUM_BODY_MEMORY_BYTES)
+        .contains(&args.body_memory_bytes)
+    {
+        bail!("GATEWAY_BODY_MEMORY_BYTES must hold one request of the largest body");
+    }
     if !(1..=256).contains(&args.maximum_headers)
         || !(8_192..=128 * 1_024).contains(&args.maximum_header_bytes)
         || !(256..=8 * 1_024).contains(&args.maximum_uri_bytes)
         || !(1..=30).contains(&args.header_timeout_seconds)
         || !(1..=60).contains(&args.body_timeout_seconds)
-        || !(1..=3_600).contains(&args.upstream_timeout_seconds)
+        || !(1..=MAXIMUM_UPSTREAM_TIMEOUT_SECONDS).contains(&args.upstream_timeout_seconds)
+        || !(1..=MAXIMUM_FIRST_TOKEN_TIMEOUT_SECONDS).contains(&args.first_token_timeout_seconds)
+        || args.first_token_timeout_seconds > args.upstream_timeout_seconds
         || !(1..=300).contains(&args.stream_idle_timeout_seconds)
         || !(1..=4_096).contains(&args.global_request_concurrency)
         || !(1..=256).contains(&args.per_address_concurrency)
@@ -594,6 +622,14 @@ fn apply_settings(args: &mut Args, settings: &GatewaySettings) -> Result<()> {
     args.upstream_timeout_seconds = settings.upstream_timeout_seconds;
     args.body_timeout_seconds = settings.body_timeout_seconds;
     args.stream_idle_timeout_seconds = settings.stream_idle_timeout_seconds;
+    // A settings file without the field keeps the earlier behaviour: the
+    // first chunk had the stream idle timeout.
+    args.first_token_timeout_seconds = settings
+        .first_token_timeout_seconds
+        .unwrap_or(settings.stream_idle_timeout_seconds);
+    if let Some(bytes) = settings.body_memory_bytes {
+        args.body_memory_bytes = bytes;
+    }
     args.global_request_concurrency = settings.global_request_concurrency;
     args.per_address_concurrency = settings.per_address_concurrency;
     args.inference_concurrency = settings.inference_concurrency;
@@ -775,6 +811,8 @@ mod tests {
             header_timeout_seconds: 5,
             body_timeout_seconds: 10,
             stream_idle_timeout_seconds: 60,
+            first_token_timeout_seconds: 60,
+            body_memory_bytes: 268_435_456,
             global_request_concurrency: 256,
             per_address_concurrency: 16,
             inference_concurrency: 64,
@@ -837,8 +875,68 @@ mod tests {
     }
 
     #[test]
+    fn timeouts_admit_a_1m_token_prefill_and_a_long_stream() {
+        let mut value = args();
+        value.first_token_timeout_seconds = 3_600;
+        value.upstream_timeout_seconds = 14_400;
+        assert!(validate_args(&value).is_ok());
+        value.first_token_timeout_seconds = MAXIMUM_FIRST_TOKEN_TIMEOUT_SECONDS;
+        value.upstream_timeout_seconds = MAXIMUM_UPSTREAM_TIMEOUT_SECONDS;
+        assert!(validate_args(&value).is_ok());
+        value.upstream_timeout_seconds = MAXIMUM_UPSTREAM_TIMEOUT_SECONDS + 1;
+        assert!(validate_args(&value).is_err());
+        value.upstream_timeout_seconds = MAXIMUM_UPSTREAM_TIMEOUT_SECONDS;
+        value.first_token_timeout_seconds = MAXIMUM_FIRST_TOKEN_TIMEOUT_SECONDS + 1;
+        assert!(validate_args(&value).is_err());
+        // The first chunk cannot wait longer than the whole request.
+        value.first_token_timeout_seconds = 901;
+        value.upstream_timeout_seconds = 900;
+        assert!(validate_args(&value).is_err());
+        value.first_token_timeout_seconds = 0;
+        assert!(validate_args(&value).is_err());
+    }
+
+    #[test]
+    fn the_body_memory_budget_holds_one_request_of_the_largest_body() {
+        let mut value = args();
+        value.maximum_body_bytes = 32 * 1024 * 1024;
+        value.body_memory_bytes =
+            confidential_gateway::request_body::minimum_budget(value.maximum_body_bytes);
+        assert!(validate_args(&value).is_ok());
+        value.body_memory_bytes -= 1;
+        assert!(validate_args(&value).is_err());
+        value.body_memory_bytes = confidential_gateway::request_body::MAXIMUM_BODY_MEMORY_BYTES;
+        assert!(validate_args(&value).is_ok());
+        value.body_memory_bytes += 1;
+        assert!(validate_args(&value).is_err());
+    }
+
+    #[test]
+    fn settings_set_the_first_token_timeout_and_the_body_memory() -> Result<()> {
+        let mut value = args();
+        // A settings file of an earlier chart: the first chunk keeps the
+        // stream idle timeout, and the budget keeps the process default.
+        apply_settings(&mut value, &settings(None))?;
+        assert_eq!(value.first_token_timeout_seconds, 20);
+        assert_eq!(value.body_memory_bytes, 268_435_456);
+        let mut current = settings(None);
+        current.upstream_timeout_seconds = 14_400;
+        current.first_token_timeout_seconds = Some(3_600);
+        current.body_memory_bytes = Some(4 << 30);
+        apply_settings(&mut value, &current)?;
+        assert_eq!(value.first_token_timeout_seconds, 3_600);
+        assert_eq!(value.upstream_timeout_seconds, 14_400);
+        assert_eq!(value.body_memory_bytes, 4 << 30);
+        current.first_token_timeout_seconds = Some(14_401);
+        assert!(apply_settings(&mut value, &current).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn body_limit_accepts_the_1m_context_value_and_the_ceiling_only() {
         let mut value = args();
+        // Room for one request of the ceiling.
+        value.body_memory_bytes = 1 << 30;
         // The documented limit for a 1M-token context.
         value.maximum_body_bytes = 32 * 1024 * 1024;
         assert!(validate_args(&value).is_ok());
