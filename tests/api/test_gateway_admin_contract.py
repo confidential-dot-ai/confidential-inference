@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_PATH = ROOT / "api" / "gateway-admin.openapi.json"
-GATEWAY_ADMIN_ROUTES = ROOT / "services" / "gateway" / "src" / "api_keys.rs"
+GATEWAY_ADMIN_ROUTES = ROOT / "services" / "gateway" / "gateway" / "app.py"
 HTTP_METHODS = {"get", "put", "post", "delete", "patch", "head", "options", "trace"}
 KEY_SNAPSHOT_PULL = ("/api/gateway/key-snapshot", "get")
 
@@ -129,8 +129,8 @@ class GatewayAdminContractTests(unittest.TestCase):
 
     def test_gateway_paths_match_the_gateway_admin_router(self):
         source = GATEWAY_ADMIN_ROUTES.read_text(encoding="utf-8")
-        routed = set(re.findall(r'\.route\(\s*"([^"]+)",\s*(get|put|post|delete)\(', source))
-        self.assertTrue(routed, "no .route(...) calls found in api_keys.rs")
+        routed = {(path, method) for method, path in re.findall(r'web\.(get|put|post|delete)\(\s*"([^"]+)"', source) if path.startswith("/admin/")}
+        self.assertTrue(routed, "no admin routes found")
         served = {
             (path, method)
             for path, method, _ in operations(self.contract)
@@ -202,9 +202,8 @@ class GatewayAdminContractTests(unittest.TestCase):
         self.assertEqual(usage["properties"]["keys"]["maxItems"], 10000)
 
     def test_key_limit_fields_match_the_gateway_source(self):
-        source = (ROOT / "services" / "gateway" / "src" / "key_registry.rs").read_text(encoding="utf-8")
-        for field in ("pub rate_limit: Option<RateLimit>", "pub token_budget: Option<TokenBudget>",
-                      "pub token_usage: Option<TokenUsage>"):
+        source = (ROOT / "services" / "gateway" / "gateway" / "keys.py").read_text(encoding="utf-8")
+        for field in ('"rateLimit"', '"tokenBudget"', '"tokenUsage"'):
             self.assertIn(field, source)
 
     def test_no_response_schema_leaks_secrets(self):

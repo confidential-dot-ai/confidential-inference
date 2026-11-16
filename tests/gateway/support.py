@@ -65,6 +65,7 @@ class AdminPeer:
         self.directory = tempfile.TemporaryDirectory(prefix="gateway-admin-test-")
         self.value, self.events, self.batches = snapshot(), [], []
         self.gets, self.fail_usage, self.unavailable = 0, 0, False
+        self.reject_input_tokens = None
         self.authorizations = []
 
     async def start(self):
@@ -118,6 +119,8 @@ class AdminPeer:
         self.authorize(request)
         batch = (await request.json())["events"]
         self.batches.append(batch)
+        if self.reject_input_tokens is not None and any(event["input_tokens"] == self.reject_input_tokens for event in batch):
+            raise web.HTTPUnprocessableEntity()
         if self.fail_usage:
             self.fail_usage -= 1
             raise web.HTTPServiceUnavailable()

@@ -1,7 +1,7 @@
+import ast
 import copy
 import hashlib
 import json
-import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -66,16 +66,15 @@ class GatewayInferenceContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.contract = load(ROOT / "api/gateway-inference.openapi.json")
-        cls.gateway_source = (
-            ROOT / "services/gateway/src/lib.rs"
-        ).read_text(encoding="utf-8")
+        cls.gateway_source = (ROOT / "services/gateway/gateway/app.py").read_text(encoding="utf-8")
+        cls.key_source = (ROOT / "services/gateway/gateway/keys.py").read_text(encoding="utf-8")
 
     def test_contract_is_valid_json(self):
         self.assertEqual(self.contract["openapi"], "3.1.0")
         self.assertIn("paths", self.contract)
 
     def test_key_limit_errors_are_documented(self):
-        """The 429 response lists the per-key limit codes that lib.rs emits."""
+        """The 429 response lists the per-key limit codes that the key policy emits."""
         capacity = self.contract["components"]["responses"]["InferenceCapacity"]
         codes = {
             example["value"]["error"]["code"]
@@ -83,25 +82,31 @@ class GatewayInferenceContractTests(unittest.TestCase):
         }
         for code in ("rate_limit_exceeded", "insufficient_quota"):
             self.assertIn(code, codes)
-            self.assertIn(f'"{code}"', self.gateway_source)
+            self.assertIn(f'"{code}"', self.key_source)
 
     def test_expected_paths_are_present(self):
         self.assertEqual(set(self.contract["paths"]), self.EXPECTED_PATHS)
 
     def test_paths_match_the_gateway_route_table(self):
-        """The Rust-served paths in the spec must equal the .route(...) table in lib.rs."""
-        routed_paths = set(
-            re.findall(r'\.route\(\s*"([^"]+)"', self.gateway_source)
-        )
-        self.assertTrue(routed_paths, "no .route(...) calls found in lib.rs")
-
-        rust_served_spec_paths = {
+        """Public application routes must equal the non-C8s paths in the API."""
+        routed_paths = {
+            node.args[0].value
+            for node in ast.walk(ast.parse(self.gateway_source))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == "web"
+            and node.func.attr in ("get", "post", "put") and node.args
+            and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)
+            and not node.args[0].value.startswith("/admin/")
+        }
+        self.assertTrue(routed_paths)
+        served_spec_paths = {
             path
             for path, item in self.contract["paths"].items()
             for operation in item.values()
             if "tls-lb-static" not in operation.get("tags", [])
         }
-        self.assertEqual(rust_served_spec_paths, routed_paths)
+        self.assertEqual(served_spec_paths, routed_paths)
+
 
 
 if __name__ == "__main__":

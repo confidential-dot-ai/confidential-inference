@@ -27,8 +27,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          gateway=false
-          maintenance=false
+          gateways=false
           python=false
           helm_app=false
           helm_maintenance=false
@@ -36,12 +35,7 @@ jobs:
 
           while IFS= read -r path; do
             case "$path" in
-              Cargo.toml|Cargo.lock|rust-toolchain.toml)
-                gateway=true
-                maintenance=true
-                ;;
-              services/gateway/*) gateway=true ;;
-              services/maintenance-gateway/*) maintenance=true ;;
+              services/gateway/*|tests/gateway/*|images/gateway/*|images/maintenance-gateway/*) gateways=true ;;
               scripts/*.py|images/*/*.py) python=true ;;
               helm/confidential-inference/*) helm_app=true ;;
               helm/maintenance-gateway/*) helm_maintenance=true ;;
@@ -49,8 +43,7 @@ jobs:
                 config=true
                 ;;
               .github/workflows/pr.yml)
-                gateway=true
-                maintenance=true
+                gateways=true
                 python=true
                 helm_app=true
                 helm_maintenance=true
@@ -60,36 +53,35 @@ jobs:
           done < <(git diff --name-only "$BASE_SHA" "$GITHUB_SHA")
 
           {
-            echo "gateway=$gateway"
-            echo "maintenance=$maintenance"
+            echo "gateways=$gateways"
             echo "python=$python"
             echo "helm_app=$helm_app"
             echo "helm_maintenance=$helm_maintenance"
             echo "config=$config"
           } >> "$GITHUB_OUTPUT"
 
-      - name: install rust
-        if: steps.changes.outputs.gateway == 'true' || steps.changes.outputs.maintenance == 'true'
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-04
+      - name: install gateway Python
+        if: steps.changes.outputs.gateways == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          toolchain: stable
-          components: rustfmt, clippy
+          python-version: '3.13'
 
-      - name: rustfmt
-        if: steps.changes.outputs.gateway == 'true' || steps.changes.outputs.maintenance == 'true'
-        run: cargo fmt --all -- --check
-
-      - name: test gateway
-        if: steps.changes.outputs.gateway == 'true'
+      - name: test gateway containers
+        if: steps.changes.outputs.gateways == 'true'
+        env:
+          GATEWAY_TEST_IMAGE: gateway-test
+          MAINTENANCE_GATEWAY_TEST_IMAGE: maintenance-gateway-test
+          PYTHONDONTWRITEBYTECODE: '1'
         run: |
-          cargo clippy --locked --package confidential-gateway --all-targets -- -D warnings
-          cargo test --locked --package confidential-gateway
-
-      - name: test maintenance gateway
-        if: steps.changes.outputs.maintenance == 'true'
-        run: |
-          cargo clippy --locked --package maintenance-gateway --all-targets -- -D warnings
-          cargo test --locked --package maintenance-gateway
+          python -m venv /tmp/gateway-tests
+          /tmp/gateway-tests/bin/python -m pip install --require-hashes --only-binary=:all: \
+            -r services/gateway/requirements.lock
+          epoch=$(git show -s --format=%ct "$GITHUB_SHA")
+          docker build -f images/gateway/Dockerfile --build-arg "SOURCE_REVISION=$GITHUB_SHA" \
+            --build-arg "SOURCE_DATE_EPOCH=$epoch" -t "$GATEWAY_TEST_IMAGE" .
+          docker build -f images/maintenance-gateway/Dockerfile --build-arg "SOURCE_REVISION=$GITHUB_SHA" \
+            --build-arg "SOURCE_DATE_EPOCH=$epoch" -t "$MAINTENANCE_GATEWAY_TEST_IMAGE" .
+          /tmp/gateway-tests/bin/python -m unittest discover -s tests/gateway -q
 
       - name: check python syntax
         if: steps.changes.outputs.python == 'true'

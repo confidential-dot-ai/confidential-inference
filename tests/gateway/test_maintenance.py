@@ -21,12 +21,15 @@ class MaintenanceContract(unittest.IsolatedAsyncioTestCase):
         command = ([os.environ.get("RUST_MAINTENANCE_BINARY", "/tmp/gateway-rust-baseline-target/release/maintenance-gateway")]
             if self.kind == "rust" else [sys.executable, "-m", "gateway.maintenance"])
         self.container = None
-        if self.kind == "python" and os.environ.get("GATEWAY_TEST_IMAGE"):
+        image = os.environ.get("MAINTENANCE_GATEWAY_TEST_IMAGE")
+        if self.kind == "python" and os.environ.get("GATEWAY_TEST_IMAGE") and not image:
+            raise RuntimeError("container tests need MAINTENANCE_GATEWAY_TEST_IMAGE")
+        if self.kind == "python" and image:
             self.container = Path(self.directory.name).name
             command = ["docker", "run", "--rm", "--name", self.container, "--network", "host",
                 "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "32",
                 "--env", "MAINTENANCE_GATEWAY_LISTEN=127.0.0.1:9443",
-                "--entrypoint", "python", os.environ["GATEWAY_TEST_IMAGE"], "-m", "gateway.maintenance"]
+                "--entrypoint", "python", image, "-m", "gateway.maintenance"]
         self.process = subprocess.Popen(command, env={**os.environ, "PYTHONPATH": str(PYTHON_ROOT),
             "MAINTENANCE_GATEWAY_LISTEN": "127.0.0.1:9443"}, stdout=self.log, stderr=subprocess.STDOUT)
         self.client = aiohttp.ClientSession()

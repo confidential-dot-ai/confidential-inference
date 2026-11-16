@@ -400,7 +400,6 @@ def create_app(config, keys, admin_auth, token=None):
     app.cleanup_ctx.append(session)
     app.on_response_prepare.append(response_headers)
     app.add_routes([web.get("/health", health), web.get("/ready", ready), web.get("/v1/models", models)])
-    for route in ("/v1/chat/completions", "/v1/completions", "/v1/responses"):
-        app.router.add_post(route, inference)
+    app.add_routes([web.post("/v1/chat/completions", inference), web.post("/v1/completions", inference), web.post("/v1/responses", inference)])
     app.add_routes([web.get("/admin/v1/health", admin), web.get("/admin/v1/api-keys/source", admin), web.put("/admin/v1/api-keys/snapshot", admin)])
     return app

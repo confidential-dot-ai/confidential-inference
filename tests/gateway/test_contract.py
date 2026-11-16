@@ -14,7 +14,16 @@ from datetime import UTC
 import aiohttp
 import orjson
 from aiohttp import web
-from support import ADMIN_KEY, API_KEY, MODEL, AdminPeer, Gateway, raw_request, snapshot
+from support import (
+    ADMIN_KEY,
+    API_KEY,
+    MODEL,
+    ROOT,
+    AdminPeer,
+    Gateway,
+    raw_request,
+    snapshot,
+)
 
 
 class GatewayContract(unittest.IsolatedAsyncioTestCase):
@@ -165,6 +174,19 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
         for private in (canary, API_KEY, ADMIN_KEY, "caller-log-canary", "caller-instance-canary"):
             self.assertNotIn(private, raw)
             self.assertNotIn(private, self.gateway.logs())
+        import re
+        policy = (ROOT / "helm/confidential-inference/templates/_log-policy.tpl").read_text()
+        listed = policy.split("gatewayMessages:", 1)[1].split("auditRecord:", 1)[0]
+        allowed = {orjson.loads(line.strip()[2:]) for line in listed.splitlines() if line.strip().startswith('- "')}
+        audit = policy.split("auditRecord: '", 1)[1].split("'", 1)[0]
+        for line in self.gateway.logs().splitlines():
+            record = orjson.loads(line)
+            # The old Rust filter permits this library's startup diagnostics.
+            # The collector drops them. Python permits only reviewed records.
+            if self.gateway.kind == "rust" and record.get("log.target", "").startswith("rustls_platform_verifier::") and record["level"] in ("DEBUG", "TRACE"):
+                continue
+            self.assertIn(record["level"], ("INFO", "WARN", "ERROR"), record)
+            self.assertTrue(record["message"] in allowed or re.fullmatch(audit, record["message"]), record["message"])
 
     async def test_responses_terminal_events_and_usage_binding(self):
         """I2/I5/T1: all terminal Responses events finish and report approved usage."""
@@ -243,6 +265,76 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
             status, _, body = await self.send(body={"model": MODEL}, token=key)
             self.assertEqual(status, 401)
             self.assertEqual(orjson.loads(body)["error"]["code"], "invalid_api_key")
+
+    async def test_pepper_mismatch_rows_and_envelopes(self):
+        """K4: skip mismatched HMAC rows, reject mismatched envelopes and plain rows."""
+        import copy
+        await self.start()
+        value = snapshot(2)
+        hmac_row = copy.deepcopy(value["keys"][0])
+        hmac_row.update(id="key_wrong_pepper", hashAlgorithm="hmac-sha256", pepperFingerprint="0" * 64)
+        value["keys"].append(hmac_row)
+        status, _, body = await self.push(value)
+        self.assertEqual(status, 200)
+        self.assertEqual(orjson.loads(body)["skippedPepperMismatch"], 1)
+        self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
+        value = snapshot(3)
+        value["pepperFingerprint"] = "0" * 64
+        self.assertEqual((await self.push(value))[0], 409)
+        value["pepperFingerprint"] = ""
+        value["keys"][0]["pepperFingerprint"] = "0" * 64
+        self.assertEqual((await self.push(value))[0], 400)
+        self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
+
+    async def test_cors_and_public_input_bounds(self):
+        """I6/L1: CORS preflight needs no key; URI, headers and forwarding stay bounded."""
+        await self.start()
+        status, headers, _ = await self.send(method="OPTIONS", token="", headers={
+            "Origin": "https://client.example", "Access-Control-Request-Method": "POST"})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Access-Control-Allow-Origin"], "*")
+        self.assertEqual({value.strip().lower() for value in headers["Access-Control-Allow-Headers"].split(",")},
+            {"authorization", "content-type", "accept", "x-smg-routing-key"})
+        self.assertEqual((await self.send("/health?" + "x" * 2100, method="GET"))[0], 414)
+        self.assertEqual((await self.send("/health", method="GET", headers={f"X-Fill-{index}": "x" * 8000 for index in range(3)}))[0], 431)
+        self.assertEqual((await self.send("/health", method="GET", headers={"Forwarded": "for=192.0.2.1"}))[0], 400)
+        self.assertEqual(self.received, [])
+
+    async def test_monthly_budget_and_rate_refill(self):
+        """L3: one token bucket refills over time and completed tokens exhaust a monthly budget."""
+        await self.start_with_admin(usage=True)
+        value = snapshot(2)
+        value["keys"][0].update(rateLimit={"requestsPerMinute": 60, "burst": 1},
+            tokenBudget={"tokens": 20, "window": "month"})
+        self.assertEqual((await self.push(value))[0], 200)
+        self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
+        status, _, raw = await self.send(body={"model": MODEL})
+        self.assertEqual(status, 429)
+        self.assertEqual(orjson.loads(raw)["error"]["code"], "rate_limit_exceeded")
+        await asyncio.sleep(1.05)
+        self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
+        status, _, raw = await self.send(body={"model": MODEL})
+        self.assertEqual(status, 429)
+        self.assertEqual(orjson.loads(raw)["error"]["code"], "insufficient_quota")
+
+    async def test_usage_batch_splitting_drops_only_the_refused_event(self):
+        """B2: retain accepted usage when the admin permanently refuses one event."""
+        await self.start_with_admin(usage=True)
+        self.admin_peer.reject_input_tokens = 99
+        state = {"input": 8}
+        async def reply(request, value):
+            return web.json_response({"model": "backend", "choices": [],
+                "usage": {"prompt_tokens": state["input"], "completion_tokens": 2}})
+        self.reply = reply
+        for amount in (8, 99, 10):
+            state["input"] = amount
+            self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
+        async with asyncio.timeout(10):
+            while len(self.admin_peer.events) < 2:
+                await asyncio.sleep(.05)
+        self.assertEqual([event["input_tokens"] for event in self.admin_peer.events], [8, 10])
+        self.assertEqual(len({event["request_id"] for event in self.admin_peer.events}), 2)
+        self.assertGreater(len(self.admin_peer.batches), 1)
 
     async def test_snapshot_revision_and_environment(self):
         """K3: equal revisions acknowledge; rollback/wrong environment do not replace."""
@@ -394,6 +486,42 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
         self.reply = None
         self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
 
+    async def test_graceful_shutdown_keeps_an_admitted_stream(self):
+        """V2: SIGTERM stops the gateway after an admitted response finishes."""
+        await self.start({"GATEWAY_SHUTDOWN_GRACE_SECONDS": "3"})
+        async def reply(request, value):
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            await response.write(b": heartbeat\n\n")
+            await asyncio.sleep(.5)
+            await response.write(b"data: [DONE]\n\n")
+            return response
+        self.reply = reply
+        async with self.client.post("http://127.0.0.1:9443/v1/chat/completions",
+                json={"model": MODEL, "stream": True}, headers={"Authorization": "Bearer " + API_KEY}) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(await response.content.readline(), b": heartbeat\n")
+            self.gateway.process.terminate()
+            self.assertTrue((await response.read()).endswith(b"data: [DONE]\n\n"))
+        async with asyncio.timeout(4):
+            while self.gateway.process.poll() is None:
+                await asyncio.sleep(.02)
+        self.assertEqual(self.gateway.process.returncode, 0)
+
+    async def test_body_timeout_does_not_retain_execution_capacity(self):
+        """L1/L2: a stalled upload times out before it can reach inference."""
+        await self.start({"GATEWAY_BODY_TIMEOUT_SECONDS": "1", "GATEWAY_INFERENCE_CONCURRENCY": "1"})
+        async def slow():
+            yield b'{"model":'
+            await asyncio.sleep(2)
+            yield b'"model-a"}'
+        async with self.client.post("http://127.0.0.1:9443/v1/chat/completions", data=slow(),
+                headers={"Authorization": "Bearer " + API_KEY}) as response:
+            self.assertEqual(response.status, 408)
+            self.assertEqual((await response.json())["error"]["code"], "request_body_timeout")
+        self.assertEqual(self.received, [])
+        self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
+
     async def test_header_deadline_does_not_end_an_active_stream(self):
         """L1/I5: incomplete headers time out; the header timer excludes a stream."""
         await self.start({"GATEWAY_HEADER_TIMEOUT_SECONDS": "1"})
@@ -539,3 +667,11 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
         status, _, _ = await self.send(body=value)
         self.assertEqual(status, 200)
         self.assertEqual(self.received[-1][1]["metadata"]["number"], 18446744073709551616)
+
+    async def test_wide_metadata_preserves_fields_without_unbounded_lookup_work(self):
+        """I3/P1: wide objects remain valid and do not stall a parser worker."""
+        await self.start()
+        value = {"model": MODEL, "metadata": {f"field_{index}": index for index in range(40000)}}
+        async with asyncio.timeout(3):
+            self.assertEqual((await self.send(body=value))[0], 200)
+        self.assertEqual(self.received[-1][1], value)

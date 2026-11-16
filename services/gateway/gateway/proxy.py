@@ -273,11 +273,12 @@ def inspect_buffer(parent, descriptor, length, capacity, maximum):
                 stack.pop()
                 continue
             if isinstance(value, simdjson.Object):
-                keys = tuple(value.keys())
-                if len(set(keys)) != len(keys):
+                keys = tuple(value.keys()) if len(value) <= 128 else None
+                if keys is None or len(set(keys)) != len(keys):
                     # Native lookup returns the first duplicate, while JSON
                     # object construction keeps the last. Charge a conservative
-                    # whole-tree bound instead of missing a shadowed subtree.
+                    # whole-tree bound for duplicates or wide objects. Repeated
+                    # lazy key lookups on a wide object can take quadratic time.
                     cost = max(cost, 128 * length + 65536)
                     if cost > maximum:
                         raise Rejected(413, "request_too_large")

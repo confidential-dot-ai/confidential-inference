@@ -9,7 +9,7 @@ container name from the log file path (no Kubernetes API access):
 
 - gateway: the gateway's JSON lines. Only the `message` leaves, and only when
   it is one of gatewayMessages, or the audit record (auditRecord), which
-  leaves as its own fields. services/gateway/tests/log_privacy.rs fails when
+  leaves as its own fields. tests/gateway/test_contract.py fails when
   a gateway message is not on this list.
 - sglang-router, inference-worker: JSON events of fixed names. Only the listed
   fields leave, each checked: a string field against its pattern, an

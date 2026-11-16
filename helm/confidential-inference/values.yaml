@@ -110,7 +110,7 @@ gateway:
       sourcePath: /confidential-inference/gateway/api-key-pepper
     # The admin client configuration (JSON: endpoint, token, optional
     # tls_ca_pem, connect_address, models). The gateway pulls its API keys
-    # from the admin and sends usage events there. services/gateway/src/admin_client.rs.
+    # from the admin and sends usage events there. services/gateway/gateway/usage.py.
     adminConfig:
       name: product-usage
       sourcePath: /confidential-inference/gateway/product-usage
@@ -136,12 +136,12 @@ gateway:
     # own limit, which the worker launch file sets. See
     # docs/request-body-limit.md.
     maximumBodyBytes: 2097152
-    # The memory budget of all request bodies in progress together, in
-    # bytes. A request reserves 4 x its body before the read, and 1 x after
-    # the parse until the router answers; above the budget it waits up to
-    # queueTimeoutSeconds, then gets 429 body_memory_capacity. At least
-    # 5 x maximumBodyBytes. Set gateway.resources.memory to 256Mi plus this
-    # value or more. See docs/long-context-sizing.md.
+    # Shared request-body accounting. Large bodies reserve 4 x their bytes
+    # while receiving, then 12 x before native JSON inspection. Object shape
+    # can require more. Small inline parses reserve 64 x declared bytes.
+    # Include the main process and parser workers when measuring RSS. The
+    # startup minimum is 5 x maximumBodyBytes + 65536, but a large parse can
+    # require more. See docs/request-body-limit.md.
     bodyMemoryBytes: 268435456
     headerTimeoutSeconds: 5
     bodyTimeoutSeconds: 10

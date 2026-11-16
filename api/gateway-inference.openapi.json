@@ -3,7 +3,7 @@
   "info": {
     "title": "Confidential Inference Public Gateway API",
     "version": "1.0.0",
-    "description": "This contract defines the real public API of the Rust gateway in services/gateway. The gateway sits behind the c8s tls-lb, which terminates public TLS inside the TEE and forwards HTTP to the gateway process. `/v1/chat/completions`, `/v1/completions`, and `/v1/responses` are OpenAI-compatible: request and response bodies follow the OpenAI chat-completions, legacy-completions, and Responses API shapes. The SGLang worker serves `/v1/responses` natively and the sglang-router forwards it; the gateway does not translate it. The gateway itself validates only the `model` field on inference requests (services/gateway/src/lib.rs, `proxy_inference`); it forwards the rest of the body to the upstream sglang-router unchanged. Bearer tokens authenticate with `Authorization: Bearer <api-key>` (services/gateway/src/lib.rs, `authenticate`). Every response carries an `X-Request-ID` header (services/gateway/src/lib.rs, `request_id`); a caller may supply this header on the request, and the gateway echoes a valid value back or generates one. Every response also carries a fresh server-generated `X-CI-Request-ID`, which identifies the internal audit record and upstream request. Caller values cannot set this ID. It is exposed to browser clients. The caller-facing `X-Request-ID` is never used as the audit ID. The gateway sends the router an `X-SMG-Routing-Key` header that keeps one conversation on one inference worker (services/gateway/src/routing_key.rs); a caller may supply its own conversation key in the same header."
+    "description": "This contract defines the real public API of the Python gateway in services/gateway. The gateway sits behind the c8s tls-lb, which terminates public TLS inside the TEE and forwards HTTP to the gateway process. `/v1/chat/completions`, `/v1/completions`, and `/v1/responses` are OpenAI-compatible: request and response bodies follow the OpenAI chat-completions, legacy-completions, and Responses API shapes. The SGLang worker serves `/v1/responses` natively and the sglang-router forwards it; the gateway does not translate it. The gateway itself validates only the `model` field on inference requests (services/gateway/gateway/app.py, `inference`); it forwards the rest of the body to the upstream sglang-router unchanged. Bearer tokens authenticate with `Authorization: Bearer <api-key>` (services/gateway/gateway/keys.py, `Keys.authenticate`). Every response carries an `X-Request-ID` header (services/gateway/gateway/app.py, `response_headers`); a caller may supply this header on the request, and the gateway echoes a valid value back or generates one. Every response also carries a fresh server-generated `X-CI-Request-ID`, which identifies the internal audit record and upstream request. Caller values cannot set this ID. It is exposed to browser clients. The caller-facing `X-Request-ID` is never used as the audit ID. The gateway sends the router an `X-SMG-Routing-Key` header that keeps one conversation on one inference worker (services/gateway/gateway/proxy.py); a caller may supply its own conversation key in the same header."
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [
@@ -14,15 +14,15 @@
   ],
   "x-deployment-contract": {
     "tlsTermination": "c8s-tls-lb",
-    "tlsRequirement": "c8s tls-lb terminates public TLS inside the TEE and sends plain HTTP to the gateway process over the cluster network (services/gateway/src/main.rs, GATEWAY_LISTEN 0.0.0.0:9443).",
-    "inferenceUpstream": "The gateway proxies /v1/chat/completions and /v1/completions to the c8s workload-proxy loopback at http://127.0.0.1:30001, which forwards to the sglang-router workload (services/gateway/src/main.rs, INFERENCE_UPSTREAM_URL).",
+    "tlsRequirement": "c8s tls-lb terminates public TLS inside the TEE and sends plain HTTP to the gateway process over the cluster network (services/gateway/gateway/config.py, GATEWAY_LISTEN 0.0.0.0:9443).",
+    "inferenceUpstream": "The gateway proxies /v1/chat/completions and /v1/completions to the c8s workload-proxy loopback at http://127.0.0.1:30001, which forwards to the sglang-router workload (services/gateway/gateway/config.py, INFERENCE_UPSTREAM_URL).",
     "authenticationHeader": "Authorization: Bearer <api-key>",
     "requestIdHeader": "X-Request-ID",
     "routingKeyHeader": "X-SMG-Routing-Key"
   },
   "x-protection-limits": {
-    "source": "services/gateway/src/protection.rs (ProtectionConfig::default) and services/gateway/src/main.rs (Args)",
-    "note": "These are the deployed defaults. Each value is also a configurable environment variable, listed in parentheses.",
+    "source": "services/gateway/gateway/limits.py (ProtectionConfig::default) and services/gateway/gateway/config.py (Args)",
+    "note": "These are process defaults. Deployment settings can replace them. Each value is also a configurable environment variable, listed in parentheses.",
     "maximumRequestBodyBytes": 2097152,
     "maximumHeaderCount": 64,
     "maximumHeaderBytes": 16384,
@@ -49,7 +49,7 @@
         "operationId": "getHealth",
         "tags": ["health"],
         "summary": "Report that the gateway process runs",
-        "description": "This route makes no upstream call and no availability check (services/gateway/src/lib.rs, `health`).",
+        "description": "This route makes no upstream call and no availability check (services/gateway/gateway/app.py, `health`).",
         "responses": {
           "200": {
             "description": "The gateway process runs.",
@@ -73,7 +73,7 @@
         "operationId": "getReady",
         "tags": ["health"],
         "summary": "Report whether the gateway holds a key snapshot",
-        "description": "The gateway reports 503 until it has applied its first key snapshot from the admin, then 200. It does not call the inference upstream. Inference availability does not control gateway readiness (services/gateway/src/lib.rs, `ready`).",
+        "description": "The gateway reports 503 until it has applied its first key snapshot from the admin, then 200. It does not call the inference upstream. Inference availability does not control gateway readiness (services/gateway/gateway/app.py, `ready`).",
         "responses": {
           "200": {
             "description": "The gateway holds a key snapshot.",
@@ -135,7 +135,7 @@
         "operationId": "createChatCompletion",
         "tags": ["inference"],
         "summary": "Create an OpenAI-compatible chat completion",
-        "description": "This route accepts an OpenAI chat-completions request and proxies it to the sglang-router upstream (services/gateway/src/lib.rs, `chat_completions` calls `proxy_inference`). The gateway itself checks only that the body is valid JSON and that `model` names one authorized model. It does not validate `messages`; the upstream sglang service performs OpenAI request validation. Set `stream: true` for a `text/event-stream` response.",
+        "description": "This route accepts an OpenAI chat-completions request and proxies it to the sglang-router upstream (services/gateway/gateway/app.py, `chat_completions` calls `inference`). The gateway itself checks only that the body is valid JSON and that `model` names one authorized model. It does not validate `messages`; the upstream sglang service performs OpenAI request validation. Set `stream: true` for a `text/event-stream` response.",
         "security": [{"bearerAuth": []}],
         "parameters": [{"$ref": "#/components/parameters/RoutingKey"}],
         "requestBody": {
@@ -199,7 +199,7 @@
         "operationId": "createCompletion",
         "tags": ["inference"],
         "summary": "Create an OpenAI-compatible legacy completion",
-        "description": "This is the legacy (non-chat) OpenAI-compatible completions route. It shares the same gateway-side validation, proxy path, and error behavior as `/v1/chat/completions` (services/gateway/src/lib.rs, `completions` calls `proxy_inference`).",
+        "description": "This is the legacy (non-chat) OpenAI-compatible completions route. It shares the same gateway-side validation, proxy path, and error behavior as `/v1/chat/completions` (services/gateway/gateway/app.py, `completions` calls `inference`).",
         "security": [{"bearerAuth": []}],
         "parameters": [{"$ref": "#/components/parameters/RoutingKey"}],
         "requestBody": {
@@ -250,7 +250,7 @@
         "operationId": "createResponse",
         "tags": ["inference"],
         "summary": "Create an OpenAI-compatible response (stateless Responses API)",
-        "description": "This route accepts an OpenAI Responses API request and proxies it to the sglang-router upstream (services/gateway/src/lib.rs, `responses` calls `proxy_inference`). The pinned SGLang worker serves `/v1/responses` natively, and the router forwards it; the gateway does not translate it to chat completions. Authentication, the body limit, the body-read timeout, the per-key and global admission limits, model authorization, model-name rewriting, audit records, metrics, and usage accounting are the same as for `/v1/chat/completions`. The gateway keeps no response state, and it tells the upstream not to keep any: it rejects a request with a non-null `previous_response_id` or `conversation`, or with `store` or `background` set to a value other than `false` or `null` (400, `stateful_responses_not_supported`), and it forwards every accepted request with `store: false`. It also sets an absent or null `stream` to `false`. Send the full input with each request. The gateway does not serve `GET /v1/responses/{response_id}`, `POST /v1/responses/{response_id}/cancel`, `DELETE /v1/responses/{response_id}`, or `GET /v1/responses/{response_id}/input_items`. The router parses the request with its own Responses API types and drops non-text input parts, so image and file inputs do not reach the model. Set `stream: true` for a `text/event-stream` response. Usage uses `input_tokens` and `output_tokens`; in a stream, the usage is in the `response` of the terminal `response.completed`, `response.incomplete`, or `response.failed` event.",
+        "description": "This route accepts an OpenAI Responses API request and proxies it to the sglang-router upstream (services/gateway/gateway/app.py, `responses` calls `inference`). The pinned SGLang worker serves `/v1/responses` natively, and the router forwards it; the gateway does not translate it to chat completions. Authentication, the body limit, the body-read timeout, the per-key and global admission limits, model authorization, model-name rewriting, audit records, metrics, and usage accounting are the same as for `/v1/chat/completions`. The gateway keeps no response state, and it tells the upstream not to keep any: it rejects a request with a non-null `previous_response_id` or `conversation`, or with `store` or `background` set to a value other than `false` or `null` (400, `stateful_responses_not_supported`), and it forwards every accepted request with `store: false`. It also sets an absent or null `stream` to `false`. Send the full input with each request. The gateway does not serve `GET /v1/responses/{response_id}`, `POST /v1/responses/{response_id}/cancel`, `DELETE /v1/responses/{response_id}`, or `GET /v1/responses/{response_id}/input_items`. The router parses the request with its own Responses API types and drops non-text input parts, so image and file inputs do not reach the model. Set `stream: true` for a `text/event-stream` response. Usage uses `input_tokens` and `output_tokens`; in a stream, the usage is in the `response` of the terminal `response.completed`, `response.incomplete`, or `response.failed` event.",
         "security": [{"bearerAuth": []}],
         "parameters": [{"$ref": "#/components/parameters/RoutingKey"}],
         "requestBody": {
@@ -419,7 +419,7 @@
         "name": "X-SMG-Routing-Key",
         "in": "header",
         "required": false,
-        "description": "An optional conversation key: send one value for every turn of one conversation. The gateway never forwards this value. It sends the router an HMAC, under a secret drawn at gateway start, of the API key's record ID and this value, so each conversation stays on one inference worker and reuses its prefix cache. A value outside 1 to 128 visible ASCII bytes is ignored. Without a valid value, a chat completion's key is the HMAC of the model and the messages up to and including the first user message, which later turns repeat; a Responses API request's key is the HMAC of the model, the `instructions`, and the `input` items up to and including the first user message (a string `input` counts as one user message); a legacy completion gets no key and the router picks a worker at random (services/gateway/src/routing_key.rs).",
+        "description": "An optional conversation key: send one value for every turn of one conversation. The gateway never forwards this value. It sends the router an HMAC, under a secret drawn at gateway start, of the API key's record ID and this value, so each conversation stays on one inference worker and reuses its prefix cache. A value outside 1 to 128 visible ASCII bytes is ignored. Without a valid value, a chat completion's key is the HMAC of the model and the messages up to and including the first user message, which later turns repeat; a Responses API request's key is the HMAC of the model, the `instructions`, and the `input` items up to and including the first user message (a string `input` counts as one user message); a legacy completion gets no key and the router picks a worker at random (services/gateway/gateway/proxy.py).",
         "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]+$"}
       }
     },
@@ -427,7 +427,7 @@
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "`Authorization: Bearer <api-key>`. The gateway rejects a missing header, a missing `Bearer ` prefix, an empty token, and a token over 256 bytes, all with the same `invalid_api_key` error, to avoid revealing which check failed (services/gateway/src/lib.rs, `authenticate`)."
+        "description": "`Authorization: Bearer <api-key>`. The gateway rejects a missing header, a missing `Bearer ` prefix, an empty token, and a token over 256 bytes, all with the same `invalid_api_key` error, to avoid revealing which check failed (services/gateway/gateway/keys.py, `Keys.authenticate`)."
       }
     },
     "schemas": {
@@ -465,7 +465,7 @@
       "Tool": {
         "type": "object",
         "required": ["type", "function"],
-        "description": "An `OpenAI`-compatible function tool the caller offers the model. Passed through to the upstream unchanged (services/gateway/src/lib.rs, `proxy_inference`); production runs sglang with `--tool-call-parser=deepseekv4`.",
+        "description": "An `OpenAI`-compatible function tool the caller offers the model. Passed through to the upstream unchanged (services/gateway/gateway/app.py, `inference`); production runs sglang with `--tool-call-parser=deepseekv4`.",
         "properties": {
           "type": {"const": "function"},
           "function": {
@@ -498,7 +498,7 @@
       "ChatCompletionRequest": {
         "type": "object",
         "required": ["model"],
-        "description": "The gateway itself requires only `model` (services/gateway/src/lib.rs, `proxy_inference`). The upstream sglang-router enforces the full OpenAI chat-completions contract, including a `messages` array. `tools` and `tool_choice` pass through to the upstream unchanged.",
+        "description": "The gateway itself requires only `model` (services/gateway/gateway/app.py, `inference`). The upstream sglang-router enforces the full OpenAI chat-completions contract, including a `messages` array. `tools` and `tool_choice` pass through to the upstream unchanged.",
         "properties": {
           "model": {"type": "string", "description": "Must equal the one model the deployment authorizes for inference. GET /v1/models may list additional catalog entries that are not accepted here."},
           "messages": {"type": "array", "items": {"$ref": "#/components/schemas/ChatMessage"}},
@@ -707,7 +707,7 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["error"],
-        "description": "The exact shape the gateway itself emits for a synthesized error (services/gateway/src/lib.rs, `client_error`; services/gateway/src/protection.rs, `error`). This differs from the four-field OpenAI error shape: the gateway sets only `code` and `message`. The gateway normalizes an upstream 503. It streams other upstream non-2xx responses unchanged.",
+        "description": "The exact shape the gateway itself emits for a synthesized error (services/gateway/gateway/app.py, `client_error`; services/gateway/gateway/limits.py, `error`). This differs from the four-field OpenAI error shape: the gateway sets only `code` and `message`. The gateway normalizes an upstream 503. It preserves other upstream non-2xx statuses and returns fixed error text. It does not follow redirects.",
         "properties": {
           "error": {
             "type": "object",

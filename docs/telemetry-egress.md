@@ -58,14 +58,12 @@ stdout or disk, and writes only fixed events (`wait-for-model` in
 
 | Layer | Control | Source |
 |---|---|---|
-| Gateway | Writes one JSON object per line to stdout. Each log message is fixed text. A test fails when a message is not on the log policy list. | `services/gateway/src/log_privacy.rs`, `services/gateway/tests/log_privacy.rs` |
-| Gateway | `RUST_LOG` cannot open the debug output of the HTTP libraries (hyper, h2, axum, tower, reqwest, rustls). These libraries log only at `warn` and `error`. | `log_privacy::log_filter`, `main.rs` |
-| Gateway | The panic hook logs the code location. It does not log the panic message. | `log_privacy::install_panic_hook` |
-| Gateway | The gateway does not read, log, or forward the body of a non-success upstream answer. The caller gets the status code and a fixed error body. | `lib.rs`, `upstream_error` |
-| Gateway | An invalid request gets a fixed error code. The error does not quote the request. | `lib.rs`, `client_error` |
-| Gateway | The audit record holds a key pseudonym, not the key record ID. | `TracingAuditSink`, `KeyPseudonyms` |
-| Gateway | The client address is used in memory for rate limits only. No log, metric, or event holds it. | `protection.rs` |
-| Maintenance gateway | The same HTTP library filter and panic hook. It sends no telemetry. | `services/maintenance-gateway/src/main.rs` |
+| Gateway | Writes one JSON object per line to stdout. Fixed messages and audit records must match the log policy. | `services/gateway/gateway/telemetry.py`, `tests/gateway/test_contract.py` |
+| Gateway | HTTP and exception loggers cannot write request content at any verbosity. Parser errors use fixed text before application middleware runs. | `__main__.py`, `http.py` |
+| Gateway | A non-success upstream answer returns its status and a fixed error body. Its error text is not logged or forwarded. | `app.py` |
+| Gateway | Invalid requests use fixed errors. Audit records use gateway UUIDs and keyed key pseudonyms. | `app.py`, `telemetry.py` |
+| Gateway | Client addresses are used in memory for request protection. They do not enter logs, metrics, or usage events. | `limits.py` |
+| Maintenance gateway | Uses the same fixed parser errors and disabled HTTP loggers. It sends no telemetry. | `services/gateway/gateway/maintenance.py` |
 | Worker | `wait-for-model` keeps SGLang's output in memory and writes only `worker_ready`, `request_failed`, `gpu_oom`, `cuda_error`, `nccl_error`, `worker_error` and `worker_exit`. A traceback becomes the exception type and one SGLang code location; the message is dropped. An unknown error is `unclassified`. | `images/sglang-confidential/wait_for_model.py`, `tests/images/sglang-confidential/test_server_output.py` |
 | Router | The launcher keeps the router's output in memory and writes only the reviewed events. | `images/sglang-router/private_router.py` |
 | Node log agent | Reads `/var/log/pods` read-only. Takes namespace, pod and container from the file path. Keeps a record only when the log policy lists its source and event (or, for a C8s or collector source, its level and message). Keeps only the listed fields, checks each one against its pattern, and drops the others. A statement that fails does not log (`error_mode: silent`) and the record is dropped. | `templates/node-log-agent.yaml`, `transform/classify` |

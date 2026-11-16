@@ -86,53 +86,30 @@ Assumptions and limits of this number:
 
 The C8s front door streams the body, so its memory does not increase.
 
-The gateway reads the full body into memory, parses it as JSON, and sends
-the body to the router. One budget, `gateway.protection.bodyMemoryBytes`,
-bounds the memory of all bodies in progress together
-(`services/gateway/src/request_body.rs`):
+The Python gateway keeps request bodies in anonymous memory buffers. Six
+parser processes handle large JSON bodies. Keys, counters, and usage remain
+in the main process. Buffers have no persistent file path.
 
-1. Before the read, a request reserves 4 x its `Content-Length` (4 x
-   `maximumBodyBytes` when the length is not known). When the budget does
-   not have this space, the request waits up to `queueTimeoutSeconds`, then
-   gets 429 `body_memory_capacity` with `Retry-After: 1`.
-2. After the read, the gateway counts the JSON items of the body and
-   changes the reservation to the cost of the parse: 2 x the body, plus
-   2 x the longest string with an escape, plus 96 bytes for each JSON item
-   and 768 bytes for each object. It returns the excess, or takes the
-   difference without a wait or gets 429. A body whose cost is more than
-   the whole budget gets 413 `request_too_large`.
-3. After the parse, the reservation is 1 x the body until the router sends
-   the response headers. A non-streaming response sends its headers at the
-   end, so this part stays for the whole request.
+One shared `gateway.protection.bodyMemoryBytes` budget covers these phases:
 
-The budget must be at least 5 x `maximumBodyBytes` + 64 KiB, so that one
-request of the largest body fits. The chart and the gateway refuse a
-smaller budget.
+| Phase | Reservation |
+| --- | --- |
+| Receive a body over 32 KiB | 4 x declared body bytes; use the maximum when length is unknown |
+| Parse a body up to 32 KiB in the main process | 64 x declared body bytes |
+| Start large-body inspection | 12 x received body bytes |
+| Construct large JSON objects | 5 x body bytes plus the estimated Python object tree; duplicate keys, wide objects, and large integers use a conservative 128 x bound |
+| Wait for upstream headers after a complete upload | 1 x the forwarded body bytes |
 
-Measured peak heap of one request through the gateway (a counting
-allocator, the body in 64 KiB chunks with a `Content-Length`, the chat
-route with a routing key):
+Reservations also include 64 KiB before parsing. A request waits at most
+`queueTimeoutSeconds` for its first reservation. An unavailable shared
+reservation gives 429 `body_memory_capacity`. A body whose required
+reservation exceeds the entire budget gives 413 `request_too_large`.
 
-| Body | Before this change | Now | Reserved after the read (cost) |
-| --- | --- | --- | --- |
-| 31 MiB of plain text in one message | 5.0 x | 2.0 x | 2.0 x |
-| 29 MiB of source code (escapes `\n`, `\"`) | 4.5 x | 3.4 x | 3.8 x |
-| 27 MiB of CJK text as `\uXXXX` escapes | 3.0 x | 2.1 x | 3.0 x |
-| 31 MiB agent transcript (2 KiB tool results) | 3.2 x | 3.2 x | 4.5 x |
-| 31 MiB of 80-byte chat messages | 8.2 x | 8.2 x | 13.5 x |
-| 8 MiB array of `0` (not realistic) | 17 x | 17 x | 50 x |
-| 8 MiB array of `{"a":"b"}` (not realistic) | 68 x | 68 x | 108 x |
-
-The gateway no longer copies the first user message to make the routing
-key, and it drops the read body before it writes the changed body. The
-reservation is at least the measured peak for each body in the table.
-
-Size the gateway memory as:
-
-    gateway.resources.memory >= 256 MiB + bodyMemoryBytes
-
-`docs/long-context-sizing.md` gives the budget for a number of concurrent
-large requests.
+Startup requires at least 5 x `maximumBodyBytes` + 64 KiB. This minimum
+alone does not ensure that a large Python JSON parse fits. Size the budget
+for the request shapes and concurrency in the load test. Include the main
+process, parser processes, and retained allocator memory in measured RSS.
+`bodyMemoryBytes` is accounting, not an OS memory limit.
 
 ## Time
 
@@ -165,12 +142,12 @@ streaming request, and all of a non-streaming request, must come within
    ```yaml
    gateway:
      resources:
-       memory: 9Gi
+       memory: <measured total RSS plus headroom>
      protection:
        maximumBodyBytes: 33554432
        bodyTimeoutSeconds: 60
-       # 64 large requests at the same time: 64 x 4 x 32 MiB.
-       bodyMemoryBytes: 8589934592
+       # Set from simultaneous receive and parse reservations.
+       bodyMemoryBytes: <measured reservation peak plus headroom>
    ```
 
    Also set the worker context length to 1,048,576 tokens, and size the

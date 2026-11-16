@@ -85,37 +85,30 @@ gateway:
 queue hold it: increase `inferenceConcurrency`, not `inferenceQueue`.
 
 The admin can also set a request rate and a token budget for each key
-(`services/gateway/src/key_limits.rs`). One 1M-token request counts more
+(`services/gateway/gateway/keys.py`). One 1M-token request counts more
 than 1,048,576 tokens against the budget.
 
 ## 4. Gateway memory
 
-`docs/request-body-limit.md` gives the memory of one request. Choose `U`,
-the number of large bodies that clients send at the same time (at most `N`):
+The Python gateway has one main process and six parser processes. Size
+memory from measured RSS for all seven processes. The shared body budget
+also covers receive, inspection, and JSON object construction. See
+[request-body-limit.md](request-body-limit.md) for its phases and errors.
 
 ```yaml
 gateway:
   protection:
     maximumBodyBytes: 33554432
     bodyTimeoutSeconds: 60
-    bodyMemoryBytes: <U x 4 x maximumBodyBytes>
+    bodyMemoryBytes: <simultaneous receive and parse reservations plus headroom>
   resources:
-    memory: <256 MiB + bodyMemoryBytes, rounded up>
+    memory: <measured main and parser RSS plus headroom>
 ```
 
-A request above the budget waits up to `queueTimeoutSeconds` for space, then
-gets 429 `body_memory_capacity`. After the parse a request holds 1 x its
-body until the router sends the response headers, so `N` requests in flight
-hold at most `N x maximumBodyBytes`.
-
-| `U` | `bodyMemoryBytes` at 32 MiB | `gateway.resources.memory` |
-| --- | --- | --- |
-| 16 | 2147483648 (2 GiB) | 3Gi |
-| 32 | 4294967296 (4 GiB) | 5Gi |
-| 64 | 8589934592 (8 GiB) | 9Gi |
-
-`gateway.resources.memory` is a request, not a limit. The node must have
-this memory for the gateway, the router and the other pods together.
+The old Rust heap measurements and its 4 x upload sizing rule do not size
+the Python parser. Test representative text, escaped text, and structured
+requests. `gateway.resources.memory` is a request, not a limit. The node
+must also have memory for the router and other pods.
 
 ## 5. Router
 
@@ -167,10 +160,10 @@ inference:
   maxRunningRequests: 12
 gateway:
   resources:
-    memory: 9Gi
+    memory: <measured main and parser RSS plus headroom>
   protection:
     maximumBodyBytes: 33554432
-    bodyMemoryBytes: 8589934592
+    bodyMemoryBytes: <measured reservation peak plus headroom>
     bodyTimeoutSeconds: 60
     inferenceConcurrency: 64
     perKeyConcurrency: 64

@@ -1,12 +1,20 @@
 {
-  "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:1d6ba18732374a457ab89a2e7ca170b7d5a32f47ad85cdb7147a90cf20da6040": {
-    "cmd": [],
+  "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:995b7a7055712f3cc291599918221a460a826532307cf48697d313d790d6c338": {
     "entrypoint": [
-      "/usr/local/bin/confidential-gateway"
+      "python",
+      "-m",
+      "gateway"
     ],
+    "cmd": [],
     "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+      "PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "LANG=C.UTF-8",
+      "GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305",
+      "PYTHON_VERSION=3.13.18",
+      "PYTHON_SHA256=abb0102e6d4ae027509bcb82327d9dd85515b44a3ba8ad538cfc5e9847029f68",
+      "PYTHONDONTWRITEBYTECODE=1",
+      "PYTHONUNBUFFERED=1",
+      "PYTHONPATH=/app"
     ]
   },
   "ghcr.io/confidential-dot-ai/confidential-inference/sglang-confidential@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809": {

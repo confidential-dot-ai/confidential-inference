@@ -1,6 +1,7 @@
+# Synthetic gateway config for release tests; not a publication receipt.
 images:
   rolloutClient: ghcr.io/confidential-dot-ai/confidential-inference/rollout-client@sha256:7777777777777777777777777777777777777777777777777777777777777777
-  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:1d6ba18732374a457ab89a2e7ca170b7d5a32f47ad85cdb7147a90cf20da6040
+  gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:995b7a7055712f3cc291599918221a460a826532307cf48697d313d790d6c338
   sglangConfidential: ghcr.io/confidential-dot-ai/confidential-inference/sglang-confidential@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809
   sglangRouter: ghcr.io/confidential-dot-ai/confidential-inference/sglang-router@sha256:7440bead8020d969b5ebe69c0689ba894edb2d2fd2a406bb16d346a86770918f
   telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849

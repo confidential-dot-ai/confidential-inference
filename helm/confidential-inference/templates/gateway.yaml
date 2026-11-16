@@ -6,7 +6,7 @@
 {{- if gt (int64 $protection.firstTokenTimeoutSeconds) (int64 $protection.upstreamTimeoutSeconds) }}
 {{- fail "gateway.protection.firstTokenTimeoutSeconds must not exceed gateway.protection.upstreamTimeoutSeconds" }}
 {{- end }}
-{{- /* services/gateway/src/request_body.rs minimum_budget: one request of the largest body. */}}
+{{- /* services/gateway/gateway/config.py minimum body budget: one request of the largest body. */}}
 {{- if lt (int64 $protection.bodyMemoryBytes) (add (mul 5 (int64 $protection.maximumBodyBytes)) 65536) }}
 {{- fail "gateway.protection.bodyMemoryBytes must be at least 5 x maximumBodyBytes + 65536: the gateway refuses to start below it" }}
 {{- end }}

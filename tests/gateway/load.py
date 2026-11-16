@@ -137,22 +137,27 @@ async def measure(args):
                     errors.append({"error": type(error).__name__})
                 finally:
                     active -= 1
-            background = [asyncio.create_task(request(slow=(i == 0), cancel=(i == 1))) for i in range(args.background)]
-            await asyncio.sleep(.2)
             async def small_requests():
                 while upload_end is None:
                     await request(cancel=True, probe=True)
                     await asyncio.sleep(.1)
-            probe_task = asyncio.create_task(small_requests())
-            started = upload_start = time.monotonic()
-            await asyncio.gather(*(request(large=True) for _ in range(args.requests)))
-            upload_end = time.monotonic()
-            elapsed = upload_end - started
-            await probe_task
-            for task in background:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*background, return_exceptions=True)
+            elapsed, settled_rss = 0, []
+            for _ in range(args.batches):
+                upload_start = upload_end = None
+                background = [asyncio.create_task(request(slow=(i == 0), cancel=(i == 1))) for i in range(args.background)]
+                await asyncio.sleep(.2)
+                probe_task = asyncio.create_task(small_requests())
+                started = upload_start = time.monotonic()
+                await asyncio.gather(*(request(large=True) for _ in range(args.requests)))
+                upload_end = time.monotonic()
+                elapsed += upload_end - started
+                await probe_task
+                for task in background:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*background, return_exceptions=True)
+                await asyncio.sleep(.25)
+                settled_rss.append(sum(p.memory_info().rss for p in [process, *process.children(recursive=True)] if p.is_running()) / 1024**2)
             async with client.get("http://127.0.0.1:9090/metrics") as response:
                 metrics = await response.text()
             processing_bounds = {}
@@ -174,9 +179,11 @@ async def measure(args):
         await sampler
         final_cpu = process.cpu_times()
         child_cpu = sum(p.cpu_times().user + p.cpu_times().system for p in process.children(recursive=True) if p.is_running())
-        result = {"gateway": args.gateway, "requests": args.requests, "body_bytes": size, "background": args.background, "body_memory_budget_bytes": 32 * 1024**3,
+        result = {"gateway": args.gateway, "requests": args.requests, "batches": args.batches, "body_bytes": size, "background": args.background, "body_memory_budget_bytes": 32 * 1024**3,
                   "peak_client_concurrency": peak, "completed_large": len(durations), "errors": errors,
-                  "large_elapsed_seconds": elapsed, "input_mib_per_second": args.requests * args.body_mib / elapsed,
+                  "large_elapsed_seconds": elapsed, "input_mib_per_second": args.requests * args.batches * args.body_mib / elapsed,
+                  "settled_rss_mib_by_batch": settled_rss,
+                  "settled_rss_growth_fraction": settled_rss[-1] / settled_rss[0] - 1,
                   "large_first_chunk_p95_seconds": percentile(firsts, .95),
                   "post_upload_first_chunk_p95_seconds": percentile(processing, .95),
                   "post_upload_first_chunk_p99_seconds": percentile(processing, .99),
@@ -193,7 +200,7 @@ async def measure(args):
         print(json.dumps(result, indent=2))
         if args.output:
             Path(args.output).write_text(json.dumps(result, indent=2) + "\n")
-        if errors or len(durations) != args.requests:
+        if errors or len(durations) != args.requests * args.batches:
             raise SystemExit(1)
     finally:
         if sampler and not sampler.done():
@@ -213,6 +220,7 @@ if __name__ == "__main__":
     parser.add_argument("--requests", type=int, default=64)
     parser.add_argument("--body-mib", type=int, default=32)
     parser.add_argument("--background", type=int, default=16)
+    parser.add_argument("--batches", type=int, default=1)
     parser.add_argument("--output")
     parser.add_argument("--fixture", action="store_true")
     args = parser.parse_args()

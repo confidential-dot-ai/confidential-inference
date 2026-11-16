@@ -217,6 +217,6 @@ GPU capacity with [docs/long-context-sizing.md](../../docs/long-context-sizing.m
   the model's own value) set the worker flags.
 
 The gateway sends an `X-SMG-Routing-Key` header on every request it can
-identify a conversation for (`services/gateway/src/routing_key.rs`). The
+identify a conversation for (`services/gateway/gateway/proxy.py`). The
 removed PD router's `manual` policy read it. The aggregated router's
 `cache_aware` policy does not: it picks a worker by prefix match and load.

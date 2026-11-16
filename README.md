@@ -31,7 +31,7 @@ receipts in a separate private deployment repository.
   in production, Qwen3.5-0.8B in a staging recipe). It can also run a GPU-free
   simulator for tests.
 - `images/sglang-router`: the separate router image and build inputs.
-- `services/maintenance-gateway`: the fallback API.
+- `services/gateway/gateway/maintenance.py`: the fallback API.
 - `helm/confidential-inference`: the generic Kubernetes application chart.
 - `api`: public API and release schemas.
 
@@ -49,22 +49,17 @@ for a deployment that the `candidate` or `production` alias will point to.
 
 ## Local development
 
-Install a stable Rust toolchain and build the gateway:
+Use Python 3.13 and install the locked runtime dependencies:
 
 ```sh
-cargo build -p confidential-gateway
+python3.13 -m venv .venv
+.venv/bin/python -m pip install --require-hashes --only-binary=:all: \
+  -r services/gateway/requirements.lock
+.venv/bin/python -m unittest discover -s tests/gateway -q
 ```
 
-A standalone production-style gateway needs an admin certificate and the admin that serves its API keys. A local
-binary alone does not supply these dependencies.
-
-For a local forwarding check, use the gateway integration test. It creates
-the request router and an HTTP test upstream:
-
-```sh
-cargo test -p confidential-gateway --test fake_upstream \
-  gateway_forwards_to_the_internal_router_without_the_caller_key
-```
+The tests start real HTTP listeners with local admin and inference peers.
+A standalone gateway needs the configured admin endpoint and credentials.
 
 This test does not establish hardware attestation or production readiness.
 
@@ -118,11 +113,10 @@ model and application-secret flow.
 
 ## Continuous integration
 
-`.github/workflows/pr.yml` runs one required check on each pull request. It
-tests and lints only changed Rust components, checks Python syntax only after a
-Python change, tests release rules only after a release-tooling change, lints
-only changed Helm charts, and parses only changed configuration. Documentation
-changes do not start documentation checks.
+`.github/workflows/pr.yml` tests the Python gateway containers after gateway
+changes. It also checks changed Python syntax, Helm charts, and configuration.
+The test job covers the API, image recipes, release rules, and rendered
+workloads on every pull request.
 
 `.github/workflows/release-images.yml` is manual. It selects affected images for
 an intended release candidate. It does not run on pull requests or pushes to
