@@ -100,7 +100,7 @@ async def errors(request, handler):
     except (ConnectionError, asyncio.CancelledError):
         raise
     except Exception:
-        return error_response(Rejected(500, "internal_error"))
+        return error_response(Rejected(500, "internal_error"), admin_path)
     finally:
         if release:
             release()

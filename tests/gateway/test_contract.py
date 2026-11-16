@@ -1256,6 +1256,76 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
         self.reply = None
         self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
 
+    async def test_slow_reader_bounds_memory_and_does_not_block_another_request(self):
+        """I5/L2/V2: a blocked reader holds bounded buffers and releases on close."""
+        from prometheus_client.parser import text_string_to_metric_families
+
+        await self.start(
+            {"GATEWAY_INFERENCE_CONCURRENCY": "2", "GATEWAY_PER_KEY_CONCURRENCY": "2"}
+        )
+
+        async def resident():
+            async with self.client.get("http://127.0.0.1:9090/metrics") as response:
+                return next(
+                    sample.value
+                    for family in text_string_to_metric_families(await response.text())
+                    for sample in family.samples
+                    if sample.name == "process_resident_memory_bytes"
+                )
+
+        baseline = await resident()
+        stopped = asyncio.Event()
+        written = 0
+        payload = (
+            b"data: "
+            + orjson.dumps(
+                {"model": "backend", "choices": [{"delta": {"content": "x" * 16384}}]}
+            )
+            + b"\n\n"
+        )
+
+        async def reply(request, value):
+            nonlocal written
+            if not value.get("slow_reader"):
+                return web.json_response({"model": "backend", "choices": []})
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            try:
+                while written < 128 * 1024**2:
+                    await response.write(payload)
+                    written += len(payload)
+                    await asyncio.sleep(0)
+            except ConnectionError:
+                pass
+            finally:
+                stopped.set()
+            return response
+
+        self.reply = reply
+        response = await self.client.post(
+            "http://127.0.0.1:9443/v1/chat/completions",
+            json={"model": MODEL, "stream": True, "slow_reader": True},
+            headers={"Authorization": "Bearer " + API_KEY},
+        )
+        try:
+            self.assertEqual(response.status, 200)
+            async with asyncio.timeout(4):
+                while True:
+                    before = written
+                    await asyncio.sleep(0.1)
+                    if written == before and written > 65536:
+                        break
+            self.assertLess(written, 128 * 1024**2)
+            self.assertFalse(stopped.is_set())
+            self.assertLess(await resident() - baseline, 64 * 1024**2)
+            async with asyncio.timeout(1):
+                self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
+        finally:
+            response.close()
+        async with asyncio.timeout(1):
+            await stopped.wait()
+        self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
+
     async def test_graceful_shutdown_keeps_an_admitted_stream(self):
         """V2: SIGTERM stops the gateway after an admitted response finishes."""
         await self.start(
