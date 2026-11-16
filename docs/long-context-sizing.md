@@ -12,8 +12,8 @@ Terms:
   each running request.
 - Prefill: the step in which the worker reads the whole prompt before the
   first output token.
-- Body: the JSON of one request. `docs/request-body-limit.md` gives the
-  calculation of 32 MiB for a 1M-token request.
+- Body: the JSON of one request. `docs/request-body-limit.md` explains how
+  to measure its size. Token count does not determine a fixed byte count.
 
 ## 1. The limits in the request path
 
@@ -142,12 +142,20 @@ Measure the router memory in the load test
 | `gateway.protection.upstreamTimeoutSeconds` | `firstTokenTimeoutSeconds + D`, with a margin | 14400 |
 | `gateway.protection.streamIdleTimeoutSeconds` | The longest gap between two output chunks under full load. The chunked prefill of other requests runs between the decode steps | 60 |
 | `router.requestTimeoutSeconds` | `upstreamTimeoutSeconds` + 60 | 14460 |
+| `gateway.shutdownGraceSeconds` | The upstream deadline plus body upload, both capacity waits, and measured parsing time, with a margin | 900 |
+| `gateway.terminationGracePeriodSeconds` | Endpoint drain + shutdown grace + 20 s usage flush, with a margin | 960 |
+
+The current 900-second shutdown grace does not cover a 14400-second
+request. Override it for the long-request profile before testing a rolling
+update. The example below sets shutdown grace to 14400 + 120 seconds.
+Its container termination period also includes 35 seconds for endpoint
+drain, 20 seconds for usage flush, and a 5-second margin. Measure the time
+before forwarding under full load and increase the 120-second allowance
+if needed. A long shutdown grace does not delay an idle gateway: it exits
+when its admitted requests and cleanup finish.
 
 A non-streaming request sends nothing until it ends, so it must end within
 1 h (the C8s front door). Use streaming for long requests.
-
-The gateway waits up to `gateway.shutdownGraceSeconds` (900) for requests in
-flight when it stops. A rollout ends a longer request.
 
 ## 7. Example
 
@@ -159,6 +167,8 @@ inference:
   contextLength: 1048576
   maxRunningRequests: 12
 gateway:
+  shutdownGraceSeconds: 14520
+  terminationGracePeriodSeconds: 14580
   resources:
     memory: <measured main and parser RSS plus headroom>
   protection:

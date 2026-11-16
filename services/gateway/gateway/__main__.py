@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import os
 import signal
+import stat
 from pathlib import Path
 
 import orjson
@@ -20,7 +22,25 @@ async def bounded_file(path, maximum, wait=0):
     deadline = asyncio.get_running_loop().time() + wait
     while True:
         try:
-            with open(path, "rb") as file:
+            requested = Path(path)
+            target = requested.resolve(strict=True)
+            directory = requested.parent.resolve(strict=True)
+            if target == directory or not target.is_relative_to(directory):
+                raise ValueError("the mounted file resolves outside its directory")
+
+            def valid(metadata):
+                return (
+                    stat.S_ISREG(metadata.st_mode) and 0 < metadata.st_size <= maximum
+                )
+
+            if not valid(target.stat(follow_symlinks=False)):
+                raise ValueError("invalid credential shape")
+            descriptor = os.open(
+                target, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+            )
+            with os.fdopen(descriptor, "rb") as file:
+                if not valid(os.fstat(file.fileno())):
+                    raise ValueError("invalid credential shape")
                 value = file.read(maximum + 1)
             if not value or len(value) > maximum:
                 raise ValueError("invalid credential size")
@@ -36,6 +56,8 @@ async def serve(config):
     secret = orjson.loads(
         await bounded_file(config.admin_file, 65536, config.secret_wait)
     )
+    if not isinstance(secret, dict) or not isinstance(secret.get("token"), str):
+        raise ValueError("invalid admin client secret")
     certificate = await bounded_file(config.signer_file, 256 * 1024)
     hashes = []
     if Path(config.hashes_file).exists():

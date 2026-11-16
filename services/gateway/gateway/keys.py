@@ -423,9 +423,13 @@ class AdminAuth:
         )
         if version != "v1":
             raise Rejected(401, "unsupported_signature_version")
-        if not stamp.isascii() or not stamp.isdecimal() or int(stamp) >= 2**64:
+        number = stamp.removeprefix("+")
+        digits = number.lstrip("0")
+        if not stamp.isascii() or not number.isdecimal() or len(digits) > 20:
             raise Rejected(401, "invalid_timestamp")
-        now, signed_at = int(time.time()), int(stamp)
+        now, signed_at = int(time.time()), int(digits or "0")
+        if signed_at >= 2**64:
+            raise Rejected(401, "invalid_timestamp")
         if abs(now - signed_at) > 60:
             raise Rejected(401, "stale_signature")
         if len(nonce) != 32 or any(c not in "0123456789abcdefABCDEF" for c in nonce):

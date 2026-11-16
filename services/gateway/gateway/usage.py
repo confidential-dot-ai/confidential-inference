@@ -20,6 +20,8 @@ class AdminClient:
         if (
             origin.scheme != "https"
             or not origin.hostname
+            or origin.port is not None
+            and not 0 <= origin.port <= 65535
             or origin.username
             or origin.password
             or origin.query

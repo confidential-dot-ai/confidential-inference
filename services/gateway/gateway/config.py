@@ -213,13 +213,23 @@ class Config:
             "attestationCacheSeconds",
             "attestationConcurrency",
         }
+        required = allowed - {
+            "routerService",
+            "firstTokenTimeoutSeconds",
+            "bodyMemoryBytes",
+        }
         if (
             not isinstance(settings, dict)
             or type(settings.get("schemaVersion")) is not int
             or settings.get("schemaVersion") != 1
             or set(settings) - allowed
+            or required - set(settings)
+            or any(settings[name] is None for name in required)
         ):
             raise ValueError("invalid gateway settings")
+        for name in ("attestationCacheSeconds", "attestationConcurrency"):
+            if type(settings[name]) is not int or not 0 <= settings[name] < 2**64:
+                raise ValueError("invalid gateway settings")
         self.models, self.catalog = (
             settings["inferenceModelIds"],
             settings["catalogModelIds"],

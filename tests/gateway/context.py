@@ -32,25 +32,53 @@ def generate(directory, output, requests, context_tokens, output_tokens):
     records = []
     for index in range(requests):
         prefix, unit = f"request-{index:04d}:", " hello"
+
         def count(content):
-            prompt = encode([{"role": "user", "content": content}], thinking_mode="chat")
+            prompt = encode(
+                [{"role": "user", "content": content}], thinking_mode="chat"
+            )
             return len(tokenizer.encode(prompt, add_special_tokens=False))
+
         repetitions = target - count(prefix + unit * 2) + 2
         content = prefix + unit * repetitions
         actual = count(content)
         if actual != target:
-            raise ValueError(f"request {index} has {actual} input tokens, expected {target}")
-        body = json.dumps({"model": "model-a", "stream": True, "max_tokens": output_tokens,
-            "chat_template_kwargs": {"thinking": False}, "messages": [{"role": "user", "content": content}]},
-            ensure_ascii=False, separators=(",", ":")).encode()
+            raise ValueError(
+                f"request {index} has {actual} input tokens, expected {target}"
+            )
+        body = json.dumps(
+            {
+                "model": "model-a",
+                "stream": True,
+                "max_tokens": output_tokens,
+                "chat_template_kwargs": {"thinking": False},
+                "messages": [{"role": "user", "content": content}],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
         name = f"request-{index:04d}.json"
         (output / name).write_bytes(body)
-        records.append({"file": name, "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest()})
+        records.append(
+            {
+                "file": name,
+                "bytes": len(body),
+                "sha256": hashlib.sha256(body).hexdigest(),
+            }
+        )
         if (index + 1) % 8 == 0:
             print(f"Verified {index + 1} inputs", flush=True)
-    metadata = {"model": MODEL, "revision": REVISION, "tokenizer_files": FILES, "thinking_mode": "chat",
-        "input_tokens": target, "output_token_budget": output_tokens, "context_tokens": context_tokens,
-        "requests": records, "transport_only": True}
+    metadata = {
+        "model": MODEL,
+        "revision": REVISION,
+        "tokenizer_files": FILES,
+        "thinking_mode": "chat",
+        "input_tokens": target,
+        "output_token_budget": output_tokens,
+        "context_tokens": context_tokens,
+        "requests": records,
+        "transport_only": True,
+    }
     (output / "corpus.json").write_text(json.dumps(metadata, indent=2) + "\n")
 
 
@@ -62,6 +90,15 @@ if __name__ == "__main__":
     parser.add_argument("--context-tokens", type=int, default=1048576)
     parser.add_argument("--output-tokens", type=int, default=20)
     args = parser.parse_args()
-    if not 1 <= args.requests <= 1024 or not 0 < args.output_tokens < args.context_tokens:
+    if (
+        not 1 <= args.requests <= 1024
+        or not 0 < args.output_tokens < args.context_tokens
+    ):
         parser.error("invalid request count or token budget")
-    generate(args.tokenizer_directory, args.output, args.requests, args.context_tokens, args.output_tokens)
+    generate(
+        args.tokenizer_directory,
+        args.output,
+        args.requests,
+        args.context_tokens,
+        args.output_tokens,
+    )
