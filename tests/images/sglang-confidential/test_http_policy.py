@@ -172,6 +172,47 @@ class WorkerHTTPPolicyTests(unittest.TestCase):
             result = asyncio.run(namespace["server_info"]())
             self.assertEqual(set(result), set(policy.SERVER_INFO_FIELDS))
 
+    def test_request_export_startup_settings_are_refused(self):
+        from types import SimpleNamespace
+        for variant, sources in self.sources.items():
+            tree = ast.parse(policy.harden_http(sources["http"], variant))
+            launch = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "launch_server"]
+            self.assertEqual(len(launch), 1)
+            # The docstring, then the refusal, then the original first statement.
+            guard = launch[0].body[1:3]
+            self.assertEqual(ast.unparse(guard[0].targets[0]), "refused")
+            namespace = {}
+            body = "".join(f"    {line}\n" for stmt in guard for line in ast.unparse(stmt).splitlines())
+            exec(compile(f"def check(server_args):\n{body}", "guard", "exec"), namespace)
+            defaults = {name: None for name in policy.REFUSED_SERVER_ARGS}
+            namespace["check"](SimpleNamespace(**{**defaults, "log_requests": False, "export_metrics_to_file": False}))
+            namespace["check"](SimpleNamespace())
+            for name, value in (("log_requests", True), ("log_requests_target", ["stdout"]),
+                                ("crash_dump_folder", "/tmp/crash"), ("export_metrics_to_file", True),
+                                ("export_metrics_to_file_dir", "/tmp/metrics"),
+                                ("debug_tensor_dump_output_folder", "/tmp/tensors"),
+                                ("debug_tensor_dump_input_file", "/tmp/input"),
+                                ("msprobe_dump_config", "/tmp/msprobe.json"),
+                                ("forward_hooks", [{"name": "synthetic"}]), ("spec_trace_dir", "/tmp/spec")):
+                with self.subTest(variant=variant, name=name):
+                    with self.assertRaisesRegex(RuntimeError, f"request data: remove {name}$"):
+                        namespace["check"](SimpleNamespace(**{**defaults, name: value}))
+
+    def test_refused_settings_are_pinned_fields_that_default_off(self):
+        repo, rev = PINS["pd"]
+        defaults = {}
+        for group in ("observability", "spec"):
+            url = f"https://raw.githubusercontent.com/{repo}/{rev}/python/sglang/srt/arg_groups/fields/{group}.py"
+            with urlopen(url, timeout=60) as response:
+                tree = ast.parse(response.read().decode())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+                    defaults[node.target.id] = node.value
+        for name in policy.REFUSED_SERVER_ARGS:
+            with self.subTest(name=name):
+                self.assertIn(name, defaults)
+                self.assertIn(ast.literal_eval(defaults[name]), (None, False))
+
     def test_alternate_frontends_are_rejected_before_launch(self):
         from types import SimpleNamespace
         import sys
