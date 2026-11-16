@@ -91,8 +91,9 @@ than 1,048,576 tokens against the budget.
 ## 4. Gateway memory
 
 The Python gateway has one main process and six parser processes. Size
-memory from measured RSS for all seven processes. The shared body budget
-also covers receive, inspection, and JSON object construction. See
+memory from measured RSS for the main process and all its children,
+including runtime helpers. The shared body budget also covers receive,
+inspection, and JSON object construction. See
 [request-body-limit.md](request-body-limit.md) for its phases and errors.
 
 ```yaml
