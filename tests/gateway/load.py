@@ -213,8 +213,9 @@ async def measure(args):
                 while upload_end is None:
                     await request(cancel=True, probe=True)
                     await asyncio.sleep(.1)
-            elapsed, settled_rss = 0, []
-            for _ in range(args.batches):
+            elapsed, settled_rss, batches = 0, [], 0
+            soak_started = time.monotonic()
+            while batches < args.batches or time.monotonic() - soak_started < args.duration_seconds:
                 upload_start = upload_end = None
                 background = [asyncio.create_task(request(slow=(i == 0), cancel=(i == 1))) for i in range(args.background)]
                 await asyncio.sleep(.2)
@@ -230,6 +231,11 @@ async def measure(args):
                 await asyncio.gather(*background, return_exceptions=True)
                 await asyncio.sleep(.25)
                 settled_rss.append(sum(p.memory_info().rss for p in [process, *process.children(recursive=True)] if p.is_running()) / 1024**2)
+                batches += 1
+                if args.output:
+                    progress = {"batches": batches, "completed_large": len(durations), "errors": errors,
+                        "elapsed_seconds": time.monotonic() - soak_started, "settled_rss_mib": settled_rss[-1]}
+                    Path(args.output + ".progress.json").write_text(json.dumps(progress) + "\n")
             async with client.get("http://127.0.0.1:9090/metrics") as response:
                 metrics = await response.text()
             processing_bounds = {}
@@ -251,7 +257,8 @@ async def measure(args):
         await sampler
         final_cpu = process.cpu_times()
         child_cpu = sum(p.cpu_times().user + p.cpu_times().system for p in process.children(recursive=True) if p.is_running())
-        result = {"gateway": args.gateway, "requests": args.requests, "batches": args.batches, "body_bytes": max(sizes), "background": args.background, "body_memory_budget_bytes": 32 * 1024**3,
+        result = {"gateway": args.gateway, "requests": args.requests, "batches": batches, "body_bytes": max(sizes), "background": args.background, "body_memory_budget_bytes": 32 * 1024**3,
+                  "soak_elapsed_seconds": time.monotonic() - soak_started,
                   "usage_enabled": args.usage,
                   "small_body_bytes": len(small_body),
                   "peak_client_concurrency": peak, "completed_large": len(durations), "errors": errors,
@@ -281,7 +288,7 @@ async def measure(args):
             completed = [event for event in admin.events if event["outcome"] == "completed" and event["input_tokens"] == input_tokens]
             result["completed_large_usage_events"] = len(completed)
             result["usage_events_received"] = len(admin.events)
-            if len(completed) != args.requests * args.batches or any(not event["final_usage"] or event["output_tokens"] != 20 for event in completed):
+            if len(completed) != args.requests * batches or any(not event["final_usage"] or event["output_tokens"] != 20 for event in completed):
                 errors.append({"error": "incomplete usage accounting"})
         summary = {key: value for key, value in result.items() if key not in ("corpus", "body_bytes_by_request")}
         if corpus_metadata:
@@ -289,7 +296,7 @@ async def measure(args):
         print(json.dumps(summary, indent=2))
         if args.output:
             Path(args.output).write_text(json.dumps(result, indent=2) + "\n")
-        if errors or len(durations) != args.requests * args.batches:
+        if errors or len(durations) != args.requests * batches:
             raise SystemExit(1)
     finally:
         if sampler and not sampler.done():
@@ -314,6 +321,7 @@ if __name__ == "__main__":
     parser.add_argument("--small-body-bytes", type=int, default=65536)
     parser.add_argument("--background", type=int, default=16)
     parser.add_argument("--batches", type=int, default=1)
+    parser.add_argument("--duration-seconds", type=int, default=0, help="Repeat full batches for at least this duration")
     parser.add_argument("--corpus", help="Directory made by tests/gateway/context.py")
     parser.add_argument("--output")
     parser.add_argument("--fixture", action="store_true")

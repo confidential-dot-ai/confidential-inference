@@ -366,6 +366,25 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
             await first
         self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
 
+    async def test_trusted_proxy_addresses_have_separate_rate_limits(self):
+        """L1: trusted single addresses select a bucket; malformed chains fail."""
+        await self.start({"GATEWAY_TRUSTED_PROXY_CIDRS": "127.0.0.0/8",
+            "GATEWAY_REQUESTS_PER_ADDRESS_PER_SECOND": "2"})
+        headers = {"X-Forwarded-For": "192.0.2.1", "X-Real-IP": "192.0.2.1"}
+        for _ in range(2):
+            self.assertEqual((await self.send(body={"model": MODEL}, headers=headers))[0], 200)
+        status, _, raw = await self.send(body={"model": MODEL}, headers=headers)
+        self.assertEqual(status, 429)
+        self.assertEqual(orjson.loads(raw)["error"]["code"], "address_rate_limited")
+        self.assertEqual((await self.send(body={"model": MODEL}, headers={"X-Forwarded-For": "192.0.2.2"}))[0], 200)
+        for value in ("192.0.2.3, 192.0.2.4", "not-an-address"):
+            status, _, raw = await self.send(body={"model": MODEL}, headers={"X-Forwarded-For": value})
+            self.assertEqual(status, 400)
+            self.assertEqual(orjson.loads(raw)["error"]["code"], "invalid_forwarding_headers")
+        self.assertEqual((await self.send(body={"model": MODEL}, headers={
+            "X-Forwarded-For": "192.0.2.3", "X-Real-IP": "192.0.2.4"}))[0], 400)
+        self.assertEqual(len(self.received), 3)
+
     async def test_monthly_budget_and_rate_refill(self):
         """L3: one token bucket refills over time and completed tokens exhaust a monthly budget."""
         await self.start_with_admin(usage=True)
@@ -483,6 +502,37 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
         self.assertIn(": heartbeat\r\n", text)
         self.assertIn('"model":"model-a"', text)
         self.assertTrue(text.endswith("data: [DONE]\n\n"))
+
+    async def test_streamed_tool_arguments_and_sampling_fields_are_preserved(self):
+        """I3/I5: tool deltas survive split JSON lines and partial arguments."""
+        await self.start()
+        frames = [
+            {"id": "tool-result", "model": "backend", "choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call-1", "type": "function", "function": {"name": "lookup", "arguments": '{"city":"'}}]}}]},
+            {"id": "tool-result", "model": "backend", "choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '東京"}'}}]}, "finish_reason": "tool_calls"}]},
+        ]
+        async def reply(request, value):
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            for value in frames:
+                encoded = b"data: " + orjson.dumps(value) + b"\n\n"
+                for start in range(0, len(encoded), 7):
+                    await response.write(encoded[start:start+7])
+                    await asyncio.sleep(0)
+            await response.write(b"data: [DONE]\n\n")
+            return response
+        self.reply = reply
+        value = {"model": MODEL, "stream": True, "messages": [{"role": "user", "content": "lookup"}],
+            "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+            "tool_choice": "auto", "parallel_tool_calls": True, "temperature": .2, "top_p": .9,
+            "max_tokens": 512, "stop": ["END"]}
+        status, _, raw = await self.send(body=value)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.received[-1][1], value)
+        observed = [orjson.loads(line[5:]) for line in raw.splitlines() if line.startswith(b"data:") and b"[DONE]" not in line]
+        self.assertEqual(observed, [{**frame, "model": MODEL} for frame in frames])
+        self.assertTrue(raw.endswith(b"data: [DONE]\n\n"))
 
     async def test_affinity_is_stable_and_separates_key_records(self):
         """I4: inline and worker parsing use one process secret and isolate keys."""
@@ -713,7 +763,7 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
             digest = hashlib.sha256(body).hexdigest()
             canonical = f"v1\n{stamp}\n{nonce}\nPUT\n{route}\n{digest}\n".encode()
             signature = self.gateway.signer.sign(canonical, ec.ECDSA(hashes.SHA256()))
-            return {"X-Admin-Signature-Version": "v1", "X-Admin-Timestamp": stamp,
+            return {"Content-Type": "application/json", "X-Admin-Signature-Version": "v1", "X-Admin-Timestamp": stamp,
                 "X-Admin-Nonce": nonce, "X-Admin-Body-SHA256": digest,
                 "X-Admin-Signature": base64.urlsafe_b64encode(signature).decode().rstrip("=")}
         cases = [(signed(body=raw + b" "), "body_hash_mismatch"),
@@ -785,6 +835,40 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
         status, _, _ = await self.send(body=value)
         self.assertEqual(status, 200)
         self.assertEqual(self.received[-1][1]["metadata"]["number"], 18446744073709551616)
+
+    @unittest.skipIf(os.environ.get("GATEWAY_TEST_IMPLEMENTATION") == "rust", "Python parser process recovery")
+    async def test_failed_parser_processes_are_replaced(self):
+        """V2: a failed parse can fail one request, but later work recovers."""
+        import subprocess
+        import sys
+
+        await self.start()
+        command = [sys.executable, "-c"]
+        if self.gateway.container:
+            command = ["docker", "exec", self.gateway.container, "python", "-c"]
+        script = """
+import os, signal, sys
+from pathlib import Path
+pid = sys.argv[1]
+children = (Path('/proc') / pid / 'task' / pid / 'children').read_text().split()
+workers = [int(child) for child in children if b'multiprocessing.spawn' in (Path('/proc') / child / 'cmdline').read_bytes()]
+for worker in workers:
+    os.kill(worker, signal.SIGKILL)
+print(len(workers))
+"""
+        count = int(await asyncio.to_thread(subprocess.check_output,
+            [*command, script, "1" if self.gateway.container else str(self.gateway.process.pid)]))
+        self.assertGreater(count, 0)
+        body = orjson.dumps({"model": MODEL, "messages": [{"role": "user", "content": "x" * 1024**2}]})
+        statuses = []
+        for _ in range(2 * count):
+            status, _, raw = await self.send(body=body)
+            self.assertIn(status, (200, 500))
+            if status == 500:
+                self.assertEqual(orjson.loads(raw)["error"]["code"], "internal_error")
+            statuses.append(status)
+        self.assertEqual(statuses[-count:], [200] * count)
+        self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
 
     async def test_wide_metadata_preserves_fields_without_unbounded_lookup_work(self):
         """I3/P1: wide objects remain valid and do not stall a parser worker."""

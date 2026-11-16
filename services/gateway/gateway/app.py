@@ -6,6 +6,7 @@ import re
 import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import ExitStack, asynccontextmanager
 from multiprocessing import get_context
 from urllib.parse import urlsplit
@@ -335,6 +336,11 @@ async def parsing_worker(app):
     finally:
         try:
             await parser_call(executor, clear_buffer)
+        except BrokenProcessPool:
+            # A failed child must not leave a permanently unusable queue slot.
+            executor.shutdown(wait=False, cancel_futures=True)
+            executor = app["parser_stack"].enter_context(
+                ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")))
         finally:
             app["parsers"].put_nowait(executor)
 
@@ -371,6 +377,7 @@ async def session(app):
     async with aiohttp.ClientSession(timeout=timeout, connector=connector, auto_decompress=False) as client:
         app["http"] = client
         with ExitStack() as stack:
+            app["parser_stack"] = stack
             executors = [stack.enter_context(ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn"))) for _ in range(6)]
             app["parsers"] = asyncio.Queue()
             await asyncio.gather(*(asyncio.get_running_loop().run_in_executor(executor, os.getpid) for executor in executors))
