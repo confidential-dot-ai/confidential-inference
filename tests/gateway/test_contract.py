@@ -614,6 +614,9 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
         async with self.client.get("http://127.0.0.1:9443" + path, headers={**headers, "Authorization": "Bearer invalid"}) as response:
             self.assertEqual(response.status, 401)
             self.assertEqual((await response.json())["code"], "invalid_api_key")
+        raw = await raw_request(b"GET /admin/v1/api-keys/source HTTP/1.1\r\nHost: test\r\nConnection: close\r\nAuthorization: Bearer private-admin-canary\xff\r\n\r\n")
+        self.assertEqual(raw.split(b" ", 2)[1], b"401")
+        self.assertNotIn(b"private-admin-canary", raw)
 
     async def test_key_rate_bucket_is_not_refilled_by_a_snapshot(self):
         """L3: per-key rate refusal happens before forwarding and survives refresh."""

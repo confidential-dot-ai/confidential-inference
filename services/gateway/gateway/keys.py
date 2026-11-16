@@ -275,7 +275,7 @@ class AdminAuth:
         from cryptography.hazmat.primitives.asymmetric import ec
         if "Authorization" in request.headers:
             value = self.one(request.headers, "Authorization")
-            if not value.startswith("Bearer "):
+            if not value.isascii() or not value.startswith("Bearer "):
                 raise Rejected(401, "invalid_authorization")
             supplied = hashlib.sha256(value[7:].encode()).hexdigest()
             matched = 0
