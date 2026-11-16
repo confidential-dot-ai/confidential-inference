@@ -307,6 +307,65 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.send("/health", method="GET", headers={"Forwarded": "for=192.0.2.1"}))[0], 400)
         self.assertEqual(self.received, [])
 
+    async def test_execution_queue_is_bounded_and_releases_waiters(self):
+        """L2: one queued request waits; overflow is refused without forwarding."""
+        await self.start({"GATEWAY_INFERENCE_CONCURRENCY": "1", "GATEWAY_INFERENCE_QUEUE": "1",
+            "GATEWAY_QUEUE_TIMEOUT_SECONDS": "2"})
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def reply(request, value):
+            entered.set()
+            await release.wait()
+            return web.json_response({"model": "backend", "choices": []})
+        self.reply = reply
+        first = asyncio.create_task(self.send(body={"model": MODEL}))
+        second = None
+        try:
+            async with asyncio.timeout(2):
+                await entered.wait()
+            second = asyncio.create_task(self.send(body={"model": MODEL}))
+            async with asyncio.timeout(2):
+                while True:
+                    async with self.client.get("http://127.0.0.1:9090/metrics") as response:
+                        metrics = await response.text()
+                    if 'gateway_inference_queue_depth{env="test"} 1' in metrics:
+                        break
+                    await asyncio.sleep(.01)
+            self.assertFalse(second.done())
+            status, headers, raw = await self.send(body={"model": MODEL})
+            self.assertEqual(status, 429)
+            self.assertIn("Retry-After", headers)
+            self.assertEqual(orjson.loads(raw)["error"]["code"], "inference_capacity")
+            self.assertEqual(len(self.received), 1)
+        finally:
+            release.set()
+            results = await asyncio.gather(first, *([second] if second else []))
+        self.assertEqual([result[0] for result in results], [200, 200])
+        self.assertEqual(len(self.received), 2)
+        self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
+
+    async def test_execution_queue_timeout_does_not_leak_capacity(self):
+        """L2: an expired waiter cannot reach the router or retain a permit."""
+        await self.start({"GATEWAY_INFERENCE_CONCURRENCY": "1", "GATEWAY_INFERENCE_QUEUE": "1",
+            "GATEWAY_QUEUE_TIMEOUT_SECONDS": "1"})
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def reply(request, value):
+            entered.set()
+            await release.wait()
+            return web.json_response({"model": "backend", "choices": []})
+        self.reply = reply
+        first = asyncio.create_task(self.send(body={"model": MODEL}))
+        try:
+            async with asyncio.timeout(2):
+                await entered.wait()
+                status, _, raw = await self.send(body={"model": MODEL})
+            self.assertEqual(status, 429)
+            self.assertEqual(orjson.loads(raw)["error"]["code"], "inference_capacity")
+            self.assertEqual(len(self.received), 1)
+        finally:
+            release.set()
+            await first
+        self.assertEqual((await self.send(body={"model": MODEL}))[0], 200)
+
     async def test_monthly_budget_and_rate_refill(self):
         """L3: one token bucket refills over time and completed tokens exhaust a monthly budget."""
         await self.start_with_admin(usage=True)
@@ -637,6 +696,42 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
         raw = await raw_request(b"GET /admin/v1/api-keys/source HTTP/1.1\r\nHost: test\r\nConnection: close\r\nAuthorization: Bearer private-admin-canary\xff\r\n\r\n")
         self.assertEqual(raw.split(b" ", 2)[1], b"401")
         self.assertNotIn(b"private-admin-canary", raw)
+
+    async def test_signed_snapshot_binds_body_path_and_timestamp(self):
+        """K5: signed writes reject tampering and leave the accepted cache intact."""
+        import time
+
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        await self.start()
+        path = "/admin/v1/api-keys/snapshot"
+        raw = orjson.dumps(snapshot(2))
+        def signed(body=raw, route=path, age=0):
+            stamp = str(int(time.time()) - age)
+            nonce = os.urandom(16).hex()
+            digest = hashlib.sha256(body).hexdigest()
+            canonical = f"v1\n{stamp}\n{nonce}\nPUT\n{route}\n{digest}\n".encode()
+            signature = self.gateway.signer.sign(canonical, ec.ECDSA(hashes.SHA256()))
+            return {"X-Admin-Signature-Version": "v1", "X-Admin-Timestamp": stamp,
+                "X-Admin-Nonce": nonce, "X-Admin-Body-SHA256": digest,
+                "X-Admin-Signature": base64.urlsafe_b64encode(signature).decode().rstrip("=")}
+        cases = [(signed(body=raw + b" "), "body_hash_mismatch"),
+            (signed(route="/admin/v1/api-keys/source"), "invalid_signature"),
+            (signed(age=120), "stale_signature")]
+        duplicate = list(signed().items())
+        duplicate.append(("X-Admin-Nonce", "0" * 32))
+        cases.append((duplicate, "duplicate_signature_header"))
+        for headers, code in cases:
+            async with self.client.put("http://127.0.0.1:9443" + path, data=raw, headers=headers) as response:
+                self.assertEqual(response.status, 401, code)
+                self.assertEqual((await response.json())["code"], code)
+            status, _, value = await self.send("/admin/v1/api-keys/source", token=ADMIN_KEY, method="GET")
+            self.assertEqual(status, 200)
+            self.assertEqual(orjson.loads(value)["cachedRevision"], 1)
+        async with self.client.put("http://127.0.0.1:9443" + path, data=raw, headers=signed()) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual((await response.json())["cachedRevision"], 2)
 
     async def test_key_rate_bucket_is_not_refilled_by_a_snapshot(self):
         """L3: per-key rate refusal happens before forwarding and survives refresh."""
