@@ -181,7 +181,9 @@ class AdminPeer:
     async def keys(self, request):
         self.gets += 1
         self.authorize(request)
-        return web.json_response(self.value)
+        response = web.json_response(self.value)
+        response.enable_compression()
+        return response
 
     async def usage(self, request):
         self.authorize(request)

@@ -521,7 +521,10 @@ async def session(app):
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=10)
     connector = aiohttp.TCPConnector(limit=0, limit_per_host=0)
     async with aiohttp.ClientSession(
-        timeout=timeout, connector=connector, auto_decompress=False
+        timeout=timeout,
+        connector=connector,
+        auto_decompress=False,
+        skip_auto_headers={"Accept-Encoding"},
     ) as client:
         app["http"] = client
         with ExitStack() as stack:

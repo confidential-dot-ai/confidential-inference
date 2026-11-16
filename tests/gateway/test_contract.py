@@ -37,7 +37,7 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
             if self.reply:
                 return await self.reply(request, value)
             if not value.get("stream"):
-                return web.json_response(
+                response = web.json_response(
                     {
                         "id": "result",
                         "model": "backend",
@@ -47,6 +47,8 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
                         "usage": {"prompt_tokens": 8, "completion_tokens": 2},
                     }
                 )
+                response.enable_compression()
+                return response
             raw = (
                 b": heartbeat\r\n\r\ndata: "
                 + orjson.dumps(
