@@ -53,6 +53,8 @@ async def fixture(args):
                     arrived, group_ready = 0, asyncio.Event()
                     ready.set()
                 await ready.wait()
+            if large:
+                await asyncio.sleep(args.prefill_seconds)
             await response.prepare(request)
             for index in range(500 if length < 1024**2 else 20):
                 value = {
@@ -64,7 +66,7 @@ async def fixture(args):
                     value["_request_sha256"] = digest.hexdigest()
                     value["_upstream_peak_large"] = large_peak
                 await response.write(b"data: " + orjson.dumps(value) + b"\n\n")
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(args.token_interval if large else 0.02)
             if args.usage:
                 await response.write(
                     b"data: "
@@ -120,6 +122,12 @@ async def measure(args):
     command = [sys.executable, str(Path(__file__).resolve()), "--fixture"]
     if args.large_barrier:
         command += ["--large-barrier", "--requests", str(args.requests)]
+    command += [
+        "--prefill-seconds",
+        str(args.prefill_seconds),
+        "--token-interval",
+        str(args.token_interval),
+    ]
     if args.usage:
         command += [
             "--usage",
@@ -444,6 +452,8 @@ async def measure(args):
             "soak_elapsed_seconds": time.monotonic() - soak_started,
             "usage_enabled": args.usage,
             "large_barrier": args.large_barrier,
+            "simulated_prefill_seconds": args.prefill_seconds,
+            "simulated_token_interval_seconds": args.token_interval,
             "upstream_peak_large": max(peer_peaks, default=0),
             "small_body_bytes": len(small_body),
             "peak_client_concurrency": peak,
@@ -554,6 +564,18 @@ if __name__ == "__main__":
     parser.add_argument("--output")
     parser.add_argument("--fixture", action="store_true")
     parser.add_argument(
+        "--prefill-seconds",
+        type=float,
+        default=0,
+        help="Simulated inference delay for large requests; no GPU work occurs",
+    )
+    parser.add_argument(
+        "--token-interval",
+        type=float,
+        default=0.02,
+        help="Seconds between simulated large-response tokens",
+    )
+    parser.add_argument(
         "--usage",
         action="store_true",
         help="Exercise HTTPS key pulls and usage delivery",
@@ -567,4 +589,6 @@ if __name__ == "__main__":
         "--fixture-input-tokens", type=int, default=1000, help=argparse.SUPPRESS
     )
     args = parser.parse_args()
+    if not 0 <= args.prefill_seconds <= 120 or not 0 < args.token_interval <= 2:
+        parser.error("invalid simulated inference timing")
     asyncio.run(fixture(args) if args.fixture else measure(args))
