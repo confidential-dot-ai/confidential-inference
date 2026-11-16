@@ -48,9 +48,10 @@ class Routing:
         return mac.digest()[:16].hex()
 
 
-def prepare(body, route, key_id, client_key, config, routing):
+def prepare(body, route, key_id, client_key, config, routing, payload=None):
     try:
-        payload = orjson.loads(body)
+        if payload is None:
+            payload = orjson.loads(body)
     except (ValueError, TypeError) as error:
         raise Rejected(400, "invalid_json") from error
     model = payload.get("model") if isinstance(payload, dict) else None
@@ -82,29 +83,83 @@ def prepare(body, route, key_id, client_key, config, routing):
 
 
 class Output:
-    def __init__(self, model, event_stream, hidden=False):
+    def __init__(self, model, event_stream, hidden=False, expected=None, responses=False, on_value=None):
         self.model, self.event_stream, self.hidden = model, event_stream, hidden
+        self.expected, self.responses, self.on_value = expected, responses, on_value
         self.pending = bytearray()
-        self.done = False
-        self.failed = False
-        self.observation = None
+        self.done = self.failed = self.mismatch = False
+        self.observation = {}
+        self.reason = None
+
+    def observe(self, value, final):
+        from .telemetry import log
+        observed = value.get("response") if isinstance(value.get("response"), dict) else value
+        if self.responses and "model" not in observed and "usage" not in observed:
+            return
+        if self.expected is not None and observed.get("model") != self.expected:
+            if not self.mismatch:
+                log("usage model identity did not match its approved binding", "WARN")
+            self.mismatch = True
+        if self.mismatch:
+            self.observation = {}
+            return
+        usage = observed.get("usage")
+        if isinstance(usage, dict):
+            def number(value):
+                return value if type(value) is int and 0 <= value <= 9_007_199_254_740_991 else None
+            def detail(parent, field):
+                value = usage.get(parent)
+                return number(value.get(field)) if isinstance(value, dict) else None
+            if self.responses:
+                input_tokens, output_tokens = number(usage.get("input_tokens")), number(usage.get("output_tokens"))
+                cached, reasoning = detail("input_tokens_details", "cached_tokens"), detail("output_tokens_details", "reasoning_tokens")
+            else:
+                input_tokens, output_tokens = number(usage.get("prompt_tokens")), number(usage.get("completion_tokens"))
+                cached = detail("prompt_tokens_details", "cached_tokens")
+                if "prompt_tokens_details" in usage and usage["prompt_tokens_details"] is None:
+                    cached = 0
+                elif cached is None:
+                    cached = number(usage.get("cache_read_input_tokens"))
+                reasoning = number(usage.get("reasoning_tokens"))
+                if reasoning is None:
+                    reasoning = detail("completion_tokens_details", "reasoning_tokens")
+            self.observation = {"input_tokens": input_tokens, "output_tokens": output_tokens,
+                "cached_input_tokens": cached if input_tokens is not None and cached is not None and cached <= input_tokens else None,
+                "reasoning_tokens": reasoning if output_tokens is not None and reasoning is not None and reasoning <= output_tokens else None,
+                "final_usage": final}
+        if self.responses:
+            if observed.get("status") == "completed":
+                output = observed.get("output")
+                calls = isinstance(output, list) and any(isinstance(item, dict) and item.get("type") in ("function_call", "custom_tool_call") for item in output)
+                self.reason = "tool_calls" if calls else "stop"
+            elif observed.get("status") == "incomplete":
+                details = observed.get("incomplete_details")
+                reason = details.get("reason") if isinstance(details, dict) else None
+                self.reason = {"max_output_tokens": "length", "content_filter": "content_filter"}.get(reason)
+        else:
+            choices = value.get("choices")
+            if isinstance(choices, list):
+                for choice in choices:
+                    reason = choice.get("finish_reason") if isinstance(choice, dict) else None
+                    if reason in ("stop", "length", "tool_calls", "content_filter"):
+                        self.reason = reason
 
     def value(self, raw):
         value = orjson.loads(raw)
         if isinstance(value, dict):
+            kind = value.get("type")
+            terminal = kind in ("response.completed", "response.incomplete", "response.failed")
+            if terminal:
+                self.done, self.failed = True, kind == "response.failed"
+            final = isinstance(value.get("usage"), dict) and value.get("choices") == []
+            self.observe(value, not self.event_stream or terminal or final)
+            if self.on_value:
+                self.on_value(value)
             if "model" in value:
                 value["model"] = self.model
             response = value.get("response")
             if isinstance(response, dict) and "model" in response:
                 response["model"] = self.model
-            kind = value.get("type")
-            terminal = kind in ("response.completed", "response.incomplete", "response.failed")
-            if terminal:
-                self.done, self.failed = True, kind == "response.failed"
-            observed = response if isinstance(response, dict) else value
-            if isinstance(observed.get("usage"), dict):
-                self.observation = observed["usage"]
-            final = isinstance(value.get("usage"), dict) and value.get("choices") == []
             if final and self.hidden:
                 return b""
         return orjson.dumps(value)
@@ -152,19 +207,110 @@ class Output:
         return self.line(self.pending) if self.event_stream else self.value(self.pending)
 
 
+_parsed_buffer = None
+
+
+def clear_buffer():
+    global _parsed_buffer
+    if _parsed_buffer is not None:
+        _, mapping, _, _, incoming = _parsed_buffer
+        incoming.release()
+        mapping.close()
+        _parsed_buffer = None
+
+
 def prepare_buffer(parent, descriptor, length, capacity, route, key_id, client_key, config, routing):
-    """Parse a volatile shared buffer; return only small control metadata."""
+    """Use the inspected native document on the same exclusive worker."""
+    import simdjson
+    if _parsed_buffer is None or _parsed_buffer[0] != (parent, descriptor, length):
+        raise ValueError("missing inspected buffer")
+    _, mapping, parser, document, incoming = _parsed_buffer
+    if isinstance(document, simdjson.Object):
+        payload = document.as_dict()
+    elif isinstance(document, simdjson.Array):
+        payload = document.as_list()
+    else:
+        payload = document
+    outgoing, model, affinity, hidden = prepare(incoming, route, key_id, client_key, config, routing, payload)
+    if outgoing is not incoming:
+        incoming.release()
+        if len(outgoing) > capacity:
+            mapping.resize(len(outgoing))
+        mapping[:len(outgoing)] = outgoing
+        length = len(outgoing)
+    return length, model, affinity, hidden
+
+
+def object_items(value):
+    # Object.items() recursively materializes children; key lookup stays lazy.
+    for key in value.keys():
+        yield key, value[key]
+
+
+def inspect_buffer(parent, descriptor, length, capacity, maximum):
+    """Estimate Python objects on a lazy native tree before constructing them."""
     import mmap
+    import sys
+
+    import simdjson
+
+    global _parsed_buffer
+    clear_buffer()
     with open(f"/proc/{parent}/fd/{descriptor}", "r+b", buffering=0) as file:
-        with mmap.mmap(file.fileno(), capacity) as mapping:
-            incoming = memoryview(mapping)[:length]
+        mapping = mmap.mmap(file.fileno(), capacity)
+    incoming = memoryview(mapping)[:length]
+    try:
+        parser = simdjson.Parser()
+        document = parser.parse(incoming)
+        # Original, native parser storage, parser scratch and rewritten bytes
+        # remain charged alongside the estimated Python object tree.
+        cost = 5 * length + 65536
+        stack = [iter((document,))]
+        while stack:
             try:
-                outgoing, model, affinity, hidden = prepare(incoming, route, key_id, client_key, config, routing)
-                if outgoing is not incoming:
-                    if len(outgoing) > capacity:
+                value = next(stack[-1])
+            except StopIteration:
+                stack.pop()
+                continue
+            if isinstance(value, simdjson.Object):
+                keys = tuple(value.keys())
+                if len(set(keys)) != len(keys):
+                    # Native lookup returns the first duplicate, while JSON
+                    # object construction keeps the last. Charge a conservative
+                    # whole-tree bound instead of missing a shadowed subtree.
+                    cost = max(cost, 128 * length + 65536)
+                    if cost > maximum:
                         raise Rejected(413, "request_too_large")
-                    mapping[:len(outgoing)] = outgoing
-                    length = len(outgoing)
-                return length, model, affinity, hidden
-            finally:
-                incoming.release()
+                    break
+                cost += 256 + 96 * len(value)
+                stack.append(object_items(value))
+            elif isinstance(value, simdjson.Array):
+                cost += 128 + 16 * len(value)
+                stack.append(iter(value))
+            elif isinstance(value, tuple):
+                cost += sys.getsizeof(value[0])
+                stack.append(iter((value[1],)))
+            else:
+                cost += sys.getsizeof(value)
+            if cost > maximum:
+                raise Rejected(413, "request_too_large")
+        _parsed_buffer = (parent, descriptor, length), mapping, parser, document, incoming
+        return cost
+    except ValueError as error:
+        if str(error).startswith(("NUMBER_ERROR", "BIGINT_ERROR")):
+            cost = 128 * length + 65536
+            if cost <= maximum:
+                _parsed_buffer = (parent, descriptor, length), mapping, None, None, incoming
+                return cost
+            incoming.release()
+            mapping.close()
+            raise Rejected(413, "request_too_large") from error
+        incoming.release()
+        mapping.close()
+        raise Rejected(400, "invalid_json") from error
+    except BaseException as error:
+        incoming.release()
+        mapping.close()
+        if isinstance(error, ValueError):
+            raise Rejected(400, "invalid_json") from error
+        raise

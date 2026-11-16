@@ -106,3 +106,61 @@ class Body:
         import os
         self.mapping.close()
         os.close(self.fd)
+
+
+class Public:
+    def __init__(self, config):
+        import ipaddress
+        self.config = config
+        self.trusted = [ipaddress.ip_network(value) for value in config.trusted_proxies]
+        self.active, self.addresses, self.windows = 0, {}, {}
+
+    def enter(self, request):
+        import ipaddress
+        import time
+        config = self.config
+        if len(request.headers) > config.maximum_headers or sum(len(key) + len(value) for key, value in request.raw_headers) > config.maximum_header_bytes:
+            raise Rejected(431, "request_headers_too_large")
+        if len(request.raw_path.encode()) > config.maximum_uri:
+            raise Rejected(414, "request_uri_too_long")
+        if "Forwarded" in request.headers:
+            raise Rejected(400, "invalid_forwarding_headers")
+        peer = ipaddress.ip_address(request.remote or "0.0.0.0")
+        client = peer
+        if "X-Forwarded-For" in request.headers and any(peer in network for network in self.trusted):
+            try:
+                value = request.headers["X-Forwarded-For"]
+                if value.strip() != value or "," in value:
+                    raise ValueError("invalid forwarding")
+                client = ipaddress.ip_address(value)
+                if "X-Real-IP" in request.headers and request.headers["X-Real-IP"] != value:
+                    raise ValueError("inconsistent forwarding")
+            except ValueError as error:
+                raise Rejected(400, "invalid_forwarding_headers") from error
+        if self.active >= config.public_capacity:
+            raise Rejected(503, "request_capacity", 1)
+        if self.addresses.get(client, 0) >= config.per_address:
+            raise Rejected(429, "address_capacity", 1)
+        now = time.monotonic()
+        self.windows = {key: value for key, value in self.windows.items() if now - value[0] < 2}
+        if client not in self.windows and len(self.windows) >= 4096:
+            raise Rejected(429, "address_rate_limited", 1)
+        started, count = self.windows.get(client, (now, 0))
+        if now - started >= 1:
+            started, count = now, 0
+        if count >= config.address_rate:
+            raise Rejected(429, "address_rate_limited", 1)
+        self.windows[client] = started, count + 1
+        self.active += 1
+        self.addresses[client] = self.addresses.get(client, 0) + 1
+        released = False
+
+        def release():
+            nonlocal released
+            if not released:
+                released = True
+                self.active -= 1
+                self.addresses[client] -= 1
+                if not self.addresses[client]:
+                    del self.addresses[client]
+        return release

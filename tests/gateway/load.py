@@ -16,7 +16,7 @@ import aiohttp
 import orjson
 import psutil
 from aiohttp import web
-
+from prometheus_client.parser import text_string_to_metric_families
 from support import API_KEY, MODEL, Gateway
 
 
@@ -32,7 +32,7 @@ async def fixture():
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await response.prepare(request)
         try:
-            for index in range(150 if length < 1024**2 else 20):
+            for index in range(500 if length < 1024**2 else 20):
                 value = {"model": MODEL, "choices": [{"delta": {"content": "x"}, "finish_reason": None}], "_sent_ns": time.monotonic_ns()}
                 await response.write(b"data: " + orjson.dumps(value) + b"\n\n")
                 await asyncio.sleep(.02)
@@ -63,7 +63,7 @@ async def measure(args):
     try:
         await gateway.start()
         process = psutil.Process(gateway.process.pid)
-        rss, cpu, sampling = [], [], True
+        rss, sampling = [], True
         initial_cpu = process.cpu_times()
         initial_time = time.monotonic()
         async def sample():
@@ -73,6 +73,8 @@ async def measure(args):
         sampler = asyncio.create_task(sample())
         gaps, firsts, durations, errors, delays, processing = [], [], [], [], [], []
         upload_finished = {}
+        upload_start, upload_end = None, None
+        probes = []
         active, peak = 0, 0
         headers = {"Authorization": "Bearer " + API_KEY, "Content-Type": "application/json"}
         prefix = b'{"model":"model-a","stream":true,"messages":[{"role":"user","content":"'
@@ -91,7 +93,7 @@ async def measure(args):
         timeout = aiohttp.ClientTimeout(total=180)
         connector = aiohttp.TCPConnector(limit=0)
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as client:
-            async def request(large=False, slow=False, cancel=False):
+            async def request(large=False, slow=False, cancel=False, probe=False):
                 nonlocal active, peak
                 active += 1
                 peak = max(peak, active)
@@ -107,14 +109,16 @@ async def measure(args):
                             if not line.startswith(b"data:"):
                                 continue
                             now = time.monotonic()
-                            if previous is not None and not large:
+                            if previous is not None and not large and not slow and upload_start is not None and (upload_end is None or now <= upload_end):
                                 gaps.append(now - previous)
                             previous = now
-                            if not slow and not large and b"[DONE]" not in line:
+                            if not slow and not large and b"[DONE]" not in line and upload_start is not None and (upload_end is None or now <= upload_end):
                                 value = orjson.loads(line[5:])
                                 delays.append((time.monotonic_ns() - value["_sent_ns"]) / 1e9)
                             if first is None:
                                 first = now
+                                if probe:
+                                    probes.append(now - started)
                                 if large:
                                     firsts.append(now - started)
                                     if identifier in upload_finished:
@@ -135,22 +139,53 @@ async def measure(args):
                     active -= 1
             background = [asyncio.create_task(request(slow=(i == 0), cancel=(i == 1))) for i in range(args.background)]
             await asyncio.sleep(.2)
-            started = time.monotonic()
+            async def small_requests():
+                while upload_end is None:
+                    await request(cancel=True, probe=True)
+                    await asyncio.sleep(.1)
+            probe_task = asyncio.create_task(small_requests())
+            started = upload_start = time.monotonic()
             await asyncio.gather(*(request(large=True) for _ in range(args.requests)))
-            elapsed = time.monotonic() - started
-            await asyncio.gather(*background)
+            upload_end = time.monotonic()
+            elapsed = upload_end - started
+            await probe_task
+            for task in background:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*background, return_exceptions=True)
+            async with client.get("http://127.0.0.1:9090/metrics") as response:
+                metrics = await response.text()
+            processing_bounds = {}
+            forwarding_bound = None
+            for family in text_string_to_metric_families(metrics):
+                if family.name == "gateway_stream_forward_seconds":
+                    count = next(sample.value for sample in family.samples if sample.name.endswith("_count"))
+                    forwarding_bound = min(float(sample.labels["le"]) for sample in family.samples
+                        if sample.name.endswith("_bucket") and sample.value >= .99 * count)
+                if family.name == "gateway_request_processing_seconds":
+                    for sample in family.samples:
+                        if sample.name.endswith("_count"):
+                            count = sample.value
+                            size_class = sample.labels["size"]
+                            bounds = [float(bucket.labels["le"]) for bucket in family.samples
+                                if bucket.name.endswith("_bucket") and bucket.labels["size"] == size_class and bucket.value >= .99 * count]
+                            processing_bounds[size_class] = min(bounds)
         sampling = False
         await sampler
         final_cpu = process.cpu_times()
         child_cpu = sum(p.cpu_times().user + p.cpu_times().system for p in process.children(recursive=True) if p.is_running())
-        result = {"gateway": args.gateway, "requests": args.requests, "body_bytes": size, "background": args.background,
+        result = {"gateway": args.gateway, "requests": args.requests, "body_bytes": size, "background": args.background, "body_memory_budget_bytes": 32 * 1024**3,
                   "peak_client_concurrency": peak, "completed_large": len(durations), "errors": errors,
                   "large_elapsed_seconds": elapsed, "input_mib_per_second": args.requests * args.body_mib / elapsed,
                   "large_first_chunk_p95_seconds": percentile(firsts, .95),
                   "post_upload_first_chunk_p95_seconds": percentile(processing, .95),
                   "post_upload_first_chunk_p99_seconds": percentile(processing, .99),
+                  "server_body_complete_to_submission_p99_upper_seconds": processing_bounds,
+                  "server_chunk_receive_to_write_p99_upper_seconds": forwarding_bound,
                   "stream_gap_p50_seconds": percentile(gaps, .5), "stream_gap_p95_seconds": percentile(gaps, .95),
                   "stream_gap_p99_seconds": percentile(gaps, .99), "stream_gap_max_seconds": max(gaps, default=None),
+                  "small_probe_first_chunk_p95_seconds": percentile(probes, .95),
+                  "small_probe_first_chunk_p99_seconds": percentile(probes, .99),
                   "chunk_delay_p95_seconds": percentile(delays, .95), "chunk_delay_p99_seconds": percentile(delays, .99),
                   "chunk_delay_max_seconds": max(delays, default=None), "peak_rss_mib": max(rss, default=0) / 1024**2,
                   "cpu_seconds": final_cpu.user + final_cpu.system - initial_cpu.user - initial_cpu.system + child_cpu,

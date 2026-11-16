@@ -3,15 +3,17 @@
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import os
+import ssl
 import subprocess
 import sys
 import tempfile
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import aiohttp
+from aiohttp import web
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -27,7 +29,7 @@ MODEL = "model-a"
 def certificate(directory):
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "gateway-test")])
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
             .serial_number(x509.random_serial_number()).not_valid_before(now - timedelta(minutes=1))
             .not_valid_after(now + timedelta(days=1)).sign(key, hashes.SHA256()))
@@ -41,6 +43,77 @@ def snapshot(revision=1):
             "pepperFingerprint": "", "keys": [{"id": "key_test", "name": "test", "owner": "test", "prefix": "test",
             "keyHash": base64.urlsafe_b64encode(hashlib.sha256(API_KEY.encode()).digest()).decode().rstrip("="),
             "hashAlgorithm": "sha256", "pepperFingerprint": "", "createdAt": "2026-01-01T00:00:00Z", "createdBy": "test", "version": 1}]}
+
+
+class AdminPeer:
+    """A real HTTPS admin with a private test CA and recorded usage batches."""
+
+    def __init__(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="gateway-admin-test-")
+        self.value, self.events, self.batches = snapshot(), [], []
+        self.gets, self.fail_usage, self.unavailable = 0, 0, False
+        self.authorizations = []
+
+    async def start(self):
+        directory = Path(self.directory.name)
+        now = datetime.now(UTC)
+        ca_key = ec.generate_private_key(ec.SECP256R1())
+        ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "gateway-admin-test-ca")])
+        ca = (x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name).public_key(ca_key.public_key())
+              .serial_number(x509.random_serial_number()).not_valid_before(now - timedelta(minutes=1))
+              .not_valid_after(now + timedelta(days=1)).add_extension(x509.BasicConstraints(ca=True, path_length=0), True)
+              .add_extension(x509.KeyUsage(True, False, False, False, False, True, True, False, False), True)
+              .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), False)
+              .sign(ca_key, hashes.SHA256()))
+        key = ec.generate_private_key(ec.SECP256R1())
+        leaf = (x509.CertificateBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")]))
+                .issuer_name(ca_name).public_key(key.public_key()).serial_number(x509.random_serial_number())
+                .not_valid_before(now - timedelta(minutes=1)).not_valid_after(now + timedelta(days=1))
+                .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), False)
+                .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), False)
+                .add_extension(x509.BasicConstraints(ca=False, path_length=None), True).sign(ca_key, hashes.SHA256()))
+        self.ca_file = directory / "ca.pem"
+        self.ca_file.write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+        cert_file, key_file = directory / "server.pem", directory / "server.key"
+        cert_file.write_bytes(leaf.public_bytes(serialization.Encoding.PEM))
+        key_file.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert_file, key_file)
+        app = web.Application()
+        app.router.add_get("/api/gateway/key-snapshot", self.keys)
+        app.router.add_post("/api/usage/ingest", self.usage)
+        self.runner = web.AppRunner(app, access_log=None)
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, "127.0.0.1", 0, ssl_context=context)
+        await site.start()
+        self.endpoint = f"https://127.0.0.1:{site._server.sockets[0].getsockname()[1]}/api/usage/ingest"
+        return self
+
+    def authorize(self, request):
+        self.authorizations.append(request.headers.get("Authorization"))
+        if self.authorizations[-1] != "Bearer " + "t" * 32:
+            raise web.HTTPUnauthorized()
+        if self.unavailable:
+            raise web.HTTPServiceUnavailable()
+
+    async def keys(self, request):
+        self.gets += 1
+        self.authorize(request)
+        return web.json_response(self.value)
+
+    async def usage(self, request):
+        self.authorize(request)
+        batch = (await request.json())["events"]
+        self.batches.append(batch)
+        if self.fail_usage:
+            self.fail_usage -= 1
+            raise web.HTTPServiceUnavailable()
+        self.events.extend(batch)
+        return web.json_response({"accepted": len(batch)})
+
+    async def close(self):
+        await self.runner.cleanup()
+        self.directory.cleanup()
 
 
 class Gateway:
@@ -64,12 +137,34 @@ class Gateway:
                "GATEWAY_ADMIN_ENDPOINT": "https://127.0.0.1:1/api/usage/ingest",
                "GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE": str(self.signer_path),
                "GATEWAY_ADMIN_API_KEY_HASHES_FILE": str(directory / "admin.sha256"),
-               "GATEWAY_MAXIMUM_BODY_BYTES": str(64 * 1024**2), "GATEWAY_BODY_MEMORY_BYTES": str(10 * 1024**3),
+               "GATEWAY_MAXIMUM_BODY_BYTES": str(64 * 1024**2), "GATEWAY_BODY_MEMORY_BYTES": str(32 * 1024**3),
                "GATEWAY_BODY_TIMEOUT_SECONDS": "60", "GATEWAY_INFERENCE_CONCURRENCY": "128",
                "GATEWAY_PER_KEY_CONCURRENCY": "128", "GATEWAY_PER_ADDRESS_CONCURRENCY": "256",
                "GATEWAY_REQUESTS_PER_ADDRESS_PER_SECOND": "10000", "GATEWAY_INFERENCE_QUEUE": "0",
                "GATEWAY_ENDPOINT_DRAIN_SECONDS": "0", "GATEWAY_SHUTDOWN_GRACE_SECONDS": "1", **self.settings}
         command = [self.rust] if self.kind == "rust" else [sys.executable, "-m", "gateway"]
+        self.container = None
+        image = os.environ.get("GATEWAY_TEST_IMAGE") if self.kind == "python" else None
+        if image:
+            # Only test settings are passed to the container, never the full
+            # host environment. The credential directory contains test keys.
+            directory.chmod(0o755)
+            self.container = directory.name
+            command = ["docker", "run", "--rm", "--name", self.container, "--network", "host",
+                "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                "--pids-limit", "64", "--memory", "8g", "--cpus", "8",
+                "--mount", f"type=bind,src={directory},dst=/run/test-gateway,readonly"]
+            ca = env.get("SSL_CERT_FILE")
+            if ca:
+                command.extend(["--mount", f"type=bind,src={ca},dst=/run/test-ca.pem,readonly"])
+            for name, value in env.items():
+                if name.startswith("GATEWAY_") or name == "DEPLOYMENT_ENVIRONMENT":
+                    if name.startswith("GATEWAY_TEST_"):
+                        continue
+                    command.extend(["--env", name + "=" + value.replace(str(directory), "/run/test-gateway")])
+            if ca:
+                command.extend(["--env", "SSL_CERT_FILE=/run/test-ca.pem"])
+            command.append(image)
         self.log = open(directory / "output.log", "wb")
         self.process = subprocess.Popen(command, env=env, stdout=self.log, stderr=subprocess.STDOUT)
         async with aiohttp.ClientSession() as client:
@@ -104,6 +199,9 @@ class Gateway:
                     break
                 await asyncio.sleep(.05)
             else:
+                if self.container:
+                    await asyncio.to_thread(subprocess.run, ["docker", "rm", "--force", self.container],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 self.process.kill()
             self.process.wait()
         if hasattr(self, "log"):

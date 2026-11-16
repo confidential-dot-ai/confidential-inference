@@ -3,9 +3,9 @@
 import base64
 import hashlib
 import hmac
-import time
 import re
-from datetime import datetime
+import time
+from datetime import UTC, datetime
 
 from .limits import Rejected
 
@@ -27,18 +27,41 @@ class Keys:
         self.fingerprint = hashlib.sha256(b"confidential.ai/gateway-pepper-fingerprint/v1" + pepper).hexdigest()
         self.revision = None
         self.rows = []
+        self.index = {}
+        self.index_secret = hmac.digest(pepper, b"confidential.ai/gateway-verifier-index/v1", "sha256")
         self.updated = None
         self.skipped = 0
         self.limits = KeyLimits()
+        self.metrics = None
 
     def apply(self, snapshot):
+        try:
+            result = self._apply(snapshot)
+        except Rejected as error:
+            if self.metrics:
+                self.metrics.inc("gateway_key_registry_push_rejected_total", reason=error.code)
+                if error.code == "pepper_mismatch":
+                    self.metrics.set("gateway_key_registry_pepper_mismatch", 1)
+            raise
+        if self.metrics:
+            self.metrics.set("gateway_key_registry_revision", self.revision)
+            self.metrics.set("gateway_key_registry_stale_seconds", 0)
+            self.metrics.set("gateway_key_registry_pepper_mismatch_rows", self.skipped)
+            self.metrics.set("gateway_key_registry_pepper_mismatch", 0)
+        return result
+
+    def _apply(self, snapshot):
+        if not isinstance(snapshot, dict):
+            raise Rejected(400, "invalid_request")
         if snapshot.get("schemaVersion") != "confidential.ai/key-registry-snapshot/v1" or snapshot.get("environment") != self.environment:
             raise Rejected(400, "invalid_request")
         revision, rows = snapshot.get("revision"), snapshot.get("keys")
         if type(revision) is not int or revision < 1 or not isinstance(rows, list) or len(rows) > 10_000:
             raise Rejected(400, "invalid_request")
         fingerprint = snapshot.get("pepperFingerprint", "")
-        if fingerprint and not hmac.compare_digest(fingerprint, self.fingerprint):
+        if not isinstance(fingerprint, str) or not isinstance(snapshot.get("generatedAt", ""), str):
+            raise Rejected(400, "invalid_request")
+        if fingerprint and not hmac.compare_digest(fingerprint.encode(), self.fingerprint.encode()):
             raise Rejected(409, "pepper_mismatch")
         if self.revision is not None and revision < self.revision:
             raise Rejected(409, "stale_revision")
@@ -51,17 +74,25 @@ class Keys:
         if applied:
             try:
                 for row in rows:
+                    if not isinstance(row, dict) or not all(isinstance(row.get(field), str) for field in ("id", "name", "owner", "prefix", "createdAt", "createdBy", "keyHash", "pepperFingerprint")):
+                        raise ValueError("invalid key row")
+                    if type(row.get("version")) is not int or not -(2**63) <= row["version"] < 2**63:
+                        raise ValueError("invalid key version")
+                    if not isinstance(row.get("tags", []), list) or not all(isinstance(tag, str) for tag in row.get("tags", [])):
+                        raise ValueError("invalid key tags")
+                    if row.get("revokedBy") is not None and not isinstance(row["revokedBy"], str):
+                        raise ValueError("invalid revocation metadata")
                     algorithm = row.get("hashAlgorithm", "hmac-sha256")
                     if algorithm not in ("sha256", "hmac-sha256"):
                         raise ValueError("invalid algorithm")
                     digest = unpad(row["keyHash"])
                     policy = self.limits.policy(row)
-                    datetime.fromisoformat(row["createdAt"].replace("Z", "+00:00"))
+                    timestamp(row["createdAt"])
                     if row.get("revokedAt") is not None:
-                        datetime.fromisoformat(row["revokedAt"].replace("Z", "+00:00"))
+                        timestamp(row["revokedAt"])
                     if algorithm == "sha256" and row["pepperFingerprint"]:
                         raise ValueError("unexpected pepper")
-                    if algorithm == "hmac-sha256" and not hmac.compare_digest(row["pepperFingerprint"], self.fingerprint):
+                    if algorithm == "hmac-sha256" and not hmac.compare_digest(row["pepperFingerprint"].encode(), self.fingerprint.encode()):
                         skipped += 1
                         continue
                     parsed.append((row["id"], algorithm, digest, row.get("revokedAt") is not None))
@@ -69,7 +100,11 @@ class Keys:
                         policies[row["id"]] = policy
             except (KeyError, TypeError, ValueError) as error:
                 raise Rejected(400, "invalid_request") from error
-            self.rows, self.skipped, self.revision = parsed, skipped, revision
+            index = {}
+            for position, (identifier, algorithm, digest, revoked) in enumerate(parsed):
+                tag = hmac.digest(self.index_secret, digest, "sha256")[:16]
+                index.setdefault((algorithm, tag), []).append((position, identifier, digest, revoked))
+            self.rows, self.index, self.skipped, self.revision = parsed, index, skipped, revision
             self.limits.replace(policies)
         self.limits.apply_usage(usage)
         self.updated = int(time.time())
@@ -79,13 +114,19 @@ class Keys:
     def authenticate(self, authorization):
         if self.revision is None:
             raise Rejected(503, "key_registry_not_ready")
-        if not authorization.startswith("Bearer ") or not 1 <= len(authorization[7:].encode()) <= 256:
+        if not authorization.isascii() or not authorization.startswith("Bearer ") or not 1 <= len(authorization[7:].encode()) <= 256:
             raise Rejected(401, "invalid_api_key")
         key = authorization[7:].encode()
         digests = {"sha256": hashlib.sha256(key).digest(), "hmac-sha256": hmac.digest(self.pepper, key, "sha256")}
-        for identifier, algorithm, digest, revoked in self.rows:
-            if not revoked and hmac.compare_digest(digest, digests[algorithm]):
-                return identifier
+        matches = []
+        for algorithm, supplied in digests.items():
+            # The lookup compares keyed index tags, not verifier digests.
+            tag = hmac.digest(self.index_secret, supplied, "sha256")[:16]
+            for position, identifier, digest, revoked in self.index.get((algorithm, tag), ()):
+                if not revoked and hmac.compare_digest(digest, supplied):
+                    matches.append((position, identifier))
+        if matches:
+            return min(matches)[1]
         raise Rejected(401, "invalid_api_key")
 
     def status(self):
@@ -95,12 +136,13 @@ class Keys:
 
 
 def timestamp(value):
-    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})", value):
+        raise ValueError("invalid timestamp")
+    return int(datetime.fromisoformat(value.upper().replace("Z", "+00:00")).timestamp())
 
 
 def window_edges(window, now):
-    from datetime import timezone
-    moment = datetime.fromtimestamp(now, timezone.utc)
+    moment = datetime.fromtimestamp(now, UTC)
     if window == "day":
         start = int(now // 86400) * 86400
         return start, start + 86400
@@ -117,8 +159,11 @@ class KeyLimits:
     @staticmethod
     def policy(row):
         rate, budget = row.get("rateLimit"), row.get("tokenBudget")
+        if rate is not None and not isinstance(rate, dict) or budget is not None and not isinstance(budget, dict):
+            raise ValueError("invalid key policy")
         if rate is not None:
-            values = (rate["requestsPerMinute"], rate.get("burst", rate["requestsPerMinute"]))
+            burst = rate.get("burst")
+            values = (rate["requestsPerMinute"], rate["requestsPerMinute"] if burst is None else burst)
             if any(type(value) is not int or not 1 <= value <= 1_000_000 for value in values):
                 raise ValueError("invalid rate")
         if budget is not None:
@@ -146,10 +191,14 @@ class KeyLimits:
     def parse_usage(value):
         if value is None:
             return None
+        if not isinstance(value, dict) or not isinstance(value.get("keys"), list):
+            raise ValueError("invalid usage totals")
         if len(value["keys"]) > 10_000:
             raise ValueError("too many usage rows")
         parsed = {}
         for row in value["keys"]:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+                raise ValueError("invalid usage row")
             if type(row["tokens"]) is not int or not 0 <= row["tokens"] < 2**64:
                 raise ValueError("invalid tokens")
             parsed[row["id"]] = timestamp(row["windowStart"]), row["tokens"]
