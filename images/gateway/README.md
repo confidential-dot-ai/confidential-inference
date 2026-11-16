@@ -28,6 +28,8 @@ See [release publication](../../release/README.md) for the full sequence.
 The local command above is for development tests. A production-ready candidate
 must use images from the approved build and signed release pipeline.
 
-The final image runs one binary as UID and GID `65532`. Kubernetes supplies all configuration and writable mounts.
+The final image runs the Python gateway as UID and GID `65532`. Runtime
+dependencies use hash-locked wheels. Kubernetes supplies all configuration
+and writable mounts.
 
 The image contains no shell, SSH server, init system, cloud helper, or overlay network client. The gateway uses high pod ports.

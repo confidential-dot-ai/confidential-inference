@@ -34,14 +34,12 @@ class Image:
         }
 
 
-RUST_IMAGE_INPUTS = (
-    "Cargo.toml",
-    "Cargo.lock",
-    "rust-toolchain.toml",
-    "services/gateway/Cargo.toml",
-    "services/gateway/src/**",
-    "services/maintenance-gateway/Cargo.toml",
-    "services/maintenance-gateway/src/**",
+GATEWAY_SHARED_INPUTS = (
+    "services/gateway/requirements.lock",
+    "services/gateway/gateway/__init__.py",
+    "services/gateway/gateway/config.py",
+    "services/gateway/gateway/http.py",
+    "services/gateway/gateway/limits.py",
 )
 SGLANG_CONFIDENTIAL_INPUTS = (
     "images/sglang-confidential/Dockerfile",
@@ -72,7 +70,13 @@ IMAGES = (
         "images/gateway/Dockerfile",
         "Confidential Inference gateway",
         (
-            *RUST_IMAGE_INPUTS,
+            *GATEWAY_SHARED_INPUTS,
+            "services/gateway/gateway/__main__.py",
+            "services/gateway/gateway/app.py",
+            "services/gateway/gateway/keys.py",
+            "services/gateway/gateway/proxy.py",
+            "services/gateway/gateway/telemetry.py",
+            "services/gateway/gateway/usage.py",
             "images/gateway/Dockerfile",
             "images/gateway/Dockerfile.dockerignore",
         ),
@@ -82,7 +86,8 @@ IMAGES = (
         ".",
         "images/maintenance-gateway/Dockerfile",
         "Confidential Inference maintenance gateway",
-        (*RUST_IMAGE_INPUTS, "images/maintenance-gateway/Dockerfile"),
+        (*GATEWAY_SHARED_INPUTS, "services/gateway/gateway/maintenance.py",
+         "images/maintenance-gateway/Dockerfile", "images/maintenance-gateway/Dockerfile.dockerignore"),
     ),
     Image(
         "sglang-confidential",

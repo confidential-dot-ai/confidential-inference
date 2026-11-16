@@ -20,11 +20,12 @@ def names(paths: list[str]) -> list[str]:
 
 
 class AffectedReleaseImagesTests(unittest.TestCase):
-    def test_rust_source_change_selects_both_rust_images(self) -> None:
+    def test_gateway_and_maintenance_modules_select_separate_images(self) -> None:
         self.assertEqual(
-            names(["services/gateway/src/main.rs"]),
-            ["gateway", "maintenance-gateway"],
+            names(["services/gateway/gateway/app.py"]),
+            ["gateway"],
         )
+        self.assertEqual(names(["services/gateway/gateway/maintenance.py"]), ["maintenance-gateway"])
 
     def test_image_change_selects_only_its_image(self) -> None:
         self.assertEqual(names(["images/gateway/Dockerfile"]), ["gateway"])
@@ -35,11 +36,10 @@ class AffectedReleaseImagesTests(unittest.TestCase):
                                 'images/sglang-router/source.lock',
                                 'images/sglang-router/canonicalize_wheel.py']), ['sglang-router'])
 
-    def test_shared_rust_input_selects_both_rust_images(self) -> None:
-        self.assertEqual(
-            names(["Cargo.lock"]),
-            ["gateway", "maintenance-gateway"],
-        )
+    def test_shared_python_inputs_select_both_gateways(self) -> None:
+        for path in ("services/gateway/requirements.lock", "services/gateway/gateway/http.py",
+                     "services/gateway/gateway/config.py", "services/gateway/gateway/limits.py"):
+            self.assertEqual(names([path]), ["gateway", "maintenance-gateway"], path)
 
     def test_unrelated_change_selects_no_image(self) -> None:
         self.assertEqual(

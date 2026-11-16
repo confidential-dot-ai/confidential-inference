@@ -4,7 +4,7 @@ set -euo pipefail
 recipe_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$recipe_dir/../.." && pwd)
 
-for required in Cargo.toml Cargo.lock rust-toolchain.toml services/gateway/Cargo.toml; do
+for required in services/gateway/requirements.lock services/gateway/gateway/__main__.py; do
   test -f "$repo_root/$required" || {
     printf 'The gateway build input is absent: %s\n' "$required" >&2
     exit 66
@@ -19,7 +19,7 @@ source_date_epoch=$(git -C "$repo_root" show -s --format=%ct "$source_revision")
 }
 
 source_status=$(git -C "$repo_root" status --porcelain --untracked-files=all -- \
-  Cargo.toml Cargo.lock rust-toolchain.toml services/gateway images/gateway)
+  services/gateway/gateway services/gateway/requirements.lock images/gateway)
 [[ -z $source_status ]] || {
   printf 'The gateway build input contains uncommitted changes.\n' >&2
   exit 65

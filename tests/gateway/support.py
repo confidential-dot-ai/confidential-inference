@@ -26,6 +26,19 @@ API_KEY = "test-inference-" + "b" * 32
 MODEL = "model-a"
 
 
+async def raw_request(data, port=9443):
+    """Send malformed HTTP without a client library normalizing it."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(data)
+        await writer.drain()
+        async with asyncio.timeout(2):
+            return await reader.read()
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
 def certificate(directory):
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "gateway-test")])

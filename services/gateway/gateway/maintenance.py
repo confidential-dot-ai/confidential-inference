@@ -12,6 +12,7 @@ import uvloop
 from aiohttp import web
 
 from .config import Config
+from .http import AppRunner
 from .limits import Public, Rejected
 
 MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731"
@@ -79,7 +80,7 @@ def create_app(trusted):
 
 
 async def serve(listen, trusted):
-    runner = web.AppRunner(create_app(trusted), access_log=None, handler_cancellation=True,
+    runner = AppRunner(create_app(trusted), access_log=None, handler_cancellation=True,
         shutdown_timeout=10, max_field_size=16384, keepalive_timeout=5, max_headers=64)
     await runner.setup()
     host, port = listen.rsplit(":", 1)

@@ -11,6 +11,7 @@ from aiohttp import web
 
 from .app import create_app
 from .config import Config
+from .http import AppRunner
 from .keys import AdminAuth, Keys
 from .telemetry import log
 
@@ -44,7 +45,7 @@ async def serve(config):
         log("no admin API key file; admin requests need the v1 signature")
     keys = Keys(pepper, config.environment)
     app = create_app(config, keys, AdminAuth(certificate, hashes), secret["token"])
-    runner = web.AppRunner(app, access_log=None, handler_cancellation=True, shutdown_timeout=config.shutdown_grace,
+    runner = AppRunner(app, access_log=None, handler_cancellation=True, shutdown_timeout=config.shutdown_grace,
                           keepalive_timeout=config.header_timeout, max_headers=config.maximum_headers,
                           max_field_size=config.maximum_header_bytes, max_line_size=max(8192, config.maximum_uri + 32))
     await runner.setup()
@@ -52,7 +53,7 @@ async def serve(config):
     async def metrics(request):
         return web.Response(body=app["metrics"].render(), headers={"Content-Type": "text/plain; version=0.0.4; charset=utf-8"})
     private.router.add_get("/metrics", metrics)
-    metrics_runner = web.AppRunner(private, access_log=None)
+    metrics_runner = AppRunner(private, access_log=None)
     await metrics_runner.setup()
     def address(value):
         host, port = value.rsplit(":", 1)

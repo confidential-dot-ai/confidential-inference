@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 import aiohttp
-from support import PYTHON_ROOT
+from support import PYTHON_ROOT, raw_request
 
 
 class MaintenanceContract(unittest.IsolatedAsyncioTestCase):
@@ -78,6 +78,14 @@ class MaintenanceContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body, {"mode": "maintenance", "inferenceAvailable": False, "inferenceWorkloads": [],
             "attestationType": "outage-status", "statement": "This maintenance gateway runs no inference workload."})
+
+    async def test_http_parser_errors_do_not_quote_caller_bytes(self):
+        for invalid in (b"private-parser-canary\r\n", b"Content-Length: private-parser-canary\r\n"):
+            raw = await raw_request(b"GET /health HTTP/1.1\r\nHost: test\r\n" + invalid + b"\r\n")
+            self.assertEqual(raw.split(b" ", 2)[1], b"400")
+            self.assertNotIn(b"private-parser-canary", raw)
+        self.log.flush()
+        self.assertNotIn("private-parser-canary", (Path(self.directory.name) / "stdout").read_text())
 
     async def test_all_inference_routes_refuse_without_credentials(self):
         for path in ("/v1/completions", "/v1/chat/completions", "/v1/responses"):

@@ -1,6 +1,10 @@
-FROM docker.io/library/rust@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55 AS build
+FROM docker.io/library/python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72
 
-WORKDIR /workspace
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app
+WORKDIR /app
+COPY services/gateway/requirements.lock /tmp/requirements.lock
+RUN python -m pip install --disable-pip-version-check --no-cache-dir --no-compile \
+    --require-hashes --only-binary=:all: -r /tmp/requirements.lock && rm /tmp/requirements.lock
 
 ARG SOURCE_REVISION
 ARG SOURCE_DATE_EPOCH
@@ -8,31 +12,22 @@ RUN case "${SOURCE_REVISION}" in *[!0-9a-f]*|'') exit 64 ;; esac && \
     test "${#SOURCE_REVISION}" -eq 40 && \
     case "${SOURCE_DATE_EPOCH}" in *[!0-9]*|'') exit 64 ;; esac
 
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY services/gateway/Cargo.toml services/gateway/Cargo.toml
-COPY services/gateway/src services/gateway/src
-COPY services/maintenance-gateway/Cargo.toml services/maintenance-gateway/Cargo.toml
-COPY services/maintenance-gateway/src services/maintenance-gateway/src
+COPY services/gateway/gateway/__init__.py \
+    services/gateway/gateway/config.py \
+    services/gateway/gateway/http.py \
+    services/gateway/gateway/limits.py \
+    services/gateway/gateway/maintenance.py /app/gateway/
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/workspace/target,sharing=locked \
-    cargo build --locked --release --package maintenance-gateway && \
-    install -D -m 0755 target/release/maintenance-gateway /out/maintenance-gateway
-
-FROM gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
-
-ARG SOURCE_REVISION
-ARG SOURCE_DATE_EPOCH
-LABEL org.opencontainers.image.title="Confidential Inference maintenance gateway"
-LABEL org.opencontainers.image.description="Stateless confidential-inference fallback responses"
+LABEL org.opencontainers.image.title="Confidential Inference maintenance-gateway"
+LABEL org.opencontainers.image.description="Confidential Inference stateless fallback responses"
 LABEL org.opencontainers.image.source="https://github.com/confidential-dot-ai/confidential-inference"
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 LABEL org.opencontainers.image.version="sha-${SOURCE_REVISION}"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.base.name="docker.io/library/python:3.13-slim-bookworm"
+LABEL org.opencontainers.image.base.digest="sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72"
 LABEL ai.confidential.build.source-date-epoch="${SOURCE_DATE_EPOCH}"
-
-COPY --from=build --chown=65532:65532 /out/maintenance-gateway /usr/local/bin/maintenance-gateway
 
 USER 65532:65532
 EXPOSE 9443
-ENTRYPOINT ["/usr/local/bin/maintenance-gateway"]
+ENTRYPOINT ["python", "-m", "gateway.maintenance"]

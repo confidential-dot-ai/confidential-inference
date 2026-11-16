@@ -1,0 +1,10 @@
+**
+!services/
+!services/gateway/
+!services/gateway/requirements.lock
+!services/gateway/gateway/
+!services/gateway/gateway/__init__.py
+!services/gateway/gateway/config.py
+!services/gateway/gateway/http.py
+!services/gateway/gateway/limits.py
+!services/gateway/gateway/maintenance.py

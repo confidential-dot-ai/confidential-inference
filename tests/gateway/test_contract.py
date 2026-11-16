@@ -14,7 +14,7 @@ from datetime import UTC
 import aiohttp
 import orjson
 from aiohttp import web
-from support import ADMIN_KEY, API_KEY, MODEL, AdminPeer, Gateway, snapshot
+from support import ADMIN_KEY, API_KEY, MODEL, AdminPeer, Gateway, raw_request, snapshot
 
 
 class GatewayContract(unittest.IsolatedAsyncioTestCase):
@@ -417,6 +417,16 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
         status, _, body = await self.send(body={"model": MODEL, "stream": True})
         self.assertEqual(status, 200)
         self.assertTrue(body.endswith(b"data: [DONE]\n\n"))
+
+    async def test_http_parser_errors_do_not_quote_caller_bytes(self):
+        """F1/T1: errors before application dispatch also use fixed text."""
+        await self.start({"RUST_LOG": "trace"})
+        for port in (9443, 9090):
+            for invalid in (b"private-parser-canary\r\n", b"Content-Length: private-parser-canary\r\n"):
+                raw = await raw_request(b"GET /health HTTP/1.1\r\nHost: test\r\n" + invalid + b"\r\n", port)
+                self.assertEqual(raw.split(b" ", 2)[1], b"400")
+                self.assertNotIn(b"private-parser-canary", raw)
+        self.assertNotIn("private-parser-canary", self.gateway.logs())
 
     async def test_first_chunk_and_idle_deadlines_abort_stream(self):
         """P1/I5: first-byte and later idle deadlines both close the upstream."""
