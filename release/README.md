@@ -206,7 +206,7 @@ Hand traffic over only when all of these hold:
   release manifest.
 - Every client that verifies the deployment pins the worker's launch file
   besides the release's node image, as
-  [verification.md](../docs/verification.md#releases-on-c8s-v09929) describes.
+  [verification.md](../docs/verification.md#3-pin-the-workers-launch-file) describes.
   Worker admission alone does not show that clients enforce the CDS image and
   configuration.
 - The operator keys in its `cds-config.yaml` are the deployment's operator

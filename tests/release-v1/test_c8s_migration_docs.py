@@ -18,12 +18,12 @@ def section(path: str, heading: str) -> str:
 class MigrationDocsTest(unittest.TestCase):
     def test_the_worker_cds_pin_embeds_the_launch_file(self):
         # cmdsutil.CDSLaunchFile refuses a CDS pin entry without launch_file.
-        steps = section("docs/verification.md", "## Releases on C8s v0.99.29")
+        steps = section("docs/verification.md", "## 3. Pin the worker's launch file")
         self.assertIn("embed the exact bytes of `cds-config.yaml` as `launch_file`", steps)
         self.assertIn("refuses an entry that carries only `launch_file_digest`", steps)
 
     def test_the_cds_manifest_comes_from_the_release_and_its_digest_is_checked(self):
-        steps = section("docs/verification.md", "## Releases on C8s v0.99.29")
+        steps = section("docs/verification.md", "## 3. Pin the worker's launch file")
         self.assertIn("Download the release's `cds-manifest.json` asset", steps)
         self.assertIn("jq -r .cdsImage.manifestSha256 release-bundle.json", steps)
 
