@@ -13,6 +13,17 @@ SOURCE_HASHES = {'ordinary': {'http': '305a02a9238b62da90c9dc90ecbbdc0811ba7725f
 
 SERVING_HANDLERS = frozenset(['health_generate', 'ready', 'get_model_info', 'model_info', 'get_server_info', 'server_info', 'get_load', 'generate_request', 'encode_request', 'classify_request', 'parse_function_call_request', 'separate_reasoning_request', 'openai_v1_completions', 'openai_v1_chat_completions', 'openai_v1_embeddings', 'openai_v1_classify', 'openai_v1_tokenize', 'openai_v1_detokenize', 'openai_v1_audio_transcriptions', 'openai_v1_realtime_transcription', 'available_models', 'retrieve_model', 'v1_score_request', 'v1_responses_request', 'v1_retrieve_responses', 'v1_cancel_responses', 'v1_rerank_request', 'ollama_chat', 'ollama_generate', 'ollama_tags', 'ollama_show', 'anthropic_v1_messages', 'anthropic_v1_count_tokens', 'sagemaker_health', 'sagemaker_chat_completions', 'vertex_generate', 'sglang_root', 'ollama_root'])
 
+# Startup settings that write request content, or data derived from it, to
+# logs, files or hooks. The worker refuses them before it starts, so no
+# deployment value (inference.workerExtraArgs) can turn them on. Every default
+# is off (False or None).
+REFUSED_SERVER_ARGS = (
+    "log_requests", "log_requests_target", "crash_dump_folder",
+    "export_metrics_to_file", "export_metrics_to_file_dir",
+    "debug_tensor_dump_output_folder", "debug_tensor_dump_input_file",
+    "msprobe_dump_config", "forward_hooks", "spec_trace_dir",
+)
+
 SERVER_INFO_FIELDS = (
     "model_id", "model_path", "served_model_name", "tp_size", "dp_size",
     "attn_dp_size", "load_balance_method", "disaggregation_mode", "version",
@@ -39,6 +50,7 @@ def apply_edits(source, edits):
 
 def harden_http(source, variant):
     edits = []
+    guarded = 0
     # Walk the whole module: some routes are registered inside env-gated `if`
     # blocks (for example /dumper/{method} with DUMPER_SERVER_PORT=reuse).
     for node in ast.walk(ast.parse(source)):
@@ -46,6 +58,18 @@ def harden_http(source, variant):
             for decorator in route_decorators(node):
                 if node.name not in SERVING_HANDLERS:
                     edits.append((decorator.lineno, decorator.end_lineno, ""))
+            if node.name == "launch_server":
+                # Both the worker (launch_server.run_server) and the simulator
+                # start here, before any engine process.
+                guard = (
+                    f"    refused = [name for name in {REFUSED_SERVER_ARGS!r} if getattr(server_args, name, None)]\n"
+                    "    if refused:\n"
+                    "        raise RuntimeError('This image does not log or dump request data: remove ' + ', '.join(refused))\n"
+                )
+                docstring = isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant)
+                insert = node.body[1 if docstring else 0].lineno
+                edits.append((insert, insert - 1, guard))
+                guarded += 1
             if node.name == "server_info":
                 # Do not serialize launch argv, credentials or live internal state.
                 config = ("build_server_info(server_args, _global_state.scheduler_info)"
@@ -58,6 +82,8 @@ def harden_http(source, variant):
                     f"    return {{key: info[key] for key in {SERVER_INFO_FIELDS!r} if key in info}}\n"
                 )
                 edits.append((node.body[0].lineno, node.end_lineno, body))
+    if guarded != 1:
+        raise ValueError("unsupported launch_server definition")
     marker = "app.include_router(elastic_ep_router)"
     if source.count(marker) != 1:
         raise ValueError("unsupported elastic router registration")

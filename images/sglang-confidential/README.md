@@ -17,7 +17,11 @@ backend explicitly. Normal upstream model kernels remain enabled. Published
 checkpoint precision is preserved; the build does not requantize weights.
 
 The HTTP policy removes non-serving routes, OpenAPI, and documentation
-routes. The model gate verifies the pinned repository, revision, metadata,
+routes. It also makes the worker refuse to start with a setting that logs or
+dumps request data: request logging (`--log-requests`, `--log-requests-target`),
+crash dumps, per-request metric files, tensor and msProbe dumps, forward hooks,
+and speculative trace files (`REFUSED_SERVER_ARGS`). No deployment value can
+turn these on. The model gate verifies the pinned repository, revision, metadata,
 and model bytes before it starts the worker. These are serving and trust
 controls, not changes to inference computation.
 
