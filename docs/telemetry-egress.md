@@ -6,11 +6,20 @@ and the retention if we know it.
 
 Terms:
 
-- **OTLP**: OpenTelemetry Protocol. The protocol that sends logs and spans
-  to the collector.
+- **OTLP**: OpenTelemetry Protocol. The protocol that sends logs, metrics
+  and spans to the collector.
 - **Collector**: the stock OpenTelemetry Collector pod `telemetry-collector`.
   It is the only pod of the chart with an exit for telemetry. Its full
   configuration is one argument, and the allowlist pins that argument.
+- **Node log agent**: the DaemonSet `node-log-agent`, one pod on each node,
+  of the same pinned collector image. It reads the container output that the
+  kubelet writes under `/var/log/pods` (a read-only host mount) and sends
+  only reviewed records to the collector over the C8s mesh. It has no exit,
+  no secret, and no Kubernetes API access. Its configuration is one argument
+  too.
+- **Log policy**: `helm/confidential-inference/templates/_log-policy.tpl`.
+  The list of the records and fields that may leave, for each source. The
+  agent and the collector both apply it.
 - **Relay**: the host `telemetry.relay.serverName`, at the fixed address
   `telemetry.relay.address`. The collector sends all telemetry to this host
   over TLS (Transport Layer Security).
@@ -37,27 +46,39 @@ personal data, also without content. Thus each field below has a reason.
 
 ## 2. How the rules are enforced
 
-The senders write only reviewed records. The collector is a second gate. It
-does not trust the senders.
+Each container writes JSON events to its standard output. The node log
+agent keeps only the records of the log policy and drops the rest. The
+collector is a second gate. It does not trust the agents or the senders.
+
+The SGLang workers and the SGLang router do not write their own output.
+Each runs under a supervisor that keeps the output in memory, never on
+stdout or disk, and writes only fixed events (`wait-for-model` in
+`images/sglang-confidential/wait_for_model.py`, the router launcher in
+`images/sglang-router/private_router.py`).
 
 | Layer | Control | Source |
 |---|---|---|
-| Gateway | Each log message is fixed text. A test fails when a message is not on the collector list. | `services/gateway/src/log_privacy.rs`, `services/gateway/tests/log_privacy.rs` |
-| Gateway | `RUST_LOG` cannot open the debug output of the HTTP libraries (hyper, h2, axum, tower, reqwest, rustls). These libraries log only at `warn` and `error`. No HTTP library event goes to OTLP. | `log_privacy::log_filter`, `main.rs` |
+| Gateway | Writes one JSON object per line to stdout. Each log message is fixed text. A test fails when a message is not on the log policy list. | `services/gateway/src/log_privacy.rs`, `services/gateway/tests/log_privacy.rs` |
+| Gateway | `RUST_LOG` cannot open the debug output of the HTTP libraries (hyper, h2, axum, tower, reqwest, rustls). These libraries log only at `warn` and `error`. | `log_privacy::log_filter`, `main.rs` |
 | Gateway | The panic hook logs the code location. It does not log the panic message. | `log_privacy::install_panic_hook` |
 | Gateway | The gateway does not read, log, or forward the body of a non-success upstream answer. The caller gets the status code and a fixed error body. | `lib.rs`, `upstream_error` |
 | Gateway | An invalid request gets a fixed error code. The error does not quote the request. | `lib.rs`, `client_error` |
 | Gateway | The audit record holds a key pseudonym, not the key record ID. | `TracingAuditSink`, `KeyPseudonyms` |
 | Gateway | The client address is used in memory for rate limits only. No log, metric, or event holds it. | `protection.rs` |
 | Maintenance gateway | The same HTTP library filter and panic hook. It sends no telemetry. | `services/maintenance-gateway/src/main.rs` |
-| Collector | Removes all log attributes, scope attributes, and resource attributes except `service.name`. | `transform/logs` |
-| Collector | Replaces a log body that is not text. | `transform/logs` |
-| Collector | Replaces a gateway log body that is not a listed message or the exact audit record. If a statement fails, the body is replaced. | `transform/logs` |
+| Worker | `wait-for-model` keeps SGLang's output in memory and writes only `worker_ready`, `request_failed`, `gpu_oom`, `cuda_error`, `nccl_error`, `worker_error` and `worker_exit`. A traceback becomes the exception type and one SGLang code location; the message is dropped. An unknown error is `unclassified`. | `images/sglang-confidential/wait_for_model.py`, `tests/images/sglang-confidential/test_server_output.py` |
+| Router | The launcher keeps the router's output in memory and writes only the reviewed events. | `images/sglang-router/private_router.py` |
+| Node log agent | Reads `/var/log/pods` read-only. Takes namespace, pod and container from the file path. Keeps a record only when the log policy lists its source and event (or, for a C8s or collector source, its level and message). Keeps only the listed fields, checks each one against its pattern, and drops the others. A statement that fails does not log (`error_mode: silent`) and the record is dropped. | `templates/node-log-agent.yaml`, `transform/classify` |
+| Node log agent | In a message of a text source, replaces Bearer tokens, `Authorization`, `User-Agent` and `X-Api-Key` values, and IPv4 and IPv6 addresses, and cuts it to 256 characters. | `transform/classify` |
+| Node log agent | Counts every record it reads, kept or dropped, by source: `node_log_agent.records{source, kept}`. | `count` connector |
+| Collector | Removes all log attributes, scope attributes, and resource attributes except `service.name` and the pod identity. | `transform/logs` |
+| Collector | Replaces a body that is not a JSON object of a listed source with a listed event (or a text source's message), and removes the fields that the log policy does not list for that source. If a statement fails, the body is replaced. | `transform/logs` |
+| Collector | Adds `environment`, `deployment` and `framework_release` to every body. | `transform/logs` |
 | Collector | Replaces Bearer tokens and IPv4 and IPv6 addresses in all log bodies. | `transform/logs` |
 | Collector | Cuts log times to whole seconds. | `transform/logs` |
 | Collector | Keeps only the listed metric labels (Prometheus `labelkeep` and `keep_keys`). | `telemetry.labels` in `values.yaml` |
 | Collector | Sends spans only as span metrics. Span attributes and span event attributes are removed first. | `transform/traces` |
-| Tests | Run the real collector with the rendered configuration and check the output. | `tests/telemetry/test_collector.py`, `tests/helm/test_render.py` |
+| Tests | Run the real agent and collector with the rendered configuration on log files with a canary marker, a client address, a user agent and a Bearer token, and check the output. | `tests/telemetry/test_node_log_agent.py`, `tests/telemetry/test_collector.py`, `tests/helm/test_render.py` |
 
 ## 3. Destinations
 
@@ -96,23 +117,40 @@ console must compute the same pseudonym for the keys of a customer.
 - **Destination**: `https://<relay>/otlp/v1/logs`. The relay passes the logs
   to Loki.
 - **Authentication**: HTTP basic authentication, user `telemetry.logs.username`.
-- **Log senders in the cluster**: the gateway, and in PD (prefill and decode)
-  mode the SGLang router and the inference pairs. Other pods send no logs.
+- **Log sources in the cluster**: every container writes to its stdout. The
+  node log agent on each node reads them and keeps the records of these
+  sources: `gateway`, `sglang-router`, `inference-worker`, `c8s` (the
+  containers C8s injects into a pod, and the pods in `c8s-router` and
+  `c8s-system`), `telemetry-collector` and `node-log-agent`. It drops the
+  records of every other container (for example kube-system pods) and counts
+  them.
+
+Labels of each stream (Loki index labels):
+
+| Label | Example | Reason |
+|---|---|---|
+| `service.name` | `inference-worker` | The source. |
+| `deployment.environment` | `production` | The environment. |
+| `k8s.cluster.name` | `production-fedcba987654` | The deployment (chart value `deployment`, which only `scripts/render-allowlist.py --deployment` sets). |
+| `service.namespace` | `production` | `telemetry.deployment`, the `cluster` label of the metrics. |
+| `k8s.namespace.name`, `k8s.pod.name`, `k8s.container.name` | `inference-worker-0-0` | The container. From the log file path. |
 
 Fields of each record:
 
 | Field | Example | Reason |
 |---|---|---|
-| `service.name` | `gateway` | Tells the senders apart. |
-| `deployment.environment`, `service.namespace` | `production`, `production-20260926` | Select the deployment. Set by the collector. |
 | Time and observed time | `2026-11-13T10:00:01Z` | Order the events of an incident. Cut to whole seconds. |
-| Severity | `INFO` | Filter errors. |
-| Body | see below | The event. |
+| Body | see below | The event, a JSON object. |
 
-Gateway bodies. The collector lets only these leave:
+Each body holds the event fields of its source and these identity fields:
+`service`, `namespace`, `pod`, `container`, `node` (the node name, from
+`spec.nodeName`), `environment`, `deployment` and `framework_release`. Loki
+keeps no structured metadata, so the identity is in the body too.
 
-- One of the fixed messages in `telemetry-collector.yaml`, for example
-  `the key snapshot pull failed`.
+Gateway bodies. The log policy lets only these leave:
+
+- One of the fixed messages of the log policy, as `{"event": "<message>",
+  "level": "info"}`, for example `the key snapshot pull failed`.
 - The audit record, one for each request:
 
   ```json
@@ -123,17 +161,37 @@ Gateway bodies. The collector lets only these leave:
 | Audit field | Reason |
 |---|---|
 | `event` | Fixed text. |
-| `route` | One of three fixed routes. Error rates for each route. |
+| `route` | One of four fixed routes. Error rates for each route. |
 | `status` | The HTTP status code that the caller got. |
 | `request_id` | A UUID (Universally Unique Identifier) that the gateway makes for each request. The caller gets it in `x-ci-request-id`. A customer can give it to support, and support can find the record. It is never the caller's own `x-request-id`. |
 | `key_ref` | The pseudonym of the API key record: `kp_` and the first 96 bits of HMAC-SHA256. The key is derived from the API key pepper, a secret of each environment that only the gateway and the admin hold. It lets support find the requests of one key. A log reader without the pepper cannot find the key. `null` for routes without a key. |
 
-Router and pair bodies are fixed JSON diagnostic records. The writers check
-each record against a schema before it is sent
-(`images/sglang-router/private_router.py`, `images/sglang/pair_supervisor.py`).
-Fields: `event`, `role`, `status`, `code`, counters such as `rank` and
-`duration_ms`, `timestamp`, `run_id` (random for each run), `source_revision`,
-and for stack frames a code `location`. They hold no request data.
+Router bodies: the fixed events of `images/sglang-router/README.md` with the
+fields `event`, `role`, `status`, `code`, `timestamp` and `source_revision`.
+
+Worker bodies (`images/sglang-confidential/README.md`):
+
+| Event | Fields | Reason |
+|---|---|---|
+| `worker_ready` | `model_revision`, `gpus`, `load_seconds` | The worker serves, with the model revision and the start time. |
+| `request_failed` | `error_class`, `http_status`, `phase`, `input_tokens_bucket`, `duration_ms`, `exception`, `location` | Error rates by class. `input_tokens_bucket` is a size class, not a count. `duration_ms` is null: SGLang's output does not give it. |
+| `gpu_oom`, `cuda_error`, `nccl_error` | `code`, `location` | GPU faults by a fixed code. |
+| `worker_error` | `error_class`, `exception`, `location` | An error that no request owns. Unknown errors are `unclassified`. |
+| `worker_exit` | `exit_code`, `signal` | The server stopped. |
+
+`exception` is a Python type name and `location` is a frame of SGLang code
+(`sglang/<path>.py:<line>`). Both are checked against a pattern; neither can
+hold a message.
+
+C8s, collector and agent bodies: `level` and `msg`. These components do not
+read request content. The agent replaces tokens, header values and addresses
+in `msg` and cuts it to 256 characters.
+
+### 3.2a Node log agent metrics (OTLP to the collector, then 3.1)
+
+The agents send `node_log_agent.records{source, kept, node}` and their own
+`otelcol_process_*` and export counters. The collector keeps only these
+names and these labels.
 
 ### 3.3 Usage events and key snapshots to the admin service
 
@@ -162,8 +220,10 @@ and for stack frames a code `location`. They hold no request data.
 - Prompts, completions, tool calls, and model output.
 - HTTP headers, API keys, and the caller `x-request-id`.
 - Client IP addresses and forwarding headers.
-- Kubernetes pod addresses of clients. The collector adds no Kubernetes
-  attributes and keeps no OTLP client metadata.
+- Kubernetes pod addresses of clients. The collector and the agent add no
+  Kubernetes attributes from the API and keep no OTLP client metadata.
+- SGLang's own output: prompts in debug lines, exception messages, and
+  access-log paths and client addresses.
 - Span attributes and span events (SGLang request IDs and stop strings).
 
 ## 5. Retention
@@ -192,12 +252,26 @@ events keep millisecond time for billing.
 ## 7. Change rules
 
 - A new gateway log message must be added to the list in
-  `telemetry-collector.yaml`. Else the collector replaces it. The test
-  `every_gateway_log_message_is_on_the_collector_list` shows the missing
-  message.
-- A log message must be fixed text. Put values in fields. The collector
-  removes all fields.
+  `templates/_log-policy.tpl`. Else the agent and the collector drop it. The
+  gateway log privacy test shows the missing message.
+- A log message must be fixed text. Put values in fields. The agent removes
+  all gateway fields.
+- A new worker or router event or field must be added to the log policy, to
+  the writer's schema, and to this document.
+- Staging and production use the same log policy. The pipelines of two
+  deployments differ only in the identity labels (`tests/helm/test_render.py`).
 - A new metric label must be added to `telemetry.labels`, and this document
   must give its reason.
 - Do not log a request, a response, a header, an error from `serde_json` on
   request data, or a value with `{:?}` that holds request data.
+
+## 8. Not yet covered
+
+- The CDS VM: it is not a pod, so no agent reads its output.
+- C8s services that are host units on a worker (the NRI admission plugin,
+  the attestation API, the kubelet and containerd): they log to the journal,
+  and the stock collector image has no `journalctl`. A refusal of an
+  unlisted pod is in the NRI plugin's journal and the kubelet event, not in
+  Loki. Follow-up: a journal reader for these units.
+- kube-system pods (Cilium, CoreDNS, kube-proxy): dropped and counted as
+  `unlisted`.

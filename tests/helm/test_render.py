@@ -358,29 +358,42 @@ def check_log_privacy(config: dict) -> None:
     """
     statements = config["processors"]["transform/logs"]["log_statements"]
     expected = [
-        'keep_keys(resource.attributes, ["service.name"])',
+        'keep_keys(resource.attributes, ["service.name", "k8s.namespace.name", "k8s.pod.name", "k8s.container.name"])',
         "keep_keys(log.attributes, [])",
         "keep_keys(instrumentation_scope.attributes, [])",
-        'set(log.body, "[body dropped: not text]") where not IsString(log.body)',
+        'set(log.cache["b"], ParseJSON(log.body)) where IsString(log.body) and IsMatch(log.body, "^[{]")',
     ]
     assert statements[:4] == expected, statements
-    keep, drop = statements[4:6]
-    assert keep.startswith('set(log.cache["keep"], true) where resource.attributes["service.name"] == "gateway" and ')
-    assert drop == ('set(log.body, "[body dropped: not a reviewed gateway record]") where '
-                    'resource.attributes["service.name"] == "gateway" and log.cache["keep"] != true')
-    # The keep rule holds only exact messages and the audit record pattern.
-    alternatives = keep.split(" and (", 1)[1].removesuffix(")").split(" or ")
-    assert alternatives[0].startswith('IsMatch(log.body, "^[{]') and alternatives[0].endswith('[}]$")')
-    assert all(re.fullmatch(r'log\.body == "[a-z][A-Za-z0-9 ,;:]*"', item) for item in alternatives[1:]), alternatives
-    assert '\\"key_ref\\":(\\"kp_[0-9a-f]{24}\\"|null)' in alternatives[0], alternatives[0]
-    assert "key_id" not in keep and "prompt" not in keep
-    assert any(item.startswith("replace_pattern(log.body, \"(?i)bearer") for item in statements)
+    assert config["processors"]["transform/logs"]["error_mode"] == "silent"
+    # A body leaves only when a source's keep rule marks it; every other body is replaced.
+    keeps = [item for item in statements if item.startswith('set(log.cache["keep"], true) where ')]
+    sources = [re.match(r'.*?resource\.attributes\["service\.name"\] == "([a-z0-9-]+)"', item).group(1) for item in keeps]
+    assert sources == ["gateway", "inference-worker", "sglang-router", "c8s", "telemetry-collector",
+                       "node-log-agent"], sources
+    keep_body = 'set(log.body, String(log.cache["b"])) where log.cache["keep"] == true'
+    drop_body = 'set(log.body, "[body dropped: not a reviewed record]") where log.cache["keep"] != true'
+    assert statements.index(keep_body) < statements.index(drop_body)
+    # Each source keeps only its listed keys.
+    trims = [item for item in statements if item.startswith('keep_keys(log.cache["b"], ')]
+    assert len(trims) == len(sources)
+    for item in trims:
+        keys = json.loads(item.split(", ", 1)[1].split("]", 1)[0] + "]")
+        assert not set(keys) & {"prompt", "message", "messages", "client", "user_agent", "authorization", "url",
+                                "request", "body", "error", "path", "key_id"}, keys
+    gateway = keeps[0].split(" and (", 1)[1].removesuffix(")").split(" or ")
+    assert all(re.fullmatch(r'log\.cache\["b"\]\["event"\] == "[a-z_][A-Za-z0-9 ,;:_]*"', item) for item in gateway), gateway
+    assert "key_id" not in keeps[0] and "prompt" not in keeps[0]
+    assert any(item.startswith('replace_pattern(log.body, "(?i)bearer') for item in statements)
     assert sum(item.endswith('"[ip]")') for item in statements) == 2
     assert statements[-2:] == ['set(log.time, TruncateTime(log.time, Duration("1s")))',
                                'set(log.observed_time, TruncateTime(log.observed_time, Duration("1s")))']
     logs = config["service"]["pipelines"]["logs"]
     assert logs["receivers"] == ["otlp"] and logs["exporters"] == ["otlphttp/loki"]
     assert logs["processors"].index("transform/logs") < logs["processors"].index("batch")
+    assert "resource/logs" in logs["processors"]
+    agents = config["service"]["pipelines"]["metrics/agents"]
+    assert agents["receivers"] == ["otlp"]
+    assert agents["processors"][1:3] == ["filter/agent-metrics", "transform/agent-metrics"]
     # No processor adds Kubernetes or peer attributes, and the receiver keeps no client metadata.
     assert not any(name.startswith(("k8sattributes", "resourcedetection")) for name in config["processors"])
     assert "include_metadata" not in json.dumps(config["receivers"]["otlp"])
@@ -388,6 +401,87 @@ def check_log_privacy(config: dict) -> None:
     # No metric label that names an address or a client leaves.
     labels = config["processors"]["transform/metrics"]["metric_statements"][0]
     assert not re.search(r'"[^"]*(addr|address|client|peer|_ip|ip_|forwarded)[^"]*"', labels, re.I), labels
+
+
+def node_log_agent(documents: list[dict]) -> tuple[dict, dict]:
+    """The node log agent's DaemonSet and its pipeline, which is its one argument."""
+    agent = next(item for item in documents
+                 if item["kind"] == "DaemonSet" and item["metadata"]["name"] == "node-log-agent")
+    (argument,) = agent["spec"]["template"]["spec"]["containers"][0]["args"]
+    assert argument.startswith("--config=yaml:")
+    return agent, json.loads(argument.removeprefix("--config=yaml:"))
+
+
+def check_node_log_agent() -> None:
+    """The agent reads the pod logs read-only, has no exit, no secret and no API token, and sends only to the collector.
+
+    Acceptance criteria 6 and 7 of docs/plans/logging-acceptance.md, as far
+    as a render shows them. tests/telemetry/test_node_log_agent.py runs the
+    pipeline in the pinned collector.
+    """
+    assert not any(item["kind"] == "DaemonSet" for item in render())
+    documents = render(*TELEMETRY, "--set", "deployment=staging-0123456789ab")
+    agent, config = node_log_agent(documents)
+    template = agent["spec"]["template"]
+    pod = template["spec"]
+    assert template["metadata"]["annotations"] == {"confidential.ai/cw": "node-log-agent"}
+    assert pod["automountServiceAccountToken"] is False and pod["enableServiceLinks"] is False
+    assert pod["hostname"] == "node-log-agent"
+    assert not pod.get("hostAliases") and not pod.get("hostNetwork") and not pod.get("hostPID")
+    assert pod["securityContext"]["runAsNonRoot"] is True and pod["securityContext"]["runAsUser"] != 0
+    assert pod["securityContext"]["supplementalGroups"] == [0]
+    (container,) = pod["containers"]
+    collector = next(item for item in documents
+                     if item["kind"] == "Deployment" and item["metadata"]["name"] == "telemetry-collector")
+    assert container["image"] == collector["spec"]["template"]["spec"]["containers"][0]["image"]
+    assert PINNED.match(container["image"])
+    assert container["env"] == [{"name": "NODE_NAME", "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}}}]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert container["securityContext"]["capabilities"] == {"drop": ["ALL"]}
+    assert all("hostPort" not in port for port in container.get("ports", []))
+    volumes = {volume["name"]: volume for volume in pod["volumes"]}
+    assert set(volumes) == {"pod-logs", "state"}, "no secret, configMap or other host path"
+    assert volumes["pod-logs"]["hostPath"] == {"path": "/var/log/pods", "type": "Directory"}
+    assert volumes["state"]["emptyDir"]["medium"] == "Memory"
+    mounts = {mount["name"]: mount for mount in container["volumeMounts"]}
+    assert mounts["pod-logs"] == {"name": "pod-logs", "mountPath": "/var/log/pods", "readOnly": True}
+    # One exporter, to the collector over the mesh.
+    assert set(config["exporters"]) == {"otlphttp/collector"}
+    assert (config["exporters"]["otlphttp/collector"]["endpoint"]
+            == "http://telemetry-collector.default.svc.cluster.local:4318")
+    assert set(config["receivers"]) == {"filelog", "prometheus/self"}
+    assert config["receivers"]["filelog"]["include"] == ["/var/log/pods/*/*/*.log"]
+    assert config["processors"]["transform/classify"]["error_mode"] == "silent"
+    pipelines = config["service"]["pipelines"]
+    assert pipelines["logs"]["processors"][:2] == ["filter/unreviewed", "transform/egress"]
+    assert pipelines["logs/read"]["exporters"] == ["count", "forward/kept"]
+    assert "keep_keys(log.attributes, [])" in config["processors"]["transform/egress"]["log_statements"]
+    # Network: egress only to the collector's OTLP port; the collector takes OTLP/HTTP only from the agents.
+    policies = {item["metadata"]["name"]: item["spec"] for item in documents if item["kind"] == "NetworkPolicy"}
+    paths = policies["node-log-agent-paths"]
+    assert "ingress" not in paths and paths["policyTypes"] == ["Ingress", "Egress"]
+    assert paths["egress"] == [{"to": [{"podSelector": {"matchLabels": {
+        "app.kubernetes.io/component": "telemetry-collector"}}}], "ports": [{"protocol": "TCP", "port": 4318}]}]
+    otlp = [rule for rule in policies["telemetry-collector-paths"]["ingress"]
+            if {"protocol": "TCP", "port": 4318} in rule["ports"]]
+    assert otlp == [{"from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/component": "node-log-agent"}}}],
+                     "ports": [{"protocol": "TCP", "port": 4318}]}], otlp
+    # The gateway no longer sends logs itself.
+    gateway = next(item for item in documents if item["kind"] == "Deployment" and item["metadata"]["name"] == "gateway")
+    assert not any(env["name"].startswith("OTEL_")
+                   for env in gateway["spec"]["template"]["spec"]["containers"][0].get("env", []))
+    # Staging and production log alike: the pipelines differ only in the identity labels.
+    other = render(*TELEMETRY, "--set", "deployment=production-fedcba987654", "--set", "environment=production")
+    assert node_log_agent(other)[1] == config
+
+    def neutral(text: str) -> str:
+        for old, new in (("production-fedcba987654", "D"), ("staging-0123456789ab", "D"),
+                         ('\\"production\\"', '\\"E\\"'), ('\\"example\\"', '\\"E\\"')):
+            text = text.replace(old, new)
+        return text
+
+    logs = json.dumps(collector_config(documents)["processors"]["transform/logs"])
+    assert neutral(logs) == neutral(json.dumps(collector_config(other)["processors"]["transform/logs"]))
 
 
 def check_telemetry_collector() -> None:
@@ -470,7 +564,8 @@ def check_telemetry_collector() -> None:
     assert not next(item for item in with_ksm if item["kind"] == "Deployment"
                     and item["metadata"]["name"] == "telemetry-collector")["spec"]["template"]["spec"]["hostAliases"][1:]
     gateway = Gateway(documents)
-    assert gateway.env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] == "http://telemetry-collector.default.svc.cluster.local:4318/v1/logs"
+    # The gateway writes its records to stdout; the node log agent ships them.
+    assert not any(name.startswith("OTEL_") for name in gateway.env)
     assert "RUST_LOG" not in gateway.env
     model = [item for item in yaml.safe_load_all(helm(
         "template", "example", str(CHART), "--values", str(ROOT / "tests/api/values-sglang.yaml"),
@@ -905,6 +1000,7 @@ def main() -> None:
     check_front_door_namespace()
     check_c8s_admission()
     check_telemetry_collector()
+    check_node_log_agent()
     print("Helm neutral-default and safety tests passed.")
 
 

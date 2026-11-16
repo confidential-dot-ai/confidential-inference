@@ -35,6 +35,7 @@ VALUES = {
     "telemetry.traces.enabled": "true",
     "telemetry.kubeStateMetrics.target": "192.0.2.5:30809",
     "telemetry.deployment": "test-deployment",
+    "deployment": "staging-0123456789ab",
     "telemetry.relay.serverName": "relay.example.com",
     "telemetry.relay.address": "203.0.113.7",
     "telemetry.metrics.tenantId": "00000000-0000-0000-0000-000000000001",
@@ -43,33 +44,46 @@ VALUES = {
 }
 SECRET = "do-not-leak-7f3a"
 CLIENT_ADDRESS = "198.51.100.77"
-# What the gateway writes: the audit record and fixed messages. They leave.
-GATEWAY_KEPT = [
+IDENTITY = ',"deployment":"staging-0123456789ab","environment":"example","framework_release":"v0.0.0"'
+# What the node log agents send for the gateway: the audit record and fixed
+# messages, as JSON bodies. They leave, with the identity of the deployment.
+GATEWAY_SENT = [
     '{"event":"gateway_request_completed","key_ref":"kp_0123456789abcdef01234567",'
     '"request_id":"c0ffee00-cafe-4000-8000-deadbeef0002","route":"/v1/chat/completions","status":400}',
     '{"event":"gateway_request_completed","key_ref":null,"request_id":"c0ffee00-cafe-4000-8000-deadbeef0003",'
-    '"route":"/v1/models","status":200}',
-    "the key snapshot pull failed",
-    "no admin API key file; admin requests need the v1 signature",
+    '"route":"/v1/responses","status":200}',
+    '{"event":"the key snapshot pull failed","level":"warn"}',
 ]
-# Gateway bodies that are not reviewed records. The collector drops them.
+GATEWAY_KEPT = [
+    '{"event":"gateway_request_completed"%s,"key_ref":"kp_0123456789abcdef01234567",'
+    '"request_id":"c0ffee00-cafe-4000-8000-deadbeef0002","route":"/v1/chat/completions","status":400}' % IDENTITY,
+    '{"event":"gateway_request_completed"%s,"key_ref":null,"request_id":"c0ffee00-cafe-4000-8000-deadbeef0003",'
+    '"route":"/v1/responses","status":200}' % IDENTITY,
+    '{"event":"the key snapshot pull failed"%s,"level":"warn"}' % IDENTITY,
+]
+# Gateway bodies that are not reviewed records. The collector drops them, or
+# drops the fields that are not reviewed.
 GATEWAY_DROPPED = [
-    '{"event":"gateway_request_completed","prompt":"%s"}' % SECRET,
     '{"event":"x","request":{"messages":[{"content":"%s"}]}}' % SECRET,
     'invalid request: {"messages":[{"role":"user","content":"%s"}]}' % SECRET,
     "upstream answered 400: %s at line 1" % SECRET.replace("-", " "),
     "client %s sent a request" % CLIENT_ADDRESS,
-    "panicked at 'index out of bounds' with \"%s\"" % SECRET,
+    '{"event":"%s"}' % SECRET,
 ]
-GATEWAY_BODIES = GATEWAY_KEPT + GATEWAY_DROPPED
-# Bodies of other services: addresses are replaced, a structured body goes,
-# and a reviewed router record with an ISO time is unchanged.
-ROUTER_RECORD = ('{"timestamp":"2026-11-13T10:00:00.123456+00:00","source_revision":"unknown",'
-                 '"event":"worker_request_failed","role":"router","status":502}')
+GATEWAY_STRIPPED = ('{"event":"gateway_request_completed","prompt":"%s","route":"/v1/%s","status":200}'
+                    % (SECRET, SECRET))
+GATEWAY_BODIES = GATEWAY_SENT + GATEWAY_DROPPED + [GATEWAY_STRIPPED]
+# Bodies of other services: a reviewed router record with an ISO time is
+# unchanged; an address in a text source is replaced; anything else goes.
+ROUTER_RECORD = ('{"event":"worker_request_failed","role":"router","source_revision":"unknown",'
+                 '"status":502,"timestamp":"2026-11-13T10:00:00.123456+00:00"}')
 OTHER_BODIES = [
-    {"stringValue": "peer %s and 2001:db8::1 and fe80::1:2 failed" % CLIENT_ADDRESS},
-    {"kvlistValue": {"values": [{"key": "prompt", "value": {"stringValue": SECRET}}]}},
-    {"stringValue": ROUTER_RECORD},
+    ("c8s", {"stringValue": '{"msg":"peer %s and 2001:db8::1 and fe80::1:2 failed"}' % CLIENT_ADDRESS}),
+    ("c8s", {"kvlistValue": {"values": [{"key": "prompt", "value": {"stringValue": SECRET}}]}}),
+    ("sglang-router", {"stringValue": ROUTER_RECORD}),
+    ("sglang-router", {"stringValue": '{"event":"worker_request_failed","role":"router","url":"%s"}' % SECRET}),
+    ("inference-worker", {"stringValue": '{"event":"worker_ready","prompt":"%s"}' % SECRET}),
+    ("c8s", {"stringValue": '{"msg":"auth Bearer %s done"}' % SECRET}),
 ]
 METRICS = (
     "# TYPE gateway_requests counter\n"
@@ -79,12 +93,16 @@ METRICS = (
 )
 
 
-def render() -> tuple[str, dict]:
+def rendered_documents() -> list[dict]:
     arguments = [item for key, value in VALUES.items() for item in ("--set", f"{key}={value}")]
     output = subprocess.run(["helm", "template", "example", str(CHART), *arguments],
                             check=True, text=True, capture_output=True).stdout
-    collector = next(item for item in yaml.safe_load_all(output) if item
-                     and item["kind"] == "Deployment" and item["metadata"]["name"] == "telemetry-collector")
+    return [item for item in yaml.safe_load_all(output) if item]
+
+
+def render() -> tuple[str, dict]:
+    collector = next(item for item in rendered_documents()
+                     if item["kind"] == "Deployment" and item["metadata"]["name"] == "telemetry-collector")
     container = collector["spec"]["template"]["spec"]["containers"][0]
     (argument,) = container["args"]
     return container["image"], json.loads(argument.removeprefix("--config=yaml:"))
@@ -115,6 +133,7 @@ def local_pipeline(config: dict, target: str) -> dict:
     pipelines["metrics"]["exporters"] = ["file/metrics"]
     pipelines["metrics/spans"]["exporters"] = ["file/metrics"]
     pipelines["logs"]["exporters"] = ["file/logs"]
+    pipelines["metrics/agents"]["exporters"] = ["file/metrics"]
     pipelines["traces"]["exporters"] = ["spanmetrics", "file/spans"]
     for pipeline in pipelines.values():
         pipeline["processors"] = [item for item in pipeline["processors"] if item != "batch"]
@@ -184,9 +203,11 @@ class CollectorTests(unittest.TestCase):
                 }]}]}]})
                 post("/v1/logs", {"resourceLogs": [{"resource": resource, "scopeLogs": [{"logRecords": [{
                     "timeUnixNano": now, "severityText": "INFO",
-                    "body": {"stringValue": f"auth Bearer {SECRET} done"},
+                    "body": {"stringValue": '{"msg":"auth Bearer %s done"}' % SECRET},
                     "attributes": [attribute("prompt", SECRET)],
-                }, *[{"timeUnixNano": now, "body": body} for body in OTHER_BODIES]]}]}, {
+                }]}]}, *[{"resource": {"attributes": [attribute("service.name", service)]},
+                          "scopeLogs": [{"logRecords": [{"timeUnixNano": now, "body": body}]}]}
+                         for service, body in OTHER_BODIES], {
                     "resource": {"attributes": [attribute("service.name", "gateway"),
                                                 attribute("k8s.pod.ip", CLIENT_ADDRESS)]},
                     "scopeLogs": [{"scope": {"name": "gateway", "attributes": [attribute("client", SECRET)]},
@@ -223,7 +244,9 @@ class CollectorTests(unittest.TestCase):
         for line in text.splitlines():
             for resource in json.loads(line)["resourceLogs"]:
                 attributes = {item["key"] for item in resource["resource"].get("attributes", [])}
-                self.assertLessEqual(attributes, {"service.name", "deployment.environment", "service.namespace"})
+                self.assertLessEqual(attributes, {"service.name", "deployment.environment", "service.namespace",
+                                                  "k8s.cluster.name", "k8s.namespace.name", "k8s.pod.name",
+                                                  "k8s.container.name"})
                 service = next(item["value"]["stringValue"] for item in resource["resource"]["attributes"]
                                if item["key"] == "service.name")
                 for scope in resource["scopeLogs"]:
@@ -234,13 +257,31 @@ class CollectorTests(unittest.TestCase):
                             if record.get(field):
                                 self.assertEqual(int(record[field]) % 1_000_000_000, 0, record)
                         bodies.setdefault(service, []).append(record["body"].get("stringValue"))
-        gateway = bodies["gateway"]
-        self.assertEqual(gateway[:len(GATEWAY_KEPT)], GATEWAY_KEPT)
-        self.assertEqual(set(gateway[len(GATEWAY_KEPT):]), {"[body dropped: not a reviewed gateway record]"})
-        other = bodies["sglang"]
-        self.assertIn("peer [ip] and [ip] and [ip] failed", other)
-        self.assertIn("[body dropped: not text]", other)
-        self.assertIn(ROUTER_RECORD, other)
+        dropped = "[body dropped: not a reviewed record]"
+        identity = json.loads("{" + IDENTITY.lstrip(",") + "}")
+
+        def parsed(values: list[str]) -> list:
+            return [value if value == dropped else json.loads(value) for value in values]
+
+        def kept(body: str, **fields) -> dict:
+            return {**json.loads(body), **identity, **fields}
+
+        for values in bodies.values():
+            for value in values:
+                if value != dropped:
+                    self.assertEqual(value, json.dumps(json.loads(value), sort_keys=True, separators=(",", ":")))
+        gateway = parsed(bodies["gateway"])
+        self.assertEqual(gateway[:len(GATEWAY_KEPT)], [json.loads(value) for value in GATEWAY_KEPT])
+        self.assertEqual(gateway[len(GATEWAY_KEPT):-1], [dropped] * len(GATEWAY_DROPPED))
+        # An unreviewed field and a value that fails its pattern go; the record stays.
+        self.assertEqual(gateway[-1], kept('{"event":"gateway_request_completed","status":200}'))
+        # service.name sglang is no reviewed source.
+        self.assertEqual(bodies["sglang"], [dropped])
+        self.assertEqual(parsed(bodies["c8s"]), [kept('{"msg":"peer [ip] and [ip] and [ip] failed"}'), dropped,
+                                                 kept('{"msg":"auth Bearer [REDACTED] done"}')])
+        self.assertEqual(parsed(bodies["sglang-router"]),
+                         [kept(ROUTER_RECORD), kept('{"event":"worker_request_failed","role":"router"}')])
+        self.assertEqual(parsed(bodies["inference-worker"]), [kept('{"event":"worker_ready"}')])
 
 
 if __name__ == "__main__":

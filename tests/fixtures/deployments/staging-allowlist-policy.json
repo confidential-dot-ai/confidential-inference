@@ -39,6 +39,10 @@
       "controller": "Deployment/sglang-router"
     },
     {
+      "name": "node-log-agent",
+      "controller": "DaemonSet/node-log-agent"
+    },
+    {
       "name": "gateway-update-agent",
       "controller": "Deployment/gateway-update-agent"
     }

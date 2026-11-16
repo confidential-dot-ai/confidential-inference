@@ -119,7 +119,7 @@ RUN --mount=type=bind,source=images/sglang-confidential/harden_http.py,target=/r
     --mount=type=bind,source=images/sglang-confidential/harden_media.py,target=/run-src/harden-media.py,readonly \
     --mount=type=bind,source=images/sglang-confidential/harden_dist.py,target=/run-src/harden-dist.py,readonly \
     --mount=type=bind,source=images/sglang-confidential/wait_for_model.py,target=/run-src/wait-for-model,readonly \
-    --mount=type=bind,source=images/sglang-router/private_log_sink.py,target=/run-src/private_log_sink.py,readonly \
+    --mount=type=bind,source=images/sglang-router/private_router.py,target=/run-src/ci-sglang-router,readonly \
     SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 SGLANG_BUILD_RUST_EXTS=none \
         uv pip install --no-deps --no-build-isolation -e /opt/sglang/python \
     && python /run-src/harden-http.py --root /opt/sglang/python/sglang --variant pd \
@@ -130,7 +130,7 @@ RUN --mount=type=bind,source=images/sglang-confidential/harden_http.py,target=/r
     && rm "$dist/uv_cache.json" \
     && sed -i '/^sglang-0\.0\.0\.dev0\.dist-info\/uv_cache\.json,/d' "$dist/RECORD" \
     && install -D -m 0555 /run-src/wait-for-model /usr/local/bin/wait-for-model \
-    && install -D -m 0444 /run-src/private_log_sink.py /usr/local/bin/private_log_sink.py \
+    && install -D -m 0555 /run-src/ci-sglang-router /usr/local/bin/ci-sglang-router \
     && python -I -B -c 'import importlib.util as u; assert u.find_spec("sglang") and u.find_spec("mooncake")'
 # CPU staging uses the same image. Its simulator is outside the production
 # import path and is enabled only by the staging PYTHONPATH.

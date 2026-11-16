@@ -1,9 +1,11 @@
 //! Request content, client addresses and raw key record IDs never reach the
 //! gateway logs, and an upstream error text never reaches the caller.
 //!
-//! Each test captures every log line that the production log filter lets
-//! through, with `RUST_LOG=trace` for all other targets, so the HTTP
-//! libraries' debug output is in scope too.
+//! Each test captures every log line that the production log layer
+//! (`log_privacy::stdout_layer`) writes, with `RUST_LOG=trace` for all other
+//! targets, so the HTTP libraries' debug output is in scope too. Every
+//! captured line must be a JSON object whose message the node log agent and
+//! the collector keep: a listed fixed message or the audit record.
 
 use std::{
     io::Write,
@@ -24,12 +26,21 @@ use confidential_gateway::{
 };
 use serde_json::Value;
 use tower::ServiceExt;
-use tracing_subscriber::{Layer as _, layer::SubscriberExt};
+use tracing_subscriber::layer::SubscriberExt;
 
 const CANARY: &str = "CANARY_7f3a91_PRIVATE_PROMPT_TEXT";
 const CLIENT_ADDRESS: &str = "198.51.100.77";
 const KEY_RECORD: &str = "key_record_privacy_1";
 const PEPPER: [u8; 32] = [42; 32];
+/// The audit record pattern of the node log agent and the collector. Keep it
+/// equal to the chart's pattern.
+const AUDIT_RECORD: &str = r#"^[{]"event":"gateway_request_completed","key_ref":("kp_[0-9a-f]{24}"|null),"request_id":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}","route":"/v1/(models|chat/completions|completions|responses)","status":[1-5][0-9][0-9][}]$"#;
+/// The chart files that can hold the gateway message list, relative to this
+/// crate. A file that does not exist is skipped.
+const MESSAGE_LIST_FILES: &[&str] = &[
+    "../../helm/confidential-inference/templates/_log-policy.tpl",
+    "../../helm/confidential-inference/templates/telemetry-collector.yaml",
+];
 
 struct Keys;
 
@@ -63,19 +74,60 @@ impl Write for Captured {
 }
 
 /// The gateway's log setup with `RUST_LOG=trace`: every line the production
-/// filter lets through goes into `captured`.
+/// log layer writes goes into `captured`.
 fn capture() -> (Captured, tracing::subscriber::DefaultGuard) {
     let captured = Captured::default();
     let writer = captured.clone();
     let subscriber = tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new("trace"))
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_ansi(false)
-                .with_writer(move || writer.clone())
-                .with_filter(log_privacy::log_filter()),
-        );
+        .with(log_privacy::stdout_layer(move || writer.clone()));
     (captured, tracing::subscriber::set_default(subscriber))
+}
+
+/// The text of the chart files that list the gateway messages. A listed
+/// message appears in them as a double-quoted string, `"text"`.
+fn message_list() -> String {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text: String = MESSAGE_LIST_FILES
+        .iter()
+        .filter_map(|file| std::fs::read_to_string(root.join(file)).ok())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !text.is_empty(),
+        "no chart file with the gateway message list"
+    );
+    text
+}
+
+fn is_listed(list: &str, message: &str) -> bool {
+    !message.contains('"') && list.contains(&format!("\"{message}\""))
+}
+
+/// Every line is one JSON object, and its message is a listed fixed message
+/// or the audit record, so the node log agent keeps it.
+fn assert_reviewed(logs: &str) {
+    let list = message_list();
+    let audit = regex::Regex::new(AUDIT_RECORD).unwrap_or_else(|_| unreachable!());
+    for line in logs.lines() {
+        let value: Value = serde_json::from_str(line)
+            .unwrap_or_else(|error| panic!("a log line is not JSON ({error}): {line}"));
+        let object = value
+            .as_object()
+            .unwrap_or_else(|| panic!("a log line is not a JSON object: {line}"));
+        let message = object
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("a log line has no message: {line}"));
+        assert!(
+            object.get("level").and_then(Value::as_str).is_some(),
+            "a log line has no level: {line}"
+        );
+        assert!(
+            is_listed(&list, message) || audit.is_match(message),
+            "the node log agent would drop this message: {line}"
+        );
+    }
 }
 
 /// An inference server that answers every request with `status` and an
@@ -182,6 +234,7 @@ fn assert_private(logs: &str) {
     for secret in [CANARY, CLIENT_ADDRESS, KEY_RECORD, "Bearer accepted"] {
         assert!(!logs.contains(secret), "the logs carry {secret}:\n{logs}");
     }
+    assert_reviewed(logs);
 }
 
 #[tokio::test]
@@ -223,7 +276,15 @@ async fn upstream_error_bodies_reach_neither_logs_nor_callers() {
     let pseudonym = log_privacy::KeyPseudonyms::from_pepper(&PEPPER).pseudonym(KEY_RECORD);
     assert!(logs.contains("gateway_request_completed"), "{logs}");
     assert!(logs.contains(&pseudonym), "{logs}");
-    assert!(logs.contains(r#""status":422"#), "{logs}");
+    assert!(
+        logs.lines().any(|line| {
+            let value: Value = serde_json::from_str(line).unwrap_or_default();
+            value["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(r#""status":422"#))
+        }),
+        "{logs}"
+    );
 }
 
 #[tokio::test]
@@ -365,16 +426,13 @@ fn messages(source: &str) -> Vec<String> {
     found
 }
 
-/// The collector lets a gateway log body leave only when it is one of the
-/// messages the chart lists, or the audit record. Every message in the
-/// gateway source must be on that list, or the collector drops it.
+/// The node log agent and the collector keep a gateway log message only when
+/// it is one of the messages the chart lists, or the audit record. Every
+/// message in the gateway source must be on that list, or they drop it.
 #[test]
 fn every_gateway_log_message_is_on_the_collector_list() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let template = std::fs::read_to_string(
-        root.join("../../helm/confidential-inference/templates/telemetry-collector.yaml"),
-    )
-    .unwrap_or_else(|_| unreachable!());
+    let list = message_list();
     let mut count = 0;
     for entry in std::fs::read_dir(root.join("src")).unwrap_or_else(|_| unreachable!()) {
         let path = entry.unwrap_or_else(|_| unreachable!()).path();
@@ -392,8 +450,8 @@ fn every_gateway_log_message_is_on_the_collector_list() {
                 path.display()
             );
             assert!(
-                template.contains(&format!("\"{message}\"")),
-                "{}: add \"{message}\" to the gateway messages in telemetry-collector.yaml",
+                is_listed(&list, &message),
+                "{}: add \"{message}\" to the chart's gateway message list",
                 path.display()
             );
         }
@@ -401,8 +459,8 @@ fn every_gateway_log_message_is_on_the_collector_list() {
     assert!(count >= 10, "the message scan found only {count} messages");
 }
 
-/// The collector keeps an audit record only in this exact shape
-/// (telemetry-collector.yaml, the audit pattern).
+/// The node log agent and the collector keep an audit record only in this
+/// exact shape (the chart's audit pattern, [`AUDIT_RECORD`]).
 #[test]
 fn the_audit_record_has_the_shape_the_collector_keeps() {
     use confidential_gateway::{AuditEvent, AuditSink};
@@ -422,14 +480,27 @@ fn the_audit_record_has_the_shape_the_collector_keeps() {
     });
     let pseudonym = log_privacy::KeyPseudonyms::from_pepper(&PEPPER).pseudonym(KEY_RECORD);
     let logs = captured.text();
-    assert!(
-        logs.contains(&format!(
+    assert_reviewed(&logs);
+    let messages: Vec<String> = logs
+        .lines()
+        .map(|line| {
+            let value: Value = serde_json::from_str(line).unwrap_or_default();
+            assert_eq!(value["level"], "INFO", "{line}");
+            assert!(value["timestamp"].is_string(), "{line}");
+            value["message"].as_str().unwrap_or_default().to_owned()
+        })
+        .collect();
+    assert_eq!(messages.len(), 2, "{logs}");
+    assert_eq!(
+        messages[0],
+        format!(
             r#"{{"event":"gateway_request_completed","key_ref":"{pseudonym}","request_id":"c0ffee00-cafe-4000-8000-deadbeef0002","route":"/v1/chat/completions","status":400}}"#
-        )),
+        ),
         "{logs}"
     );
-    assert!(
-        logs.contains(r#"{"event":"gateway_request_completed","key_ref":null,"request_id":"c0ffee00-cafe-4000-8000-deadbeef0003","route":"/v1/models","status":200}"#),
+    assert_eq!(
+        messages[1],
+        r#"{"event":"gateway_request_completed","key_ref":null,"request_id":"c0ffee00-cafe-4000-8000-deadbeef0003","route":"/v1/models","status":200}"#,
         "{logs}"
     );
 }

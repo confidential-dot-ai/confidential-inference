@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Run the PD router with an allowlist of error fields on container stdout."""
+"""Run the SGLang router and write only reviewed fixed events to stdout.
+
+Each stdout line is one JSON object. Its keys are a subset of timestamp,
+source_revision, event, role, status and code. timestamp is the ISO-8601 UTC
+time of the record. source_revision is the 40-hex image source revision, or
+"unknown". The node log agent ships stdout. This program sends nothing else.
+"""
 from datetime import datetime, timezone
+import importlib.util
 import json
 import os
+from pathlib import Path
 import resource
 import re
 import signal
@@ -10,9 +18,6 @@ import subprocess
 import sys
 import threading
 
-from private_log_sink import LogSink, NonblockingStdout
-
-LOG_SINK = None
 LOG_STDOUT = None
 SOURCE_REVISION = os.environ.get("CI_DIAGNOSTIC_SOURCE_REVISION", "")
 if not re.fullmatch(r"[0-9a-f]{40}", SOURCE_REVISION):
@@ -24,7 +29,33 @@ EVENTS = {
     "worker_request_prepare_failed", "paired_decode_cancelled", "worker_http_error",
     "worker_request_failed", "response_serialization_failed",
 }
+# Events of this launcher. Each has role "router" and an optional int code.
+OWN_EVENTS = {"router_config_rejected", "router_exit", "router_failed", "router_started"}
+ROLES = {"prefill", "decode", "router"}
+RECORD_KEYS = {"timestamp", "source_revision", "event", "role", "status", "code"}
 BLOCKED_FLAGS = {"--log-dir", "--enable-trace", "--otlp-traces-endpoint"}
+
+
+class NonblockingStdout:
+    """Write one bounded record to a container pipe without waiting for readers.
+
+    The caller must review the schema. This is not a content filter. A full
+    pipe drops that record.
+    """
+    def __init__(self, fd=1):
+        self.fd = fd
+        os.set_blocking(fd, False)
+
+    def write(self, record):
+        payload = (json.dumps(record, separators=(",", ":")) + "\n").encode()
+        # Linux pipe writes at or below PIPE_BUF are atomic. A full pipe must
+        # never leave half a JSON line or block the failure/restart path.
+        if len(payload) > 4096:
+            return False
+        try:
+            return os.write(self.fd, payload) == len(payload)
+        except OSError:
+            return False
 
 
 def reviewed_event(record):
@@ -34,7 +65,7 @@ def reviewed_event(record):
     role = record.get("role", "router")
     if type(event) is not str or event not in EVENTS:
         return None
-    if type(role) is not str or role not in {"prefill", "decode", "router"}:
+    if type(role) is not str or role not in ROLES:
         return None
     result = {"event": event, "role": role}
     if "status" in record:
@@ -47,34 +78,52 @@ def reviewed_event(record):
 
 
 def emit(event, **fields):
-    own = {"router_config_rejected", "router_exit", "router_failed", "diagnostic_delivery_failed"}
     if type(event) is not str:
         raise ValueError("invalid diagnostic event")
-    if event in own:
-        if fields.get("role") != "router" or fields.keys() - {"role", "code", "exported", "dropped", "pending", "failures"}:
+    if event in OWN_EVENTS:
+        if fields.get("role") != "router" or fields.keys() - {"role", "code"}:
             raise ValueError("invalid diagnostic fields")
-        if any(type(value) is not int or not -(2**63) < value < 2**63 for key, value in fields.items() if key != "role"):
+        code = fields.get("code", 0)
+        if type(code) is not int or not -(2**63) < code < 2**63:
             raise ValueError("invalid diagnostic fields")
         value = {"event": event, **fields}
     else:
         value = reviewed_event({"ci_event": event, **fields})
-        if value is None:
+        if value is None or fields.keys() - {"role", "status"}:
             raise ValueError("invalid diagnostic fields")
     record = {"timestamp": datetime.now(timezone.utc).isoformat(),
               "source_revision": SOURCE_REVISION, **value}
+    assert record.keys() <= RECORD_KEYS
     if LOG_STDOUT is None:
         print(json.dumps(record, separators=(",", ":")), flush=True)
     else:
         LOG_STDOUT.write(record)
-    if LOG_SINK is not None:
-        LOG_SINK.submit(record)
+
+
+def supports_json_log():
+    """Return True when the installed launch_router accepts --json-log.
+
+    PyPI sglang-router 0.3.2 (the engine image) does not have the flag; the
+    router image build (source a7fd2e1) does. This reads the source text and
+    does not import the package. Without the flag the child writes text
+    lines, which the parser drops.
+    """
+    try:
+        spec = importlib.util.find_spec("sglang_router")
+        locations = spec.submodule_search_locations if spec else None
+        for location in locations or ():
+            path = Path(location) / "router_args.py"
+            if path.is_file():
+                return "--{prefix}json-log" in path.read_text(encoding="utf-8")
+    except (ImportError, OSError, UnicodeError, ValueError):
+        pass
+    return False
 
 
 def main():
-    global LOG_SINK, LOG_STDOUT
+    global LOG_STDOUT
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     LOG_STDOUT = NonblockingStdout()
-    LOG_SINK = LogSink.from_environment()
     for argument in sys.argv[1:]:
         flag = argument.split("=", 1)[0].replace("_", "-")
         # argparse accepts abbreviated flags. Reject those too.
@@ -85,11 +134,14 @@ def main():
     environment["RUST_LOG"] = "smg::routers::http::pd_router=warn"
     environment.pop("RUST_BACKTRACE", None)
     environment.pop("PYTHONFAULTHANDLER", None)
-    command = [sys.executable, "-m", "sglang_router.launch_router", *sys.argv[1:],
-               "--json-log", "--log-level", "warn"]
+    command = [sys.executable, "-m", "sglang_router.launch_router", *sys.argv[1:]]
+    if supports_json_log():
+        command.append("--json-log")
+    command += ["--log-level", "warn"]
     child = subprocess.Popen(command, env=environment, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              start_new_session=True)
+    emit("router_started", role="router")
     timer = None
 
     def kill_group():
@@ -135,11 +187,6 @@ def main():
         if timer is not None:
             timer.cancel()
         kill_group()
-        if LOG_SINK is not None:
-            delivery = LOG_SINK.close(timeout=1)
-            LOG_SINK = None
-            if delivery["dropped"] or delivery["pending"] or delivery["failures"]:
-                emit("diagnostic_delivery_failed", role="router", **delivery)
 
 
 if __name__ == "__main__":

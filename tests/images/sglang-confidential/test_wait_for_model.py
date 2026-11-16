@@ -118,14 +118,24 @@ class ModelMountGateTests(unittest.TestCase):
         result = self.run_gate(digests, private=True, child_code=code)
         self.assertEqual(1, result.returncode)
         self.assertNotIn(marker, result.stdout + result.stderr)
-        self.assertEqual({"event": "worker_exit", "code": 1}, json.loads(result.stdout))
+        self.assertEqual({"event": "worker_exit", "exit_code": 1, "signal": None},
+                         json.loads(result.stdout.splitlines()[-1]))
+
+    def test_rejected_mount_reports_a_worker_exit(self) -> None:
+        digests = self.create_model()
+        result = self.run_gate(digests)
+        self.assertEqual(1, result.returncode)
+        self.assertEqual([{"event": "worker_exit", "exit_code": 1, "signal": None}],
+                         [json.loads(line) for line in result.stdout.splitlines()])
 
     def test_verified_mount_starts_the_server_command(self) -> None:
         digests = self.create_model()
         self.set_mount()
         result = self.run_gate(digests)
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual("server-started\n", result.stdout)
+        self.assertNotIn("server-started", result.stdout)
+        self.assertEqual({"event": "worker_exit", "exit_code": 0, "signal": None},
+                         json.loads(result.stdout.splitlines()[-1]))
         self.assertIn("model-mount: verified", result.stderr)
 
     def test_read_only_filesystem_behind_rw_bind_starts_the_server(self) -> None:
@@ -240,7 +250,9 @@ class ModelMountGateTests(unittest.TestCase):
         self.set_mount()
         result = self.run_gate(digests)
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual("server-started\n", result.stdout)
+        self.assertNotIn("server-started", result.stdout)
+        self.assertEqual({"event": "worker_exit", "exit_code": 0, "signal": None},
+                         json.loads(result.stdout.splitlines()[-1]))
 
     def test_no_index_and_no_single_weight_file_fails_closed(self) -> None:
         digests = self.create_model(sharded=False)

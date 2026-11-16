@@ -53,7 +53,7 @@ SGLANG_CONFIDENTIAL_INPUTS = (
     "images/sglang-confidential/harden_http.py",
     "images/sglang-confidential/harden_media.py",
     "images/sglang-confidential/harden_dist.py",
-    "images/sglang-router/private_log_sink.py",
+    "images/sglang-router/private_router.py",
     "images/sglang-confidential/wait_for_model.py",
     "images/sglang-confidential/fetch_model.py",
     "images/sglang-confidential/patches/**",
@@ -98,7 +98,7 @@ IMAGES = (
         "Confidential Inference SGLang Router",
         ("images/sglang-router/Dockerfile", "images/sglang-router/source.lock", "images/sglang-router/patches/**",
          "images/sglang-router/canonicalize_wheel.py", "images/sglang-router/requirements.in", "images/sglang-router/requirements.lock", "images/sglang-router/Cargo.lock",
-         "images/sglang-router/private_router.py", "images/sglang-router/private_log_sink.py"),
+         "images/sglang-router/private_router.py"),
     ),
     Image(
         "kube-state-metrics",

@@ -1,5 +1,11 @@
 environment: example
 
+# The deployment name, for example staging-0123456789ab: one immutable
+# snapshot of the environment. Only scripts/render-allowlist.py sets it
+# (--deployment); a deployment values file cannot. The telemetry collector
+# writes it in every log record (docs/telemetry-egress.md).
+deployment: ""
+
 # The final staging release declares its in-cluster validation client.
 stagingValidation:
   enabled: false
@@ -264,6 +270,9 @@ inference:
   speculativeAlgorithm: DSPARK
   moeRunnerBackend: flashinfer_mxfp4
   workerExtraArgs: []
+  # Unused: wait-for-model always keeps SGLang's output in memory and writes
+  # only the fixed worker events (images/sglang-confidential/README.md). The
+  # key stays so that existing environment values still render.
   privateServerOutput: false
   gpuMetricsEnabled: true
   # On SIGTERM SGLang answers /health with 503 and finishes its in-flight
@@ -325,10 +334,14 @@ router:
 
 # The telemetry collector (templates/telemetry-collector.yaml): the stock
 # OpenTelemetry Collector and the only workload with an exit. It scrapes the
-# gateway, the router and the workers over the mesh, receives gateway logs
-# and SGLang traces over OTLP, and sends everything to one relay. The relay
-# address is the collector's allowlist egress (C8s #1047), so it is public in
-# the served allowlist.
+# gateway, the router and the workers over the mesh, receives the node log
+# agents' records and SGLang traces over OTLP, and sends everything to one
+# relay. The relay address is the collector's allowlist egress (C8s #1047),
+# so it is public in the served allowlist. With telemetry on, the chart also
+# runs the node log agent (templates/node-log-agent.yaml) on every node: it
+# reads the container output under /var/log/pods, keeps only the reviewed
+# records of templates/_log-policy.tpl, and sends them to the collector over
+# the mesh. It has no exit and no secret.
 telemetry:
   enabled: false
   attestedWorkload: telemetry-collector
@@ -364,6 +377,16 @@ telemetry:
     # kubernetes-mixin alerts read. C8s exports no Secrets or ConfigMaps and
     # no object labels or annotations.
     metrics: kube_(node|pod|deployment|statefulset|daemonset|job|persistentvolumeclaim|namespace)_.*
+  # The node log agent (templates/node-log-agent.yaml). A DaemonSet of the
+  # same pinned collector image.
+  nodeAgent:
+    attestedWorkload: node-log-agent
+    healthPort: 13134
+    # The agent's own otelcol_* metrics, on loopback, scraped by itself.
+    metricsPort: 8889
+    resources:
+      cpu: 100m
+      memory: 128Mi
   scrapeInterval: 15s
   otlpGrpcPort: 4317
   otlpHttpPort: 4318
