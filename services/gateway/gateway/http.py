@@ -8,9 +8,12 @@ class SafeRequestHandler(RequestHandler):
     def handle_error(self, request, status=500, exc=None, message=None):
         if request.writer.output_size:
             raise ConnectionError("the response has already started")
-        response = web.Response(status=status, content_type="application/json",
+        response = web.Response(
+            status=status,
+            content_type="application/json",
             body=b'{"error":{"code":"invalid_request","message":"Request failed."}}',
-            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
         response.force_close()
         return response
 
@@ -26,5 +29,10 @@ class AppRunner(web.AppRunner):
         # confined to the pinned aiohttp version and test actual parser errors.
         server = await super()._make_server()
         server._kwargs["auto_decompress"] = False
-        return SafeServer(server.request_handler, request_factory=server.request_factory,
-            handler_cancellation=server.handler_cancellation, loop=server._loop, **server._kwargs)
+        return SafeServer(
+            server.request_handler,
+            request_factory=server.request_factory,
+            handler_cancellation=server.handler_cancellation,
+            loop=server._loop,
+            **server._kwargs,
+        )

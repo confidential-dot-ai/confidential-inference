@@ -22,7 +22,12 @@ def response(value, status=200, retry=None):
     headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
     if retry is not None:
         headers["Retry-After"] = str(retry)
-    return web.Response(body=orjson.dumps(value), status=status, content_type="application/json", headers=headers)
+    return web.Response(
+        body=orjson.dumps(value),
+        status=status,
+        content_type="application/json",
+        headers=headers,
+    )
 
 
 @web.middleware
@@ -46,10 +51,23 @@ async def limits(request, handler):
             raise Rejected(413, "request_body_too_large") from error
         return await handler(request)
     except Rejected as error:
-        return response({"error": {"code": error.code}}, 429 if error.status == 503 else error.status, error.retry)
+        return response(
+            {"error": {"code": error.code}},
+            429 if error.status == 503 else error.status,
+            error.retry,
+        )
     except web.HTTPException as error:
-        return response({"error": {"code": "not_found", "type": "invalid_request_error",
-            "param": None, "message": "Route not found."}}, error.status)
+        return response(
+            {
+                "error": {
+                    "code": "not_found",
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "message": "Route not found.",
+                }
+            },
+            error.status,
+        )
     finally:
         if release:
             release()
@@ -58,14 +76,44 @@ async def limits(request, handler):
 async def handle(request):
     path = request.path
     if path == "/v1/models":
-        return response({"object": "list", "data": [{"id": MODEL, "object": "model", "owned_by": "confidential.ai"}]})
+        return response(
+            {
+                "object": "list",
+                "data": [
+                    {"id": MODEL, "object": "model", "owned_by": "confidential.ai"}
+                ],
+            }
+        )
     if path in ("/health", "/readiness"):
-        return response({"status": "live" if path == "/health" else "ready", "mode": "maintenance", "inferenceAvailable": False})
+        return response(
+            {
+                "status": "live" if path == "/health" else "ready",
+                "mode": "maintenance",
+                "inferenceAvailable": False,
+            }
+        )
     if path == "/attestation":
-        return response({"mode": "maintenance", "inferenceAvailable": False, "inferenceWorkloads": [],
-            "attestationType": "outage-status", "statement": "This maintenance gateway runs no inference workload."})
-    return response({"error": {"message": "Inference is temporarily unavailable.",
-        "type": "service_unavailable", "param": None, "code": "inference_unavailable"}}, 429, 60)
+        return response(
+            {
+                "mode": "maintenance",
+                "inferenceAvailable": False,
+                "inferenceWorkloads": [],
+                "attestationType": "outage-status",
+                "statement": "This maintenance gateway runs no inference workload.",
+            }
+        )
+    return response(
+        {
+            "error": {
+                "message": "Inference is temporarily unavailable.",
+                "type": "service_unavailable",
+                "param": None,
+                "code": "inference_unavailable",
+            }
+        },
+        429,
+        60,
+    )
 
 
 def create_app(trusted):
@@ -80,8 +128,15 @@ def create_app(trusted):
 
 
 async def serve(listen, trusted):
-    runner = AppRunner(create_app(trusted), access_log=None, handler_cancellation=True,
-        shutdown_timeout=10, max_field_size=16384, keepalive_timeout=5, max_headers=64)
+    runner = AppRunner(
+        create_app(trusted),
+        access_log=None,
+        handler_cancellation=True,
+        shutdown_timeout=10,
+        max_field_size=16384,
+        keepalive_timeout=5,
+        max_headers=64,
+    )
     await runner.setup()
     host, port = listen.rsplit(":", 1)
     try:
@@ -97,8 +152,13 @@ async def serve(listen, trusted):
 def main():
     logging.disable(logging.CRITICAL)
     parser = argparse.ArgumentParser(prog="maintenance-gateway")
-    parser.add_argument("--listen", default=os.environ.get("MAINTENANCE_GATEWAY_LISTEN", "0.0.0.0:9443"))
-    parser.add_argument("--trusted-proxy-cidrs", default=os.environ.get("MAINTENANCE_GATEWAY_TRUSTED_PROXY_CIDRS", ""))
+    parser.add_argument(
+        "--listen", default=os.environ.get("MAINTENANCE_GATEWAY_LISTEN", "0.0.0.0:9443")
+    )
+    parser.add_argument(
+        "--trusted-proxy-cidrs",
+        default=os.environ.get("MAINTENANCE_GATEWAY_TRUSTED_PROXY_CIDRS", ""),
+    )
     args = parser.parse_args()
     host, port = args.listen.rsplit(":", 1)
     ipaddress.ip_address(host.strip("[]"))

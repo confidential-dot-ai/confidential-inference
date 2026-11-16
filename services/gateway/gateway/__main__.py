@@ -28,12 +28,14 @@ async def bounded_file(path, maximum, wait=0):
         except FileNotFoundError:
             if asyncio.get_running_loop().time() >= deadline:
                 raise
-            await asyncio.sleep(.1)
+            await asyncio.sleep(0.1)
 
 
 async def serve(config):
     pepper = await bounded_file(config.pepper_file, 4096, config.secret_wait)
-    secret = orjson.loads(await bounded_file(config.admin_file, 65536, config.secret_wait))
+    secret = orjson.loads(
+        await bounded_file(config.admin_file, 65536, config.secret_wait)
+    )
     certificate = await bounded_file(config.signer_file, 256 * 1024)
     hashes = []
     if Path(config.hashes_file).exists():
@@ -45,19 +47,33 @@ async def serve(config):
         log("no admin API key file; admin requests need the v1 signature")
     keys = Keys(pepper, config.environment)
     app = create_app(config, keys, AdminAuth(certificate, hashes), secret["token"])
-    runner = AppRunner(app, access_log=None, handler_cancellation=True, shutdown_timeout=config.shutdown_grace,
-                          keepalive_timeout=config.header_timeout, max_headers=config.maximum_headers,
-                          max_field_size=config.maximum_header_bytes, max_line_size=max(8192, config.maximum_uri + 32))
+    runner = AppRunner(
+        app,
+        access_log=None,
+        handler_cancellation=True,
+        shutdown_timeout=config.shutdown_grace,
+        keepalive_timeout=config.header_timeout,
+        max_headers=config.maximum_headers,
+        max_field_size=config.maximum_header_bytes,
+        max_line_size=max(8192, config.maximum_uri + 32),
+    )
     await runner.setup()
     private = web.Application()
+
     async def metrics(request):
-        return web.Response(body=app["metrics"].render(), headers={"Content-Type": "text/plain; version=0.0.4; charset=utf-8"})
+        return web.Response(
+            body=app["metrics"].render(),
+            headers={"Content-Type": "text/plain; version=0.0.4; charset=utf-8"},
+        )
+
     private.router.add_get("/metrics", metrics)
     metrics_runner = AppRunner(private, access_log=None)
     await metrics_runner.setup()
+
     def address(value):
         host, port = value.rsplit(":", 1)
         return host.strip("[]"), int(port)
+
     try:
         await web.TCPSite(metrics_runner, *address(config.metrics_listen)).start()
         await web.TCPSite(runner, *address(config.listen)).start()
