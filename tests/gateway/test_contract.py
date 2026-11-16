@@ -455,6 +455,19 @@ class GatewayContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(orjson.loads(body)["error"]["code"], "stateful_responses_not_supported")
         self.assertEqual(len(self.received), count)
 
+    async def test_encoded_bodies_are_not_expanded_before_admission(self):
+        """L1/P1: body bytes and memory reservations use the wire representation."""
+        import gzip
+        await self.start({"GATEWAY_MAXIMUM_BODY_BYTES": "1024"})
+        encoded = gzip.compress(orjson.dumps({"model": MODEL, "padding": "x" * 200000}))
+        self.assertLess(len(encoded), 1024)
+        status, _, body = await self.send(body=encoded, headers={"Content-Encoding": "gzip"})
+        self.assertEqual(status, 400)
+        self.assertEqual(orjson.loads(body)["error"]["code"], "invalid_json")
+        self.assertEqual(self.received, [])
+        # A header alone does not change the body that the baseline parses.
+        self.assertEqual((await self.send(body=orjson.dumps({"model": MODEL}), headers={"Content-Encoding": "gzip"}))[0], 200)
+
     async def test_disconnect_releases_execution_and_upstream_connection(self):
         """L2/V2: hold capacity through a stream, then release it on disconnect."""
         await self.start({"GATEWAY_INFERENCE_CONCURRENCY": "1", "GATEWAY_PER_KEY_CONCURRENCY": "1"})

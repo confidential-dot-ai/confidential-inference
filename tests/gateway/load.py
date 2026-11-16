@@ -6,6 +6,7 @@ This is a transport test, not a GPU or tokenizer capacity claim.
 
 import argparse
 import asyncio
+import hashlib
 import json
 import subprocess
 import sys
@@ -27,13 +28,17 @@ def percentile(values, fraction):
 async def fixture():
     async def upstream(request):
         length = 0
+        digest = hashlib.sha256()
         async for chunk in request.content.iter_chunked(262_144):
             length += len(chunk)
+            digest.update(chunk)
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await response.prepare(request)
         try:
             for index in range(500 if length < 1024**2 else 20):
                 value = {"model": MODEL, "choices": [{"delta": {"content": "x"}, "finish_reason": None}], "_sent_ns": time.monotonic_ns()}
+                if index == 0:
+                    value["_request_sha256"] = digest.hexdigest()
                 await response.write(b"data: " + orjson.dumps(value) + b"\n\n")
                 await asyncio.sleep(.02)
             await response.write(b"data: [DONE]\n\n")
@@ -52,6 +57,17 @@ async def fixture():
 
 
 async def measure(args):
+    corpus, corpus_metadata = [], None
+    if args.corpus:
+        directory = Path(args.corpus)
+        corpus_metadata = json.loads((directory / "corpus.json").read_bytes())
+        for entry in corpus_metadata["requests"]:
+            data = (directory / entry["file"]).read_bytes()
+            if len(data) != entry["bytes"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
+                raise ValueError("the corpus does not match its manifest")
+            corpus.append(data)
+        if len(corpus) != args.requests:
+            raise ValueError("the corpus must contain exactly --requests bodies")
     peer = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--fixture"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # Fixture readiness is one small line, not a timing assumption.
     line = await asyncio.to_thread(peer.stdout.readline)
@@ -86,7 +102,19 @@ async def measure(args):
         suffix = b'"}]}'
         size = args.body_mib * 1024**2
         slab = b"x" * 262_144
-        async def body(identifier):
+        if corpus:
+            sizes = [len(data) for data in corpus]
+            expected_digests = [hashlib.sha256(data).hexdigest() for data in corpus]
+        else:
+            sizes = [size] * args.requests
+            expected_digests = [hashlib.sha256(prefix + b"x" * (size-len(prefix)-len(suffix)) + suffix).hexdigest()] * args.requests
+        large_index = 0
+        async def body(identifier, data=None):
+            if data is not None:
+                for start in range(0, len(data), 262_144):
+                    yield data[start:start+262_144]
+                upload_finished[identifier] = time.monotonic()
+                return
             yield prefix
             remaining = size - len(prefix) - len(suffix)
             while remaining:
@@ -99,13 +127,19 @@ async def measure(args):
         connector = aiohttp.TCPConnector(limit=0)
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as client:
             async def request(large=False, slow=False, cancel=False, probe=False):
-                nonlocal active, peak
+                nonlocal active, peak, large_index
                 active += 1
                 peak = max(peak, active)
                 started, previous, first, done = time.monotonic(), None, None, False
                 identifier = id(asyncio.current_task())
                 try:
-                    options = {"data": body(identifier), "headers": {**headers, "Content-Length": str(size)}} if large else {"json": {"model": MODEL, "stream": True, "messages": [{"role": "user", "content": "hello"}]}, "headers": headers}
+                    if large:
+                        slot = large_index % args.requests
+                        large_index += 1
+                        options = {"data": body(identifier, corpus[slot] if corpus else None),
+                            "headers": {**headers, "Content-Length": str(sizes[slot])}}
+                    else:
+                        options = {"json": {"model": MODEL, "stream": True, "messages": [{"role": "user", "content": "hello"}]}, "headers": headers}
                     async with client.post("http://127.0.0.1:9443/v1/chat/completions", **options) as response:
                         if response.status != 200:
                             errors.append({"status": response.status, "body": (await response.text())[:200]})
@@ -125,6 +159,9 @@ async def measure(args):
                                 if probe:
                                     probes.append(now - started)
                                 if large:
+                                    observed = orjson.loads(line[5:])["_request_sha256"]
+                                    if observed != expected_digests[slot]:
+                                        raise ValueError("the upstream received a different body")
                                     firsts.append(now - started)
                                     if identifier in upload_finished:
                                         processing.append(now - upload_finished[identifier])
@@ -184,9 +221,10 @@ async def measure(args):
         await sampler
         final_cpu = process.cpu_times()
         child_cpu = sum(p.cpu_times().user + p.cpu_times().system for p in process.children(recursive=True) if p.is_running())
-        result = {"gateway": args.gateway, "requests": args.requests, "batches": args.batches, "body_bytes": size, "background": args.background, "body_memory_budget_bytes": 32 * 1024**3,
+        result = {"gateway": args.gateway, "requests": args.requests, "batches": args.batches, "body_bytes": max(sizes), "background": args.background, "body_memory_budget_bytes": 32 * 1024**3,
                   "peak_client_concurrency": peak, "completed_large": len(durations), "errors": errors,
-                  "large_elapsed_seconds": elapsed, "input_mib_per_second": args.requests * args.batches * args.body_mib / elapsed,
+                  "large_elapsed_seconds": elapsed, "input_mib_per_second": sum(sizes) * args.batches / 1024**2 / elapsed,
+                  "body_bytes_by_request": sizes, "corpus": corpus_metadata,
                   "settled_rss_mib_by_batch": settled_rss,
                   "settled_rss_growth_fraction": settled_rss[-1] / settled_rss[0] - 1,
                   "large_first_chunk_p95_seconds": percentile(firsts, .95),
@@ -201,8 +239,13 @@ async def measure(args):
                   "chunk_delay_p95_seconds": percentile(delays, .95), "chunk_delay_p99_seconds": percentile(delays, .99),
                   "chunk_delay_max_seconds": max(delays, default=None), "peak_rss_mib": max(rss, default=0) / 1024**2,
                   "cpu_seconds": final_cpu.user + final_cpu.system - initial_cpu.user - initial_cpu.system + child_cpu - initial_children_cpu,
+                  "main_cpu_seconds": final_cpu.user + final_cpu.system - initial_cpu.user - initial_cpu.system,
+                  "worker_cpu_seconds": child_cpu - initial_children_cpu,
                   "sample_elapsed_seconds": time.monotonic() - initial_time, "transport_only": True}
-        print(json.dumps(result, indent=2))
+        summary = {key: value for key, value in result.items() if key not in ("corpus", "body_bytes_by_request")}
+        if corpus_metadata:
+            summary["corpus"] = {key: value for key, value in corpus_metadata.items() if key != "requests"}
+        print(json.dumps(summary, indent=2))
         if args.output:
             Path(args.output).write_text(json.dumps(result, indent=2) + "\n")
         if errors or len(durations) != args.requests * args.batches:
@@ -226,6 +269,7 @@ if __name__ == "__main__":
     parser.add_argument("--body-mib", type=int, default=32)
     parser.add_argument("--background", type=int, default=16)
     parser.add_argument("--batches", type=int, default=1)
+    parser.add_argument("--corpus", help="Directory made by tests/gateway/context.py")
     parser.add_argument("--output")
     parser.add_argument("--fixture", action="store_true")
     args = parser.parse_args()

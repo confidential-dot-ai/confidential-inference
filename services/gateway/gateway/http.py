@@ -25,5 +25,6 @@ class AppRunner(web.AppRunner):
         # aiohttp has no public protocol factory argument. Keep this adapter
         # confined to the pinned aiohttp version and test actual parser errors.
         server = await super()._make_server()
+        server._kwargs["auto_decompress"] = False
         return SafeServer(server.request_handler, request_factory=server.request_factory,
             handler_cancellation=server.handler_cancellation, loop=server._loop, **server._kwargs)
