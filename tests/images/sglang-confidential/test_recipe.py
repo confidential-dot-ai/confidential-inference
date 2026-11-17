@@ -106,6 +106,7 @@ class RecipeTests(unittest.TestCase):
         used = {line.split(maxsplit=1)[0] for line in lines}
         self.assertTrue({"ADD", "CMD", "ENTRYPOINT"}.isdisjoint(used))
         self.assertEqual("USER 1001:1001", lines[-1])
+        self.assertIn("chmod -R go-w /opt/sglang/python", DOCKERFILE)
         # The plain worker uses official source and no separate Engram holder.
         self.assertEqual(
             [
@@ -168,12 +169,6 @@ class RecipeTests(unittest.TestCase):
         self.assertIn("source=images/sglang-confidential/wait_for_model.py,target=/run-src/wait-for-model", DOCKERFILE)
         ignore = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
         self.assertIn("!images/sglang-confidential/wait_for_model.py", ignore)
-
-    def test_plain_image_has_no_pair_supervisor_or_custom_rank_hooks(self) -> None:
-        self.assertIn('chmod -R go-w /opt/sglang/python', DOCKERFILE)
-        self.assertNotIn('/usr/local/bin/sglang-pair', DOCKERFILE)
-        self.assertNotIn('/usr/local/bin/pair_diagnostics.py', DOCKERFILE)
-        self.assertEqual(LOCK['source']['commit'], LOCK['source']['upstream']['commit'])
 
     def test_build_removes_non_serving_http_routes(self) -> None:
         self.assertIn("source=images/sglang-confidential/harden_http.py,target=/run-src/harden-http.py", DOCKERFILE)

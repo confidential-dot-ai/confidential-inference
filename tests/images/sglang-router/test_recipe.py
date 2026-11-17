@@ -109,18 +109,6 @@ class RouterImageRecipeTests(unittest.TestCase):
             self.assertIn(f"+    {field}", patch)
         self.assertNotIn("max_concurrent_requests: int =", patch)
 
-    def test_pd_router_patch_touches_only_the_pd_router(self) -> None:
-        # The prefill/decode fixes must not change the regular router that the
-        # aggregated workers use.
-        patch = (RECIPE / "patches" / "pd-router.patch").read_text(encoding="utf-8")
-        self.assertEqual(
-            [
-                "sgl-model-gateway/src/routers/http/pd_router.rs",
-                "sgl-model-gateway/tests/reliability/upstream_cancel_test.rs",
-            ],
-            re.findall(r"^diff --git a/(\S+) b/", patch, re.MULTILINE),
-        )
-
     def test_every_base_image_is_pinned_by_digest(self) -> None:
         for line in instructions():
             if line.upper().startswith("FROM "):

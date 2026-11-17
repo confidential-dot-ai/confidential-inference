@@ -135,11 +135,26 @@ open({str(argv)!r},'w').write(json.dumps(sys.argv[1:]))
                 self.assertEqual(["router_started"],
                                  [json.loads(line)["event"] for line in result.stdout.splitlines()])
 
-    def test_launcher_has_no_network_sink(self):
-        source = PROGRAM.read_text(encoding="utf-8")
-        for forbidden in ("urllib", "socket", "http.client", "OTEL_", "private_log_sink", "LogSink"):
-            self.assertNotIn(forbidden, source)
-        self.assertFalse((PROGRAM.parent / "private_log_sink.py").exists())
+    def test_launcher_sends_no_network_events(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = self.fake(directory, "print('private child output', flush=True)\n")
+            audit = Path(directory) / "network-events"
+            audit.write_text("")
+            (Path(directory) / "sitecustomize.py").write_text(
+                "import sys\n"
+                f"path = {str(audit)!r}\n"
+                "def audit(event, args):\n"
+                "    if event in ('socket.connect', 'socket.bind', 'socket.getaddrinfo'):\n"
+                "        with open(path, 'a') as log: log.write(event + '\\n')\n"
+                "sys.addaudithook(audit)\n")
+            environment["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = "http://127.0.0.1:4318/v1/logs"
+            result = subprocess.run([sys.executable, str(PROGRAM)], env=environment,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("", result.stderr)
+            self.assertEqual(["router_started"],
+                             [json.loads(line)["event"] for line in result.stdout.splitlines()])
+            self.assertEqual("", audit.read_text())
 
     def test_emit_refuses_fields_outside_the_contract(self):
         for event, fields in (("router_exit", {"role": "router", "code": "1"}),
