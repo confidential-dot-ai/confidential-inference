@@ -14,17 +14,14 @@ use axum::middleware;
 use clap::Parser;
 use confidential_gateway::{
     GatewayConfig, TracingAuditSink,
-    admin_auth::{
-        AdminRequestVerifier, MAX_API_KEY_HASHES_BYTES, MAX_CERTIFICATE_BYTES,
-        require_signed_admin_request,
-    },
-    admin_client::{self, AdminClient},
-    api_keys::{KeyStore, admin_router},
+    cloud_keys::{self, CloudKeys},
     log_privacy,
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
-    router_with_usage,
+    reporter::ReporterKey,
+    reporter_key_router, router_with_usage,
     settings::GatewaySettings,
+    usage_client::{self, UsageClient},
 };
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 
@@ -40,32 +37,36 @@ const MAXIMUM_UPSTREAM_TIMEOUT_SECONDS: u64 = 86_400;
 /// closes a request with no data for 1 h (v0.101.5), which applies first.
 const MAXIMUM_FIRST_TOKEN_TIMEOUT_SECONDS: u64 = 14_400;
 
-/// The only field of the admin client secret the gateway reads.
-#[derive(serde::Deserialize)]
-struct AdminSecret {
-    token: String,
-}
-
 #[derive(Parser, Debug, Clone)]
 #[command(name = "confidential-gateway")]
 struct Args {
-    // The admin client token: a CDS secret, JSON `{"token": ...}`
-    // (`crate::admin_client`). Other fields of the secret are ignored.
+    // The gateway's CDS secret: a value CDS generates on the first ask and
+    // releases only to the gateway's attested entry. The usage reporter key
+    // (`confidential_gateway::reporter`) and the log pseudonyms are derived
+    // from it.
     #[arg(
         long,
-        env = "GATEWAY_ADMIN_CONFIG_FILE",
-        default_value = "/run/c8s/secrets/product-usage"
+        env = "GATEWAY_SECRET_FILE",
+        default_value = "/run/c8s/secrets/gateway"
     )]
-    admin_config_file: PathBuf,
-    // Where the key pull and usage events go, and which models usage is
-    // recorded for. They are environment, so the allowlist pins them: the
-    // control plane cannot point the gateway's exit at anything else.
-    #[arg(long, env = "GATEWAY_ADMIN_ENDPOINT", default_value = "")]
-    admin_endpoint: String,
+    secret_file: PathBuf,
+    // Where usage goes, where the gateway serves, as Confidential Cloud names
+    // it, and which models usage is recorded for. They are environment, so
+    // the allowlist pins them: the control plane cannot point the gateway's
+    // exit at anything else.
+    #[arg(long, env = "GATEWAY_USAGE_ORIGIN", default_value = "")]
+    usage_origin: String,
+    #[arg(long, env = "GATEWAY_USAGE_LOCATION", default_value = "")]
+    usage_location: String,
     #[arg(long, env = "GATEWAY_USAGE_MODELS", default_value = "{}")]
     usage_models: String,
     #[arg(long, env = "GATEWAY_USAGE_ENABLED", default_value_t = false)]
     usage_enabled: bool,
+    // Confidential Cloud's API origin, which answers whose each key is
+    // (`confidential_gateway::cloud_keys`). Environment, so the allowlist
+    // pins where keys are sent.
+    #[arg(long, env = "GATEWAY_CLOUD_ORIGIN")]
+    cloud_origin: String,
     #[arg(long, env = "GATEWAY_ROUTER_NAMESPACE")]
     router_namespace: Option<String>,
     // The chart's settings JSON. It is environment, so the exact allowlist
@@ -94,30 +95,9 @@ struct Args {
     gateway_instance_id: Option<String>,
     #[arg(long, env = "DEPLOYMENT_ENVIRONMENT")]
     environment: String,
-    #[arg(
-        long,
-        env = "GATEWAY_API_KEY_PEPPER_FILE",
-        default_value = "/run/c8s/secrets/GATEWAY_API_KEY_PEPPER"
-    )]
-    api_key_pepper_file: PathBuf,
     // c8s writes the secrets after the container starts.
     #[arg(long, env = "GATEWAY_SECRET_WAIT_SECONDS", default_value_t = 300)]
     secret_wait_seconds: u64,
-    #[arg(
-        long,
-        env = "GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE",
-        default_value = "/mnt/c8s-data/admin-auth/client.crt"
-    )]
-    admin_signer_certificate_file: PathBuf,
-    // SHA-256 of the accepted admin API keys, from the Kubernetes Secret
-    // gateway-admin-api-key. A missing file accepts only the v1 signature
-    // until the admin cutover (#186).
-    #[arg(
-        long,
-        env = "GATEWAY_ADMIN_API_KEY_HASHES_FILE",
-        default_value = "/mnt/c8s-data/admin-api-key/sha256"
-    )]
-    admin_api_key_hashes_file: PathBuf,
     #[arg(long, env = "GATEWAY_MAXIMUM_BODY_BYTES", default_value_t = 2_097_152)]
     maximum_body_bytes: usize,
     #[arg(long, env = "GATEWAY_UPSTREAM_TIMEOUT_SECONDS", default_value_t = 900)]
@@ -215,32 +195,18 @@ async fn main() -> Result<()> {
 
     let secret_wait = Duration::from_secs(args.secret_wait_seconds);
     let metrics = Arc::new(GatewayMetrics::new(args.environment.clone()));
-    let pepper = wait_for_bounded_file(&args.api_key_pepper_file, 4_096, secret_wait)?;
-    let key_pseudonyms = log_privacy::KeyPseudonyms::from_pepper(&pepper);
+    let secret = wait_for_bounded_file(&args.secret_file, 4_096, secret_wait)?;
+    let key_pseudonyms = log_privacy::KeyPseudonyms::from_secret(&secret);
+    let reporter = ReporterKey::from_secret(&secret).map_err(anyhow::Error::msg)?;
+    drop(secret);
+    tracing::info!("the gateway serves its usage reporter key");
     let keys = Arc::new(
-        KeyStore::new(pepper, &args.environment)
-            .map_err(|_| anyhow::anyhow!("the API key pepper must be at least 32 bytes"))?
-            .with_metrics(metrics.clone()),
+        CloudKeys::new(
+            &cloud_keys::Config::new(args.cloud_origin.clone()),
+            metrics.clone(),
+        )
+        .map_err(anyhow::Error::msg)?,
     );
-    let secret: AdminSecret = serde_json::from_slice(&wait_for_bounded_file(
-        &args.admin_config_file,
-        65_536,
-        secret_wait,
-    )?)
-    .context("invalid admin client secret")?;
-    let admin_config = admin_client::Config {
-        endpoint: args.admin_endpoint.clone(),
-        token: secret.token,
-        tls_ca_pem: None,
-        connect_address: None,
-        models: serde_json::from_str(&args.usage_models).context("invalid GATEWAY_USAGE_MODELS")?,
-    };
-    let admin = Arc::new(AdminClient::new(&admin_config).map_err(anyhow::Error::msg)?);
-    tokio::spawn(admin_client::sync_keys(
-        admin.clone(),
-        keys.clone(),
-        metrics.clone(),
-    ));
     let timeout = Duration::from_secs(args.upstream_timeout_seconds);
     let http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -249,18 +215,31 @@ async fn main() -> Result<()> {
         .build()
         .context("build the internal inference client")?;
     let protection = protection_config(&args);
-    let usage = args.usage_enabled.then(|| {
-        // Each process is one producer instance; the pod hostname is fixed.
-        let instance = format!("gateway-{}", uuid::Uuid::new_v4().simple());
+    let usage = if args.usage_enabled {
+        anyhow::ensure!(
+            !args.usage_location.is_empty(),
+            "GATEWAY_USAGE_LOCATION is required with GATEWAY_USAGE_ENABLED"
+        );
+        let client = Arc::new(
+            UsageClient::new(&usage_client::Config {
+                origin: args.usage_origin.clone(),
+                identity_pem: reporter.identity_pem().to_owned(),
+                tls_ca_pem: None,
+                connect_address: None,
+            })
+            .map_err(anyhow::Error::msg)?,
+        );
         let recorder = confidential_gateway::usage::Recorder::new(
-            &instance,
-            admin_config.models.clone(),
+            &args.usage_location,
+            serde_json::from_str(&args.usage_models).context("invalid GATEWAY_USAGE_MODELS")?,
             confidential_gateway::usage::MAX_PENDING_EVENTS,
             metrics.clone(),
         );
-        tokio::spawn(recorder.clone().deliver(admin.clone()));
-        recorder
-    });
+        tokio::spawn(recorder.clone().deliver(client.clone()));
+        Some((recorder, client))
+    } else {
+        None
+    };
     let public = router_with_usage(
         GatewayConfig {
             catalog_model_ids,
@@ -270,34 +249,14 @@ async fn main() -> Result<()> {
             upstream_timeout: timeout,
             protection,
         },
-        keys.clone(),
+        keys,
         Arc::new(TracingAuditSink::new(key_pseudonyms)),
         metrics.clone(),
         http,
-        usage.clone(),
-    );
-    let public = with_instance_header(public, args.gateway_instance_id.as_deref())?;
-    let admin_certificate =
-        read_bounded(&args.admin_signer_certificate_file, MAX_CERTIFICATE_BYTES)
-            .context("read the admin request signer certificate")?;
-    let mut admin_verifier = AdminRequestVerifier::from_certificate_pem(&admin_certificate)
-        .map_err(anyhow::Error::msg)
-        .context("parse the admin request signer certificate")?;
-    if args.admin_api_key_hashes_file.exists() {
-        let hashes = read_bounded(&args.admin_api_key_hashes_file, MAX_API_KEY_HASHES_BYTES)
-            .context("read the admin API key hashes")?;
-        admin_verifier = admin_verifier
-            .with_api_key_hashes(&hashes)
-            .map_err(anyhow::Error::msg)
-            .context("parse the admin API key hashes")?;
-    } else {
-        tracing::info!("no admin API key file; admin requests need the v1 signature");
-    }
-    let admin_routes = admin_router(keys).layer(middleware::from_fn_with_state(
-        admin_verifier,
-        require_signed_admin_request,
-    ));
-    let app = public.merge(admin_routes);
+        usage.as_ref().map(|(recorder, _)| recorder.clone()),
+    )
+    .merge(reporter_key_router(reporter.public_key_pem().to_owned()));
+    let app = with_instance_header(public, args.gateway_instance_id.as_deref())?;
 
     let metrics_listener = tokio::net::TcpListener::bind(args.metrics_listen)
         .await
@@ -335,8 +294,8 @@ async fn main() -> Result<()> {
         .await
         .context("serve the public gateway")?;
     // Every request has finished, so every usage event is queued.
-    if let Some(usage) = usage {
-        usage.flush(&admin, USAGE_FLUSH_TIMEOUT).await;
+    if let Some((recorder, client)) = usage {
+        recorder.flush(&client, USAGE_FLUSH_TIMEOUT).await;
     }
     Ok(())
 }
@@ -737,10 +696,12 @@ mod tests {
 
     fn args() -> Args {
         Args {
-            admin_config_file: PathBuf::from("/run/c8s/secrets/product-usage"),
-            admin_endpoint: "https://admin.example.com/api/usage/ingest".into(),
+            secret_file: PathBuf::from("/run/c8s/secrets/gateway"),
+            usage_origin: "https://usage.example.com".into(),
+            usage_location: "us-west-1".into(),
             usage_models: "{}".into(),
             usage_enabled: false,
+            cloud_origin: "https://cloud.example.com".into(),
             router_namespace: None,
             runtime_config: None,
             listen: "0.0.0.0:9443".parse().unwrap_or_else(|_| unreachable!()),
@@ -750,10 +711,7 @@ mod tests {
             model: "deepseek-ai/DeepSeek-V4-Flash-0731".to_owned(),
             gateway_instance_id: None,
             environment: "production".to_owned(),
-            api_key_pepper_file: PathBuf::from("/run/c8s/secrets/GATEWAY_API_KEY_PEPPER"),
             secret_wait_seconds: 300,
-            admin_signer_certificate_file: PathBuf::from("/mnt/c8s-data/admin-auth/client.crt"),
-            admin_api_key_hashes_file: PathBuf::from("/mnt/c8s-data/admin-api-key/sha256"),
             maximum_body_bytes: 2_097_152,
             upstream_timeout_seconds: 900,
             maximum_headers: 64,
@@ -908,7 +866,7 @@ mod tests {
 
     #[test]
     fn absent_mounted_inputs_fail_closed() {
-        let missing = PathBuf::from("/definitely-absent/confidential-gateway/pepper");
+        let missing = PathBuf::from("/definitely-absent/confidential-gateway/secret");
         assert!(read_bounded(&missing, 4_096).is_err());
     }
 
@@ -944,7 +902,7 @@ mod tests {
     #[cfg(unix)]
     fn kubelet_symlinked_file_is_accepted() {
         let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let path = kubelet_mount(directory.path(), "pepper", b"identity");
+        let path = kubelet_mount(directory.path(), "secret", b"identity");
         let value = read_bounded(&path, 4_096).unwrap_or_else(|_| unreachable!());
         assert_eq!(value, b"identity");
     }
@@ -953,7 +911,7 @@ mod tests {
     #[cfg(unix)]
     fn kubelet_symlinked_file_over_the_limit_fails() {
         let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let path = kubelet_mount(directory.path(), "pepper", &[b'x'; 4_097]);
+        let path = kubelet_mount(directory.path(), "secret", &[b'x'; 4_097]);
         assert!(read_bounded(&path, 4_096).is_err());
         assert!(read_bounded(&path, 4_097).is_ok());
     }
@@ -982,7 +940,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
         let inner = directory.path().join("..data");
         fs::create_dir(&inner).unwrap_or_else(|_| unreachable!());
-        let path = directory.path().join("pepper");
+        let path = directory.path().join("secret");
         std::os::unix::fs::symlink("..data", &path).unwrap_or_else(|_| unreachable!());
         assert!(read_bounded(&path, 4_096).is_err());
         assert!(read_bounded(directory.path(), 4_096).is_err());
@@ -992,37 +950,37 @@ mod tests {
     #[cfg(unix)]
     fn dangling_kubelet_symlink_is_retried_until_the_target_appears() {
         let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let path = kubelet_link(directory.path(), "pepper");
+        let path = kubelet_link(directory.path(), "secret");
         let mount = directory.path().to_path_buf();
         let handle = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(150));
-            kubelet_data(&mount, "pepper", b"staging-pepper");
+            kubelet_data(&mount, "secret", b"staging-secret");
         });
         let value = wait_for_bounded_file(&path, 4_096, Duration::from_secs(2))
             .unwrap_or_else(|_| unreachable!());
         handle.join().unwrap_or_else(|_| unreachable!());
-        assert_eq!(value, b"staging-pepper");
+        assert_eq!(value, b"staging-secret");
     }
 
     #[test]
     fn delayed_c8s_secret_is_accepted_within_the_startup_window() {
         let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let path = directory.path().join("pepper");
+        let path = directory.path().join("secret");
         let writer = path.clone();
         let handle = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(150));
-            fs::write(writer, b"staging-pepper").unwrap_or_else(|_| unreachable!());
+            fs::write(writer, b"staging-secret").unwrap_or_else(|_| unreachable!());
         });
         let value = wait_for_bounded_file(&path, 4_096, Duration::from_secs(2))
             .unwrap_or_else(|_| unreachable!());
         handle.join().unwrap_or_else(|_| unreachable!());
-        assert_eq!(value, b"staging-pepper");
+        assert_eq!(value, b"staging-secret");
     }
 
     #[test]
     fn absent_c8s_secret_fails_after_the_startup_window() {
         let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        let path = directory.path().join("pepper");
+        let path = directory.path().join("secret");
         assert!(wait_for_bounded_file(&path, 4_096, Duration::from_millis(100)).is_err());
     }
 }
