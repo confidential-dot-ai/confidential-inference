@@ -371,6 +371,7 @@
       "properties": {
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
         "requestTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 172800},
+        "policy": {"enum": ["cache_aware", "consistent_hashing"]},
         "maxConcurrentRequests": {"type": "integer", "minimum": 0, "maximum": 65536},
         "queueSize": {"type": "integer", "minimum": 0, "maximum": 65536},
         "queueTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},

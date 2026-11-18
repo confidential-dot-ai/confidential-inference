@@ -170,17 +170,32 @@ pub fn router_with_usage(
     http: reqwest::Client,
     usage: Option<Arc<usage::Recorder>>,
 ) -> Router {
+    let routing_keys = routing_key::RoutingKeys::generate()
+        .inspect_err(|error| {
+            tracing::error!(%error, "no routing key secret: the router routes requests at random");
+        })
+        .ok();
+    router_with_routing_keys(config, keys, audit, metrics, http, usage, routing_keys)
+}
+
+/// Like `router_with_usage`, with the routing keys given. A deployment passes
+/// keys derived from its API key pepper, so that all its gateways agree.
+#[allow(clippy::too_many_arguments)]
+pub fn router_with_routing_keys(
+    config: GatewayConfig,
+    keys: Arc<dyn ApiKeyVerifier>,
+    audit: Arc<dyn AuditSink>,
+    metrics: Arc<GatewayMetrics>,
+    http: reqwest::Client,
+    usage: Option<Arc<usage::Recorder>>,
+    routing_keys: Option<routing_key::RoutingKeys>,
+) -> Router {
     let protection = Arc::new(ProtectionState::new(config.protection.clone()));
     let router_label = url::Url::parse(&config.upstream_base_url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_owned))
         .unwrap_or_else(|| "fixed-router".into());
-    let routing_keys = routing_key::RoutingKeys::generate()
-        .inspect_err(|error| {
-            tracing::error!(%error, "no routing key secret: the router routes requests at random");
-        })
-        .ok()
-        .map(Arc::new);
+    let routing_keys = routing_keys.map(Arc::new);
     let state = Arc::new(AppState {
         config,
         router_label,

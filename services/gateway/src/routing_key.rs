@@ -7,7 +7,8 @@
 //! without the header goes to a random worker.
 //!
 //! The gateway never forwards a caller's header value. It sends an HMAC, under
-//! a secret drawn at process start, of the caller's API key ID and one of:
+//! a secret derived from the API key pepper, of the caller's API key ID and
+//! one of:
 //!
 //! - the caller's own `X-SMG-Routing-Key`, when it is 1 to 128 visible ASCII
 //!   bytes;
@@ -22,9 +23,13 @@
 //! `/v1/completions` gets a key only from the caller's header: its prompt
 //! grows with each turn, and no fixed part of it identifies a conversation.
 //! The router therefore never sees a client string or prompt text, and one API
-//! key can neither share nor target another key's routing slot. A gateway
-//! restart draws a new secret, so each conversation is assigned a worker
-//! again; replicas would each assign their own.
+//! key can neither share nor target another key's routing slot.
+//!
+//! Every gateway of a deployment reads the same pepper, so every gateway
+//! derives the same key for a conversation, across restarts and replicas. A
+//! router with a key-hashing policy (`consistent_hashing`) then sends the
+//! conversation to one worker whichever gateway it entered through. Rotating
+//! the pepper re-keys every conversation once.
 
 use axum::http::{HeaderName, HeaderValue};
 use hmac::{Hmac, Mac};
@@ -32,10 +37,12 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::Sha256;
 
-/// The header the router's `manual` policy reads.
+/// The header the router's `manual` and `consistent_hashing` policies read.
 pub static HEADER: HeaderName = HeaderName::from_static("x-smg-routing-key");
 
 const CONTEXT: &[u8] = b"confidential.ai/gateway-routing-key/v1";
+// Separates the routing secret from every other use of the pepper.
+const SECRET_CONTEXT: &[u8] = b"confidential.ai/gateway-routing-secret/v1";
 /// The key is 16 bytes of the HMAC: 32 hex characters.
 const KEY_BYTES: usize = 16;
 const MAXIMUM_CLIENT_KEY_BYTES: usize = 128;
@@ -55,6 +62,18 @@ impl RoutingKeys {
         let mut secret = [0; 32];
         getrandom::fill(&mut secret)?;
         Ok(Self { secret })
+    }
+
+    /// Derive the secret from the API key pepper, so that every gateway with
+    /// the same pepper derives the same routing keys.
+    #[must_use]
+    pub fn from_pepper(pepper: &[u8]) -> Self {
+        let mut mac = Hmac::<Sha256>::new_from_slice(pepper)
+            .unwrap_or_else(|_| unreachable!("HMAC accepts a key of any length"));
+        mac.update(SECRET_CONTEXT);
+        Self {
+            secret: mac.finalize().into_bytes().into(),
+        }
     }
 
     #[cfg(test)]
@@ -290,6 +309,22 @@ mod tests {
     }
 
     const CHAT: &str = "/v1/chat/completions";
+
+    #[test]
+    fn gateways_with_one_pepper_derive_the_same_keys() {
+        let payload = turn(&json!([{"role": "user", "content": "hello"}]));
+        let one = RoutingKeys::from_pepper(&[3; 32]).derive("key_record_1", CHAT, None, &payload);
+        let two = RoutingKeys::from_pepper(&[3; 32]).derive("key_record_1", CHAT, None, &payload);
+        let other = RoutingKeys::from_pepper(&[4; 32]).derive("key_record_1", CHAT, None, &payload);
+        assert!(one.is_some());
+        assert_eq!(one, two);
+        assert_ne!(one, other);
+        // The secret is not the pepper itself.
+        assert_ne!(
+            one,
+            RoutingKeys::with_secret([3; 32]).derive("key_record_1", CHAT, None, &payload)
+        );
+    }
 
     fn keys() -> RoutingKeys {
         RoutingKeys::with_secret([7; 32])

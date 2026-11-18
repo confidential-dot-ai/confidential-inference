@@ -317,6 +317,12 @@ router:
   # gateway.protection.upstreamTimeoutSeconds, so the gateway, not the
   # router, ends a long request. The upstream default is 1800.
   requestTimeoutSeconds: 14460
+  # cache_aware: one router picks a worker by prefix match and load.
+  # consistent_hashing: each conversation's routing key (the gateway derives it
+  # from the API key pepper, so every gateway agrees) maps to one worker, and
+  # every router with the same worker list maps it to the same one. Use it when
+  # more than one router serves the same workers.
+  policy: cache_aware
   # Router admission (images/sglang-router, admission-caps.patch). 0 renders
   # no flag: the router admits every request and the workers queue them.
   # A value above 0 is a concurrency ceiling (429 above it, after a wait in a
