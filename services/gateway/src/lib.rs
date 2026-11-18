@@ -389,19 +389,17 @@ async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Re
     let wire = api.wire();
     let body_changed = match api.prepare(&mut payload) {
         Ok(changed) => changed,
-        Err(error) => {
-            state.metrics.record_key_rejection(error.code(), &key_id);
-            return error.response();
+        Err(field) => {
+            state
+                .metrics
+                .record_key_rejection("stateful_responses_request", &key_id);
+            return inference_api::request_error(field);
         }
     };
-    let routing_key = state.routing_keys.as_ref().and_then(|keys| {
-        keys.derive(
-            &key_id,
-            api.upstream_route(),
-            client_routing_key.as_ref(),
-            &payload,
-        )
-    });
+    let routing_key = state
+        .routing_keys
+        .as_ref()
+        .and_then(|keys| keys.derive(&key_id, api.route(), client_routing_key.as_ref(), &payload));
     let mut usage_request = match &state.usage {
         Some(recorder) => match recorder.reserve(&key_id, model) {
             Some(guard) => Some(guard.charge_to(state.keys.clone())),
@@ -451,11 +449,7 @@ async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Re
     let active_request = state.metrics.active_request();
     let mut upstream = state
         .http
-        .post(format!(
-            "{}{}",
-            config.upstream_base_url,
-            api.upstream_route()
-        ))
+        .post(format!("{}{}", config.upstream_base_url, api.route()))
         .timeout(config.upstream_timeout)
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-request-id", &request_id);
@@ -559,7 +553,7 @@ async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Re
             response_metrics.observe(value, observation, &metrics, &metric_model, &metric_key_id, started);
         };
         let expected_model = usage_request.as_ref().map(|usage| usage.served_model().to_owned());
-        let mut model_response = model_response::ModelResponse::new(metric_model.clone(), is_event_stream).hide_final_usage(hide_final_usage).expected_model(expected_model).wire(wire).with_output(model_response::OpenAiOutput);
+        let mut model_response = model_response::ModelResponse::new(metric_model.clone(), is_event_stream).hide_final_usage(hide_final_usage).expected_model(expected_model).wire(wire);
         // The first chunk of a stream comes after the queue and the prefill
         // of the whole prompt, so it has its own, longer timeout.
         let mut wait = first_token_timeout;
@@ -573,7 +567,7 @@ async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Re
                                 if let Some(usage) = &mut usage_request { usage.observation = model_response.observation(); if model_response.stream_done() { usage.finish(model_response.done_outcome()); } }
                                 if !output.is_empty() { yield Ok::<_, std::io::Error>(axum::body::Bytes::from(output)); }
                             },
-                            Err(error) => { if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); } yield model_response.failure(error).map(axum::body::Bytes::from); break; }
+                            Err(error) => { if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); } yield Err(error); break; }
                         }
                     } else {
                         yield Ok::<_, std::io::Error>(chunk);
@@ -581,7 +575,7 @@ async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Re
                 },
                 Ok(Some(Err(_))) => {
                     if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); }
-                    yield model_response.failure(std::io::Error::other("upstream response failed")).map(axum::body::Bytes::from);
+                    yield Err(std::io::Error::other("upstream response failed"));
                     break;
                 }
                 Ok(None) => {
@@ -594,7 +588,7 @@ async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Re
                                 }
                                 if !output.is_empty() { yield Ok(axum::body::Bytes::from(output)); }
                             },
-                            Err(error) => { if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); } yield model_response.failure(error).map(axum::body::Bytes::from); },
+                            Err(error) => { if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); } yield Err(error); },
                         }
                     } else if let Some(usage) = &mut usage_request {
                         usage.finish(if status.is_success() { usage::Outcome::Completed } else { usage::Outcome::Failed });
@@ -603,7 +597,7 @@ async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Re
                 },
                 Err(_) => {
                     if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); }
-                    yield model_response.failure(std::io::Error::new(std::io::ErrorKind::TimedOut, "upstream stream timed out")).map(axum::body::Bytes::from);
+                    yield Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "upstream stream timed out"));
                     break;
                 }
             }
@@ -717,9 +711,6 @@ fn limit_rejected(
     )
         .into_response();
     response
-        .extensions_mut()
-        .insert(inference_api::ErrorCode(code));
-    response
         .headers_mut()
         .insert(header::RETRY_AFTER, HeaderValue::from(retry_after_seconds));
     response
@@ -729,13 +720,11 @@ fn limit_rejected(
 }
 
 fn client_error(status: StatusCode, code: &'static str) -> Response<Body> {
-    let code = inference_api::ErrorCode(code);
-    let mut response = (
+    (
         status,
-        Json(json!({"error":{"code":code.0,"message":status.canonical_reason().unwrap_or("Request failed.")}})),
-    ).into_response();
-    response.extensions_mut().insert(code);
-    response
+        Json(json!({"error":{"code":code,"message":status.canonical_reason().unwrap_or("Request failed.")}})),
+    )
+        .into_response()
 }
 
 /// The fixed error body for a non-success status of the inference server.
@@ -756,7 +745,7 @@ fn upstream_error(status: StatusCode) -> Response<Body> {
     } else {
         "server_error"
     };
-    inference_api::tag_error((
+    (
         status,
         Json(json!({"error":{
             "code": code,
@@ -765,7 +754,7 @@ fn upstream_error(status: StatusCode) -> Response<Body> {
             "message": "The inference server did not accept the request. The gateway does not return its error text.",
         }})),
     )
-        .into_response(), code)
+        .into_response()
 }
 
 fn inference_unavailable() -> Response<Body> {
@@ -777,9 +766,6 @@ fn inference_unavailable() -> Response<Body> {
         }})),
     )
         .into_response();
-    response
-        .extensions_mut()
-        .insert(inference_api::ErrorCode("inference_unavailable"));
     response
         .headers_mut()
         .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));

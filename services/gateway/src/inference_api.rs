@@ -15,32 +15,6 @@ pub(crate) enum Api {
     Responses,
 }
 
-/// A fixed code for a later API-specific error renderer. Never upstream text.
-#[derive(Clone, Copy)]
-pub(crate) struct ErrorCode(pub(crate) &'static str);
-
-pub(crate) fn tag_error(mut response: Response<Body>, code: &'static str) -> Response<Body> {
-    response.extensions_mut().insert(ErrorCode(code));
-    response
-}
-
-pub(crate) enum RequestError {
-    StatefulResponses(&'static str),
-}
-
-impl RequestError {
-    pub(crate) fn code(&self) -> &'static str {
-        match self {
-            Self::StatefulResponses(_) => "stateful_responses_request",
-        }
-    }
-    pub(crate) fn response(self) -> Response<Body> {
-        match self {
-            Self::StatefulResponses(field) => stateful_responses_request(field),
-        }
-    }
-}
-
 impl Api {
     pub(crate) fn route(self) -> &'static str {
         match self {
@@ -48,9 +22,6 @@ impl Api {
             Self::ChatCompletions => "/v1/chat/completions",
             Self::Responses => "/v1/responses",
         }
-    }
-    pub(crate) fn upstream_route(self) -> &'static str {
-        self.route()
     }
     pub(crate) fn wire(self) -> Wire {
         match self {
@@ -60,9 +31,9 @@ impl Api {
     }
 
     /// Return whether a stated policy changed the body.
-    pub(crate) fn prepare(self, payload: &mut Value) -> Result<bool, RequestError> {
+    pub(crate) fn prepare(self, payload: &mut Value) -> Result<bool, &'static str> {
         if self == Self::Responses {
-            stateless_responses_request(payload).map_err(RequestError::StatefulResponses)?;
+            stateless_responses_request(payload)?;
             Ok(true)
         } else {
             Ok(false)
@@ -113,7 +84,7 @@ fn stateless_responses_request(payload: &mut Value) -> Result<(), &'static str> 
     Ok(())
 }
 
-fn stateful_responses_request(field: &'static str) -> Response<Body> {
+pub(crate) fn request_error(field: &'static str) -> Response<Body> {
     let or_false = if matches!(field, "store" | "background") {
         " or set it to false"
     } else {
@@ -122,15 +93,12 @@ fn stateful_responses_request(field: &'static str) -> Response<Body> {
     let message = format!(
         "The gateway keeps no response state. Remove `{field}`{or_false}, and send the full input with each request."
     );
-    tag_error(
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":{
-                "code":"stateful_responses_not_supported",
-                "message":message,
-            }})),
-        )
-            .into_response(),
-        "stateful_responses_not_supported",
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"error":{
+            "code":"stateful_responses_not_supported",
+            "message":message,
+        }})),
     )
+        .into_response()
 }
