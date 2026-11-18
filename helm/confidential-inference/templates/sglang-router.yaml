@@ -138,6 +138,9 @@ spec:
             # The total time of one worker request, its stream included. The
             # gateway's upstreamTimeoutSeconds ends a request first.
             - --request-timeout-secs={{ .Values.router.requestTimeoutSeconds }}
+            # One failed health check run marks the only worker unavailable; hold
+            # requests for it instead of answering 503 (worker-wait.patch).
+            - --worker-wait-secs={{ .Values.router.workerWaitSeconds }}
             {{- if gt (int .Values.router.maxConcurrentRequests) 0 }}
             - --max-concurrent-requests={{ .Values.router.maxConcurrentRequests }}
             - --queue-size={{ .Values.router.queueSize }}

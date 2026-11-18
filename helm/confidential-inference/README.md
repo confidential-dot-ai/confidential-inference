@@ -214,6 +214,9 @@ GPU capacity with [docs/long-context-sizing.md](../../docs/long-context-sizing.m
   `upstreamTimeoutSeconds` (default 14400) is the whole request.
 - `router.requestTimeoutSeconds` (default 14460) must be at least
   `upstreamTimeoutSeconds`.
+- `router.workerWaitSeconds` (default 30) is how long the router holds a
+  request while no worker is available (failed health checks, or the only
+  worker restarting) before 503 `no_available_workers`.
 - `router.maxConcurrentRequests` (default 0, off) must be at least
   `inference.replicas` x the worker's `--max-running-requests`.
 - `inference.contextLength` and `inference.maxRunningRequests` (default 0:

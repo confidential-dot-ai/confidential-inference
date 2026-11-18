@@ -29,6 +29,8 @@ EXPECTED_PATCHES = [
     ("patches/private-errors.patch", "645f17a966d2476663052cf7be423eba06d55571abfbf47726217ca7494f6aa8"),
     # A worker's 4xx is not a worker fault in the regular router.
     ("patches/client-errors.patch", "beeb92df439945d48d1a68a51bf853078481846a0fb8b436cacf071ccffa4761"),
+    # Hold a request while no worker is available (--worker-wait-secs).
+    ("patches/worker-wait.patch", "a4a35e3e39a4d74cb6b56bece6d96bfd1936fddbb3a345c5d23c3ff1b72b161c"),
 ]
 
 

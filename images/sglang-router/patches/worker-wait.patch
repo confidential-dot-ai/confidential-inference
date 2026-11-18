@@ -1,0 +1,362 @@
+diff --git a/sgl-model-gateway/bindings/python/src/lib.rs b/sgl-model-gateway/bindings/python/src/lib.rs
+index 7d44bc07c5..00e2b8b75d 100644
+--- a/sgl-model-gateway/bindings/python/src/lib.rs
++++ b/sgl-model-gateway/bindings/python/src/lib.rs
+@@ -417,6 +417,7 @@ struct Router {
+     max_inflight_megapixels: i64,
+     max_images_per_request: i64,
+     unmeasured_image_megapixels: i64,
++    worker_wait_secs: u64,
+     connection_mode: core::ConnectionMode,
+     model_path: Option<String>,
+     tokenizer_path: Option<String>,
+@@ -610,6 +611,7 @@ impl Router {
+             .max_inflight_megapixels(self.max_inflight_megapixels)
+             .max_images_per_request(self.max_images_per_request)
+             .unmeasured_image_megapixels(self.unmeasured_image_megapixels)
++            .worker_wait_secs(self.worker_wait_secs)
+             .cors_allowed_origins(self.cors_allowed_origins.clone())
+             .retry_config(config::RetryConfig {
+                 max_retries: self.retry_max_retries,
+@@ -748,6 +750,7 @@ impl Router {
+         max_inflight_megapixels = 0,
+         max_images_per_request = 0,
+         unmeasured_image_megapixels = 0,
++        worker_wait_secs = 0,
+         model_path = None,
+         tokenizer_path = None,
+         chat_template = None,
+@@ -845,6 +848,7 @@ impl Router {
+         max_inflight_megapixels: i64,
+         max_images_per_request: i64,
+         unmeasured_image_megapixels: i64,
++        worker_wait_secs: u64,
+         model_path: Option<String>,
+         tokenizer_path: Option<String>,
+         chat_template: Option<String>,
+@@ -955,6 +959,7 @@ impl Router {
+             max_inflight_megapixels,
+             max_images_per_request,
+             unmeasured_image_megapixels,
++            worker_wait_secs,
+             connection_mode,
+             model_path,
+             tokenizer_path,
+diff --git a/sgl-model-gateway/bindings/python/src/sglang_router/router.py b/sgl-model-gateway/bindings/python/src/sglang_router/router.py
+index e70f35926f..99ac4d5748 100644
+--- a/sgl-model-gateway/bindings/python/src/sglang_router/router.py
++++ b/sgl-model-gateway/bindings/python/src/sglang_router/router.py
+@@ -216,6 +216,7 @@ class Router:
+         max_inflight_megapixels: Ceiling on image area in flight in megapixels, 429 above it (0 = disabled). Default: 0
+         max_images_per_request: Images accepted in one request, 400 above it (0 = disabled). Default: 0
+         unmeasured_image_megapixels: Area charged to an image whose size cannot be read, in megapixels (0 = built-in default). Default: 0
++        worker_wait_secs: Seconds a request waits for an available worker before 503 no_available_workers (0 = answer at once). Default: 0
+         cors_allowed_origins: List of allowed origins for CORS. Empty list allows all origins. Default: []
+         health_failure_threshold: Number of consecutive health check failures before marking worker unhealthy. Default: 3
+         health_success_threshold: Number of consecutive health check successes before marking worker healthy. Default: 2
+diff --git a/sgl-model-gateway/bindings/python/src/sglang_router/router_args.py b/sgl-model-gateway/bindings/python/src/sglang_router/router_args.py
+index 931f491cb8..d1326cc237 100644
+--- a/sgl-model-gateway/bindings/python/src/sglang_router/router_args.py
++++ b/sgl-model-gateway/bindings/python/src/sglang_router/router_args.py
+@@ -109,6 +109,8 @@ class RouterArgs:
+     max_images_per_request: int = 0
+     # Area charged to an image whose size cannot be read, in megapixels. 0 = built-in default.
+     unmeasured_image_megapixels: int = 0
++    # Seconds a request waits for an available worker before 503. 0 = answer at once.
++    worker_wait_secs: int = 0
+     # CORS allowed origins
+     cors_allowed_origins: List[str] = dataclasses.field(default_factory=list)
+     # Retry configuration
+@@ -621,6 +623,15 @@ class RouterArgs:
+             help="Area charged to an image whose dimensions cannot be read (remote "
+             "URLs), in megapixels. 0 uses the built-in default.",
+         )
++        rate_limit_group.add_argument(
++            f"--{prefix}worker-wait-secs",
++            type=int,
++            metavar="SECS",
++            default=RouterArgs.worker_wait_secs,
++            help="Hold a request up to SECS for a worker to become available (healthy, "
++            "circuit not open) before 503 no_available_workers. Covers a health-check "
++            "blip or a restart of the only worker. 0 answers at once.",
++        )
+ 
+         # Retry configuration
+         retry_group.add_argument(
+diff --git a/sgl-model-gateway/src/config/builder.rs b/sgl-model-gateway/src/config/builder.rs
+index fb915e82a2..5a092c8b37 100644
+--- a/sgl-model-gateway/src/config/builder.rs
++++ b/sgl-model-gateway/src/config/builder.rs
+@@ -254,6 +254,11 @@ impl RouterConfigBuilder {
+         self
+     }
+ 
++    pub fn worker_wait_secs(mut self, secs: u64) -> Self {
++        self.config.worker_wait_secs = secs;
++        self
++    }
++
+     pub fn rate_limit_tokens_per_second(mut self, tokens: i32) -> Self {
+         self.config.rate_limit_tokens_per_second = Some(tokens);
+         self
+diff --git a/sgl-model-gateway/src/config/types.rs b/sgl-model-gateway/src/config/types.rs
+index 0009d14359..2ff9df7d39 100644
+--- a/sgl-model-gateway/src/config/types.rs
++++ b/sgl-model-gateway/src/config/types.rs
+@@ -55,6 +55,11 @@ pub struct RouterConfig {
+     /// unknowable at admission. 0 falls back to `UNMEASURED_IMAGE_PIXELS`.
+     #[serde(default)]
+     pub unmeasured_image_megapixels: i64,
++    /// Seconds a request waits for a worker to become available (healthy,
++    /// circuit not open) before 503 `no_available_workers`. Shared by its retry
++    /// attempts. 0 answers at once.
++    #[serde(default)]
++    pub worker_wait_secs: u64,
+     pub discovery: Option<DiscoveryConfig>,
+     pub metrics: Option<MetricsConfig>,
+     pub trace_config: Option<TraceConfig>,
+@@ -551,6 +556,7 @@ impl Default for RouterConfig {
+             max_inflight_megapixels: 0,
+             max_images_per_request: 0,
+             unmeasured_image_megapixels: 0,
++            worker_wait_secs: 0,
+             discovery: None,
+             metrics: None,
+             trace_config: None,
+diff --git a/sgl-model-gateway/src/main.rs b/sgl-model-gateway/src/main.rs
+index 070e528f18..2f20746fa5 100644
+--- a/sgl-model-gateway/src/main.rs
++++ b/sgl-model-gateway/src/main.rs
+@@ -401,6 +401,17 @@ struct CliArgs {
+     )]
+     unmeasured_image_megapixels: i64,
+ 
++    /// Seconds a request waits for an available worker before 503
++    /// no_available_workers (0 = answer at once)
++    #[arg(
++        long,
++        value_name = "SECS",
++        env = "SMG_WORKER_WAIT_SECS",
++        default_value_t = 0,
++        help_heading = "Rate Limiting"
++    )]
++    worker_wait_secs: u64,
++
+     // ==================== Retry Configuration ====================
+     /// Maximum number of retry attempts
+     #[arg(long, default_value_t = 5, help_heading = "Retry Configuration")]
+@@ -1070,6 +1081,7 @@ impl CliArgs {
+             .max_inflight_megapixels(self.max_inflight_megapixels)
+             .max_images_per_request(self.max_images_per_request)
+             .unmeasured_image_megapixels(self.unmeasured_image_megapixels)
++            .worker_wait_secs(self.worker_wait_secs)
+             .cors_allowed_origins(self.cors_allowed_origins.clone())
+             .retry_config(RetryConfig {
+                 max_retries: self.retry_max_retries,
+diff --git a/sgl-model-gateway/src/routers/http/router.rs b/sgl-model-gateway/src/routers/http/router.rs
+index 89ae5629f9..d186339c6b 100644
+--- a/sgl-model-gateway/src/routers/http/router.rs
++++ b/sgl-model-gateway/src/routers/http/router.rs
+@@ -1,4 +1,7 @@
+-use std::{sync::Arc, time::Instant};
++use std::{
++    sync::Arc,
++    time::{Duration, Instant},
++};
+ 
+ use axum::{
+     body::{to_bytes, Body},
+@@ -51,8 +54,12 @@ pub struct Router {
+     dp_aware: bool,
+     enable_igw: bool,
+     retry_config: RetryConfig,
++    worker_wait: Duration,
+ }
+ 
++/// Worker health changes on the health-check interval (seconds), so a coarse poll loses nothing.
++const WORKER_WAIT_POLL: Duration = Duration::from_millis(100);
++
+ impl std::fmt::Debug for Router {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         f.debug_struct("Router")
+@@ -62,6 +69,7 @@ impl std::fmt::Debug for Router {
+             .field("dp_aware", &self.dp_aware)
+             .field("enable_igw", &self.enable_igw)
+             .field("retry_config", &self.retry_config)
++            .field("worker_wait", &self.worker_wait)
+             .finish()
+     }
+ }
+@@ -76,6 +84,7 @@ impl Router {
+             dp_aware: ctx.router_config.dp_aware,
+             enable_igw: ctx.router_config.enable_igw,
+             retry_config: ctx.router_config.effective_retry_config(),
++            worker_wait: Duration::from_secs(ctx.router_config.worker_wait_secs),
+         })
+     }
+ 
+@@ -130,14 +139,12 @@ impl Router {
+         }
+     }
+ 
+-    /// Select worker for a specific model considering circuit breaker state
+-    async fn select_worker_for_model(
++    /// Workers a request for this model could be sent to now: healthy, circuit not open.
++    fn available_workers(
+         &self,
+         model_id: Option<&str>,
+         backends: Option<&[String]>,
+-        text: Option<&str>,
+-        headers: Option<&HeaderMap>,
+-    ) -> Option<Arc<dyn Worker>> {
++    ) -> Vec<Arc<dyn Worker>> {
+         let effective_model_id = if !self.enable_igw { None } else { model_id };
+ 
+         // Get workers for the specified model O(1), filtered by connection mode
+@@ -153,11 +160,40 @@ impl Router {
+             )
+         };
+ 
+-        let available: Vec<Arc<dyn Worker>> = workers
++        workers
+             .iter()
+             .filter(|w| w.is_available())
+             .cloned()
+-            .collect();
++            .collect()
++    }
++
++    /// Hold a request until a worker is available or `deadline` passes. A health-check
++    /// blip, or the restart of the only worker, then delays requests instead of failing them.
++    async fn wait_for_available_worker(
++        &self,
++        model_id: Option<&str>,
++        backends: Option<&[String]>,
++        deadline: Instant,
++    ) {
++        loop {
++            let now = Instant::now();
++            if now >= deadline || !self.available_workers(model_id, backends).is_empty() {
++                return;
++            }
++            tokio::time::sleep(WORKER_WAIT_POLL.min(deadline - now)).await;
++        }
++    }
++
++    /// Select worker for a specific model considering circuit breaker state
++    async fn select_worker_for_model(
++        &self,
++        model_id: Option<&str>,
++        backends: Option<&[String]>,
++        text: Option<&str>,
++        headers: Option<&HeaderMap>,
++    ) -> Option<Arc<dyn Worker>> {
++        let effective_model_id = if !self.enable_igw { None } else { model_id };
++        let available = self.available_workers(model_id, backends);
+         if available.is_empty() {
+             return None;
+         }
+@@ -214,6 +250,8 @@ impl Router {
+         // or any of its retry attempts to another model.
+         let backends = self.worker_registry.resolve_model_route(model_id);
+         let selected_backend = std::sync::Mutex::new(None::<String>);
++        // One wait budget per request, not per retry attempt.
++        let worker_deadline = start + self.worker_wait;
+         let endpoint = route_to_endpoint(route);
+ 
+         // Record request start (Layer 2)
+@@ -230,6 +268,16 @@ impl Router {
+             &self.retry_config,
+             // operation per attempt
+             |_: u32| async {
++                let pinned = selected_backend.lock().unwrap().clone();
++                self.wait_for_available_worker(
++                    model_id,
++                    pinned
++                        .as_ref()
++                        .map(std::slice::from_ref)
++                        .or(backends.as_deref()),
++                    worker_deadline,
++                )
++                .await;
+                 let res = self
+                     .route_typed_request_once(
+                         headers,
+@@ -1095,6 +1143,69 @@ mod tests {
+         server.abort();
+     }
+ 
++    /// A request arriving while the only worker is unhealthy waits for it,
++    /// within --worker-wait-secs, instead of failing with 503.
++    #[tokio::test]
++    async fn test_request_waits_for_a_worker_to_become_available() {
++        let backend = axum::Router::new().route(
++            "/v1/completions",
++            axum::routing::post(|| async { Json(serde_json::json!({"ok": true})) }),
++        );
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let url = format!("http://{}", listener.local_addr().unwrap());
++        let server = tokio::spawn(async move {
++            axum::serve(listener, backend).await.unwrap();
++        });
++        let request: CompletionRequest = serde_json::from_value(serde_json::json!({
++            "model": "test-model", "prompt": "test", "max_tokens": 2
++        }))
++        .unwrap();
++        let only_worker = |router: &Router| {
++            for (id, _) in router.worker_registry.get_all_with_ids() {
++                router.worker_registry.remove(&id);
++            }
++            let worker: Arc<dyn Worker> = Arc::new(BasicWorkerBuilder::new(&url).build());
++            worker.set_healthy(false);
++            router.worker_registry.register(worker.clone());
++            worker
++        };
++
++        // Without a wait budget the router answers 503 at once (after its retries).
++        let router = create_test_regular_router();
++        only_worker(&router);
++        let response = router
++            .route_typed_request(None, &request, "/v1/completions", None)
++            .await;
++        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
++
++        let mut router = create_test_regular_router();
++        router.worker_wait = Duration::from_secs(10);
++        let worker = only_worker(&router);
++        let recover = tokio::spawn(async move {
++            tokio::time::sleep(Duration::from_millis(1500)).await;
++            worker.set_healthy(true);
++        });
++        let started = Instant::now();
++        let response = router
++            .route_typed_request(None, &request, "/v1/completions", None)
++            .await;
++        assert_eq!(response.status(), StatusCode::OK);
++        assert!(started.elapsed() >= Duration::from_millis(1400));
++        recover.await.unwrap();
++
++        // The budget is per request: once spent, the request fails without waiting again.
++        let mut router = create_test_regular_router();
++        router.worker_wait = Duration::from_millis(300);
++        only_worker(&router);
++        let started = Instant::now();
++        let response = router
++            .route_typed_request(None, &request, "/v1/completions", None)
++            .await;
++        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
++        assert!(started.elapsed() < Duration::from_secs(5));
++        server.abort();
++    }
++
+     fn create_test_regular_router() -> Router {
+         // Create registries
+         let worker_registry = Arc::new(WorkerRegistry::new());
+@@ -1119,6 +1230,7 @@ mod tests {
+             client: Client::new(),
+             retry_config: RetryConfig::default(),
+             enable_igw: false,
++            worker_wait: Duration::ZERO,
+         }
+     }
+ 
