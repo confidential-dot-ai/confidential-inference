@@ -27,19 +27,28 @@ pub(crate) enum Wire {
     Responses,
 }
 
-fn rewrite_value(mut value: Value, model: &str) -> io::Result<Vec<u8>> {
+fn encode(value: &Value, streaming: bool, ending: &[u8]) -> io::Result<Vec<u8>> {
+    let mut output = if streaming {
+        b"data: ".to_vec()
+    } else {
+        Vec::new()
+    };
+    serde_json::to_writer(&mut output, value).map_err(io::Error::other)?;
+    output.extend_from_slice(ending);
+    Ok(output)
+}
+
+fn rewrite_value(value: &mut Value, model: &str) {
     if let Some(name) = value.get_mut("model") {
         *name = Value::String(model.to_owned());
     }
-    // A Responses API stream event carries the model in its `response`.
     if let Some(name) = value
         .get_mut("response")
-        .filter(|response| response.is_object())
-        .and_then(|response| response.get_mut("model"))
+        .filter(|v| v.is_object())
+        .and_then(|v| v.get_mut("model"))
     {
         *name = Value::String(model.to_owned());
     }
-    serde_json::to_vec(&value).map_err(io::Error::other)
 }
 
 /// The object of a Responses API value that can carry `model` and `usage`:
@@ -81,7 +90,6 @@ impl ModelResponse {
             stream_failed: false,
         }
     }
-
     pub(crate) fn wire(mut self, wire: Wire) -> Self {
         self.wire = wire;
         self
@@ -212,14 +220,23 @@ impl ModelResponse {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn push(&mut self, bytes: &[u8]) -> io::Result<Vec<u8>> {
+        self.push_observed(bytes, &mut |_, _| {})
+    }
+
+    pub(crate) fn push_observed(
+        &mut self,
+        bytes: &[u8],
+        observe: &mut impl FnMut(&Value, Observation),
+    ) -> io::Result<Vec<u8>> {
         let mut output = Vec::new();
         if self.event_stream {
             // Process lines as they arrive, including split UTF-8 and CRLF.
             for segment in bytes.split_inclusive(|byte| *byte == b'\n') {
                 self.append(segment)?;
                 if self.pending.last() == Some(&b'\n') {
-                    output.extend(self.line()?);
+                    output.extend(self.line(observe)?);
                     self.pending.clear();
                 }
             }
@@ -239,7 +256,7 @@ impl ModelResponse {
         Ok(())
     }
 
-    fn line(&mut self) -> io::Result<Vec<u8>> {
+    fn line(&mut self, observe: &mut impl FnMut(&Value, Observation)) -> io::Result<Vec<u8>> {
         let Some(data) = self.pending.strip_prefix(b"data:") else {
             return Ok(self.pending.clone());
         };
@@ -247,13 +264,15 @@ impl ModelResponse {
         let payload = data.strip_suffix(b"\n").unwrap_or(data);
         let payload = payload.strip_suffix(b"\r").unwrap_or(payload);
         if payload == b"[DONE]" {
-            self.stream_done = true;
+            if self.wire == Wire::Completions {
+                self.stream_done = true;
+            }
             return Ok(self.pending.clone());
         }
         if payload.is_empty() {
             return Ok(self.pending.clone());
         }
-        let value: Value = serde_json::from_slice(payload)
+        let mut value: Value = serde_json::from_slice(payload)
             .map_err(|_| io::Error::other("invalid upstream completion JSON"))?;
         let final_usage = match self.wire {
             Wire::Completions => {
@@ -278,28 +297,43 @@ impl ModelResponse {
             }
         };
         self.observe(&value, final_usage);
+        observe(&value, self.observation);
         if final_usage && self.hide_final_usage {
             return Ok(Vec::new());
         }
-        let rewritten = rewrite_value(value, &self.model)?;
-        let mut output = b"data: ".to_vec();
-        output.extend(rewritten);
-        if self.pending.ends_with(b"\r\n") {
-            output.extend(b"\r\n");
+        rewrite_value(&mut value, &self.model);
+        let ending: &[u8] = if self.pending.ends_with(b"\r\n") {
+            b"\r\n"
         } else if self.pending.ends_with(b"\n") {
-            output.push(b'\n');
-        }
-        Ok(output)
+            b"\n"
+        } else {
+            b""
+        };
+        encode(&value, true, ending)
     }
 
+    #[cfg(test)]
     pub(crate) fn finish(&mut self) -> io::Result<Vec<u8>> {
+        self.finish_observed(&mut |_, _| {})
+    }
+
+    pub(crate) fn finish_observed(
+        &mut self,
+        observe: &mut impl FnMut(&Value, Observation),
+    ) -> io::Result<Vec<u8>> {
         if self.event_stream {
-            self.line()
+            // Consume the final pending line only once.
+            let result = self.line(observe)?;
+            self.pending.clear();
+            Ok(result)
         } else {
-            let value: Value = serde_json::from_slice(&self.pending)
+            let mut value: Value = serde_json::from_slice(&self.pending)
                 .map_err(|_| io::Error::other("invalid upstream completion JSON"))?;
+            self.pending.clear();
             self.observe(&value, true);
-            rewrite_value(value, &self.model)
+            observe(&value, self.observation);
+            rewrite_value(&mut value, &self.model);
+            encode(&value, false, b"")
         }
     }
 }
