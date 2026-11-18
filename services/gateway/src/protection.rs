@@ -12,10 +12,8 @@ use axum::{
     extract::{ConnectInfo, Request, State},
     http::{HeaderMap, HeaderValue, Response, StatusCode, header},
     middleware::Next,
-    response::IntoResponse,
 };
 use ipnet::IpNet;
-use serde_json::json;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const ADDRESS_CAPACITY: usize = 4_096;
@@ -294,11 +292,7 @@ fn error(
     code: &'static str,
     retry_after: Option<&'static str>,
 ) -> Response<Body> {
-    let mut response = (
-        status,
-        axum::Json(json!({"error":{"code":code,"message":status.canonical_reason().unwrap_or("Request failed.")}})),
-    )
-        .into_response();
+    let mut response = crate::client_error(status, code);
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

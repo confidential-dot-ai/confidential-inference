@@ -26,6 +26,7 @@ use uuid::Uuid;
 pub mod admin_auth;
 pub mod admin_client;
 pub mod api_keys;
+mod inference_api;
 pub mod key_limits;
 pub mod key_registry;
 pub mod log_privacy;
@@ -33,12 +34,15 @@ pub mod metrics;
 mod model_response;
 pub mod protection;
 pub mod request_body;
+mod response_metrics;
 pub mod routing_key;
 pub mod settings;
 pub mod usage;
 
+use inference_api::Api;
 use metrics::GatewayMetrics;
 use protection::{ProtectionConfig, ProtectionState};
+use response_metrics::ResponseMetrics;
 
 pub trait ApiKeyVerifier: Send + Sync + 'static {
     fn verify_bearer(&self, bearer: &str) -> Option<String>;
@@ -281,88 +285,24 @@ async fn models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
 }
 
 async fn chat_completions(State(state): State<Arc<AppState>>, request: Request) -> Response<Body> {
-    proxy_inference(state, request, "/v1/chat/completions").await
+    proxy_inference(state, request, Api::ChatCompletions).await
 }
 
 async fn completions(State(state): State<Arc<AppState>>, request: Request) -> Response<Body> {
-    proxy_inference(state, request, "/v1/completions").await
+    proxy_inference(state, request, Api::Completions).await
 }
 
 /// The `OpenAI` Responses API. The `SGLang` worker serves it natively and the
 /// router forwards it, so the gateway proxies it like the completion routes. The
 /// gateway keeps no response state, so it accepts only stateless requests
-/// (`stateless_responses_request`).
+/// (`inference_api::Api::prepare`).
 async fn responses(State(state): State<Arc<AppState>>, request: Request) -> Response<Body> {
-    proxy_inference(state, request, "/v1/responses").await
-}
-
-fn wire_of(route: &str) -> model_response::Wire {
-    if route == "/v1/responses" {
-        model_response::Wire::Responses
-    } else {
-        model_response::Wire::Completions
-    }
-}
-
-/// Refuse each Responses API request field that needs server-side state, and
-/// tell the upstream not to store the response.
-///
-/// No component of this service may keep a conversation: a stored response
-/// would hold prompt and output text after the request ends, and a later
-/// request could reach a different worker. The caller sends the full input
-/// with each request instead. A `null` value counts as absent.
-///
-/// Returns the refused field. A body that is not a JSON object passes
-/// unchanged; the upstream rejects it.
-fn stateless_responses_request(payload: &mut Value) -> Result<(), &'static str> {
-    let Some(object) = payload.as_object_mut() else {
-        return Ok(());
-    };
-    for field in ["previous_response_id", "conversation"] {
-        if object.get(field).is_some_and(|value| !value.is_null()) {
-            return Err(field);
-        }
-    }
-    for field in ["store", "background"] {
-        match object.get(field) {
-            None | Some(Value::Null | Value::Bool(false)) => {}
-            Some(_) => return Err(field),
-        }
-    }
-    // OpenAI and SGLang both default `store` to true.
-    object.insert("store".to_owned(), Value::Bool(false));
-    // The router's typed request turns an absent `stream` into `null`.
-    if object.get("stream").is_none_or(Value::is_null) {
-        object.insert("stream".to_owned(), Value::Bool(false));
-    }
-    Ok(())
-}
-
-fn stateful_responses_request(field: &'static str) -> Response<Body> {
-    let or_false = if matches!(field, "store" | "background") {
-        " or set it to false"
-    } else {
-        ""
-    };
-    let message = format!(
-        "The gateway keeps no response state. Remove `{field}`{or_false}, and send the full input with each request."
-    );
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({"error":{
-            "code":"stateful_responses_not_supported",
-            "message":message,
-        }})),
-    )
-        .into_response()
+    proxy_inference(state, request, Api::Responses).await
 }
 
 #[allow(clippy::too_many_lines)]
-async fn proxy_inference(
-    state: Arc<AppState>,
-    request: Request,
-    route: &'static str,
-) -> Response<Body> {
+async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Response<Body> {
+    let route = api.route();
     let config = &state.config;
     let request_id = request
         .extensions()
@@ -446,19 +386,22 @@ async fn proxy_inference(
         return client_error(StatusCode::UNAUTHORIZED, "model_not_authorized");
     }
     let model = model.as_str();
-    let wire = wire_of(route);
-    if wire == model_response::Wire::Responses
-        && let Err(field) = stateless_responses_request(&mut payload)
-    {
-        state
-            .metrics
-            .record_key_rejection("stateful_responses_request", &key_id);
-        return stateful_responses_request(field);
-    }
-    let routing_key = state
-        .routing_keys
-        .as_ref()
-        .and_then(|keys| keys.derive(&key_id, route, client_routing_key.as_ref(), &payload));
+    let wire = api.wire();
+    let body_changed = match api.prepare(&mut payload) {
+        Ok(changed) => changed,
+        Err(error) => {
+            state.metrics.record_key_rejection(error.code(), &key_id);
+            return error.response();
+        }
+    };
+    let routing_key = state.routing_keys.as_ref().and_then(|keys| {
+        keys.derive(
+            &key_id,
+            api.upstream_route(),
+            client_routing_key.as_ref(),
+            &payload,
+        )
+    });
     let mut usage_request = match &state.usage {
         Some(recorder) => match recorder.reserve(&key_id, model) {
             Some(guard) => Some(guard.charge_to(state.keys.clone())),
@@ -466,18 +409,9 @@ async fn proxy_inference(
         },
         None => None,
     };
-    // A Responses API stream always ends with its usage, in the terminal
-    // `response.*` event; only the completion routes need `stream_options`.
-    let internal_stream_usage = wire == model_response::Wire::Completions
-        && usage_request.is_some()
-        && payload.get("stream").and_then(Value::as_bool) == Some(true);
-    let hide_final_usage = internal_stream_usage
-        && payload
-            .get("stream_options")
-            .and_then(|v| v.get("include_usage"))
-            .and_then(Value::as_bool)
-            != Some(true);
-    let body = if internal_stream_usage || wire == model_response::Wire::Responses {
+    let internal_stream_usage = api.stream_usage(&payload, usage_request.is_some());
+    let hide_final_usage = api.hide_usage(&payload, internal_stream_usage);
+    let body = if internal_stream_usage || body_changed {
         if internal_stream_usage {
             if !payload.get("stream_options").is_some_and(Value::is_object) {
                 payload["stream_options"] = json!({});
@@ -517,7 +451,11 @@ async fn proxy_inference(
     let active_request = state.metrics.active_request();
     let mut upstream = state
         .http
-        .post(format!("{}{route}", config.upstream_base_url))
+        .post(format!(
+            "{}{}",
+            config.upstream_base_url,
+            api.upstream_route()
+        ))
         .timeout(config.upstream_timeout)
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-request-id", &request_id);
@@ -616,11 +554,12 @@ async fn proxy_inference(
         let _active_request = active_request;
         let _router_request = router_request;
         let mut upstream_stream = upstream.bytes_stream();
-        let mut stream_metrics = StreamMetrics { wire, ..StreamMetrics::default() };
-        let mut json_metrics = Vec::new();
-        let mut json_metrics_overflow = false;
+        let mut response_metrics = ResponseMetrics::new(wire);
+        let mut observe = |value: &Value, observation| {
+            response_metrics.observe(value, observation, &metrics, &metric_model, &metric_key_id, started);
+        };
         let expected_model = usage_request.as_ref().map(|usage| usage.served_model().to_owned());
-        let mut model_response = model_response::ModelResponse::new(metric_model.clone(), is_event_stream).hide_final_usage(hide_final_usage).expected_model(expected_model).wire(wire);
+        let mut model_response = model_response::ModelResponse::new(metric_model.clone(), is_event_stream).hide_final_usage(hide_final_usage).expected_model(expected_model).wire(wire).with_output(model_response::OpenAiOutput);
         // The first chunk of a stream comes after the queue and the prefill
         // of the whole prompt, so it has its own, longer timeout.
         let mut wait = first_token_timeout;
@@ -628,29 +567,13 @@ async fn proxy_inference(
             match tokio::time::timeout(wait, upstream_stream.next()).await {
                 Ok(Some(Ok(chunk))) => {
                     wait = idle_timeout;
-                    if is_event_stream {
-                        stream_metrics.observe(
-                            &chunk,
-                            &metrics,
-                            &metric_model,
-                            &metric_key_id,
-                            started,
-                        );
-                    } else if !json_metrics_overflow {
-                        if json_metrics.len().saturating_add(chunk.len()) <= 1_048_576 {
-                            json_metrics.extend_from_slice(&chunk);
-                        } else {
-                            json_metrics.clear();
-                            json_metrics_overflow = true;
-                        }
-                    }
                     if rewrite_model {
-                        match model_response.push(&chunk) {
+                        match model_response.push_observed(&chunk, &mut observe) {
                             Ok(output) => {
                                 if let Some(usage) = &mut usage_request { usage.observation = model_response.observation(); if model_response.stream_done() { usage.finish(model_response.done_outcome()); } }
                                 if !output.is_empty() { yield Ok::<_, std::io::Error>(axum::body::Bytes::from(output)); }
                             },
-                            Err(error) => { if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); } yield Err(error); break; }
+                            Err(error) => { if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); } yield model_response.failure(error).map(axum::body::Bytes::from); break; }
                         }
                     } else {
                         yield Ok::<_, std::io::Error>(chunk);
@@ -658,12 +581,12 @@ async fn proxy_inference(
                 },
                 Ok(Some(Err(_))) => {
                     if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); }
-                    yield Err(std::io::Error::other("upstream response failed"));
+                    yield model_response.failure(std::io::Error::other("upstream response failed")).map(axum::body::Bytes::from);
                     break;
                 }
                 Ok(None) => {
                     if rewrite_model {
-                        match model_response.finish() {
+                        match model_response.finish_observed(&mut observe) {
                             Ok(output) => {
                                 if let Some(usage) = &mut usage_request {
                                     usage.observation = model_response.observation();
@@ -671,7 +594,7 @@ async fn proxy_inference(
                                 }
                                 if !output.is_empty() { yield Ok(axum::body::Bytes::from(output)); }
                             },
-                            Err(error) => { if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); } yield Err(error); },
+                            Err(error) => { if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); } yield model_response.failure(error).map(axum::body::Bytes::from); },
                         }
                     } else if let Some(usage) = &mut usage_request {
                         usage.finish(if status.is_success() { usage::Outcome::Completed } else { usage::Outcome::Failed });
@@ -680,16 +603,12 @@ async fn proxy_inference(
                 },
                 Err(_) => {
                     if let Some(usage) = &mut usage_request { usage.finish(usage::Outcome::Interrupted); }
-                    yield Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "upstream stream timed out"));
+                    yield model_response.failure(std::io::Error::new(std::io::ErrorKind::TimedOut, "upstream stream timed out")).map(axum::body::Bytes::from);
                     break;
                 }
             }
         }
-        if !is_event_stream && !json_metrics_overflow {
-            record_safe_openai_metrics(&metrics, &metric_model, &metric_key_id, wire, &json_metrics);
-        } else if is_event_stream {
-            stream_metrics.finish(&metrics, &metric_model, &metric_key_id);
-        }
+        response_metrics.finish(&metrics, &metric_model, &metric_key_id);
     };
     let mut response = Response::builder()
         .status(status)
@@ -726,314 +645,6 @@ fn body_memory_refused(state: &AppState, error: &request_body::ReserveError) -> 
             protection::overload("body_memory_capacity")
         }
     }
-}
-
-/// Read only bounded numeric usage fields from an OpenAI-compatible response.
-/// Prompt text, output text, tool arguments, and headers are never retained.
-fn record_safe_openai_metrics(
-    metrics: &GatewayMetrics,
-    model: &str,
-    key_id: &str,
-    wire: model_response::Wire,
-    body: &[u8],
-) {
-    let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return;
-    };
-    match wire {
-        model_response::Wire::Completions => {
-            record_safe_openai_value(metrics, model, key_id, &value);
-        }
-        model_response::Wire::Responses => {
-            record_safe_responses_value(metrics, model, key_id, &value);
-        }
-    }
-}
-
-/// Read only bounded numeric usage fields and the status of one Responses API
-/// response object: a JSON body, or the `response` of a terminal stream event.
-fn record_safe_responses_value(
-    metrics: &GatewayMetrics,
-    model: &str,
-    key_id: &str,
-    response: &Value,
-) {
-    if let Some(usage) = response.get("usage") {
-        if let Some(tokens) = usage.get("input_tokens").and_then(Value::as_u64) {
-            metrics.add_token_usage(model, key_id, "input", tokens);
-        }
-        if let Some(tokens) = usage.get("output_tokens").and_then(Value::as_u64) {
-            metrics.add_token_usage(model, key_id, "output", tokens);
-        }
-        if let Some(tokens) = responses_cached_input_tokens(usage) {
-            metrics.add_cache_read_input_tokens(model, key_id, tokens);
-        }
-    }
-    if let Some(reason) = responses_finish_reason(response) {
-        metrics.record_finish_reason(model, reason);
-    }
-}
-
-fn responses_cached_input_tokens(usage: &Value) -> Option<u64> {
-    usage
-        .get("input_tokens_details")
-        .and_then(|details| details.get("cached_tokens"))
-        .and_then(Value::as_u64)
-}
-
-/// Map a Responses API status onto the chat-completions finish reasons the
-/// finish-reason metric counts.
-fn responses_finish_reason(response: &Value) -> Option<&'static str> {
-    match response.get("status").and_then(Value::as_str)? {
-        "completed" => {
-            let calls_a_tool = response
-                .get("output")
-                .and_then(Value::as_array)
-                .is_some_and(|items| {
-                    items.iter().any(|item| {
-                        matches!(
-                            item.get("type").and_then(Value::as_str),
-                            Some("function_call" | "custom_tool_call")
-                        )
-                    })
-                });
-            Some(if calls_a_tool { "tool_calls" } else { "stop" })
-        }
-        "incomplete" => match response
-            .get("incomplete_details")
-            .and_then(|details| details.get("reason"))
-            .and_then(Value::as_str)
-        {
-            Some("max_output_tokens") => Some("length"),
-            Some("content_filter") => Some("content_filter"),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn record_safe_openai_value(metrics: &GatewayMetrics, model: &str, key_id: &str, value: &Value) {
-    if let Some(usage) = value.get("usage") {
-        if let Some(tokens) = usage.get("prompt_tokens").and_then(Value::as_u64) {
-            metrics.add_token_usage(model, key_id, "input", tokens);
-        }
-        if let Some(tokens) = usage.get("completion_tokens").and_then(Value::as_u64) {
-            metrics.add_token_usage(model, key_id, "output", tokens);
-        }
-        let cached_tokens = cached_input_tokens(usage);
-        if let Some(tokens) = cached_tokens {
-            metrics.add_cache_read_input_tokens(model, key_id, tokens);
-        }
-    }
-    record_finish_reasons(metrics, model, value);
-}
-
-fn cached_input_tokens(usage: &Value) -> Option<u64> {
-    if let Some(details) = usage.get("prompt_tokens_details") {
-        if details.is_null() {
-            // SGLang emits this explicit value when no prompt token came from
-            // cache. An absent field remains unclassified.
-            return Some(0);
-        }
-        return details.get("cached_tokens").and_then(Value::as_u64);
-    }
-    usage.get("cache_read_input_tokens").and_then(Value::as_u64)
-}
-
-fn record_finish_reasons(metrics: &GatewayMetrics, model: &str, value: &Value) {
-    let Some(choices) = value.get("choices").and_then(Value::as_array) else {
-        return;
-    };
-    for choice in choices {
-        if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
-            metrics.record_finish_reason(model, reason);
-        }
-    }
-}
-
-struct StreamMetrics {
-    wire: model_response::Wire,
-    pending: String,
-    first_output_at: Option<Instant>,
-    last_output_at: Option<Instant>,
-    output_tokens: Option<u64>,
-    cached_input_tokens: Option<u64>,
-    ttft_seconds: Option<f64>,
-}
-
-impl Default for StreamMetrics {
-    fn default() -> Self {
-        Self {
-            wire: model_response::Wire::Completions,
-            pending: String::new(),
-            first_output_at: None,
-            last_output_at: None,
-            output_tokens: None,
-            cached_input_tokens: None,
-            ttft_seconds: None,
-        }
-    }
-}
-
-impl StreamMetrics {
-    fn observe(
-        &mut self,
-        chunk: &[u8],
-        metrics: &GatewayMetrics,
-        model: &str,
-        key_id: &str,
-        request_started: Instant,
-    ) {
-        let Ok(text) = std::str::from_utf8(chunk) else {
-            return;
-        };
-        self.pending.push_str(text);
-        while let Some(newline) = self.pending.find('\n') {
-            let line = self.pending[..newline].trim_end_matches('\r').to_owned();
-            self.pending.drain(..=newline);
-            let Some(data) = line.strip_prefix("data: ") else {
-                continue;
-            };
-            if data == "[DONE]" {
-                continue;
-            }
-            let Ok(value) = serde_json::from_str::<Value>(data) else {
-                continue;
-            };
-            match self.wire {
-                model_response::Wire::Completions => {
-                    record_safe_openai_value(metrics, model, key_id, &value);
-                    if let Some(usage) = value.get("usage")
-                        && let Some(tokens) = cached_input_tokens(usage)
-                    {
-                        self.cached_input_tokens = Some(tokens);
-                    }
-                    if let Some(tokens) = value
-                        .get("usage")
-                        .and_then(|usage| usage.get("completion_tokens"))
-                        .and_then(Value::as_u64)
-                    {
-                        self.output_tokens = Some(tokens);
-                    }
-                }
-                model_response::Wire::Responses => {
-                    self.observe_responses_event(&value, metrics, model, key_id);
-                }
-            }
-            let output_delta = match self.wire {
-                model_response::Wire::Completions => has_output_delta(&value),
-                model_response::Wire::Responses => has_responses_output_delta(&value),
-            };
-            if output_delta {
-                let now = Instant::now();
-                match self.last_output_at.replace(now) {
-                    None => {
-                        self.first_output_at = Some(now);
-                        let ttft_seconds = request_started.elapsed().as_secs_f64();
-                        self.ttft_seconds = Some(ttft_seconds);
-                        metrics.observe_time_to_first_token(model, key_id, ttft_seconds);
-                    }
-                    Some(previous) => metrics.observe_time_per_output_token(
-                        model,
-                        key_id,
-                        now.duration_since(previous).as_secs_f64(),
-                    ),
-                }
-            }
-        }
-    }
-
-    /// Only a terminal event carries the usage of a Responses API stream.
-    fn observe_responses_event(
-        &mut self,
-        value: &Value,
-        metrics: &GatewayMetrics,
-        model: &str,
-        key_id: &str,
-    ) {
-        let terminal = value
-            .get("type")
-            .and_then(Value::as_str)
-            .is_some_and(|event| {
-                matches!(
-                    event,
-                    "response.completed" | "response.incomplete" | "response.failed"
-                )
-            });
-        let Some(response) = value.get("response").filter(|_| terminal) else {
-            return;
-        };
-        record_safe_responses_value(metrics, model, key_id, response);
-        if let Some(usage) = response.get("usage") {
-            if let Some(tokens) = responses_cached_input_tokens(usage) {
-                self.cached_input_tokens = Some(tokens);
-            }
-            if let Some(tokens) = usage.get("output_tokens").and_then(Value::as_u64) {
-                self.output_tokens = Some(tokens);
-            }
-        }
-    }
-
-    fn finish(&self, metrics: &GatewayMetrics, model: &str, key_id: &str) {
-        if let (Some(ttft_seconds), Some(cached_input_tokens)) =
-            (self.ttft_seconds, self.cached_input_tokens)
-        {
-            metrics.observe_cache_classified_time_to_first_token(
-                model,
-                key_id,
-                cached_input_tokens > 0,
-                ttft_seconds,
-            );
-        }
-        let (Some(tokens), Some(first), Some(last)) = (
-            self.output_tokens,
-            self.first_output_at,
-            self.last_output_at,
-        ) else {
-            return;
-        };
-        let seconds = last.duration_since(first).as_secs_f64();
-        if tokens > 1 && seconds > 0.0 {
-            let generated = u32::try_from(tokens - 1).map_or(f64::from(u32::MAX), f64::from);
-            metrics.observe_tokens_per_second(model, key_id, generated / seconds);
-        }
-    }
-}
-
-fn has_output_delta(value: &Value) -> bool {
-    value
-        .get("choices")
-        .and_then(Value::as_array)
-        .is_some_and(|choices| {
-            choices.iter().any(|choice| {
-                choice
-                    .get("delta")
-                    .and_then(Value::as_object)
-                    .is_some_and(|delta| {
-                        ["content", "reasoning_content"].iter().any(|field| {
-                            delta
-                                .get(*field)
-                                .and_then(Value::as_str)
-                                .is_some_and(|text| !text.is_empty())
-                        })
-                    })
-            })
-        })
-}
-
-/// A Responses API text or reasoning delta with text in it.
-fn has_responses_output_delta(value: &Value) -> bool {
-    matches!(
-        value.get("type").and_then(Value::as_str),
-        Some(
-            "response.output_text.delta"
-                | "response.reasoning_text.delta"
-                | "response.reasoning_summary_text.delta"
-        )
-    ) && value
-        .get("delta")
-        .and_then(Value::as_str)
-        .is_some_and(|text| !text.is_empty())
 }
 
 enum Authentication {
@@ -1106,6 +717,9 @@ fn limit_rejected(
     )
         .into_response();
     response
+        .extensions_mut()
+        .insert(inference_api::ErrorCode(code));
+    response
         .headers_mut()
         .insert(header::RETRY_AFTER, HeaderValue::from(retry_after_seconds));
     response
@@ -1115,11 +729,13 @@ fn limit_rejected(
 }
 
 fn client_error(status: StatusCode, code: &'static str) -> Response<Body> {
-    (
+    let code = inference_api::ErrorCode(code);
+    let mut response = (
         status,
-        Json(json!({"error":{"code":code,"message":status.canonical_reason().unwrap_or("Request failed.")}})),
-    )
-        .into_response()
+        Json(json!({"error":{"code":code.0,"message":status.canonical_reason().unwrap_or("Request failed.")}})),
+    ).into_response();
+    response.extensions_mut().insert(code);
+    response
 }
 
 /// The fixed error body for a non-success status of the inference server.
@@ -1140,7 +756,7 @@ fn upstream_error(status: StatusCode) -> Response<Body> {
     } else {
         "server_error"
     };
-    (
+    inference_api::tag_error((
         status,
         Json(json!({"error":{
             "code": code,
@@ -1149,7 +765,7 @@ fn upstream_error(status: StatusCode) -> Response<Body> {
             "message": "The inference server did not accept the request. The gateway does not return its error text.",
         }})),
     )
-        .into_response()
+        .into_response(), code)
 }
 
 fn inference_unavailable() -> Response<Body> {
@@ -1161,6 +777,9 @@ fn inference_unavailable() -> Response<Body> {
         }})),
     )
         .into_response();
+    response
+        .extensions_mut()
+        .insert(inference_api::ErrorCode("inference_unavailable"));
     response
         .headers_mut()
         .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
@@ -1469,13 +1088,22 @@ mod tests {
     #[test]
     fn records_only_safe_openai_usage_from_json() {
         let metrics = GatewayMetrics::new("production");
-        record_safe_openai_metrics(
-            &metrics,
-            "deepseek",
-            "key_safe_1",
-            model_response::Wire::Completions,
-            br#"{"choices":[{"message":{"content":"private"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":3}}}"#,
-        );
+        let mut response = model_response::ModelResponse::new("deepseek".into(), false);
+        let mut facts = ResponseMetrics::new(model_response::Wire::Completions);
+        response.push_observed(br#"{"choices":[{"message":{"content":"private"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":3}}}"#, &mut |_, _| {}).unwrap_or_else(|_| unreachable!());
+        response
+            .finish_observed(&mut |value, observation| {
+                facts.observe(
+                    value,
+                    observation,
+                    &metrics,
+                    "deepseek",
+                    "key_safe_1",
+                    Instant::now(),
+                );
+            })
+            .unwrap_or_else(|_| unreachable!());
+        facts.finish(&metrics, "deepseek", "key_safe_1");
         let rendered = metrics.render_prometheus();
         assert!(rendered.contains("gen_ai_client_token_usage"));
         assert!(rendered.contains("key_id=\"key_safe_1\""));
@@ -1487,37 +1115,27 @@ mod tests {
     }
 
     #[test]
-    fn classifies_sglang_null_cache_details_as_cold() {
-        assert_eq!(
-            cached_input_tokens(&json!({"prompt_tokens_details": null})),
-            Some(0)
-        );
-        assert_eq!(
-            cached_input_tokens(&json!({"prompt_tokens_details": {"cached_tokens": 64}})),
-            Some(64)
-        );
-        assert_eq!(cached_input_tokens(&json!({"prompt_tokens": 64})), None);
-    }
-
-    #[test]
     fn records_stream_timing_and_usage_without_content() {
         let metrics = GatewayMetrics::new("production");
-        let mut stream = StreamMetrics::default();
+        let mut stream = ResponseMetrics::new(model_response::Wire::Completions);
+        let mut response = model_response::ModelResponse::new("deepseek".into(), true);
         let started = Instant::now();
-        stream.observe(
-            b"data: {\"choices\":[{\"delta\":{\"content\":\"SENSITIVE_OUTPUT_123\"}}]}\n\n",
-            &metrics,
-            "deepseek",
-            "key_safe_2",
-            started,
-        );
-        stream.observe(
-            b"data: {\"choices\":[{\"delta\":{\"content\":\"SENSITIVE_OUTPUT_456\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":1}}}\n\n",
-            &metrics,
-            "deepseek",
-            "key_safe_2",
-            started,
-        );
+        response
+            .push_observed(
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"SENSITIVE_OUTPUT_123\"}}]}\n\n",
+                &mut |value, observation| {
+                    stream.observe(
+                        value,
+                        observation,
+                        &metrics,
+                        "deepseek",
+                        "key_safe_2",
+                        started,
+                    );
+                },
+            )
+            .unwrap_or_else(|_| unreachable!());
+        response.push_observed(b"data: {\"choices\":[{\"delta\":{\"content\":\"SENSITIVE_OUTPUT_456\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":1}}}\n\n", &mut |value, observation| stream.observe(value, observation, &metrics, "deepseek", "key_safe_2", started)).unwrap_or_else(|_| unreachable!());
         stream.finish(&metrics, "deepseek", "key_safe_2");
         let rendered = metrics.render_prometheus();
         assert!(rendered.contains("gen_ai_server_time_to_first_token_count"));
