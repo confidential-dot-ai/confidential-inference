@@ -228,6 +228,10 @@ spec:
             # URLs (the discovered <pod IP>:<port>): routers that see the same
             # workers agree on every key.
             - --policy={{ .Values.router.policy }}
+            {{- if eq (include "confidential-inference.routerPatched" .) "true" }}
+            # Bounded loads (consistent-hash-bounded-load.patch).
+            - --consistent-hashing-load-factor={{ .Values.router.consistentHashingLoadFactor }}
+            {{- end }}
             {{- end }}
             # The router checks each worker with /health_generate, a 1-token
             # generation: a worker gets traffic only while its scheduler

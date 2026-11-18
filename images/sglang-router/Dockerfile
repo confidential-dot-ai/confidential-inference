@@ -35,7 +35,9 @@ RUN python3 -c 'import json,hashlib,pathlib; d=json.load(open("/inputs/source.lo
     && git apply --check /inputs/patches/client-errors.patch \
     && git apply /inputs/patches/client-errors.patch \
     && git apply --check /inputs/patches/worker-wait.patch \
-    && git apply /inputs/patches/worker-wait.patch
+    && git apply /inputs/patches/worker-wait.patch \
+    && git apply --check /inputs/patches/consistent-hash-bounded-load.patch \
+    && git apply /inputs/patches/consistent-hash-bounded-load.patch
 COPY Cargo.lock /src/sgl-model-gateway/Cargo.lock
 RUN python3 -c 'import json,hashlib,pathlib; d=json.load(open("/inputs/source.lock")); assert hashlib.sha256(pathlib.Path("/src/sgl-model-gateway/Cargo.lock").read_bytes()).hexdigest()==d["cargoLockSha256"]'
 COPY canonicalize_wheel.py /inputs/canonicalize_wheel.py
@@ -67,6 +69,7 @@ LABEL ai.confidential.sglang-router.pd-pairs-patch.sha256="3d6c2f8e9a337e5dec421
 LABEL ai.confidential.sglang-router.private-errors-patch.sha256="645f17a966d2476663052cf7be423eba06d55571abfbf47726217ca7494f6aa8"
 LABEL ai.confidential.sglang-router.client-errors-patch.sha256="beeb92df439945d48d1a68a51bf853078481846a0fb8b436cacf071ccffa4761"
 LABEL ai.confidential.sglang-router.worker-wait-patch.sha256="a4a35e3e39a4d74cb6b56bece6d96bfd1936fddbb3a345c5d23c3ff1b72b161c"
+LABEL ai.confidential.sglang-router.consistent-hash-bounded-load-patch.sha256="1ed303329ea7589beecd1a232f63ce261301e4439c5b65d96a4c893cb4e86216"
 LABEL ai.confidential.sglang-router.cargo-lock.sha256="4a20619832eeabce83651c4cd7eb9cf4d9038ffafca81bf3ee64b9032a4ce880"
 COPY requirements.lock /router-requirements.lock
 RUN python3 -m pip install --no-cache-dir --require-hashes -r /router-requirements.lock

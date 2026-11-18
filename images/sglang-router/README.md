@@ -181,6 +181,23 @@ Without it, one run of failed health checks on the only worker turns every
 request that arrives in the next few seconds into a 503: the router
 retries five times within about a second and gives up.
 
+## Bounded loads for consistent_hashing
+
+`consistent-hash-bounded-load.patch` adds `--consistent-hashing-load-factor
+C` (default 0, upstream behavior) and accepts `--policy consistent_hashing`
+in the Rust CLI. With C > 0, the worker a routing key hashes to takes the
+request only while it has fewer than ceil(C x (in flight + 1) / healthy
+workers) requests in flight; otherwise the request goes to the next worker
+on the ring that is below that bound, so a key spills to the same worker
+every time. Counts are this router's own, so routers that share traffic
+evenly see the same proportions. Spilled requests are counted under
+`branch="routing_key_spill"` in the consistent-hashing branch metric. After
+"Consistent Hashing with Bounded Loads" (Mirrokni, Thorup, Zadimoghaddam,
+2016). The chart sets it from `router.consistentHashingLoadFactor`.
+
+With two workers and two dozen conversations, the plain ring split them
+about 2.5 to 1, and the busier worker ran out of prefix cache.
+
 ## Prefill/decode relay
 
 `pd-router.patch` changes `src/routers/http/pd_router.rs` and adds its
