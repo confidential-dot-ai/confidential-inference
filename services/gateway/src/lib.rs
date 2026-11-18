@@ -29,6 +29,7 @@ pub mod api_keys;
 pub mod key_limits;
 pub mod key_registry;
 pub mod log_privacy;
+mod messages;
 pub mod metrics;
 mod model_response;
 pub mod protection;
@@ -194,6 +195,7 @@ pub fn router_with_usage(
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/completions", post(completions))
         .route("/v1/responses", post(responses))
+        .route("/v1/messages", post(messages))
         // The handler enforces the configured limit with the API error body.
         // This layer only bounds the largest limit the settings accept.
         .layer(RequestBodyLimitLayer::new(MAXIMUM_BODY_BYTES_CEILING))
@@ -201,6 +203,7 @@ pub fn router_with_usage(
             protection,
             protection::enforce_public_limits,
         ))
+        .layer(middleware::from_fn(messages_wire))
         .layer(middleware::from_fn(request_id))
         .layer(
             CorsLayer::new()
@@ -211,6 +214,10 @@ pub fn router_with_usage(
                     header::AUTHORIZATION,
                     header::CONTENT_TYPE,
                     header::ACCEPT,
+                    header::HeaderName::from_static("x-api-key"),
+                    header::HeaderName::from_static("anthropic-version"),
+                    header::HeaderName::from_static("anthropic-beta"),
+                    header::HeaderName::from_static("anthropic-dangerous-direct-browser-access"),
                     routing_key::HEADER.clone(),
                 ])),
         )
@@ -296,6 +303,33 @@ async fn responses(State(state): State<Arc<AppState>>, request: Request) -> Resp
     proxy_inference(state, request, "/v1/responses").await
 }
 
+/// Use the same authentication, limits, routing and accounting as chat.
+async fn messages(State(state): State<Arc<AppState>>, mut request: Request) -> Response<Body> {
+    // An explicit Authorization header takes precedence. An invalid bearer
+    // must never fall back to another credential.
+    if !request.headers().contains_key(header::AUTHORIZATION)
+        && let Some(key) = request
+            .headers()
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+        && let Ok(value) = HeaderValue::from_str(&format!("Bearer {key}"))
+    {
+        request.headers_mut().insert(header::AUTHORIZATION, value);
+    }
+    proxy_inference(state, request, "/v1/messages").await
+}
+
+async fn messages_wire(request: Request, next: Next) -> Response<Body> {
+    let translate =
+        request.method() == http::Method::POST && request.uri().path() == "/v1/messages";
+    let response = next.run(request).await;
+    if translate {
+        messages::response(response).await
+    } else {
+        response
+    }
+}
+
 fn wire_of(route: &str) -> model_response::Wire {
     if route == "/v1/responses" {
         model_response::Wire::Responses
@@ -364,6 +398,11 @@ async fn proxy_inference(
     route: &'static str,
 ) -> Response<Body> {
     let config = &state.config;
+    let upstream_route = if route == "/v1/messages" {
+        "/v1/chat/completions"
+    } else {
+        route
+    };
     let request_id = request
         .extensions()
         .get::<String>()
@@ -455,10 +494,20 @@ async fn proxy_inference(
             .record_key_rejection("stateful_responses_request", &key_id);
         return stateful_responses_request(field);
     }
-    let routing_key = state
-        .routing_keys
-        .as_ref()
-        .and_then(|keys| keys.derive(&key_id, route, client_routing_key.as_ref(), &payload));
+    if route == "/v1/messages" {
+        payload = match messages::request(&payload) {
+            Ok(payload) => payload,
+            Err(code) => return client_error(StatusCode::BAD_REQUEST, code),
+        };
+    }
+    let routing_key = state.routing_keys.as_ref().and_then(|keys| {
+        keys.derive(
+            &key_id,
+            upstream_route,
+            client_routing_key.as_ref(),
+            &payload,
+        )
+    });
     let mut usage_request = match &state.usage {
         Some(recorder) => match recorder.reserve(&key_id, model) {
             Some(guard) => Some(guard.charge_to(state.keys.clone())),
@@ -469,15 +518,19 @@ async fn proxy_inference(
     // A Responses API stream always ends with its usage, in the terminal
     // `response.*` event; only the completion routes need `stream_options`.
     let internal_stream_usage = wire == model_response::Wire::Completions
-        && usage_request.is_some()
+        && (usage_request.is_some() || route == "/v1/messages")
         && payload.get("stream").and_then(Value::as_bool) == Some(true);
     let hide_final_usage = internal_stream_usage
+        && route != "/v1/messages"
         && payload
             .get("stream_options")
             .and_then(|v| v.get("include_usage"))
             .and_then(Value::as_bool)
             != Some(true);
-    let body = if internal_stream_usage || wire == model_response::Wire::Responses {
+    let body = if internal_stream_usage
+        || wire == model_response::Wire::Responses
+        || route == "/v1/messages"
+    {
         if internal_stream_usage {
             if !payload.get("stream_options").is_some_and(Value::is_object) {
                 payload["stream_options"] = json!({});
@@ -517,7 +570,7 @@ async fn proxy_inference(
     let active_request = state.metrics.active_request();
     let mut upstream = state
         .http
-        .post(format!("{}{route}", config.upstream_base_url))
+        .post(format!("{}{upstream_route}", config.upstream_base_url))
         .timeout(config.upstream_timeout)
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-request-id", &request_id);
