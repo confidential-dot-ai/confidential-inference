@@ -3,7 +3,7 @@ use crate::usage::{Observation, Outcome};
 use serde_json::Value;
 use std::io;
 
-const MAXIMUM_PENDING_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAXIMUM_PENDING_BYTES: usize = 16 * 1024 * 1024;
 
 const MAXIMUM_TOKENS: u64 = 9_007_199_254_740_991;
 
@@ -27,15 +27,48 @@ pub(crate) enum Wire {
     Responses,
 }
 
-fn encode(value: &Value, streaming: bool, ending: &[u8]) -> io::Result<Vec<u8>> {
-    let mut output = if streaming {
-        b"data: ".to_vec()
-    } else {
-        Vec::new()
-    };
-    serde_json::to_writer(&mut output, value).map_err(io::Error::other)?;
-    output.extend_from_slice(ending);
-    Ok(output)
+/// Output consumes parsed values. It does not read or parse response bytes.
+pub(crate) trait Output {
+    fn value(
+        &mut self,
+        value: Value,
+        usage: Observation,
+        streaming: bool,
+        ending: &[u8],
+    ) -> io::Result<Vec<u8>>;
+    fn raw(&mut self, bytes: &[u8]) -> io::Result<Vec<u8>> {
+        Ok(bytes.to_vec())
+    }
+    fn done(&mut self, bytes: &[u8]) -> io::Result<Vec<u8>> {
+        self.raw(bytes)
+    }
+    fn finish(&mut self) -> io::Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
+    fn failure(&mut self, error: io::Error) -> io::Result<Vec<u8>> {
+        Err(error)
+    }
+}
+
+pub(crate) struct OpenAiOutput;
+
+impl Output for OpenAiOutput {
+    fn value(
+        &mut self,
+        value: Value,
+        _usage: Observation,
+        streaming: bool,
+        ending: &[u8],
+    ) -> io::Result<Vec<u8>> {
+        let mut output = if streaming {
+            b"data: ".to_vec()
+        } else {
+            Vec::new()
+        };
+        serde_json::to_writer(&mut output, &value).map_err(io::Error::other)?;
+        output.extend_from_slice(ending);
+        Ok(output)
+    }
 }
 
 fn rewrite_value(value: &mut Value, model: &str) {
@@ -62,7 +95,8 @@ fn responses_object(value: &Value) -> &Value {
 
 // These flags describe independent wire-format and accounting state.
 #[allow(clippy::struct_excessive_bools)]
-pub(crate) struct ModelResponse {
+pub(crate) struct ModelResponse<W = OpenAiOutput> {
+    output: W,
     model: String,
     event_stream: bool,
     pending: Vec<u8>,
@@ -75,9 +109,10 @@ pub(crate) struct ModelResponse {
     stream_failed: bool,
 }
 
-impl ModelResponse {
+impl ModelResponse<OpenAiOutput> {
     pub(crate) fn new(model: String, event_stream: bool) -> Self {
         Self {
+            output: OpenAiOutput,
             model,
             event_stream,
             pending: Vec::new(),
@@ -90,9 +125,45 @@ impl ModelResponse {
             stream_failed: false,
         }
     }
+}
+
+impl<W: Output> ModelResponse<W> {
+    pub(crate) fn with_output<T: Output>(self, output: T) -> ModelResponse<T> {
+        let Self {
+            model,
+            event_stream,
+            pending,
+            observation,
+            hide_final_usage,
+            stream_done,
+            expected_model,
+            model_mismatch,
+            wire,
+            stream_failed,
+            ..
+        } = self;
+        ModelResponse {
+            output,
+            model,
+            event_stream,
+            pending,
+            observation,
+            hide_final_usage,
+            stream_done,
+            expected_model,
+            model_mismatch,
+            wire,
+            stream_failed,
+        }
+    }
+
     pub(crate) fn wire(mut self, wire: Wire) -> Self {
         self.wire = wire;
         self
+    }
+
+    pub(crate) fn failure(&mut self, error: io::Error) -> io::Result<Vec<u8>> {
+        self.output.failure(error)
     }
 
     /// The outcome of a stream that reached its end marker.
@@ -258,19 +329,20 @@ impl ModelResponse {
 
     fn line(&mut self, observe: &mut impl FnMut(&Value, Observation)) -> io::Result<Vec<u8>> {
         let Some(data) = self.pending.strip_prefix(b"data:") else {
-            return Ok(self.pending.clone());
+            return self.output.raw(&self.pending);
         };
         let data = data.strip_prefix(b" ").unwrap_or(data);
         let payload = data.strip_suffix(b"\n").unwrap_or(data);
         let payload = payload.strip_suffix(b"\r").unwrap_or(payload);
         if payload == b"[DONE]" {
+            let output = self.output.done(&self.pending)?;
             if self.wire == Wire::Completions {
                 self.stream_done = true;
             }
-            return Ok(self.pending.clone());
+            return Ok(output);
         }
         if payload.is_empty() {
-            return Ok(self.pending.clone());
+            return self.output.raw(&self.pending);
         }
         let mut value: Value = serde_json::from_slice(payload)
             .map_err(|_| io::Error::other("invalid upstream completion JSON"))?;
@@ -309,7 +381,7 @@ impl ModelResponse {
         } else {
             b""
         };
-        encode(&value, true, ending)
+        self.output.value(value, self.observation, true, ending)
     }
 
     #[cfg(test)]
@@ -321,11 +393,11 @@ impl ModelResponse {
         &mut self,
         observe: &mut impl FnMut(&Value, Observation),
     ) -> io::Result<Vec<u8>> {
-        if self.event_stream {
+        let mut output = if self.event_stream {
             // Consume the final pending line only once.
             let result = self.line(observe)?;
             self.pending.clear();
-            Ok(result)
+            result
         } else {
             let mut value: Value = serde_json::from_slice(&self.pending)
                 .map_err(|_| io::Error::other("invalid upstream completion JSON"))?;
@@ -333,8 +405,10 @@ impl ModelResponse {
             self.observe(&value, true);
             observe(&value, self.observation);
             rewrite_value(&mut value, &self.model);
-            encode(&value, false, b"")
-        }
+            self.output.value(value, self.observation, false, b"")?
+        };
+        output.extend(self.output.finish()?);
+        Ok(output)
     }
 }
 
@@ -343,6 +417,44 @@ impl ModelResponse {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn observers_and_output_share_one_value_before_and_after_model_rewrite() {
+        #[derive(Default)]
+        struct Inspect {
+            values: Vec<Value>,
+        }
+        impl Output for Inspect {
+            fn value(
+                &mut self,
+                value: Value,
+                _: Observation,
+                _: bool,
+                _: &[u8],
+            ) -> io::Result<Vec<u8>> {
+                self.values.push(value);
+                Ok(b"converted".to_vec())
+            }
+        }
+        let mut response =
+            ModelResponse::new("public".into(), false).with_output(Inspect::default());
+        let value =
+            json!({"model":"backend","extension":{"keep":true},"usage":{"prompt_tokens":10}});
+        response.push(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let mut count = 0;
+        let bytes = response
+            .finish_observed(&mut |seen, usage| {
+                count += 1;
+                assert_eq!(seen["model"], "backend");
+                assert_eq!(usage.input, Some(10));
+            })
+            .unwrap();
+        assert_eq!(bytes, b"converted");
+        assert_eq!(count, 1);
+        assert_eq!(response.output.values.len(), 1);
+        assert_eq!(response.output.values[0]["model"], "public");
+        assert_eq!(response.output.values[0]["extension"], value["extension"]);
+    }
 
     #[test]
     fn json_preserves_content_usage_and_other_fields() {

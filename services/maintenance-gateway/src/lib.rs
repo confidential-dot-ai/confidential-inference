@@ -85,6 +85,21 @@ async fn unavailable() -> Response {
     response
 }
 
+async fn messages_unavailable() -> Response {
+    let mut response = json_response(
+        StatusCode::TOO_MANY_REQUESTS,
+        json!({"type":"error","error":{
+            "type":"rate_limit_error",
+            "message":"Inference is temporarily unavailable.",
+            "code":"inference_unavailable"
+        }}),
+    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("60"));
+    response
+}
+
 async fn health() -> Response {
     json_response(
         StatusCode::OK,
@@ -276,6 +291,7 @@ pub fn app_with_config(config: ProtectionConfig) -> Router {
         .route("/v1/completions", post(unavailable))
         .route("/v1/chat/completions", post(unavailable))
         .route("/v1/responses", post(unavailable))
+        .route("/v1/messages", post(messages_unavailable))
         .route("/health", get(health))
         .route("/readiness", get(readiness))
         .route("/attestation", get(attestation))
@@ -327,7 +343,12 @@ mod tests {
 
     #[tokio::test]
     async fn all_inference_routes_return_the_stable_429() {
-        for route in ["/v1/completions", "/v1/chat/completions", "/v1/responses"] {
+        for route in [
+            "/v1/completions",
+            "/v1/chat/completions",
+            "/v1/responses",
+            "/v1/messages",
+        ] {
             let response = response("POST", route).await;
             assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
             assert_eq!(
@@ -339,6 +360,13 @@ mod tests {
                 "inference_unavailable"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn messages_outage_uses_the_messages_error_envelope() {
+        let body = json_body(response("POST", "/v1/messages").await).await;
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "rate_limit_error");
     }
 
     #[tokio::test]

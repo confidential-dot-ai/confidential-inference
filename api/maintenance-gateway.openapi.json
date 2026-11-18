@@ -61,6 +61,26 @@
         }
       }
     },
+    "/v1/messages": {
+      "post": {
+        "operationId": "rejectMaintenanceMessage",
+        "responses": {"429": {
+          "description": "Inference is unavailable. Retry-After is 60 seconds.",
+          "headers": {"Retry-After": {"schema": {"type": "string", "const": "60"}}},
+          "content": {"application/json": {
+            "schema": {"type": "object", "required": ["type", "error"], "properties": {
+              "type": {"const": "error"},
+              "error": {"type": "object", "properties": {
+                "type": {"const": "rate_limit_error"},
+                "message": {"type": "string"},
+                "code": {"const": "inference_unavailable"}
+              }}
+            }},
+            "example": {"type": "error", "error": {"type": "rate_limit_error", "message": "Inference is temporarily unavailable.", "code": "inference_unavailable"}}
+          }}
+        }}
+      }
+    },
     "/v1/responses": {
       "post": {
         "operationId": "rejectMaintenanceResponse",
