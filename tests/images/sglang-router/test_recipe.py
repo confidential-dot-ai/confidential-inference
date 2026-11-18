@@ -27,6 +27,8 @@ EXPECTED_PATCHES = [
     ("patches/http-no-tokenizer.patch", "85e982bf2bf2e21da3c27615819c3880f3a30da08495893de27ffbe9c30ba1c4"),
     ("patches/pd-pairs.patch", "3d6c2f8e9a337e5dec42157b93437a7d9ab5fb6ab2b723ce603a0023c8273eab"),
     ("patches/private-errors.patch", "645f17a966d2476663052cf7be423eba06d55571abfbf47726217ca7494f6aa8"),
+    # A worker's 4xx is not a worker fault in the regular router.
+    ("patches/client-errors.patch", "beeb92df439945d48d1a68a51bf853078481846a0fb8b436cacf071ccffa4761"),
 ]
 
 
