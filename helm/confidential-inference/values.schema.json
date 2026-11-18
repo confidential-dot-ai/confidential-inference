@@ -241,7 +241,7 @@
     },
     "gateway": {
       "type": "object",
-      "required": ["attestedWorkload", "shutdownGraceSeconds", "endpointDrainSeconds", "terminationGracePeriodSeconds", "service", "containerPorts", "protection", "c8sSecrets", "secrets", "admin"],
+      "required": ["attestedWorkload", "shutdownGraceSeconds", "endpointDrainSeconds", "terminationGracePeriodSeconds", "service", "containerPorts", "protection", "c8sSecrets", "cloud", "usage"],
       "properties": {
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
         "shutdownGraceSeconds": {"type": "integer", "minimum": 1},
@@ -267,24 +267,15 @@
         "c8sSecrets": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["apiKeyPepper", "adminConfig"],
+          "required": ["gateway"],
           "properties": {
-            "apiKeyPepper": {
+            "gateway": {
               "type": "object",
               "additionalProperties": false,
               "required": ["name", "sourcePath"],
               "properties": {
-                "name": {"const": "GATEWAY_API_KEY_PEPPER"},
-                "sourcePath": {"const": "/confidential-inference/gateway/api-key-pepper"}
-              }
-            },
-            "adminConfig": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["name", "sourcePath"],
-              "properties": {
-                "name": {"const": "product-usage"},
-                "sourcePath": {"const": "/confidential-inference/gateway/product-usage"}
+                "name": {"const": "gateway"},
+                "sourcePath": {"const": "/confidential-inference/gateway/secret"}
               }
             }
           }
@@ -315,45 +306,24 @@
             "trustedProxyCidrs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$"}}
           }
         },
-        "secrets": {
-          "type": "object",
-          "required": ["adminSigner", "adminApiKey"],
-          "additionalProperties": false,
-          "properties": {
-            "adminSigner": {
-              "type": "object",
-              "required": ["secretName", "certificateKey"],
-              "additionalProperties": false,
-              "properties": {
-                "secretName": {"$ref": "#/definitions/kubernetesName"},
-                "certificateKey": {"const": "client.crt"}
-              }
-            },
-            "adminApiKey": {
-              "type": "object",
-              "required": ["secretName"],
-              "additionalProperties": false,
-              "properties": {
-                "secretName": {"$ref": "#/definitions/kubernetesName"}
-              }
-            }
-          }
-        },
-        "admin": {
+        "cloud": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["url", "address"],
+          "required": ["origin", "address"],
           "properties": {
-            "url": {"type": "string", "pattern": "^https://[a-z0-9.-]+/[^?#]*$"},
+            "origin": {"type": "string", "pattern": "^https://[a-z0-9.-]+$"},
             "address": {"type": "string", "format": "ipv4"}
           }
         },
         "usage": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "models"],
+          "required": ["enabled", "origin", "address", "location", "models"],
           "properties": {
             "enabled": {"type": "boolean"},
+            "origin": {"type": "string", "pattern": "^https://[a-z0-9.-]+$"},
+            "address": {"type": "string", "format": "ipv4"},
+            "location": {"type": "string", "pattern": "^([a-z0-9-]+)?$"},
             "models": {
               "type": "object",
               "additionalProperties": {

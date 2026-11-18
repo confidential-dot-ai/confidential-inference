@@ -257,3 +257,31 @@ default. */}}
 {{- $found -}}
 {{- end -}}
 {{- end }}
+
+{{- /*
+The gateway's exits, as a YAML map of address to the hostnames served there:
+Confidential Cloud's API, and its usage origin when usage is on. Each origin
+is plain https on the default port, and its address is pinned, so the
+allowlist exit and the hostAliases entry are the chart value itself. Two
+origins at one address are one exit.
+*/ -}}
+{{- define "confidential-inference.gatewayExits" -}}
+{{- $gateway := .Values.gateway }}
+{{- $origins := list (dict "name" "gateway.cloud" "origin" $gateway.cloud.origin "address" $gateway.cloud.address) }}
+{{- if $gateway.usage.enabled }}
+{{- $origins = append $origins (dict "name" "gateway.usage" "origin" $gateway.usage.origin "address" $gateway.usage.address) }}
+{{- end }}
+{{- $exits := dict }}
+{{- range $origins }}
+{{- $url := urlParse (required (printf "%s.origin is required" .name) .origin) }}
+{{- if or (ne $url.scheme "https") (contains ":" $url.host) (not (has $url.path (list "" "/"))) }}
+{{- fail (printf "%s.origin must be a plain https origin on the default port" .name) }}
+{{- end }}
+{{- $address := required (printf "%s.address is required" .name) .address }}
+{{- $hosts := get $exits $address | default list }}
+{{- if not (has $url.host $hosts) }}
+{{- $_ := set $exits $address (append $hosts $url.host) }}
+{{- end }}
+{{- end }}
+{{- toYaml $exits }}
+{{- end }}

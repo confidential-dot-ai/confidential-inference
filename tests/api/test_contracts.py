@@ -50,6 +50,7 @@ class GatewayInferenceContractTests(unittest.TestCase):
     EXPECTED_PATHS = {
         "/health",
         "/ready",
+        "/usage-reporter-key",
         "/v1/models",
         "/v1/chat/completions",
         "/v1/completions",
@@ -74,16 +75,17 @@ class GatewayInferenceContractTests(unittest.TestCase):
         self.assertEqual(self.contract["openapi"], "3.1.0")
         self.assertIn("paths", self.contract)
 
-    def test_key_limit_errors_are_documented(self):
-        """The 429 response lists the per-key limit codes that lib.rs emits."""
-        capacity = self.contract["components"]["responses"]["InferenceCapacity"]
-        codes = {
-            example["value"]["error"]["code"]
-            for example in capacity["content"]["application/json"]["examples"].values()
-        }
-        for code in ("rate_limit_exceeded", "insufficient_quota"):
-            self.assertIn(code, codes)
-            self.assertIn(f'"{code}"', self.gateway_source)
+    def test_refusals_before_inference_are_documented(self):
+        """The 429 and 503 responses list the codes lib.rs refuses a request with
+        before it reaches a model."""
+        def codes(response):
+            examples = self.contract["components"]["responses"][response]["content"]["application/json"]["examples"]
+            return {example["value"]["error"]["code"] for example in examples.values()}
+        for response, expected in (("InferenceCapacity", ("insufficient_quota",)),
+                                   ("InferenceUnavailable", ("key_check_unavailable", "usage_backlog_full"))):
+            for code in expected:
+                self.assertIn(code, codes(response))
+                self.assertIn(f'"{code}"', self.gateway_source)
 
     def test_expected_paths_are_present(self):
         self.assertEqual(set(self.contract["paths"]), self.EXPECTED_PATHS)

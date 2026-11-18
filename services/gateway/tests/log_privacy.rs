@@ -31,7 +31,7 @@ use tracing_subscriber::layer::SubscriberExt;
 const CANARY: &str = "CANARY_7f3a91_PRIVATE_PROMPT_TEXT";
 const CLIENT_ADDRESS: &str = "198.51.100.77";
 const KEY_RECORD: &str = "key_record_privacy_1";
-const PEPPER: [u8; 32] = [42; 32];
+const SECRET: [u8; 32] = [42; 32];
 /// The audit record pattern of the node log agent and the collector. Keep it
 /// equal to the chart's pattern.
 const AUDIT_RECORD: &str = r#"^[{]"event":"gateway_request_completed","key_ref":("kp_[0-9a-f]{24}"|null),"request_id":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}","route":"/v1/(models|chat/completions|completions|responses)","status":[1-5][0-9][0-9][}]$"#;
@@ -187,7 +187,7 @@ fn gateway(address: SocketAddr) -> Router {
         },
         Arc::new(Keys),
         Arc::new(TracingAuditSink::new(
-            log_privacy::KeyPseudonyms::from_pepper(&PEPPER),
+            log_privacy::KeyPseudonyms::from_secret(&SECRET),
         )),
         Arc::new(GatewayMetrics::new("test")),
         reqwest::Client::new(),
@@ -273,7 +273,7 @@ async fn upstream_error_bodies_reach_neither_logs_nor_callers() {
     let logs = captured.text();
     assert_private(&logs);
     // The audit record is there, with a key pseudonym instead of the key ID.
-    let pseudonym = log_privacy::KeyPseudonyms::from_pepper(&PEPPER).pseudonym(KEY_RECORD);
+    let pseudonym = log_privacy::KeyPseudonyms::from_secret(&SECRET).pseudonym(KEY_RECORD);
     assert!(logs.contains("gateway_request_completed"), "{logs}");
     assert!(logs.contains(&pseudonym), "{logs}");
     assert!(
@@ -465,7 +465,7 @@ fn every_gateway_log_message_is_on_the_collector_list() {
 fn the_audit_record_has_the_shape_the_collector_keeps() {
     use confidential_gateway::{AuditEvent, AuditSink};
     let (captured, _guard) = capture();
-    let sink = TracingAuditSink::new(log_privacy::KeyPseudonyms::from_pepper(&PEPPER));
+    let sink = TracingAuditSink::new(log_privacy::KeyPseudonyms::from_secret(&SECRET));
     sink.record(AuditEvent {
         request_id: "c0ffee00-cafe-4000-8000-deadbeef0002".to_owned(),
         route: "/v1/chat/completions",
@@ -478,7 +478,7 @@ fn the_audit_record_has_the_shape_the_collector_keeps() {
         status: 200,
         key_id: None,
     });
-    let pseudonym = log_privacy::KeyPseudonyms::from_pepper(&PEPPER).pseudonym(KEY_RECORD);
+    let pseudonym = log_privacy::KeyPseudonyms::from_secret(&SECRET).pseudonym(KEY_RECORD);
     let logs = captured.text();
     assert_reviewed(&logs);
     let messages: Vec<String> = logs

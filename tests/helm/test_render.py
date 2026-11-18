@@ -586,23 +586,20 @@ def main() -> None:
         '-f', str(ROOT/'tests/release-v1/fixtures/release-values.yaml'),
         '--set', 'frameworkRelease.name=v0.14.18')) if item]
     # The gateway keeps no state: it rolls with one extra pod, and c8s gives
-    # it the pepper and the admin client configuration, no volume.
+    # it the one secret CDS generates for it, no volume.
     gateway = next(d for d in production if d['kind'] == 'Deployment' and d['metadata']['name'] == 'gateway')
     assert gateway['spec']['strategy'] == {'type': 'RollingUpdate', 'rollingUpdate': {'maxUnavailable': 0, 'maxSurge': 1}}
     gateway_annotations = gateway['spec']['template']['metadata']['annotations']
     assert gateway_annotations['confidential.ai/cw'] == 'gateway'
-    assert gateway_annotations['confidential.ai/c8s-secrets'] == (
-        'GATEWAY_API_KEY_PEPPER=/confidential-inference/gateway/api-key-pepper,'
-        'product-usage=/confidential-inference/gateway/product-usage')
+    assert gateway_annotations['confidential.ai/c8s-secrets'] == 'gateway=/confidential-inference/gateway/secret'
     assert not any(name.startswith('confidential.ai/c8s-volume') for name in gateway_annotations)
     main_container = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'gateway')
     gateway_environment = {item['name']: item['value'] for item in main_container['env']}
-    # The gateway reads no ConfigMap: its settings are pinned environment, and
-    # only the per-deployment admin Secrets are mounted.
+    # The gateway reads no ConfigMap and no Secret: its settings are pinned
+    # environment, and it mounts only its own scratch directories.
     gateway_volumes = gateway['spec']['template']['spec']['volumes']
-    assert not any('configMap' in volume for volume in gateway_volumes)
-    assert {mount['mountPath'] for mount in main_container['volumeMounts']} == {
-        '/mnt/c8s-data/admin-auth', '/mnt/c8s-data/admin-api-key', '/run/confidential-gateway', '/tmp'}
+    assert all(set(volume) == {'name', 'emptyDir'} for volume in gateway_volumes), gateway_volumes
+    assert {mount['mountPath'] for mount in main_container['volumeMounts']} == {'/run/confidential-gateway', '/tmp'}
     assert not any(name.startswith(('GATEWAY_C8S_', 'GATEWAY_RELEASE_')) for name in gateway_environment)
     production_settings = json.loads(gateway_environment['GATEWAY_RUNTIME_CONFIG'])
     assert production_settings['maximumBodyBytes'] == 2097152
@@ -670,7 +667,8 @@ def main() -> None:
     assert deployed_gateway['spec']['template'] == gateway['spec']['template']
     assert not any(item['kind'] == 'ConfigMap' and item['metadata']['name'].startswith('gateway-')
                    for item in deployed)
-    assert gateway_environment['GATEWAY_ADMIN_CONFIG_FILE'] == '/run/c8s/secrets/product-usage'
+    assert gateway_environment['GATEWAY_SECRET_FILE'] == '/run/c8s/secrets/gateway'
+    assert gateway_environment['GATEWAY_USAGE_LOCATION'] == 'us-west-1'
     assert not any(name.startswith('GATEWAY_STATE_') for name in gateway_environment)
     assert gateway_environment['GATEWAY_INFERENCE_URL'] == 'http://sglang-router:30000'
     # The router Deployment and Service keep their names across releases, so
@@ -758,34 +756,61 @@ def main() -> None:
     rendered = yaml.safe_dump_all(documents)
     assert "nvidia.com/gpu" not in rendered
 
-    # The gateway reaches the admin only at its pinned address (also its
-    # allowlist exit), and what it sends is environment, so allowlist input.
-    with_admin = render("--namespace", "inference", "--set", "gateway.usage.enabled=true",
-                        "--set", "gateway.admin.url=https://relay.example.com/api/usage/ingest",
-                        "--set", "gateway.admin.address=203.0.113.7",
+    # The gateway reaches Confidential Cloud only at its pinned addresses
+    # (also its allowlist exits), and where it sends keys and usage is
+    # environment, so allowlist input.
+    with_usage = render("--namespace", "inference", "--set", "gateway.usage.enabled=true",
+                        "--set", "gateway.cloud.origin=https://api.example.com",
+                        "--set", "gateway.cloud.address=203.0.113.7",
+                        "--set", "gateway.usage.origin=https://usage.example.com",
+                        "--set", "gateway.usage.address=203.0.113.9",
+                        "--set", "gateway.usage.location=us-west-1",
                         "--set", "gateway.usage.models.m.served_model=m",
                         "--set", "gateway.usage.models.m.model_revision=r1")
-    admin = Gateway(with_admin)
-    assert admin.env["GATEWAY_USAGE_ENABLED"] == "true"
-    assert admin.env["GATEWAY_ADMIN_ENDPOINT"] == "https://relay.example.com/api/usage/ingest"
-    assert json.loads(admin.env["GATEWAY_USAGE_MODELS"]) == {"m": {"served_model": "m", "model_revision": "r1"}}
-    assert admin.deployment["spec"]["template"]["spec"]["hostAliases"] == [
-        {"ip": "203.0.113.7", "hostnames": ["relay.example.com"]}]
+    usage = Gateway(with_usage)
+    assert usage.env["GATEWAY_USAGE_ENABLED"] == "true"
+    assert usage.env["GATEWAY_CLOUD_ORIGIN"] == "https://api.example.com"
+    assert usage.env["GATEWAY_USAGE_ORIGIN"] == "https://usage.example.com"
+    assert usage.env["GATEWAY_USAGE_LOCATION"] == "us-west-1"
+    assert json.loads(usage.env["GATEWAY_USAGE_MODELS"]) == {"m": {"served_model": "m", "model_revision": "r1"}}
+    assert usage.deployment["spec"]["template"]["spec"]["hostAliases"] == [
+        {"ip": "203.0.113.7", "hostnames": ["api.example.com"]},
+        {"ip": "203.0.113.9", "hostnames": ["usage.example.com"]}]
     # C8s #1049: an entry with egress has no host mount and no open argv
     # (the gateway runs its image entrypoint with no args: args deny).
-    gateway_pod = admin.deployment["spec"]["template"]["spec"]
+    gateway_pod = usage.deployment["spec"]["template"]["spec"]
     assert not any("hostPath" in volume for volume in gateway_pod.get("volumes", []))
     assert not any(container.get("args") for container in gateway_pod["containers"])
     # Per-pod mesh: the gateway does not mount the c8s certificate volume.
     assert not any(mount["mountPath"] == "/etc/c8s/certs"
                    for container in gateway_pod["containers"] for mount in container.get("volumeMounts", []))
-    egress = next(item for item in with_admin if item["kind"] == "NetworkPolicy"
-                  and item["metadata"]["name"] == "gateway-to-router")["spec"]["egress"]
-    blocks = [peer["ipBlock"]["cidr"] for rule in egress for peer in rule.get("to", []) if "ipBlock" in peer]
-    assert blocks == ["203.0.113.7/32"], blocks
-    assert "GATEWAY_USAGE_ENABLED" not in Gateway(render("--namespace", "inference")).env
-    helm("template", "example", str(CHART), *NEUTRAL_MODE,
-         "--set", "gateway.admin.url=http://relay.example.com/x", success=False)
+    def gateway_exits(documents):
+        egress = next(item for item in documents if item["kind"] == "NetworkPolicy"
+                      and item["metadata"]["name"] == "gateway-to-router")["spec"]["egress"]
+        return [peer["ipBlock"]["cidr"] for rule in egress for peer in rule.get("to", []) if "ipBlock" in peer]
+    assert gateway_exits(with_usage) == ["203.0.113.7/32", "203.0.113.9/32"]
+    # Both origins at one address are one exit.
+    shared = render("--namespace", "inference", "--set", "gateway.usage.enabled=true",
+                    "--set", "gateway.cloud.origin=https://api.example.com",
+                    "--set", "gateway.cloud.address=203.0.113.7",
+                    "--set", "gateway.usage.origin=https://usage.example.com",
+                    "--set", "gateway.usage.address=203.0.113.7",
+                    "--set", "gateway.usage.location=us-west-1")
+    assert Gateway(shared).deployment["spec"]["template"]["spec"]["hostAliases"] == [
+        {"ip": "203.0.113.7", "hostnames": ["api.example.com", "usage.example.com"]}]
+    assert gateway_exits(shared) == ["203.0.113.7/32"]
+    # Without usage, Confidential Cloud's API is the one exit.
+    without_usage = render("--namespace", "inference")
+    assert "GATEWAY_USAGE_ENABLED" not in Gateway(without_usage).env
+    assert gateway_exits(without_usage) == ["192.0.2.10/32"]
+    for refused in (("gateway.cloud.address=",),
+                    ("gateway.cloud.origin=https://api.example.com/inference",),
+                    ("gateway.cloud.origin=http://api.example.com",),
+                    ("gateway.usage.enabled=true",),
+                    ("gateway.usage.enabled=true", "gateway.usage.location=us-west-1",
+                     "gateway.usage.origin=https://usage.example.com:8443")):
+        helm("template", "example", str(CHART), *NEUTRAL_MODE,
+             *[argument for value in refused for argument in ("--set", value)], success=False)
     helm(
         "lint", str(CHART), *NEUTRAL_MODE, "--set-string",
         "images.gateway=example.invalid/gateway:latest", success=False,

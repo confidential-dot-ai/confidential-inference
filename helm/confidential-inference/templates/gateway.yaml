@@ -36,7 +36,7 @@ metadata:
 spec:
   replicas: {{ .Values.gateway.replicas }}
   # Keep the ready gateway in service until its replacement passes
-  # readiness, which waits for the first key snapshot from the admin.
+  # readiness.
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -54,25 +54,24 @@ spec:
         confidential.ai/cw: gateway
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.gateway.containerPorts.metrics | quote }}
-        # c8s releases the pepper and the admin client configuration only
-        # after workload attestation, into the c8s memory-backed secret
-        # directory. They never enter a Kubernetes Secret, ConfigMap, image,
-        # or volume.
-        {{- $secrets := .Values.gateway.c8sSecrets }}
-        confidential.ai/c8s-secrets: {{ printf "%s=%s,%s=%s" $secrets.apiKeyPepper.name $secrets.apiKeyPepper.sourcePath $secrets.adminConfig.name $secrets.adminConfig.sourcePath | quote }}
+        # CDS generates the gateway's secret on the first ask and releases it
+        # only after workload attestation, into the c8s memory-backed secret
+        # directory. It never enters a Kubernetes Secret, ConfigMap, image,
+        # or volume. The usage reporter key and the log pseudonyms are
+        # derived from it.
+        {{- $secret := .Values.gateway.c8sSecrets.gateway }}
+        confidential.ai/c8s-secrets: {{ printf "%s=%s" $secret.name $secret.sourcePath | quote }}
         confidential.ai/c8s-secret-dir: /run/c8s/secrets
     spec:
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.scheduling.gatewayNodeName | quote }}
-      # The admin address is also the gateway's allowlist exit (C8s #1047);
-      # no DNS answer can move it.
-      {{- $admin := urlParse (required "gateway.admin.url is required" .Values.gateway.admin.url) }}
-      {{- if or (ne $admin.scheme "https") (contains ":" $admin.host) }}
-      {{- fail "gateway.admin.url must be https on the default port" }}
-      {{- end }}
+      # Each address is also one of the gateway's allowlist exits (C8s
+      # #1047), so no DNS answer can move where keys and usage go.
       hostAliases:
-        - ip: {{ required "gateway.admin.address is required" .Values.gateway.admin.address | quote }}
-          hostnames: [{{ $admin.host | quote }}]
+        {{- range $address, $hosts := include "confidential-inference.gatewayExits" . | fromYaml }}
+        - ip: {{ $address | quote }}
+          hostnames: {{ $hosts | toJson }}
+        {{- end }}
       enableServiceLinks: false
       # A fixed hostname keeps HOSTNAME exact in the c8s allowlist.
       hostname: gateway
@@ -131,24 +130,22 @@ spec:
             # The settings are environment, so the exact allowlist pins them.
             - name: GATEWAY_RUNTIME_CONFIG
               value: {{ include "confidential-inference.gatewaySettings" . | quote }}
-            - name: GATEWAY_ADMIN_CONFIG_FILE
-              value: {{ printf "/run/c8s/secrets/%s" .Values.gateway.c8sSecrets.adminConfig.name | quote }}
-            # What the gateway sends and where: pinned in the allowlist with
-            # the rest of the environment. The secret holds only the token.
-            - name: GATEWAY_ADMIN_ENDPOINT
-              value: {{ .Values.gateway.admin.url | quote }}
+            - name: GATEWAY_SECRET_FILE
+              value: {{ printf "/run/c8s/secrets/%s" .Values.gateway.c8sSecrets.gateway.name | quote }}
+            # Where keys are checked and usage goes: pinned in the allowlist
+            # with the rest of the environment.
+            - name: GATEWAY_CLOUD_ORIGIN
+              value: {{ .Values.gateway.cloud.origin | quote }}
             {{- if .Values.gateway.usage.enabled }}
             - name: GATEWAY_USAGE_ENABLED
               value: "true"
+            - name: GATEWAY_USAGE_ORIGIN
+              value: {{ .Values.gateway.usage.origin | quote }}
+            - name: GATEWAY_USAGE_LOCATION
+              value: {{ required "gateway.usage.location is required with gateway.usage.enabled" .Values.gateway.usage.location | quote }}
             - name: GATEWAY_USAGE_MODELS
               value: {{ toJson .Values.gateway.usage.models | quote }}
             {{- end }}
-            - name: GATEWAY_API_KEY_PEPPER_FILE
-              value: {{ printf "/run/c8s/secrets/%s" .Values.gateway.c8sSecrets.apiKeyPepper.name | quote }}
-            - name: GATEWAY_ADMIN_SIGNER_CERTIFICATE_FILE
-              value: /mnt/c8s-data/admin-auth/..data/client.crt
-            - name: GATEWAY_ADMIN_API_KEY_HASHES_FILE
-              value: /mnt/c8s-data/admin-api-key/..data/sha256
             - name: DEPLOYMENT_ENVIRONMENT
               value: {{ .Values.environment | quote }}
           ports:
@@ -175,35 +172,11 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 5
           volumeMounts:
-            # Directory mounts, not subPath: the node image policy cannot
-            # establish the storage of a kubelet subPath bind, so an exact
-            # mount rule on one never admits. The files keep their paths.
-            - name: admin-auth
-              mountPath: /mnt/c8s-data/admin-auth
-              readOnly: true
-            - name: admin-api-key
-              mountPath: /mnt/c8s-data/admin-api-key
-              readOnly: true
             - name: run
               mountPath: /run/confidential-gateway
             - name: tmp
               mountPath: /tmp
       volumes:
-        - name: admin-auth
-          secret:
-            secretName: {{ .Values.gateway.secrets.adminSigner.secretName }}
-            items:
-              - key: {{ .Values.gateway.secrets.adminSigner.certificateKey }}
-                path: client.crt
-        # Optional until the admin cutover (#186): without it the gateway
-        # accepts only the v1 admin signature.
-        - name: admin-api-key
-          secret:
-            secretName: {{ .Values.gateway.secrets.adminApiKey.secretName }}
-            optional: true
-            items:
-              - key: sha256
-                path: sha256
         - name: run
           emptyDir: {}
         - name: tmp

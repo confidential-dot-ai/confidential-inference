@@ -84,10 +84,6 @@ gateway:
 (30 s at most). A long request waits longer than that, so let the worker
 queue hold it: increase `inferenceConcurrency`, not `inferenceQueue`.
 
-The admin can also set a request rate and a token budget for each key
-(`services/gateway/src/key_limits.rs`). One 1M-token request counts more
-than 1,048,576 tokens against the budget.
-
 ## 4. Gateway memory
 
 `docs/request-body-limit.md` gives the memory of one request. Choose `U`,
