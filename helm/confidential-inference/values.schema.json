@@ -397,6 +397,7 @@
         },
         "requestTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 172800},
         "image": {"enum": ["", "sglangRouter", "confidentialSglangRouter"]},
+        "policy": {"enum": ["cache_aware", "consistent_hashing"]},
         "maxConcurrentRequests": {"type": "integer", "minimum": 0, "maximum": 65536},
         "queueSize": {"type": "integer", "minimum": 0, "maximum": 65536},
         "queueTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},

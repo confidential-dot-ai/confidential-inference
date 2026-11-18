@@ -216,12 +216,19 @@ spec:
             - --service-discovery-port={{ .Values.inference.port }}
             - --selector=app.kubernetes.io/component=inference-worker
             - --selector=confidential.ai/traffic-eligible=true
+            {{- if eq .Values.router.policy "cache_aware" }}
             - --policy=cache_aware
             - --cache-threshold=0.3
             - --balance-abs-threshold=64
             - --balance-rel-threshold=1.5
             - --eviction-interval-secs=60
             - --max-tree-size=67108864
+            {{- else }}
+            # Hashes the gateway's X-SMG-Routing-Key onto a ring of the worker
+            # URLs (the discovered <pod IP>:<port>): routers that see the same
+            # workers agree on every key.
+            - --policy={{ .Values.router.policy }}
+            {{- end }}
             # The router checks each worker with /health_generate, a 1-token
             # generation: a worker gets traffic only while its scheduler
             # answers. The worker's own /health does not generate (the worker
