@@ -1,28 +1,28 @@
 {
   "version": 3,
   "build": {
-    "timestamp": "2026-11-13T18:42:27Z",
+    "timestamp": "2026-11-17T20:48:36Z",
     "memory": "4G",
     "format": "raw",
     "platform": "multi"
   },
   "inputs": {
     "kernel": {
-      "linux_version": "6.18.60",
-      "vmlinuz_sha256": "faa1e8509e22bc942c9c5b244f49f315e273b2049fee173fa3afb1247944a170",
+      "linux_version": "6.18.62",
+      "vmlinuz_sha256": "b333cf6092126c8f47981911b9d89ebdace120afb4574ae776327b450013c40d",
       "required_config_sha256": "07bbcb7595dd93462c82b160f8ee0c27f352b90c3e1fd8ff3bb9713a3a10c530",
       "hardening_config_sha256": "0114a50e7b2695170be396b3820f2dbce940f84e7421414985197de17e4746ee",
       "kernel_extra_config_sha256": "",
-      "snapshot_config_sha256": "ac86f754e728d63e09e75568b81729c7caf1ba5e17b8b8ebf0fa125302a876ea",
+      "snapshot_config_sha256": "739a0dbd098669f556cc6b3585b544a2d91ad3af1f34c1c82cece1b3421814e2",
       "module_signing_cert_sha256": "7c9f63b0206dc794e5be126b86ce50c68cd33d1c22ecd5979984614c476a986e",
       "randstruct_seed_sha256": "7d6b81e63586f80ea22920623630caee43ec2eeab3113be606ab75da779ce317",
       "trusted_dsdt_sha256": "ab8f158398fbaabe180f9a5fecae4916764f22ef135ef8db456e7bad213799f3",
-      "trusted_aml_patch_sha256": "4bbbec506a0fa1d70c24b1117ecda165acab0b2cf8947a84532bac500736e5c6",
-      "snp_mr_patch_sha256": "116fe3820d40473c7aa943c7cde4006ad9f62a33f96dbccf66e48e89c391df8b"
+      "trusted_aml_patch_sha256": "e90708d5c9713b204269a58af18e5ca3b39bb6d9beeb4289f86e4dc798921fba",
+      "snp_mr_patch_sha256": "2d341cfb6569b94241f1ceb6d987f0c55343eccff586c12f1c7b6f8e26824e94"
     },
     "initrd": {
       "path": "initrd.img",
-      "sha256": "ec4510c2619ffd718a09846ea30e1275096487e9fb1ae5dc06b67b6e38654d58"
+      "sha256": "6640a3163ae43eeb0c6ad33d1313d0f367aba5d0921c4e0d5347d64345299959"
     },
     "firmware": {
       "path": "OVMF.fd",
@@ -30,17 +30,17 @@
     },
     "base_image": {
       "path": "image.raw",
-      "sha256": "d53aa9ccceeac4e45695565211295eb739a4f7b190d7f5c0733276b07654dba1"
+      "sha256": "c6ae61a988ebc10ce681fe0a1cee6afddd1ff923d3c9667061e0ff7a204a32a8"
     }
   },
   "outputs": {
     "disk_image": {
       "path": "disk.raw",
-      "sha256": "d53aa9ccceeac4e45695565211295eb739a4f7b190d7f5c0733276b07654dba1"
+      "sha256": "c6ae61a988ebc10ce681fe0a1cee6afddd1ff923d3c9667061e0ff7a204a32a8"
     },
     "uki": {
       "path": "uki.efi",
-      "sha256": "f2cb3bb3a992f2f373a715474aa69b6b58d2ce0c97a2c637abae28c9156d157e"
+      "sha256": "02ebccac57960b8b948209f8c70ffe082ad0ee91b0aba38e0bdaf6d2bd5f19df"
     }
   },
   "snp_variants": [
@@ -48,10 +48,10 @@
       "smp": 2,
       "igvm": {
         "path": "guest-smp2.igvm",
-        "sha256": "97230f40f85b022bbd206c2a32bc33397ab9be7b2f6ed2c45fc420dced3581da"
+        "sha256": "be6cd8b168320e01cd48a42512223264d0102709fccb126a58dcedd07fb609a0"
       },
       "measurement": {
-        "snp_launch_digest": "bf3ae84680a2d6c06fd27ec592a7a6b05fe98e8e04f46ae964488f0421697964bf1ec80b6589653c0e9e4bfdeff0dbdc",
+        "snp_launch_digest": "c9b73da9350b4cc5280600735fcf9e99a7af49319ce6cbc9e263c7f5bda063ece9250617959c012ba2df79448684f561",
         "algorithm": "sha384",
         "page_count": 12062,
         "vmsa_count": 2
@@ -61,10 +61,10 @@
       "smp": 4,
       "igvm": {
         "path": "guest-smp4.igvm",
-        "sha256": "01e73ed361cbf53f36a31ae797c845bf9259c01762ee0016f1451eaa5d7fd1e5"
+        "sha256": "56edddf39e7c9e9138cb43138552995a29fbe64d88ddbcb1bff92b9a62cd8e0d"
       },
       "measurement": {
-        "snp_launch_digest": "b8754e249e45af8aefd5ec2b4b7dbe53ec3673e2aeb4d7b21f4149ad29190dd9b3483409b859b25e6a29451ad572421f",
+        "snp_launch_digest": "3073d15f0c66aee4a2c54db504898153f820d72f6b33e45f5fea7d72c7871bf965dae7bd5ed4375bbf27b593bb14d1fb",
         "algorithm": "sha384",
         "page_count": 12064,
         "vmsa_count": 4
@@ -74,10 +74,10 @@
       "smp": 8,
       "igvm": {
         "path": "guest-smp8.igvm",
-        "sha256": "2c2a81121408a9f7312b05e91e526fd1d3b82fc756a9ba64a4f746fd3344fe5e"
+        "sha256": "6d2ff6885ffc66bb13ea32d918785ad0c7188abf8ddcdbb81d20ebc4f5233147"
       },
       "measurement": {
-        "snp_launch_digest": "24fddc934a174083f08009ce9a9e34102fe0d3b3baff42c14b164a902bb7c8a1d6c8b2062b0065dcaf88df4804547120",
+        "snp_launch_digest": "74aae2c85100c348a2095ca8c502476ab03d1521f358e49952e25534ee228268788a9e71e90eac930d2c8a363a95912b",
         "algorithm": "sha384",
         "page_count": 12068,
         "vmsa_count": 8
@@ -87,10 +87,10 @@
       "smp": 16,
       "igvm": {
         "path": "guest-smp16.igvm",
-        "sha256": "304249c9594a332346202e1b943789d95e4cee161443dc3390e9cccd6a2c2201"
+        "sha256": "9df0c877a5e5fd39d86660d38554f5b3a9c13b8fd7901b0b6bdc936ba06c92ba"
       },
       "measurement": {
-        "snp_launch_digest": "4e150e79accedffcf881b49ec23bf499a3fd87003c21c67b134bb031b71a1f276b7cd024ac80a9fd2e0e3000bba85719",
+        "snp_launch_digest": "9b81b4fa55bebb72897d4f45b1eb978110c0be80c4b6ff15701b3767e38f5b79665063812f1f6c0bdda6625e11ec5a86",
         "algorithm": "sha384",
         "page_count": 12076,
         "vmsa_count": 16
@@ -99,8 +99,8 @@
   ],
   "tdx": {
     "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
-    "rtmr1": "38577105d7d1f5fa99e8542c5a7f2dffb2c082afb699addd3466ed9aca9654858a47e6efb42fc8ec2fea5c140c4e16be",
-    "rtmr2": "944e9c913229b3e178eb5189d4bd5c69c6b28b01b3dc9a03c199386a081b8ecadde861542200336508ec2c685c63ed04",
+    "rtmr1": "f9ff2cba52cca46a8610403b0a6fa3a501c51bb99c682251a90660efcf9f54b5547afa6c80074779b5f00b53eef2e594",
+    "rtmr2": "6c6c30fc1f9469426485594ef11dbd941571bf6c01e4c7aacc01455f75077ef09885b36c4064427a9bd239237f29577f",
     "firmware": {
       "path": "OVMF.tdx.fd",
       "sha256": "a7edaeff6fc4bef8924461cb0fb68a194c3595d08ccad2720cca926dea12f7cf"
