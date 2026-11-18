@@ -168,6 +168,19 @@ New metrics: `smg_admission_limit`, `smg_admission_inflight`,
 and `smg_image_rejected_total{endpoint}`. Their labels are in the telemetry
 router label list.
 
+## Waiting for a worker
+
+`worker-wait.patch` adds `--worker-wait-secs N` (default 0, upstream
+behavior). When no worker is available (unhealthy, or its circuit open),
+the regular router holds the request and polls every 100 ms for up to N
+seconds, then answers 503 `no_available_workers` as before. The budget is
+per request: its retry attempts share it. A client that goes away ends the
+wait. The chart sets it from `router.workerWaitSeconds`.
+
+Without it, one run of failed health checks on the only worker turns every
+request that arrives in the next few seconds into a 503: the router
+retries five times within about a second and gives up.
+
 ## Prefill/decode relay
 
 `pd-router.patch` changes `src/routers/http/pd_router.rs` and adds its

@@ -642,6 +642,7 @@ def main() -> None:
     assert production_settings['firstTokenTimeoutSeconds'] == 3600
     assert production_settings['streamIdleTimeoutSeconds'] == 60
     check_long_request_limits(production)
+    check_worker_wait()
     check_flashinfer_disable_jit(production)
     check_worker_probes(production)
     production_workers = [item for item in production if item['kind'] == 'StatefulSet'
@@ -1057,6 +1058,28 @@ def check_long_request_limits(production: list[dict]) -> None:
         assert [arg for arg in container_args if arg.startswith('--context-length')] == ['--context-length=1048576']
         assert [arg for arg in container_args if arg.startswith('--max-running-requests')] == [
             '--max-running-requests=8']
+
+
+def check_worker_wait() -> None:
+    """--worker-wait-secs renders only for this repository's patched router
+    (images.sglangRouter, worker-wait.patch): the confidential-sglang router
+    and the engine image's upstream router do not parse it."""
+    def wait_args(*arguments):
+        documents = [item for item in yaml.safe_load_all(helm(
+            'template', 'confidential-inference', str(CHART), '--namespace', 'confidential-inference',
+            '-f', str(ROOT / 'tests/fixtures/deployments/production-values.yaml'),
+            '-f', str(ROOT / 'tests/release-v1/fixtures/release-values.yaml'),
+            '--set', 'images.confidentialSglangRouter=ghcr.io/example/router@sha256:' + 'f' * 64,
+            *arguments)) if item]
+        router = next(item for item in documents if item['kind'] == 'Deployment'
+                      and item['metadata']['name'] == 'sglang-router')
+        return [arg for arg in router['spec']['template']['spec']['containers'][0]['args']
+                if arg.startswith('--worker-wait-secs')]
+    assert wait_args() == ['--worker-wait-secs=30']
+    assert wait_args('--set', 'router.image=sglangRouter', '--set', 'router.workerWaitSeconds=5') == \
+        ['--worker-wait-secs=5']
+    assert wait_args('--set', 'router.workerWaitSeconds=0') == []
+    assert wait_args('--set', 'router.image=confidentialSglangRouter') == []
 
 
 def check_flashinfer_disable_jit(production: list[dict]) -> None:

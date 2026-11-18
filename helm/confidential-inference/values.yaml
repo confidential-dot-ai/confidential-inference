@@ -368,6 +368,14 @@ router:
   maxConcurrentRequests: 0
   queueSize: 100
   queueTimeoutSeconds: 60
+  # --worker-wait-secs (worker-wait.patch): how long a request waits for a
+  # worker to become available (healthy, circuit not open) before 503
+  # no_available_workers. It rides out a failed health check or the restart
+  # of the only worker. 0 answers 503 at once. A held request counts against
+  # the gateway's inferenceConcurrency, so new requests get 429 meanwhile.
+  # Only images.sglangRouter has the patch: the flag renders only when the
+  # router runs that image (router.image empty or sglangRouter).
+  workerWaitSeconds: 30
   # The router parses each request body: size its memory like the gateway's
   # bodyMemoryBytes (docs/long-context-sizing.md).
   resources:
