@@ -299,11 +299,31 @@ def container_env(
     return dict(sorted(env.items()))
 
 
+def refuse_kubelet_expansion(container: dict[str, Any]) -> None:
+    """Refuse a pod command or arg that the kubelet rewrites before the process starts.
+
+    The kubelet expands `$(VAR)` and reduces `$$` to `$` in a pod's command and args
+    (the image's ENTRYPOINT and CMD stay as they are). The node then sees another
+    argv than the pod spec, and so another argv than the allowlist pins: C8s refuses
+    the container ("the closest entry differs in args"). Write a single `$` where a
+    literal `$` is meant, and pass values through env, not `$(VAR)`.
+    """
+    for field in ("command", "args"):
+        for index, value in enumerate(container.get(field) or []):
+            if isinstance(value, str) and ("$$" in value or "$(" in value):
+                raise GenerationError(
+                    f"container {container.get('name')}: {field}[{index}] has {'$$' if '$$' in value else '$('}, "
+                    "which the kubelet rewrites before the process starts, so no allowlist entry can match it; "
+                    "write a single $ for a literal $")
+
+
 def effective_process(container: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     """Merge the pod command and args with the image defaults, as the runtime does.
 
     A pod `command` replaces ENTRYPOINT and drops CMD; pod `args` replace CMD.
+    A pod command or arg that the kubelet would rewrite is refused (refuse_kubelet_expansion).
     """
+    refuse_kubelet_expansion(container)
     merged = dict(container)
     if container.get("command"):
         merged["command"] = container["command"]
