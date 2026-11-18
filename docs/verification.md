@@ -97,7 +97,7 @@ names; start with [release/README.md](../release/README.md).
 ## 3. Pin the worker's launch file
 
 This step applies to every release that pins C8s v0.99.29 or later, which
-includes C8s v0.101.5 of the Confidential Cloud catalog. The release's MRTD,
+includes C8s v0.101.9 of the Confidential Cloud catalog. The release's MRTD,
 RTMR1, and RTMR2 pin the worker image only. The worker's launch file,
 `worker.yaml`, selects the CDS image and configuration, the CDS address, and
 the Kubernetes API server. Pin that file too: without it, an endpoint that

@@ -336,6 +336,17 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(with_command["command"], ["/other"])
         self.assertNotIn("args", with_command)
 
+    def test_an_arg_that_the_kubelet_rewrites_is_refused(self):
+        base = {"name": "otelcol", "image": IMAGE}
+        for arg in ['replace_pattern(x, "^(.*)$", "$$1")', "--node=$(NODE_NAME)"]:
+            with self.subTest(arg=arg), self.assertRaisesRegex(GEN.GenerationError, "kubelet rewrites"):
+                GEN.effective_process({**base, "args": [arg]}, self.config)
+        with self.assertRaisesRegex(GEN.GenerationError, r"command\[0\]"):
+            GEN.effective_process({**base, "command": ["/bin/$$x"]}, self.config)
+        # A single $ and the collector's own ${env:VAR} pass: the kubelet leaves them.
+        kept = GEN.effective_process({**base, "args": ['"$1" ${env:NODE_NAME} end$']}, self.config)
+        self.assertEqual(kept["args"], ['"$1" ${env:NODE_NAME} end$'])
+
     def test_c8s_carve_out_matches_cds(self):
         core = {GEN.split_image(CORE)[1]}
         self.assertTrue(GEN.is_carved_out({"image": CORE, "command": ["/c8s"]}, core))
