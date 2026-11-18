@@ -27,6 +27,14 @@ ones produce:
 5. `pd-pairs.patch` keeps each prefill worker with its assigned decode worker.
 6. `private-errors.patch` gives PD errors fixed event names and numeric status
    fields. It removes worker error bodies and arbitrary error text from logs.
+7. `client-errors.patch` stops the regular (not prefill/decode) router from
+   counting a worker's 4xx as a worker failure. A 4xx is the worker correctly
+   refusing a bad request, such as a prompt longer than the context, so the
+   worker is healthy. Counted as failures, a few refused requests could open
+   the circuit breaker of every worker, and the router then refused all
+   requests until the breakers closed. 408 and 429 still count: they mean the
+   worker is slow or full. The prefill/decode router already ignored 4xx; the
+   patch adds a test for each mode.
 
 `tests/images/sglang-router` checks each patch against its `source.lock`
 digest, the order the Dockerfile applies them in, and the image labels that
