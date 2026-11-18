@@ -1,0 +1,415 @@
+diff --git a/sgl-model-gateway/bindings/python/src/lib.rs b/sgl-model-gateway/bindings/python/src/lib.rs
+index 7d44bc07c5..c04ce53bc4 100644
+--- a/sgl-model-gateway/bindings/python/src/lib.rs
++++ b/sgl-model-gateway/bindings/python/src/lib.rs
+@@ -363,6 +363,7 @@ struct Router {
+     eviction_interval_secs: u64,
+     max_tree_size: usize,
+     max_idle_secs: u64,
++    consistent_hashing_load_factor: f64,
+     assignment_mode: String,
+     max_payload_size: usize,
+     dp_aware: bool,
+@@ -501,7 +502,9 @@ impl Router {
+                         other => panic!("Unknown assignment mode: {}", other),
+                     },
+                 },
+-                PolicyType::ConsistentHashing => ConfigPolicyConfig::ConsistentHashing,
++                PolicyType::ConsistentHashing => ConfigPolicyConfig::ConsistentHashing {
++                    load_factor: self.consistent_hashing_load_factor,
++                },
+                 PolicyType::PrefixHash => ConfigPolicyConfig::PrefixHash {
+                     prefix_token_count: 256,
+                     load_factor: 1.25,
+@@ -694,6 +697,7 @@ impl Router {
+         eviction_interval_secs = 120,
+         max_tree_size = 2usize.pow(26),
+         max_idle_secs = 14400,
++        consistent_hashing_load_factor = 0.0,
+         assignment_mode = String::from("random"),
+         max_payload_size = 512 * 1024 * 1024,
+         dp_aware = false,
+@@ -791,6 +795,7 @@ impl Router {
+         eviction_interval_secs: u64,
+         max_tree_size: usize,
+         max_idle_secs: u64,
++        consistent_hashing_load_factor: f64,
+         assignment_mode: String,
+         max_payload_size: usize,
+         dp_aware: bool,
+@@ -901,6 +906,7 @@ impl Router {
+             eviction_interval_secs,
+             max_tree_size,
+             max_idle_secs,
++            consistent_hashing_load_factor,
+             assignment_mode,
+             max_payload_size,
+             dp_aware,
+diff --git a/sgl-model-gateway/bindings/python/src/sglang_router/router.py b/sgl-model-gateway/bindings/python/src/sglang_router/router.py
+index e70f35926f..3333fad978 100644
+--- a/sgl-model-gateway/bindings/python/src/sglang_router/router.py
++++ b/sgl-model-gateway/bindings/python/src/sglang_router/router.py
+@@ -171,6 +171,8 @@ class Router:
+             routing. Default: 60
+         max_payload_size: Maximum payload size in bytes. Default: 256MB
+         max_tree_size: Maximum size of the approximation tree for cache-aware routing. Default: 2^24
++        consistent_hashing_load_factor: Bounded-load factor for consistent_hashing; a key whose
++            worker is above ceil(factor * (in flight + 1) / healthy workers) walks the ring (0 = no bound). Default: 0
+         dp_aware: Enable data parallelism aware schedule. Default: False
+         enable_igw: Enable IGW (Inference-Gateway) mode for multi-model support. When enabled,
+             the router can manage multiple models simultaneously with per-model load balancing
+diff --git a/sgl-model-gateway/bindings/python/src/sglang_router/router_args.py b/sgl-model-gateway/bindings/python/src/sglang_router/router_args.py
+index 931f491cb8..275023ff8e 100644
+--- a/sgl-model-gateway/bindings/python/src/sglang_router/router_args.py
++++ b/sgl-model-gateway/bindings/python/src/sglang_router/router_args.py
+@@ -62,6 +62,8 @@ class RouterArgs:
+     eviction_interval_secs: int = 60
+     max_tree_size: int = 2**26
+     max_idle_secs: int = 4 * 3600
++    # Bounded-load factor for consistent_hashing. 0 = no bound.
++    consistent_hashing_load_factor: float = 0.0
+     assignment_mode: str = "random"  # Mode for manual policy new routing key assignment
+     max_payload_size: int = 512 * 1024 * 1024  # 512MB default for large batches
+     bucket_adjust_interval_secs: int = 5
+@@ -354,6 +356,16 @@ class RouterArgs:
+             default=RouterArgs.max_idle_secs,
+             help="Maximum idle time in seconds before eviction (for manual policy)",
+         )
++        routing_group.add_argument(
++            f"--{prefix}consistent-hashing-load-factor",
++            type=float,
++            metavar="FACTOR",
++            default=RouterArgs.consistent_hashing_load_factor,
++            help="Bounded loads for consistent_hashing: a worker takes a keyed request "
++            "only while its in-flight count is below ceil(FACTOR * (in flight + 1) / "
++            "healthy workers); a key whose worker is full walks the hash ring to the "
++            "next worker with room. 0 disables the bound; otherwise >= 1.",
++        )
+         routing_group.add_argument(
+             f"--{prefix}assignment-mode",
+             type=str,
+diff --git a/sgl-model-gateway/src/config/types.rs b/sgl-model-gateway/src/config/types.rs
+index 0009d14359..3eefacc8d2 100644
+--- a/sgl-model-gateway/src/config/types.rs
++++ b/sgl-model-gateway/src/config/types.rs
+@@ -333,8 +333,14 @@ pub enum PolicyConfig {
+     /// - X-SMG-Target-Worker: Direct routing to a specific worker by URL
+     /// - X-SMG-Routing-Key: Consistent hash routing for session affinity
+     /// - Provides O(log n) lookup with minimal redistribution (~1/N keys) on topology change
++    /// - With `load_factor` c > 0, a worker takes a keyed request only while its
++    ///   in-flight count is below ceil(c * (total + 1) / healthy workers); a key whose
++    ///   worker is full walks the ring to the next one with room (0 = no bound)
+     #[serde(rename = "consistent_hashing")]
+-    ConsistentHashing,
++    ConsistentHashing {
++        #[serde(default)]
++        load_factor: f64,
++    },
+ 
+     /// Prefix hash policy for KV cache-aware load balancing.
+     /// A lightweight alternative to cache_aware radix tree.
+@@ -378,7 +384,7 @@ impl PolicyConfig {
+             PolicyConfig::PowerOfTwo { .. } => "power_of_two",
+             PolicyConfig::Bucket { .. } => "bucket",
+             PolicyConfig::Manual { .. } => "manual",
+-            PolicyConfig::ConsistentHashing => "consistent_hashing",
++            PolicyConfig::ConsistentHashing { .. } => "consistent_hashing",
+             PolicyConfig::PrefixHash { .. } => "prefix_hash",
+         }
+     }
+diff --git a/sgl-model-gateway/src/config/validation.rs b/sgl-model-gateway/src/config/validation.rs
+index bd3d38ab8f..d47e8a7f20 100644
+--- a/sgl-model-gateway/src/config/validation.rs
++++ b/sgl-model-gateway/src/config/validation.rs
+@@ -147,10 +147,16 @@ impl ConfigValidator {
+ 
+     fn validate_policy(policy: &PolicyConfig) -> ConfigResult<()> {
+         match policy {
+-            PolicyConfig::Random
+-            | PolicyConfig::RoundRobin
+-            | PolicyConfig::Manual { .. }
+-            | PolicyConfig::ConsistentHashing => {}
++            PolicyConfig::Random | PolicyConfig::RoundRobin | PolicyConfig::Manual { .. } => {}
++            PolicyConfig::ConsistentHashing { load_factor } => {
++                if *load_factor != 0.0 && (load_factor.is_nan() || *load_factor < 1.0) {
++                    return Err(ConfigError::InvalidValue {
++                        field: "load_factor".to_string(),
++                        value: load_factor.to_string(),
++                        reason: "Must be 0 (no bound) or >= 1.0".to_string(),
++                    });
++                }
++            }
+             PolicyConfig::CacheAware {
+                 cache_threshold,
+                 balance_abs_threshold: _,
+diff --git a/sgl-model-gateway/src/main.rs b/sgl-model-gateway/src/main.rs
+index 070e528f18..00b91d91c0 100644
+--- a/sgl-model-gateway/src/main.rs
++++ b/sgl-model-gateway/src/main.rs
+@@ -147,7 +147,7 @@ struct CliArgs {
+ 
+     // ==================== Routing Policy ====================
+     /// Load balancing policy to use
+-    #[arg(long, default_value = "cache_aware", value_parser = ["random", "round_robin", "cache_aware", "power_of_two", "prefix_hash", "manual"], help_heading = "Routing Policy")]
++    #[arg(long, default_value = "cache_aware", value_parser = ["random", "round_robin", "cache_aware", "power_of_two", "prefix_hash", "manual", "consistent_hashing"], help_heading = "Routing Policy")]
+     policy: String,
+ 
+     /// Cache threshold (0.0-1.0) for cache-aware routing
+@@ -186,6 +186,11 @@ struct CliArgs {
+     #[arg(long, default_value_t = 1.25, help_heading = "Routing Policy")]
+     prefix_hash_load_factor: f64,
+ 
++    /// Bounded-load factor for consistent_hashing: a worker takes a keyed request
++    /// while below ceil(factor * (in flight + 1) / healthy workers) (0 = no bound)
++    #[arg(long, default_value_t = 0.0, help_heading = "Routing Policy")]
++    consistent_hashing_load_factor: f64,
++
+     /// Enable data parallelism aware scheduling
+     #[arg(long, default_value_t = false, help_heading = "Routing Policy")]
+     dp_aware: bool,
+@@ -822,6 +827,9 @@ impl CliArgs {
+                 prefix_token_count: self.prefix_token_count,
+                 load_factor: self.prefix_hash_load_factor,
+             },
++            "consistent_hashing" => PolicyConfig::ConsistentHashing {
++                load_factor: self.consistent_hashing_load_factor,
++            },
+             "manual" => PolicyConfig::Manual {
+                 eviction_interval_secs: self.eviction_interval,
+                 max_idle_secs: self.max_idle_secs,
+diff --git a/sgl-model-gateway/src/policies/consistent_hashing.rs b/sgl-model-gateway/src/policies/consistent_hashing.rs
+index 2e95e8d735..3b5d7cd628 100644
+--- a/sgl-model-gateway/src/policies/consistent_hashing.rs
++++ b/sgl-model-gateway/src/policies/consistent_hashing.rs
+@@ -15,6 +15,15 @@
+ //! This ensures O(log n) lookup performance.
+ //!
+ //! Complexity: O(log n) binary search + O(k) walk where k = consecutive unhealthy workers.
++//!
++//! ## Bounded loads
++//!
++//! With a load factor `c` (> 0), a worker accepts a keyed request only while its
++//! in-flight count stays within `ceil(c * (total + 1) / healthy)`, after
++//! "Consistent Hashing with Bounded Loads" (Mirrokni et al., 2016). A key whose
++//! worker is full walks the ring to the next one with room, so it spills to the
++//! same worker every time. Loads are this router's own in-flight requests;
++//! routers sharing the traffic evenly see the same proportions. 0 turns it off.
+ 
+ use std::sync::Arc;
+ 
+@@ -35,6 +44,7 @@ enum Branch {
+     TargetWorkerHit,
+     TargetWorkerMiss,
+     RoutingKeyHit,
++    RoutingKeySpill,
+     RandomFallback,
+ }
+ 
+@@ -46,17 +56,30 @@ impl Branch {
+             Self::TargetWorkerHit => "target_worker_hit",
+             Self::TargetWorkerMiss => "target_worker_miss",
+             Self::RoutingKeyHit => "routing_key_hit",
++            Self::RoutingKeySpill => "routing_key_spill",
+             Self::RandomFallback => "random_fallback",
+         }
+     }
+ }
+ 
+ #[derive(Debug, Default)]
+-pub struct ConsistentHashingPolicy;
++pub struct ConsistentHashingPolicy {
++    /// Bounded-load factor `c`; 0 disables the bound.
++    load_factor: f64,
++}
+ 
+ impl ConsistentHashingPolicy {
+     pub fn new() -> Self {
+-        Self
++        Self::default()
++    }
++
++    pub fn with_load_factor(load_factor: f64) -> Self {
++        Self { load_factor }
++    }
++
++    /// Highest in-flight count a worker may already hold and still take one more.
++    fn load_capacity(&self, total_load: usize, healthy: usize) -> usize {
++        ((self.load_factor * (total_load + 1) as f64) / healthy as f64).ceil() as usize
+     }
+ 
+     /// Use consistent hashing to find a worker for the given key.
+@@ -67,10 +90,11 @@ impl ConsistentHashingPolicy {
+     ///
+     /// Complexity: O(n) to build healthy URL map + O(log n) ring lookup + O(k) walk
+     fn find_by_consistent_hash(
++        &self,
+         workers: &[Arc<dyn Worker>],
+         info: &SelectWorkerInfo,
+         key: &str,
+-    ) -> Option<usize> {
++    ) -> Option<(usize, Branch)> {
+         // Build URL→index map for healthy workers: O(n) once, O(1) lookups
+         let healthy_url_to_idx: std::collections::HashMap<&str, usize> = workers
+             .iter()
+@@ -87,7 +111,28 @@ impl ConsistentHashingPolicy {
+         if let Some(ref ring) = info.hash_ring {
+             // O(1) lookup per URL checked instead of O(n)
+             let url = ring.find_healthy_url(key, |url| healthy_url_to_idx.contains_key(url))?;
+-            return healthy_url_to_idx.get(url).copied();
++            let home = *healthy_url_to_idx.get(url)?;
++            if self.load_factor <= 0.0 {
++                return Some((home, Branch::RoutingKeyHit));
++            }
++            let total_load: usize = healthy_url_to_idx
++                .values()
++                .map(|&i| workers[i].load())
++                .sum();
++            let capacity = self.load_capacity(total_load, healthy_url_to_idx.len());
++            if workers[home].load() < capacity {
++                return Some((home, Branch::RoutingKeyHit));
++            }
++            // Some worker is always below capacity, since capacity exceeds the mean load.
++            let has_room = |url: &str| {
++                healthy_url_to_idx
++                    .get(url)
++                    .is_some_and(|&i| workers[i].load() < capacity)
++            };
++            return match ring.find_healthy_url(key, has_room) {
++                Some(url) => Some((healthy_url_to_idx[url], Branch::RoutingKeySpill)),
++                None => Some((home, Branch::RoutingKeyHit)),
++            };
+         }
+ 
+         // Fallback: no ring provided, use simple modulo (less optimal but functional)
+@@ -99,7 +144,7 @@ impl ConsistentHashingPolicy {
+         let hash = blake3::hash(key.as_bytes());
+         let hash_val = u64::from_le_bytes(hash.as_bytes()[..8].try_into().unwrap());
+         let idx = (hash_val as usize) % healthy_indices.len();
+-        Some(healthy_indices[idx])
++        Some((healthy_indices[idx], Branch::RoutingKeyHit))
+     }
+ 
+     fn select_worker_impl(
+@@ -127,8 +172,8 @@ impl ConsistentHashingPolicy {
+ 
+         // Priority 2: X-SMG-Routing-Key - consistent hash routing (O(log n))
+         if let Some(key) = routing_key {
+-            return match Self::find_by_consistent_hash(workers, info, key) {
+-                Some(idx) => (Some(idx), Branch::RoutingKeyHit),
++            return match self.find_by_consistent_hash(workers, info, key) {
++                Some((idx, branch)) => (Some(idx), branch),
+                 None => (None, Branch::NoHealthyWorkers),
+             };
+         }
+@@ -143,8 +188,8 @@ impl ConsistentHashingPolicy {
+         });
+ 
+         if let Some(key) = implicit_key {
+-            return match Self::find_by_consistent_hash(workers, info, key) {
+-                Some(idx) => (Some(idx), Branch::RoutingKeyHit),
++            return match self.find_by_consistent_hash(workers, info, key) {
++                Some((idx, branch)) => (Some(idx), branch),
+                 None => (None, Branch::NoHealthyWorkers),
+             };
+         }
+@@ -513,6 +558,74 @@ mod tests {
+         assert_eq!(branch, Branch::RandomFallback);
+     }
+ 
++    /// With a load factor, a key stays on its worker while that worker is
++    /// within the bound, and spills to one fixed worker once it is not.
++    #[tokio::test]
++    async fn test_bounded_load_spills_a_full_worker() {
++        let workers = create_workers(&["http://w0:8000", "http://w1:8000", "http://w2:8000"]);
++        let ring = Arc::new(HashRing::new(&workers));
++        let headers = headers_with_routing_key("session-1");
++        let info = SelectWorkerInfo {
++            headers: Some(&headers),
++            hash_ring: Some(ring),
++            ..Default::default()
++        };
++        let unbounded = ConsistentHashingPolicy::new();
++        let bounded = ConsistentHashingPolicy::with_load_factor(1.25);
++        let home = unbounded.select_worker_impl(&workers, &info).0.unwrap();
++
++        // 3 in flight, all on home: capacity ceil(1.25 * 4 / 3) = 2, home is full.
++        for _ in 0..3 {
++            workers[home].increment_load();
++        }
++        assert_eq!(
++            unbounded.select_worker_impl(&workers, &info),
++            (Some(home), Branch::RoutingKeyHit)
++        );
++        let (spill, branch) = bounded.select_worker_impl(&workers, &info);
++        let spill = spill.unwrap();
++        assert_ne!(spill, home);
++        assert_eq!(branch, Branch::RoutingKeySpill);
++        for _ in 0..5 {
++            assert_eq!(bounded.select_worker_impl(&workers, &info).0, Some(spill));
++        }
++
++        // Once the others carry load too, home is within the bound again.
++        for (i, w) in workers.iter().enumerate() {
++            if i != home {
++                for _ in 0..2 {
++                    w.increment_load();
++                }
++            }
++        }
++        // 7 in flight: capacity ceil(1.25 * 8 / 3) = 4 > 3.
++        assert_eq!(
++            bounded.select_worker_impl(&workers, &info),
++            (Some(home), Branch::RoutingKeyHit)
++        );
++    }
++
++    /// A skewed key set ends up within the bound of every worker.
++    #[tokio::test]
++    async fn test_bounded_load_caps_skew() {
++        let workers = create_workers(&["http://w0:8000", "http://w1:8000"]);
++        let ring = Arc::new(HashRing::new(&workers));
++        let policy = ConsistentHashingPolicy::with_load_factor(1.25);
++        for i in 0..40 {
++            let headers = headers_with_routing_key(&format!("session-{i}"));
++            let info = SelectWorkerInfo {
++                headers: Some(&headers),
++                hash_ring: Some(ring.clone()),
++                ..Default::default()
++            };
++            let idx = policy.select_worker_impl(&workers, &info).0.unwrap();
++            workers[idx].increment_load();
++        }
++        let loads: Vec<usize> = workers.iter().map(|w| w.load()).collect();
++        // ceil(1.25 * 40 / 2) = 25
++        assert!(loads.iter().all(|&l| l <= 25), "loads {loads:?}");
++    }
++
+     #[tokio::test]
+     async fn test_policy_name() {
+         let policy = ConsistentHashingPolicy::new();
+diff --git a/sgl-model-gateway/src/policies/factory.rs b/sgl-model-gateway/src/policies/factory.rs
+index ae3ad845e5..d7dc1c3be1 100644
+--- a/sgl-model-gateway/src/policies/factory.rs
++++ b/sgl-model-gateway/src/policies/factory.rs
+@@ -59,7 +59,9 @@ impl PolicyFactory {
+                 };
+                 Arc::new(ManualPolicy::with_config(config))
+             }
+-            PolicyConfig::ConsistentHashing => Arc::new(ConsistentHashingPolicy::new()),
++            PolicyConfig::ConsistentHashing { load_factor } => {
++                Arc::new(ConsistentHashingPolicy::with_load_factor(*load_factor))
++            }
+             PolicyConfig::PrefixHash {
+                 prefix_token_count,
+                 load_factor,
+@@ -131,7 +133,9 @@ mod tests {
+         });
+         assert_eq!(policy.name(), "manual");
+ 
+-        let policy = PolicyFactory::create_from_config(&PolicyConfig::ConsistentHashing);
++        let policy = PolicyFactory::create_from_config(&PolicyConfig::ConsistentHashing {
++            load_factor: 0.0,
++        });
+         assert_eq!(policy.name(), "consistent_hashing");
+     }
+ 

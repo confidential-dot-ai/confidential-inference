@@ -122,6 +122,7 @@ spec:
             # Hashes the gateway's X-SMG-Routing-Key onto a ring of the worker
             # URLs: routers with the same --worker-urls agree on every key.
             - --policy={{ .Values.router.policy }}
+            - --consistent-hashing-load-factor={{ .Values.router.consistentHashingLoadFactor }}
             {{- end }}
             - --health-check-endpoint=/health
             # SGLang's /health generates one token and polls once a second, so

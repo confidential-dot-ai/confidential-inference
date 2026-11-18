@@ -224,5 +224,9 @@ GPU capacity with [docs/long-context-sizing.md](../../docs/long-context-sizing.m
 
 The gateway sends an `X-SMG-Routing-Key` header on every request it can
 identify a conversation for (`services/gateway/src/routing_key.rs`). The
-removed PD router's `manual` policy read it. The aggregated router's
-`cache_aware` policy does not: it picks a worker by prefix match and load.
+default `router.policy: cache_aware` does not read it: it picks a worker by
+prefix match and load. `router.policy: consistent_hashing` hashes it onto a
+ring of the worker URLs, so every router with the same workers sends a
+conversation to the same worker. `router.consistentHashingLoadFactor`
+(default 1.25, 0 = off) caps how far one worker can run ahead of the others
+(`images/sglang-router`, bounded loads).
