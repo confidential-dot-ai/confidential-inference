@@ -1,7 +1,7 @@
 {
   "version": 3,
   "build": {
-    "timestamp": "2026-11-17T20:48:36Z",
+    "timestamp": "2026-11-19T06:05:20Z",
     "memory": "4G",
     "format": "raw",
     "platform": "multi"
@@ -30,17 +30,17 @@
     },
     "base_image": {
       "path": "image.raw",
-      "sha256": "c6ae61a988ebc10ce681fe0a1cee6afddd1ff923d3c9667061e0ff7a204a32a8"
+      "sha256": "c755eba76dfebf39e756279e7ae1a7f06bac2ee6979095786d4fd9a9fa18414d"
     }
   },
   "outputs": {
     "disk_image": {
       "path": "disk.raw",
-      "sha256": "c6ae61a988ebc10ce681fe0a1cee6afddd1ff923d3c9667061e0ff7a204a32a8"
+      "sha256": "c755eba76dfebf39e756279e7ae1a7f06bac2ee6979095786d4fd9a9fa18414d"
     },
     "uki": {
       "path": "uki.efi",
-      "sha256": "02ebccac57960b8b948209f8c70ffe082ad0ee91b0aba38e0bdaf6d2bd5f19df"
+      "sha256": "f577465c666575b2c5b96fc94109d316652492b0727e86278e4889440f1368f2"
     }
   },
   "snp_variants": [
@@ -48,10 +48,10 @@
       "smp": 2,
       "igvm": {
         "path": "guest-smp2.igvm",
-        "sha256": "be6cd8b168320e01cd48a42512223264d0102709fccb126a58dcedd07fb609a0"
+        "sha256": "c57654c4e59c7378606b06b8d58ce4398841dc11587e703dfb581f4c5f3f2e4c"
       },
       "measurement": {
-        "snp_launch_digest": "c9b73da9350b4cc5280600735fcf9e99a7af49319ce6cbc9e263c7f5bda063ece9250617959c012ba2df79448684f561",
+        "snp_launch_digest": "d71a87a5d33345fcb9c5cd61b43b6c79293e67d171fcea729857ba6ffb76e95fd7f0de4b7b8b8bc7f964615ebf444c2d",
         "algorithm": "sha384",
         "page_count": 12062,
         "vmsa_count": 2
@@ -61,10 +61,10 @@
       "smp": 4,
       "igvm": {
         "path": "guest-smp4.igvm",
-        "sha256": "56edddf39e7c9e9138cb43138552995a29fbe64d88ddbcb1bff92b9a62cd8e0d"
+        "sha256": "a2f79d132517608e961a93ca5a6cc22e4ad965b1a94d5c928fd4d8d61e72191b"
       },
       "measurement": {
-        "snp_launch_digest": "3073d15f0c66aee4a2c54db504898153f820d72f6b33e45f5fea7d72c7871bf965dae7bd5ed4375bbf27b593bb14d1fb",
+        "snp_launch_digest": "663fd283b59038925cd088dc565bebd4980723af0d2dd1cf73eb6dd57301d08469fd0e3e457bbdb357713581e587ccbe",
         "algorithm": "sha384",
         "page_count": 12064,
         "vmsa_count": 4
@@ -74,10 +74,10 @@
       "smp": 8,
       "igvm": {
         "path": "guest-smp8.igvm",
-        "sha256": "6d2ff6885ffc66bb13ea32d918785ad0c7188abf8ddcdbb81d20ebc4f5233147"
+        "sha256": "7ca30159d301838a488ce7ef62609ccf450ac01b2a6ab28a7d340984804b1e27"
       },
       "measurement": {
-        "snp_launch_digest": "74aae2c85100c348a2095ca8c502476ab03d1521f358e49952e25534ee228268788a9e71e90eac930d2c8a363a95912b",
+        "snp_launch_digest": "b2cf3e58a7cf840d10f05fd9894d7a68c805a12b322d28d155e4fcb99a20ddc255b62343fd744e0f412c29723dfbcc51",
         "algorithm": "sha384",
         "page_count": 12068,
         "vmsa_count": 8
@@ -87,10 +87,10 @@
       "smp": 16,
       "igvm": {
         "path": "guest-smp16.igvm",
-        "sha256": "9df0c877a5e5fd39d86660d38554f5b3a9c13b8fd7901b0b6bdc936ba06c92ba"
+        "sha256": "809aaae08fdbaf3084c1826ee63b3cd288d9501cabbf1fcfc66a8ec3135282b4"
       },
       "measurement": {
-        "snp_launch_digest": "9b81b4fa55bebb72897d4f45b1eb978110c0be80c4b6ff15701b3767e38f5b79665063812f1f6c0bdda6625e11ec5a86",
+        "snp_launch_digest": "452c4322e8dcd01cc5b38a9210317bb03e31e957ad8d592efded9b2ec92fab45b87fafd1a73f7e3be88c93f1c8985bdf",
         "algorithm": "sha384",
         "page_count": 12076,
         "vmsa_count": 16
@@ -99,8 +99,8 @@
   ],
   "tdx": {
     "mrtd": "9309eaae9c151e766de0f97b1d1aaeb76b8c8c366080803943fb566521c8f0cf00a142d8b7b0683ed1d42c5a27198ba1",
-    "rtmr1": "f9ff2cba52cca46a8610403b0a6fa3a501c51bb99c682251a90660efcf9f54b5547afa6c80074779b5f00b53eef2e594",
-    "rtmr2": "6c6c30fc1f9469426485594ef11dbd941571bf6c01e4c7aacc01455f75077ef09885b36c4064427a9bd239237f29577f",
+    "rtmr1": "c362f19e261c5545e5769b48d91aed722e36425eda550076f41a5ede79a82a7f9e7309b58d0c7da3f444bd2d6f9dbd1c",
+    "rtmr2": "cd82e9eba1c4b8abce04b8299e06e5639d11734b262830a72c42c695857bbb1553f9c9cf3745199a89fbd9536f160fd1",
     "firmware": {
       "path": "OVMF.tdx.fd",
       "sha256": "a7edaeff6fc4bef8924461cb0fb68a194c3595d08ccad2720cca926dea12f7cf"
