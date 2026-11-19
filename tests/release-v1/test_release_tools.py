@@ -1156,7 +1156,7 @@ class RenderTests(unittest.TestCase):
         changed = framework_manifest()
         for key in ("coreImages", "seedImages"):
             changed["c8s"][key] = [image for image in changed["c8s"][key] if "nginx-unprivileged" not in image]
-        with self.assertRaisesRegex(REN.ManifestError, "does not name: \\['sha256:5d8bb943"):
+        with self.assertRaisesRegex(REN.ManifestError, "does not name: \\['sha256:8432c57a"):
             render_deployment(manifest=changed)
 
     def test_the_live_allowlist_names_the_framework_release(self):
