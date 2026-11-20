@@ -171,7 +171,7 @@ def staging_allowlist(c8s: Path) -> bytes:
 
 def rendered_workers(deployment) -> list[dict]:
     return [item for item in rendered(deployment) if item.get("kind") == "StatefulSet"
-            and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
+            and item.get("metadata", {}).get("name", "") == "inference-worker"]
 
 DIGEST = "sha256:" + "a" * 64
 IMAGE = f"ghcr.io/example/app@{DIGEST}"
@@ -233,6 +233,29 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual({name for name, rule in policy["variables"].items() if "exact" not in rule}, {"NODE_NAME"})
         self.assertEqual(policy["variables"]["HOSTNAME"], {"exact": "agent"})
         self.assertEqual(GEN.env_policy({"A": "1"}), {"policy": "exact", "values": {"A": "1"}})
+
+    def test_the_pods_of_a_statefulset_with_several_replicas_differ_only_in_hostname(self):
+        """One StatefulSet runs every worker under one entry: inference-worker-0, -1, ...
+
+        The entry requires HOSTNAME and a metadata.name variable and admits
+        any value; every other variable stays exact. One replica keeps
+        HOSTNAME exact.
+        """
+        container = {"name": "app", "image": IMAGE, "env": [
+            {"name": "POD", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}}]}
+        workers = controller(container=container)
+        workers["spec"]["replicas"] = 2
+        values = self.env(workers)
+        self.assertIs(values["HOSTNAME"], GEN.OPEN_VALUE)
+        self.assertIs(values["POD"], GEN.OPEN_VALUE)
+        policy = GEN.env_policy(values)
+        self.assertEqual(policy["policy"], "match")
+        self.assertEqual({name for name, rule in policy["variables"].items() if "exact" not in rule}, {"HOSTNAME", "POD"})
+        self.assertEqual(policy["variables"]["A"], {"exact": "1"})
+        # The StatefulSet controller sets each pod's hostname to its name.
+        workers["spec"]["template"]["spec"]["hostname"] = "fixed"
+        self.assertIs(GEN.pod_name(workers), GEN.OPEN_VALUE)
+        self.assertEqual(self.env(controller())["HOSTNAME"], "worker-0")
 
     def test_service_links_and_random_pod_names_are_refused(self):
         obj = controller()
@@ -1194,7 +1217,8 @@ class RenderTests(unittest.TestCase):
         values = STAGING.read_values()["inference"]["model"]
         manifest_sha256 = MAN.sha256(values["download"]["manifest"].encode()).removeprefix("sha256:")
         workers = rendered_workers(STAGING)
-        self.assertEqual(len(workers), 2)
+        self.assertEqual(len(workers), 1)
+        self.assertEqual(workers[0]["spec"]["replicas"], 2)
         for worker in workers:
             pod = worker["spec"]["template"]
             container = pod["spec"]["containers"][0]
@@ -1210,7 +1234,8 @@ class RenderTests(unittest.TestCase):
 
         allowlist = json.loads(STAGING_ALLOWLIST.read_text())
         zero_digest = "sha256:" + "0" * 64
-        for index, name in enumerate(("inference-worker-0", "inference-worker-1")):
+        self.assertNotIn("inference-worker-0", allowlist["workloads"])
+        for name in ("inference-worker",):
             entry = allowlist["workloads"][name]
             # The download address is the entry's one exit (C8s #1047).
             self.assertEqual(entry["egress"], [{"cidr": "192.0.2.20/32", "port": 443}])
@@ -1218,10 +1243,13 @@ class RenderTests(unittest.TestCase):
                        if item["command"].get("argv", [""])[0] == "/bin/sh"]
             self.assertEqual(len(guarded), 1)
             policy = guarded[0]
-            self.assertEqual(policy["command"]["argv"], workers[index]["spec"]["template"]["spec"]["containers"][0]["command"])
+            self.assertEqual(policy["command"]["argv"], workers[0]["spec"]["template"]["spec"]["containers"][0]["command"])
+            # The two pods differ in HOSTNAME: the entry requires it and admits any value.
+            self.assertEqual(policy["env"]["policy"], "match")
+            self.assertEqual(policy["env"]["variables"]["HOSTNAME"], {"present": True})
             self.assertEqual(policy["args"]["argv"][0], "/usr/local/bin/wait-for-model")
             self.assertIn("sglang_simulator.simulation.sglang.launch_server", policy["args"]["argv"])
-            model = "/mnt/c8s-data/models/" + values["volumeNames"][index]
+            model = "/mnt/c8s-data/models/" + values["volumeNames"][0]
             # The download volume is writable at the fetch path and read-only at the model path.
             self.assertEqual(policy["mounts"], {"policy": "exact", "rules": [
                 {"destination": "/dev/shm", "kind": "emptyDir"},
@@ -1268,10 +1296,12 @@ class RenderTests(unittest.TestCase):
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
-        self.assertEqual(args[:3], ["--worker-urls", "http://inference-worker-0-0.inference-workers:30000",
-                                    "http://inference-worker-1-0.inference-workers:30000"])
+        self.assertEqual(args[:2], ["--service-discovery",
+                                    "--service-discovery-namespace=confidential-inference-staging"])
+        # The API server address is the router's one exit (C8s #1047).
+        self.assertEqual(allowlist["workloads"]["sglang-router"]["egress"], [{"cidr": "192.0.2.30/32", "port": 6443}])
         changed = json.loads(json.dumps(allowlist))
-        changed["workloads"].pop("inference-worker-1")
+        changed["workloads"].pop("inference-worker")
         with self.assertRaisesRegex(REN.ManifestError, "entries differ"):
             contract(changed)
         changed = json.loads(json.dumps(allowlist))

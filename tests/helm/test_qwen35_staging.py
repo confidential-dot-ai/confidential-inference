@@ -22,7 +22,6 @@ MODEL = "Qwen/Qwen3.5-0.8B"
 REVISION = "2fc06364715b967f1860aea9cf38778875588b17"
 MANIFEST_SHA256 = "625963f6a7f159fd2a3e8ad97642a11ac275d1735adaadca8df39452b9fbd8fa"
 ENGINE = yaml.safe_load(RELEASE_VALUES.read_text())["images"]["sglangConfidential"]
-WORKERS = ["inference-worker-0", "inference-worker-1"]
 
 
 def render(*layers: str, extra: tuple[str, ...] = (), check: bool = True) -> subprocess.CompletedProcess:
@@ -40,7 +39,7 @@ def documents(result: subprocess.CompletedProcess) -> list[dict]:
 
 def workers(found: list[dict]) -> list[dict]:
     return [item for item in found if item["kind"] == "StatefulSet"
-            and item["metadata"]["name"].startswith("inference-worker-")]
+            and item["metadata"]["name"] == "inference-worker"]
 
 
 def sglang(worker: dict) -> dict:
@@ -66,7 +65,8 @@ class Qwen35StagingTests(unittest.TestCase):
 
     def test_two_workers_run_qwen_on_one_gpu_each(self):
         found = workers(self.documents)
-        self.assertEqual(WORKERS, [w["metadata"]["name"] for w in found])
+        self.assertEqual(1, len(found))
+        self.assertEqual(2, found[0]["spec"]["replicas"])
         for worker in found:
             template = worker["spec"]["template"]
             container = sglang(worker)
@@ -92,12 +92,13 @@ class Qwen35StagingTests(unittest.TestCase):
             self.assertFalse(any(a.startswith("--speculative-algorithm") for a in server))
             self.assertFalse(any("dsv4" in a or "deepseek" in a for a in server))
 
-    def test_router_sends_to_both_workers(self):
+    def test_router_discovers_the_workers(self):
         router = named(self.documents, "Deployment", "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
-        urls = args[args.index("--worker-urls") + 1:args.index("--policy=cache_aware")]
-        self.assertEqual(["http://inference-worker-0-0.inference-workers:30000",
-                          "http://inference-worker-1-0.inference-workers:30000"], urls)
+        self.assertNotIn("--worker-urls", args)
+        self.assertIn("--service-discovery", args)
+        self.assertIn("--service-discovery-namespace=confidential-inference", args)
+        self.assertIn("--selector=app.kubernetes.io/component=inference-worker", args)
 
     def test_model_comes_from_the_model_server_over_plain_http(self):
         for worker in workers(self.documents):

@@ -96,7 +96,7 @@ processors:
     log_statements:
       - {{ printf "set(%s, \"gateway\") where %s and %s == \"gateway\"" $src $inNs $container | toJson }}
       - {{ printf "set(%s, \"sglang-router\") where %s and %s == \"sglang-router\"" $src $inNs $container | toJson }}
-      - {{ printf "set(%s, \"inference-worker\") where %s and %s == \"sglang\" and IsMatch(%s, \"^inference-worker-[0-9]+-0$\")" $src $inNs $container $pod | toJson }}
+      - {{ printf "set(%s, \"inference-worker\") where %s and %s == \"sglang\" and IsMatch(%s, \"^inference-worker-[0-9]+$\")" $src $inNs $container $pod | toJson }}
       - {{ printf "set(%s, \"telemetry-collector\") where %s and %s == \"otelcol\" and IsMatch(%s, \"^telemetry-collector-\")" $src $inNs $container $pod | toJson }}
       - {{ printf "set(%s, \"node-log-agent\") where %s and %s == \"otelcol\" and IsMatch(%s, \"^node-log-agent-\")" $src $inNs $container $pod | toJson }}
       - {{ printf "set(%s, \"c8s\") where %s or (%s and (%s))" $src (join " or " $c8sNs) $inNs (join " or " $c8sCtr) | toJson }}

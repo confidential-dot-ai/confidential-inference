@@ -16,9 +16,14 @@ imagePullSecret:
 scheduling:
   gatewayNodeName: gateway-node
   inferenceNodeName: inference-node
-  # One node per inference worker, by worker index. An empty list places every
-  # worker on inferenceNodeName.
+  # The nodes that hold a C8s model volume. The workers run only on these
+  # nodes; an empty list places every worker on inferenceNodeName. Not used
+  # with inference.model.download, where the scheduler places the workers.
   inferenceNodeNames: []
+  # With inference.model.download: the node labels a worker node must have,
+  # for example {inference.confidential.ai/role: gpu}. Empty: any node with
+  # a free GPU (inference.gpusPerReplica).
+  inferenceNodeSelector: {}
   # The router node. Empty uses inferenceNodeName.
   routerNodeName: ""
 
@@ -198,11 +203,13 @@ inference:
   # evidence enumerates every device visible in the CVM. 0 means the
   # evidence must show exactly gpusPerReplica devices.
   attestedGpuCount: 0
-  # Keep the pod identity stable. Use these names to select exact c8s launch
-  # policies during an old/new worker overlap.
-  attestedWorkloads:
-    - inference-worker-0
-    - inference-worker-1
+  # The C8s allowlist entry of every worker pod (the confidential.ai/cw
+  # annotation). One StatefulSet runs inference.replicas pods, and all of
+  # them claim this one entry.
+  attestedWorkload: inference-worker
+  # Unused: the chart ran one StatefulSet per worker before. The key stays
+  # so that existing environment values still render.
+  attestedWorkloads: []
   autoscaling:
     enabled: false
     maxReplicas: 0
@@ -210,6 +217,8 @@ inference:
     name: example/model
     revision: "0000000000000000000000000000000000000000"
     c8sVolumeSource: /example/volumes/model
+    # The model directory name below volumeDirectory. Every worker uses the
+    # first name; the others are unused.
     volumeNames:
       - model
     volumeDirectory: /mnt/c8s-data/models
@@ -319,6 +328,22 @@ router:
   # This is the exact c8s policy entry for this workload.
   attestedWorkload: sglang-router
   enabled: true
+  # The router finds the Ready worker pods with Kubernetes service discovery
+  # (templates/sglang-router.yaml). A C8s mesh member cannot reach the
+  # Kubernetes API through its Service address, which is in a cluster range.
+  # The router dials the API server's own address instead: one allowlist
+  # exit, so the deployment's allowlist policy must declare
+  # `egress: {port: <port>}` for the router entry.
+  discovery:
+    apiServer:
+      # The API server's IPv4 address, outside the pod and Service ranges.
+      # The default is a documentation address (RFC 5737) that reaches no
+      # API server.
+      address: 192.0.2.30
+      port: 6443
+      # The name the router checks in the API server's certificate. Every
+      # API server certificate names kubernetes.default.svc.
+      serverName: kubernetes.default.svc
   replicas: 1
   port: 30000
   metricsPort: 29000

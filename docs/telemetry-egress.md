@@ -133,7 +133,7 @@ Labels of each stream (Loki index labels):
 | `deployment.environment` | `production` | The environment. |
 | `k8s.cluster.name` | `production-fedcba987654` | The deployment (chart value `deployment`, which only `scripts/render-allowlist.py --deployment` sets). |
 | `service.namespace` | `production` | `telemetry.deployment`, the `cluster` label of the metrics. |
-| `k8s.namespace.name`, `k8s.pod.name`, `k8s.container.name` | `inference-worker-0-0` | The container. From the log file path. |
+| `k8s.namespace.name`, `k8s.pod.name`, `k8s.container.name` | `inference-worker-0` | The container. From the log file path. |
 
 Fields of each record:
 

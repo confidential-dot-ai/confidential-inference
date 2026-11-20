@@ -19,13 +19,8 @@
       ]
     },
     {
-      "name": "inference-worker-0",
-      "controller": "StatefulSet/inference-worker-0",
-      "egress": {"port": 443}
-    },
-    {
-      "name": "inference-worker-1",
-      "controller": "StatefulSet/inference-worker-1",
+      "name": "inference-worker",
+      "controller": "StatefulSet/inference-worker",
       "egress": {"port": 443}
     },
 
@@ -36,7 +31,8 @@
     },
     {
       "name": "sglang-router",
-      "controller": "Deployment/sglang-router"
+      "controller": "Deployment/sglang-router",
+      "egress": {"port": 6443}
     },
     {
       "name": "node-log-agent",

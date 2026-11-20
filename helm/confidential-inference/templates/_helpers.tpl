@@ -20,22 +20,8 @@ app.kubernetes.io/component: {{ .component }}
 router-headless
 {{- end }}
 
-{{/*
-The inference node of one worker. scheduling.inferenceNodeNames lists one node
-per worker index. An empty list places every worker on
-scheduling.inferenceNodeName.
-*/}}
-{{- define "confidential-inference.inferenceNodeName" -}}
-{{- $names := .root.Values.scheduling.inferenceNodeNames | default list -}}
-{{- if $names -}}
-{{- if ge (int .index) (len $names) -}}
-{{- fail (printf "scheduling.inferenceNodeNames has no entry for worker %d" (int .index)) -}}
-{{- end -}}
-{{- index $names (int .index) -}}
-{{- else -}}
-{{- .root.Values.scheduling.inferenceNodeName -}}
-{{- end -}}
-{{- end }}
+{{/* The router's Kubernetes client files: token, CA and kubeconfig. */}}
+{{- define "confidential-inference.routerKubernetesDirectory" -}}/mnt/c8s-data/kubernetes{{- end }}
 
 {{/*
 The distinct inference nodes, as a JSON list.

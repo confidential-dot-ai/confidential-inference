@@ -61,7 +61,7 @@ receivers:
             - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.router)) | quote }}}
         {{- if .Values.inference.enabled }}
         {{- range $index := until (int .Values.inference.replicas) }}
-        {{- $host := printf "inference-worker-%d-0.inference-workers.%s.svc.cluster.local" $index $ns }}
+        {{- $host := printf "inference-worker-%d.inference-workers.%s.svc.cluster.local" $index $ns }}
         - job_name: {{ printf "inference-worker-%d" $index }}
           static_configs:
             - targets: [{{ printf "%s:%v" $host $.Values.inference.port | quote }}]

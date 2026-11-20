@@ -21,9 +21,11 @@ internal release runbook describes:
    version in release/inputs/cdi/.
 
 The script never learns a value from a running container. A value that no
-pinned source can give (for example a node IP) is an error. One exception: a
-DaemonSet container may read its node name (`spec.nodeName`). Its entry is
-`env: match`, with that variable `present` and every other variable `exact`.
+pinned source can give (for example a node IP) is an error. Two exceptions:
+a DaemonSet container may read its node name (`spec.nodeName`), and the pods
+of a StatefulSet with several replicas differ in HOSTNAME (and a
+`metadata.name` variable). Such an entry is `env: match`, with that variable
+`present` and every other variable `exact`.
 
 `c8s allowlist derive` from the pinned c8s release builds each entry, so c8s
 itself decides which containers it injects and drops. The c8s core entries
@@ -223,30 +225,40 @@ def expand(value: str, known: dict[str, str]) -> str:
     return "".join(output)
 
 
-def pod_name(controller: dict[str, Any]) -> str:
+def pod_name(controller: dict[str, Any]) -> Any:
+    """The pod's name, or OPEN_VALUE when its pods differ in name.
+
+    A StatefulSet of several replicas names its pods <name>-0, <name>-1 and
+    so on, and the StatefulSet controller sets each pod's hostname to that
+    name. All of them claim one allowlist entry, so the entry requires
+    HOSTNAME (and a `metadata.name` variable) and admits any value.
+    """
     kind = controller["kind"]
     name = controller["metadata"]["name"]
     pod = controller["spec"]["template"]["spec"]
+    if kind == "StatefulSet":
+        return f"{name}-0" if int(controller["spec"].get("replicas", 1)) == 1 else OPEN_VALUE
     if pod.get("hostname"):
         return pod["hostname"]
-    if kind == "StatefulSet" and int(controller["spec"].get("replicas", 1)) == 1:
-        return f"{name}-0"
     raise GenerationError(
         f"{kind}/{name} has a random pod name, so HOSTNAME is not exact; set spec.template.spec.hostname"
     )
 
 
-# The value of a variable that a DaemonSet reads from spec.nodeName. C8s
-# `match` admits it with `present`; no other variable is left open.
-NODE_NAME_VALUE = object()
+# The value of a variable that differs per pod of one entry: a DaemonSet's
+# node name (`spec.nodeName`), or the pod name of a StatefulSet with several
+# replicas. C8s `match` admits it with `present`; no other variable is left
+# open.
+OPEN_VALUE = object()
+NODE_NAME_VALUE = OPEN_VALUE
 
 
 def env_policy(env: dict[str, Any]) -> dict[str, Any]:
-    """The env policy of a container: `exact`, or `match` when a node name is open."""
-    if not any(value is NODE_NAME_VALUE for value in env.values()):
+    """The env policy of a container: `exact`, or `match` when a value is open."""
+    if not any(value is OPEN_VALUE for value in env.values()):
         return {"policy": "exact", "values": env}
     return {"policy": "match", "variables": {
-        name: {"present": True} if value is NODE_NAME_VALUE else {"exact": value}
+        name: {"present": True} if value is OPEN_VALUE else {"exact": value}
         for name, value in env.items()}}
 
 
@@ -289,7 +301,7 @@ def container_env(
                 raise GenerationError(f"{label}: env {name} reads {field}, which differs per node or pod")
         else:
             raise GenerationError(f"{label}: env {name} has a value the release does not pin")
-        if value is not NODE_NAME_VALUE:
+        if value is not OPEN_VALUE:
             defined[name] = value
         env[name] = value
     if requests_gpu(container):
