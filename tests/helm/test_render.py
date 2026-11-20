@@ -1001,6 +1001,7 @@ def main() -> None:
     check_model_download()
     check_model_download_scheme()
     check_worker_placement()
+    check_router_exit_ranges()
     check_front_door_namespace()
     check_c8s_admission()
     check_telemetry_collector()
@@ -1137,6 +1138,52 @@ def check_router_discovery(documents: list[dict]) -> None:
     assert template["metadata"]["annotations"]["confidential.ai/cw"] == "inference-worker"
     assert template["metadata"]["labels"]["confidential.ai/traffic-eligible"] == "true"
     assert template["metadata"]["labels"]["app.kubernetes.io/component"] == "inference-worker"
+
+
+def check_router_exit_ranges() -> None:
+    """router.discovery.apiServer.cidrs: the allowlist exit ranges of an address set at deploy time.
+
+    The release render of the allowlist knows only the ranges; the deploy
+    sets the address. The ranges go on the router Deployment (not its pod),
+    the pod dials the address, and a known address must be in a range.
+    """
+    def router(*arguments):
+        documents = render(*arguments)
+        (item,) = [item for item in documents if item["kind"] == "Deployment"
+                   and item["metadata"]["name"] == "sglang-router"]
+        (policy,) = [item for item in documents if item["kind"] == "NetworkPolicy"
+                     and item["metadata"]["name"] == "router-paths"]
+        return item, policy
+    annotation = "inference.confidential.ai/egress-cidrs"
+    default, default_policy = router()
+    assert annotation not in default["metadata"].get("annotations", {})
+    # The release render: ranges, and the documentation address (not known yet).
+    ranges = ("--set-json", 'router.discovery.apiServer.cidrs=["10.48.64.0/18","10.50.0.0/16"]')
+    rendered, policy = router(*ranges)
+    assert rendered["metadata"]["annotations"] == {annotation: "10.48.64.0/18,10.50.0.0/16"}
+    assert rendered["spec"]["template"] == default["spec"]["template"], "the ranges must not change the pod"
+    # The NetworkPolicy names only the port: the API server is a host identity
+    # to Cilium, and C8s limits the address to the exit ranges.
+    assert policy == default_policy
+    assert {"ports": [{"protocol": "TCP", "port": 6443}]} in policy["spec"]["egress"]
+    # The deploy: the address in a range.
+    for address in ("10.48.64.0", "10.48.100.7", "10.48.127.255", "10.50.255.1"):
+        rendered, _ = router(*ranges, "--set", f"router.discovery.apiServer.address={address}")
+        assert rendered["spec"]["template"]["spec"]["hostAliases"] == [{"ip": address, "hostnames": ["kubernetes-api"]}]
+        assert rendered["metadata"]["annotations"] == {annotation: "10.48.64.0/18,10.50.0.0/16"}
+    # An address outside every range: C8s would drop the connection.
+    for address in ("10.48.128.1", "10.48.63.255", "10.51.0.1"):
+        error = render_values({"router": {"discovery": {"apiServer": {
+            "address": address, "cidrs": ["10.48.64.0/18", "10.50.0.0/16"]}}}}, success=False)
+        assert "is in no range of router.discovery.apiServer.cidrs" in error, error
+    single, _ = router("--set-json", 'router.discovery.apiServer.cidrs=["203.0.113.9/32"]',
+                       "--set", "router.discovery.apiServer.address=203.0.113.9")
+    assert single["metadata"]["annotations"] == {annotation: "203.0.113.9/32"}
+    # C8s refuses an exit broader than /16, and more than 8 exits.
+    for cidrs in (["10.0.0.0/8"], ["10.48.0.0/15"], ["10.48.64.0"], ["10.48.64.0/18", "10.48.64.0/18"],
+                  [f"10.{i}.0.0/16" for i in range(9)]):
+        error = render_values({"router": {"discovery": {"apiServer": {"cidrs": cidrs}}}}, success=False)
+        assert "cidrs" in error, error
 
 
 def check_worker_placement() -> None:

@@ -87,7 +87,9 @@ All worker pods are one C8s workload: the `confidential.ai/cw` annotation
 names the allowlist entry `inference.attestedWorkload` (default
 `inference-worker`), and every pod claims it. The pods differ only in their
 name, so the entry requires `HOSTNAME` and admits any value
-(`scripts/generate-release-allowlist.py`). The deployment's allowlist policy
+(`scripts/generate-release-allowlist.py`). This is so for every value of
+`inference.replicas`, 1 included: a scale of the StatefulSet at runtime (for
+example from 1 to 2 pods) needs no new allowlist. The deployment's allowlist policy
 has one item for them: `{"name": "inference-worker", "controller":
 "StatefulSet/inference-worker"}`.
 
@@ -113,8 +115,28 @@ connection. The router dials the API server's own address,
 `router.discovery.apiServer.address` (default: a documentation address that
 reaches no API server). That address is the router's one allowlist exit, so
 the deployment's allowlist policy must declare `"egress": {"port": <port>}`
-for `Deployment/sglang-router`, with `router.discovery.apiServer.port`. The
-router reads a kubeconfig, its service account token and the cluster CA
+for `Deployment/sglang-router`, with `router.discovery.apiServer.port`.
+
+An environment that sets the address at deploy time (after the release
+render of the allowlist, for example when the control plane is made with the
+cluster) sets `router.discovery.apiServer.cidrs` instead: a list of the IPv4
+ranges the address can be in, for example `["10.48.64.0/18"]`. Each range is
+`a.b.c.d/n` with `n` from 16 to 32 (C8s refuses an exit broader than /16),
+with no host bits, at most 8. Each range is then one allowlist exit on the
+port, in place of the exact address; the chart writes the list to the
+Deployment annotation `inference.confidential.ai/egress-cidrs`, which the
+allowlist generator reads. The pod still dials
+`router.discovery.apiServer.address` (its `hostAliases` entry and
+kubeconfig), which the deploy sets. The chart refuses an address outside
+every range, except a documentation address (192.0.2.0/24, the default),
+which means "not known yet". The router's node must not be in a range, and
+neither must the cluster's pod and Service ranges: C8s refuses an exit to the
+node's own address or into the cluster. With an empty list (the default) the
+exit is the exact address. The `router-paths` NetworkPolicy names only the
+port in both cases: the API server is a host identity to Cilium, and C8s
+limits the address.
+
+The router reads a kubeconfig, its service account token and the cluster CA
 from one projected volume below `/mnt/c8s-data/kubernetes`, and checks the
 API server certificate for `router.discovery.apiServer.serverName`
 (`kubernetes.default.svc`). The Role `sglang-router-pods` lets it get, list

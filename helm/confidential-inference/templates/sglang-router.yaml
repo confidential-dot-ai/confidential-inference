@@ -50,6 +50,19 @@ spec:
       targetPort: {{ .Values.router.metricsPort }}
 ---
 {{- $api := .Values.router.discovery.apiServer }}
+{{- /* A documentation address (192.0.2.0/24, the default) is not known
+       yet: the release render of the allowlist runs before the control
+       plane exists. A known address must be in router.discovery.apiServer.cidrs
+       when that list is set, or C8s drops the router's connection. */}}
+{{- if and $api.cidrs (not (eq (include "confidential-inference.ipv4InRange" (dict "address" $api.address "cidr" "192.0.2.0/24")) "true")) }}
+{{- $inRange := false }}
+{{- range $api.cidrs }}
+{{- if eq (include "confidential-inference.ipv4InRange" (dict "address" $api.address "cidr" .)) "true" }}{{ $inRange = true }}{{ end }}
+{{- end }}
+{{- if not $inRange }}
+{{- fail (printf "router.discovery.apiServer.address %s is in no range of router.discovery.apiServer.cidrs %v: the router's allowlist exits would not reach it" $api.address $api.cidrs) }}
+{{- end }}
+{{- end }}
 # The router's Kubernetes client configuration. A C8s mesh member cannot
 # reach the API server through the `kubernetes` Service: the Service address
 # is in a cluster range, so the mesh captures the connection. The router
@@ -124,6 +137,15 @@ metadata:
   labels:
     {{- include "confidential-inference.labels" . | nindent 4 }}
     app.kubernetes.io/component: sglang-router
+  {{- with $api.cidrs }}
+  # The ranges the API server address can have. When it is set,
+  # scripts/generate-release-allowlist.py makes each range one allowlist
+  # exit, in place of the hostAliases address: the deployment sets the
+  # address after the release render of the allowlist. On the Deployment,
+  # not the pod, so the pods do not change.
+  annotations:
+    inference.confidential.ai/egress-cidrs: {{ join "," . | quote }}
+  {{- end }}
 spec:
   replicas: {{ .Values.router.replicas }}
   # Keep the ready router in service until its replacement can reach a worker.
@@ -151,7 +173,8 @@ spec:
         kubernetes.io/hostname: {{ .Values.scheduling.routerNodeName | default .Values.scheduling.inferenceNodeName | quote }}
       # The API server address is the router's allowlist exit (C8s #1047):
       # scripts/generate-release-allowlist.py makes each hostAliases address
-      # one exit on the port that the allowlist policy declares.
+      # one exit on the port that the allowlist policy declares, or, when
+      # router.discovery.apiServer.cidrs is set, each of those ranges.
       hostAliases:
         - ip: {{ $api.address | quote }}
           hostnames: [kubernetes-api]
