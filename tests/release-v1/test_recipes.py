@@ -54,16 +54,20 @@ def release_images() -> dict[str, str]:
 
 
 class ConfidentialSglangPinTests(unittest.TestCase):
-    def test_the_spec_pins_the_placeholder_and_the_build_refuses_it(self):
+    def test_the_build_refuses_the_placeholder(self):
         spec = MAN.read_spec()
-        self.assertEqual(spec["confidentialSglang"], {"record": CSR.PLACEHOLDER})
         with self.assertRaisesRegex(MAN.ManifestError, "placeholder"):
-            MAN.confidential_sglang(spec)
+            MAN.confidential_sglang({**spec, "confidentialSglang": {"record": CSR.PLACEHOLDER}})
+
+    def test_the_spec_pins_a_record_that_is_in_the_inputs(self):
+        record = MAN.read_spec()["confidentialSglang"]["record"]
+        self.assertNotEqual(record, CSR.PLACEHOLDER)
+        CSR.read_record(record)
 
     def test_the_pin_is_one_spec_line(self):
         lines = [line for line in (ROOT / "release/spec.yaml").read_text().splitlines()
                  if CSR.SPEC_LINE.fullmatch(line)]
-        self.assertEqual(lines, [f"  record: {CSR.PLACEHOLDER}"])
+        self.assertEqual(len(lines), 1)
 
     def test_a_record_pins_both_images_with_their_two_build_digests(self):
         pin = CSR.release_pin({"record": RECORD}, FIXTURES)
@@ -81,12 +85,14 @@ class ConfidentialSglangPinTests(unittest.TestCase):
             return record
         cases = {
             "names source commit": (changed(lambda r: r.update(sourceCommit="1" * 40)), RECORD),
-            "two build digests": (changed(lambda r: r["images"]["engine"].update(
-                buildDigests=["sha256:" + "e" * 64, "sha256:" + "d" * 64])), RECORD),
-            "exactly schema": (changed(lambda r: r.update(extra=1)), RECORD),
-            "untagged": (changed(lambda r: r["images"]["router"].update(image="docker.io/library/router")), RECORD),
-            "images are exactly": (changed(lambda r: r["images"].pop("router")), RECORD),
-            "runId": (changed(lambda r: r.update(runId="1")), RECORD),
+            "two build digests": (changed(lambda r: r["images"][0].update(
+                builds=["sha256:" + "e" * 64, "sha256:" + "d" * 64])), RECORD),
+            "holds exactly": (changed(lambda r: r.update(extra=1)), RECORD),
+            "untagged": (changed(lambda r: r["images"][1].update(image="docker.io/library/router")), RECORD),
+            "images are exactly": (changed(lambda r: r["images"].pop()), RECORD),
+            "run.id": (changed(lambda r: r["run"].update(id="1")), RECORD),
+            "run.repository": (changed(lambda r: r["run"].update(repository="someone/else")), RECORD),
+            "on main": (changed(lambda r: r["run"].update(workflow="x/y/.github/workflows/images.yml@refs/heads/dev")), RECORD),
         }
         for message, (record, name) in cases.items():
             with self.subTest(message=message), self.assertRaisesRegex(CSR.RecordError, message):
@@ -109,8 +115,9 @@ class ConfidentialSglangPinTests(unittest.TestCase):
             CSR.pin(RECORD, spec, inputs, fetch=lambda name, _directory: data)
             old = (ROOT / "release/spec.yaml").read_text().splitlines()
             new = spec.read_text().splitlines()
-            self.assertEqual([(a, b) for a, b in zip(old, new) if a != b],
-                             [(f"  record: {CSR.PLACEHOLDER}", f"  record: {RECORD}")])
+            changed = [(a, b) for a, b in zip(old, new) if a != b]
+            self.assertEqual(len(changed), 1)
+            self.assertEqual(changed[0][1], f"  record: {RECORD}")
             self.assertEqual((inputs / f"{RECORD}.json").read_bytes(), data)
             with self.assertRaisesRegex(CSR.RecordError, "names source commit"):
                 CSR.pin("images-111111111111", spec, inputs, fetch=lambda name, _directory: data)

@@ -277,7 +277,7 @@
           "pattern": "^images-[0-9a-f]{12}$"
         },
         "recordAsset": {
-          "const": "images.json"
+          "pattern": "^images-[0-9a-f]{12}\\.json$"
         },
         "recordSha256": {
           "description": "The SHA-256 of the record asset.",
