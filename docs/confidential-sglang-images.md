@@ -22,11 +22,11 @@ is the first 12 hex digits of the source commit, with one asset,
   "sourceCommit": "<40 hex>",
   "sourceDateEpoch": 1795169221,
   "run": {
-    "id": 44716530121,
+    "id": 44811154899,
     "attempt": 1,
-    "repository": "confidential-dot-ai/confidential-sglang-ci",
-    "workflow": "confidential-dot-ai/confidential-sglang-ci/.github/workflows/images.yml@refs/heads/main",
-    "url": "https://github.com/confidential-dot-ai/confidential-sglang-ci/actions/runs/44716530121/attempts/1"
+    "repository": "confidential-dot-ai/confidential-sglang",
+    "workflow": "confidential-dot-ai/confidential-sglang/.github/workflows/images.yml@refs/heads/main",
+    "url": "https://github.com/confidential-dot-ai/confidential-sglang/actions/runs/44811154899/attempts/1"
   },
   "images": [
     {

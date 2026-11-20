@@ -95,7 +95,7 @@ class ConfidentialSglangPinTests(unittest.TestCase):
             # The archived confidential-sglang-ci, even with a consistent URL and workflow.
             "run.repository is not": (changed(lambda r: r["run"].update(
                 repository="confidential-dot-ai/confidential-sglang-ci",
-                url="https://github.com/confidential-dot-ai/confidential-sglang-ci/actions/runs/1/attempts/1",
+                url="https://github.com/confidential-dot-ai/confidential-sglang-ci/actions/runs/19000000001/attempts/1",
                 workflow="confidential-dot-ai/confidential-sglang-ci/.github/workflows/images.yml@refs/heads/main")),
                 RECORD),
             "on main": (changed(lambda r: r["run"].update(workflow="x/y/.github/workflows/images.yml@refs/heads/dev")), RECORD),
