@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pin the images that confidential-dot-ai/confidential-sglang publishes.
+"""Pin engine and router images from the publisher selected in release/spec.yaml.
 
 confidential-sglang builds one SGLang engine image and one router image. Its
 image workflow builds each image twice on clean runners, requires equal
@@ -13,7 +13,8 @@ Release-images build proof for them. It carries the confidential-sglang
 record instead, as it carries the C8s release for the C8s images:
 
 - release/spec.yaml `confidentialSglang.record` names the record, for
-  example `images-0123456789ab`. That one line is the pin.
+  example `images-0123456789ab`. Optional `repository` selects its publisher;
+  it defaults to confidential-dot-ai/confidential-sglang.
 - release/inputs/confidential-sglang/<record>.json holds the record bytes.
   `pin` downloads them and writes the file and the line.
 - The release build (scripts/build-release-manifest.py) reads the file,
@@ -43,18 +44,17 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "release/spec.yaml"
 INPUTS = ROOT / "release/inputs/confidential-sglang"
 REPOSITORY = "confidential-dot-ai/confidential-sglang"
+REPOSITORY_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
 RECORD_SCHEMA = "confidential.ai/confidential-sglang-images/v1"
 ASSET = "images.json"
 RECORD = re.compile(r"images-[0-9a-f]{12}")
 # The record name in release/spec.yaml until confidential-sglang publishes
 # its first record. The release build refuses it.
 PLACEHOLDER = "images-000000000000"
-IMAGE_PREFIX = "ghcr.io/confidential-dot-ai/confidential-sglang/"
 # Each record component and its chart image key (values.yaml `images`).
 CHART_KEYS = {"engine": "confidentialSglangEngine", "router": "confidentialSglangRouter"}
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
-IMAGE = re.compile(re.escape(IMAGE_PREFIX) + r"[a-z0-9][a-z0-9._/-]*")
 MAX_RECORD_BYTES = 65536
 
 
@@ -77,12 +77,25 @@ def validate_name(name: Any) -> str:
     return name
 
 
-def validate_record(record: Any, name: str) -> dict[str, Any]:
+def repository_of(section: Any) -> str:
+    """The reviewed spec chooses the publisher; a downloaded record cannot change it."""
+    require(isinstance(section, dict) and set(section) in ({"record"}, {"record", "repository"}),
+            "confidentialSglang holds record and an optional repository")
+    repository = section.get("repository", REPOSITORY)
+    require(isinstance(repository, str) and REPOSITORY_NAME.fullmatch(repository) is not None,
+            "confidentialSglang.repository must be a GitHub owner/repository")
+    return repository
+
+
+def validate_record(record: Any, name: str, repository: str = REPOSITORY) -> dict[str, Any]:
     """Check one record and that it is the record `name` names."""
     require(isinstance(record, dict) and set(record) == {"schema", "repository", "sourceCommit", "runId", "images"},
             "the record holds exactly schema, repository, sourceCommit, runId and images")
     require(record["schema"] == RECORD_SCHEMA, f"the record schema is not {RECORD_SCHEMA}")
-    require(record["repository"] == REPOSITORY, f"the record repository is not {REPOSITORY}")
+    repository_of({"record": name, "repository": repository})
+    require(record["repository"] == repository, f"the record repository is not {repository}")
+    image_prefix = f"ghcr.io/{repository.lower()}/"
+    image_pattern = re.compile(re.escape(image_prefix) + r"[a-z0-9][a-z0-9._/-]*")
     commit = record["sourceCommit"]
     require(isinstance(commit, str) and COMMIT.fullmatch(commit) is not None, "record sourceCommit is not a full commit")
     require(name == f"images-{commit[:12]}", f"the record {name} names source commit {commit}")
@@ -94,9 +107,9 @@ def validate_record(record: Any, name: str) -> dict[str, Any]:
     for component, entry in images.items():
         require(isinstance(entry, dict) and set(entry) == {"image", "digest", "buildDigests"},
                 f"record images.{component} holds exactly image, digest and buildDigests")
-        require(isinstance(entry["image"], str) and IMAGE.fullmatch(entry["image"]) is not None
+        require(isinstance(entry["image"], str) and image_pattern.fullmatch(entry["image"]) is not None
                 and "@" not in entry["image"] and ":" not in entry["image"],
-                f"record images.{component}.image is not an untagged {IMAGE_PREFIX} name")
+                f"record images.{component}.image is not an untagged {image_prefix} name")
         require(isinstance(entry["digest"], str) and DIGEST.fullmatch(entry["digest"]) is not None,
                 f"record images.{component}.digest is not a SHA-256 digest")
         builds = entry["buildDigests"]
@@ -107,7 +120,7 @@ def validate_record(record: Any, name: str) -> dict[str, Any]:
     return record
 
 
-def read_record(name: str, inputs: Path = INPUTS) -> tuple[bytes, dict[str, Any]]:
+def read_record(name: str, inputs: Path = INPUTS, repository: str = REPOSITORY) -> tuple[bytes, dict[str, Any]]:
     """Return the bytes and the checked record of `name` from release/inputs/confidential-sglang/."""
     validate_name(name)
     require(name != PLACEHOLDER,
@@ -119,16 +132,15 @@ def read_record(name: str, inputs: Path = INPUTS) -> tuple[bytes, dict[str, Any]
         record = json.loads(data)
     except (OSError, json.JSONDecodeError) as error:
         raise RecordError(f"cannot read the record {path}: {error}") from error
-    return data, validate_record(record, name)
+    return data, validate_record(record, name, repository)
 
 
 def release_pin(spec_section: Any, inputs: Path = INPUTS) -> dict[str, Any]:
     """The manifest block of the pin: the record, its SHA-256, and each image by digest."""
-    require(isinstance(spec_section, dict) and set(spec_section) == {"record"},
-            "confidentialSglang holds exactly record")
-    data, record = read_record(spec_section["record"], inputs)
+    repository = repository_of(spec_section)
+    data, record = read_record(spec_section["record"], inputs, repository)
     return {
-        "repository": REPOSITORY,
+        "repository": repository,
         "record": spec_section["record"],
         "recordAsset": ASSET,
         "recordSha256": sha256(data),
@@ -146,11 +158,13 @@ def chart_images(pin: dict[str, Any]) -> dict[str, str]:
 
 
 def download(name: str, directory: Path,
-             run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> bytes:
+             run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+             *, repository: str = REPOSITORY) -> bytes:
     """Download the record asset of release `name` with gh."""
-    result = run(["gh", "release", "download", name, "--repo", REPOSITORY, "--pattern", ASSET,
+    repository_of({"record": name, "repository": repository})
+    result = run(["gh", "release", "download", name, "--repo", repository, "--pattern", ASSET,
                   "--dir", str(directory), "--clobber"], text=True, capture_output=True, check=False)
-    require(result.returncode == 0, f"cannot download {ASSET} of {REPOSITORY} {name}: {result.stderr.strip()}")
+    require(result.returncode == 0, f"cannot download {ASSET} of {repository} {name}: {result.stderr.strip()}")
     data = (directory / ASSET).read_bytes()
     require(len(data) <= MAX_RECORD_BYTES, "the record is too large")
     return data
@@ -160,17 +174,20 @@ SPEC_LINE = re.compile(r"^(  record: )(images-[0-9a-f]{12})([ \t]*(?:#.*)?)$", r
 
 
 def pin(name: str, spec: Path = SPEC, inputs: Path = INPUTS,
-        fetch: Callable[[str, Path], bytes] = download) -> None:
+        fetch: Callable[[str, Path], bytes] | None = None) -> None:
     """Download and check record `name`, write it to inputs/, and set the one spec line."""
     validate_name(name)
     require(name != PLACEHOLDER, "the placeholder is not a published record")
+    import yaml
+
+    text = spec.read_text(encoding="utf-8")
+    repository = repository_of(yaml.safe_load(text).get("confidentialSglang"))
     with tempfile.TemporaryDirectory(prefix="confidential-sglang-record-") as directory:
-        data = fetch(name, Path(directory))
+        data = fetch(name, Path(directory)) if fetch else download(name, Path(directory), repository=repository)
     try:
-        validate_record(json.loads(data), name)
+        validate_record(json.loads(data), name, repository)
     except json.JSONDecodeError as error:
         raise RecordError(f"the record is not JSON: {error}") from error
-    text = spec.read_text(encoding="utf-8")
     matches = SPEC_LINE.findall(text)
     require(len(matches) == 1, f"{spec} must set confidentialSglang.record on one line")
     inputs.mkdir(parents=True, exist_ok=True)

@@ -1,15 +1,16 @@
 # confidential-sglang images
 
-`confidential-dot-ai/confidential-sglang` builds the SGLang engine image and
-the router image. This repository defines how they run (the chart, the
+The publisher selected in `release/spec.yaml` builds the SGLang engine image
+and router image. It defaults to `confidential-dot-ai/confidential-sglang`.
+This repository defines how they run (the chart, the
 recipes, the contracts) and signs framework releases that pin them. It pins
 them as it pins C8s: by a release record of the repository that builds them,
 not by its own image publication.
 
 ## The release record
 
-confidential-sglang's image workflow builds each image twice on clean
-runners, requires equal digests, and pushes the image. It then creates the
+The publisher's image workflow must build each image twice on clean
+runners, require equal digests, and push those exact bytes. It then creates the
 GitHub release `images-<12hex>`, where `<12hex>` is the first 12 hex digits
 of the source commit, with one asset, `images.json`:
 
@@ -35,7 +36,8 @@ of the source commit, with one asset, `images.json`:
 ```
 
 - The record holds exactly these fields.
-- `image` is an untagged name below `ghcr.io/confidential-dot-ai/confidential-sglang/`.
+- `repository` must equal the publisher selected by the reviewed specification.
+- `image` is an untagged name below `ghcr.io/<lowercase repository>/`.
 - `buildDigests` are the digests of the two clean builds. Both must equal
   `digest`. They replace this repository's own two-build image audit.
 - `runId` is the workflow run that built and pushed the images.
@@ -46,6 +48,7 @@ of the source commit, with one asset, `images.json`:
 
 ```yaml
 confidentialSglang:
+  repository: confidential-dot-ai/confidential-sglang  # optional; this is the default
   record: images-0123456789ab
 ```
 
@@ -56,8 +59,17 @@ To pin a published record:
 python3 scripts/confidential_sglang_release.py pin images-0123456789ab
 ```
 
-The script downloads `images.json` with `gh`, checks it, writes the input
-file, and changes the record line only. Review both and commit them.
+The script downloads `images.json` with `gh` from the selected repository,
+checks its repository and image namespace, writes the input file, and changes
+the record line only. Review the specification and record together. A record
+cannot choose a different publisher. For a private publisher, the caller needs
+read access; neither credentials nor source files belong in the record.
+
+The record, repository name, source commit and image references become framework
+release metadata. Only select a publisher whose metadata may be distributed with
+the framework. Private images also need pull access in contract CI and at runtime.
+The two-build record does not replace the engine image contract tests or GPU
+validation; a new publisher must satisfy those requirements before deployment.
 
 `images-000000000000` is the placeholder until confidential-sglang publishes
 its first record. The release build refuses it, so no framework release is

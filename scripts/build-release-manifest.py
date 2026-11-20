@@ -159,9 +159,8 @@ def validate_spec(spec: Any) -> dict[str, Any]:
     require(isinstance(spec, dict) and set(spec) == {"c8s", "images", "confidentialSglang"},
             "the release specification holds exactly c8s, images and confidentialSglang; the tag is the version")
     section = spec["confidentialSglang"]
-    require(isinstance(section, dict) and set(section) == {"record"},
-            "confidentialSglang holds exactly record")
     try:
+        confidential_sglang_release.repository_of(section)
         confidential_sglang_release.validate_name(section["record"])
     except confidential_sglang_release.RecordError as error:
         raise ManifestError(str(error)) from error

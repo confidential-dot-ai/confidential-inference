@@ -269,7 +269,9 @@
       ],
       "properties": {
         "repository": {
-          "const": "confidential-dot-ai/confidential-sglang"
+          "description": "The engine publisher selected by the reviewed release specification.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$"
         },
         "record": {
           "description": "The GitHub release of the record: images-<first 12 hex of sourceCommit>.",
