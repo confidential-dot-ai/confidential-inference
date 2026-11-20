@@ -8,37 +8,55 @@ not by its own image publication.
 
 ## The release record
 
-confidential-sglang's image workflow builds each image twice on clean
-runners, requires equal digests, and pushes the image. It then creates the
-GitHub release `images-<12hex>`, where `<12hex>` is the first 12 hex digits
-of the source commit, with one asset, `images.json`:
+confidential-sglang's image workflow (`.github/workflows/images.yml`) builds
+each image twice on clean runners, requires equal digests, and pushes the
+image. It then creates the GitHub release `images-<12hex>`, where `<12hex>`
+is the first 12 hex digits of the source commit, with one asset,
+`images-<12hex>.json`. confidential-sglang defines the format in
+`confidential/ci/release_record.py`:
 
 ```json
 {
   "schema": "confidential.ai/confidential-sglang-images/v1",
-  "repository": "confidential-dot-ai/confidential-sglang",
+  "repository": "https://github.com/confidential-dot-ai/confidential-sglang",
   "sourceCommit": "<40 hex>",
-  "runId": 19000000001,
-  "images": {
-    "engine": {
-      "image": "ghcr.io/confidential-dot-ai/confidential-sglang/<name>",
+  "sourceDateEpoch": 1795169221,
+  "run": {
+    "id": 44716530121,
+    "attempt": 1,
+    "repository": "confidential-dot-ai/confidential-sglang-ci",
+    "workflow": "confidential-dot-ai/confidential-sglang-ci/.github/workflows/images.yml@refs/heads/main",
+    "url": "https://github.com/confidential-dot-ai/confidential-sglang-ci/actions/runs/44716530121/attempts/1"
+  },
+  "images": [
+    {
+      "name": "engine",
+      "image": "ghcr.io/confidential-dot-ai/confidential-sglang/engine",
       "digest": "sha256:<64 hex>",
-      "buildDigests": ["sha256:<64 hex>", "sha256:<64 hex>"]
+      "builds": ["sha256:<64 hex>", "sha256:<64 hex>"],
+      "reference": "ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:<64 hex>",
+      "tag": "sha-<40 hex>"
     },
-    "router": {
-      "image": "ghcr.io/confidential-dot-ai/confidential-sglang/<name>",
-      "digest": "sha256:<64 hex>",
-      "buildDigests": ["sha256:<64 hex>", "sha256:<64 hex>"]
-    }
-  }
+    {"name": "router", "...": "the same fields"}
+  ]
 }
 ```
 
-- The record holds exactly these fields.
-- `image` is an untagged name below `ghcr.io/confidential-dot-ai/confidential-sglang/`.
-- `buildDigests` are the digests of the two clean builds. Both must equal
+`scripts/confidential_sglang_release.py` checks:
+
+- The record holds exactly these fields; `sourceDateEpoch` is optional.
+- `sourceCommit` is the commit the release name names.
+- `images` holds `engine` and `router`, once each. `image` is an untagged
+  name below `ghcr.io/confidential-dot-ai/confidential-sglang/`.
+- `builds` are the digests of the two clean builds. Both must equal
   `digest`. They replace this repository's own two-build image audit.
-- `runId` is the workflow run that built and pushed the images.
+- `run` is a run of the images workflow **on `main`**, in
+  confidential-sglang or in `confidential-sglang-ci`. That repository only
+  calls `confidential-sglang/.github/workflows/images.yml@main` with a
+  commit, while Actions are off in confidential-sglang.
+
+The manifest stores the record normalized: each image by digest with its
+`buildDigests`, and the run ID as `runId`.
 
 ## The pin
 
@@ -56,7 +74,7 @@ To pin a published record:
 python3 scripts/confidential_sglang_release.py pin images-0123456789ab
 ```
 
-The script downloads `images.json` with `gh`, checks it, writes the input
+The script downloads `images-<12hex>.json` with `gh`, checks it, writes the input
 file, and changes the record line only. Review both and commit them.
 
 `images-000000000000` is the placeholder until confidential-sglang publishes

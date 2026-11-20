@@ -4,7 +4,8 @@
 The spec pins the engine by a confidential-sglang release record
 (`confidentialSglang.record: images-<12hex>`, docs/confidential-sglang-images.md).
 The record bytes are release/inputs/confidential-sglang/<record>.json; the
-engine is its `images.engine` image and digest. Without a record, the pin is
+engine is its `engine` image and digest, as
+scripts/confidential_sglang_release.py checks and normalizes it. Without a record, the pin is
 the first value under a key that names the engine: an image reference with
 a digest, or a mapping with `reference`/`image` and `digest`. A missing pin,
 the placeholder record images-000000000000, or an all-zero digest prints
@@ -58,7 +59,12 @@ def from_record(spec: dict, inputs: Path) -> str | None:
     name = section.get("record") if isinstance(section, dict) else None
     if not isinstance(name, str) or name == PLACEHOLDER_RECORD:
         return None
-    record = json.loads((inputs / f"{name}.json").read_text())
+    # The one record parser and checker: scripts/confidential_sglang_release.py. It returns the
+    # record normalized (images by component, each with image and digest).
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
+    import confidential_sglang_release
+
+    _data, record = confidential_sglang_release.read_record(name, inputs)
     return reference(record["images"]["engine"])
 
 
