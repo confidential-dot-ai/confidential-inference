@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-import hashlib
 import json
 import re
 import subprocess
@@ -43,22 +42,6 @@ RUST_IMAGE_INPUTS = (
     "services/maintenance-gateway/Cargo.toml",
     "services/maintenance-gateway/src/**",
 )
-SGLANG_CONFIDENTIAL_INPUTS = (
-    "images/sglang-confidential/Dockerfile",
-    "images/sglang-confidential/Dockerfile.dockerignore",
-    "images/sglang-confidential/source.lock",
-    "images/sglang-confidential/requirements.lock",
-    "images/sglang-confidential/dcgm-counters.csv",
-    "images/sglang-confidential/fetch_source.py",
-    "images/sglang-confidential/harden_http.py",
-    "images/sglang-confidential/harden_media.py",
-    "images/sglang-confidential/harden_dist.py",
-    "images/sglang-router/private_router.py",
-    "images/sglang-confidential/wait_for_model.py",
-    "images/sglang-confidential/fetch_model.py",
-    "images/sglang-confidential/patches/**",
-    "images/sglang-confidential/simulator-upstream/**",
-)
 # A base is a commit, a release tag (also of the earlier -staging and
 # -transition forms), or a legacy release candidate tag.
 BASE_REF = re.compile(
@@ -85,22 +68,6 @@ IMAGES = (
         (*RUST_IMAGE_INPUTS, "images/maintenance-gateway/Dockerfile"),
     ),
     Image(
-        "sglang-confidential",
-        ".",
-        "images/sglang-confidential/Dockerfile",
-        "Confidential Inference SGLang",
-        SGLANG_CONFIDENTIAL_INPUTS,
-    ),
-    Image(
-        "sglang-router",
-        "images/sglang-router",
-        "images/sglang-router/Dockerfile",
-        "Confidential Inference SGLang Router",
-        ("images/sglang-router/Dockerfile", "images/sglang-router/source.lock", "images/sglang-router/patches/**",
-         "images/sglang-router/canonicalize_wheel.py", "images/sglang-router/requirements.in", "images/sglang-router/requirements.lock", "images/sglang-router/Cargo.lock",
-         "images/sglang-router/private_router.py"),
-    ),
-    Image(
         "kube-state-metrics",
         "images/kube-state-metrics",
         "images/kube-state-metrics/Dockerfile",
@@ -117,11 +84,6 @@ IMAGES = (
 )
 
 
-# The images that need the large-runner build and publish jobs: the one
-# SGLang engine image. It holds no model; workers get the model at start.
-LARGE_IMAGES = ("sglang-confidential",)
-
-
 def affected_images(paths: list[str]) -> list[Image]:
     """Return each affected image once, in stable release order."""
     return [
@@ -133,32 +95,6 @@ def affected_images(paths: list[str]) -> list[Image]:
             for pattern in image.paths
         )
     ]
-
-
-# The SOURCE_DATE_EPOCH of a build stamped by input_revision: 1980-01-01,
-# the earliest time a ZIP entry (a wheel) can hold.
-INPUT_EPOCH = "315532800"
-
-
-def input_revision(image: Image, head: str, cwd: str | None = None) -> tuple[str, str]:
-    """A content id of the image's inputs at head, and a fixed source epoch.
-
-    The id is the SHA-1 of the image's `git ls-tree -r` lines (mode, object id,
-    path). It depends on the input files only, not on the commit that holds
-    them, so two commits with the same inputs (a branch and its merge into
-    main) give the same image digest, and an upgrade rolls only changed images.
-    """
-    listing = subprocess.check_output(["git", "ls-tree", "-r", "-z", "--full-tree", head], cwd=cwd)
-    entries = [
-        entry
-        for entry in listing.split(b"\0")
-        if entry and any(
-            fnmatch.fnmatchcase(entry.split(b"\t", 1)[1].decode(), pattern) for pattern in image.paths
-        )
-    ]
-    if not entries:
-        raise ValueError(f"{head} has none of the inputs of {image.image}")
-    return hashlib.sha1(b"\0".join(entries)).hexdigest(), INPUT_EPOCH
 
 
 def changed_paths(base_ref: str, head: str) -> list[str]:
@@ -187,23 +123,12 @@ def main() -> int:
     args = parser.parse_args()
 
     selected = affected_images(changed_paths(args.base_ref, args.head))
-    matrix = [
-        {**image.matrix_entry(), **dict(zip(("revision", "epoch"), input_revision(image, args.head)))}
-        for image in selected
-    ]
-    # The SGLang engine image holds the ~20 GB engine environment.
-    large = [entry for entry in matrix if entry["image"] in LARGE_IMAGES]
-    standard = [entry for entry in matrix if entry not in large]
+    matrix = [image.matrix_entry() for image in selected]
     print("matrix=" + json.dumps({"include": matrix}, separators=(",", ":")))
-    print("standard_matrix=" + json.dumps({"include": standard}, separators=(",", ":")))
-    # One job per clean build: the audit builds each standard image twice.
-    passes = [{**entry, "pass": number} for entry in standard for number in (1, 2)]
-    print("standard_pass_matrix=" + json.dumps({"include": passes}, separators=(",", ":")))
-    print("sglang=" + str(bool(large)).lower())
-    print("large_matrix=" + json.dumps({"include": large}, separators=(",", ":")))
-    print("large_pass_matrix=" + json.dumps({"include": [{**entry, "pass": number} for entry in large for number in (1, 2)]}, separators=(",", ":")))
+    # One job per clean build: the audit builds each image twice.
+    passes = [{**entry, "pass": number} for entry in matrix for number in (1, 2)]
+    print("pass_matrix=" + json.dumps({"include": passes}, separators=(",", ":")))
     print("names=" + ",".join(image.image for image in selected))
-    print("standard_names=" + ",".join(entry["image"] for entry in standard))
     return 0
 
 

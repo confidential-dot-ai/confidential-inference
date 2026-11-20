@@ -45,8 +45,9 @@ PARSER = re.compile(r"[a-z0-9_]{0,64}")
 FLAG = re.compile(r"--[a-z0-9][a-z0-9-]*(=.*)?")
 # The files of a recipe directory.
 FILES = {"recipe.yaml", "model-manifest.json"}
-ENGINE_IMAGES = ("sglangConfidential", "confidentialSglangEngine")
-ROUTER_IMAGES = ("sglangRouter", "confidentialSglangRouter")
+# The chart image keys of the confidential-sglang images (release/spec.yaml confidentialSglang).
+ENGINE_IMAGES = ("confidentialSglangEngine",)
+ROUTER_IMAGES = ("confidentialSglangRouter",)
 GPU_ARCHITECTURES = ("HOPPER", "BLACKWELL")
 APIS = ("chat", "completions", "responses", "messages")
 # The SGLang flags that the chart sets itself (templates/inference-workers.yaml).

@@ -25,12 +25,13 @@ receipts in a separate private deployment repository.
 ## Components
 
 - `services/gateway`: API-key checks, request limits, and routing.
-- `images/sglang-confidential`: the one SGLang engine image (plain upstream
-  SGLang). It holds no model: each worker gets its model from a model server
-  or a C8s model volume, and the chart values choose the model (DeepSeek-V4.1
-  in production, Qwen3.5-0.8B in a staging recipe). It can also run a GPU-free
-  simulator for tests.
-- `images/sglang-router`: the separate router image and build inputs.
+- The SGLang engine and router images come from
+  [confidential-sglang](https://github.com/confidential-dot-ai/confidential-sglang),
+  pinned by its release record (`release/spec.yaml` `confidentialSglang`,
+  `docs/confidential-sglang-images.md`). The engine holds no model: each
+  worker gets its model from a model server or a C8s model volume, and the
+  chart values choose the model (DeepSeek-V4.1 in production, Qwen3.5-0.8B in
+  a staging recipe). It also runs the GPU-free simulator for tests.
 - `services/maintenance-gateway`: the fallback API.
 - `helm/confidential-inference`: the generic Kubernetes application chart.
 - `api`: public API and release schemas.

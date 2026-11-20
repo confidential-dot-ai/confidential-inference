@@ -102,5 +102,22 @@ build digests.
 digest, as it does for an image of this repository.
 
 A recipe chooses the images (`engine.image`, `routing.image`;
-`recipes/README.md`). `images.sglangConfidential` and `images.sglangRouter`
-still work and stay the default until they are removed.
+`recipes/README.md`). They are also the chart defaults: every worker,
+`inference.mode=simulator` included, runs `images.confidentialSglangEngine`,
+and the router runs `images.confidentialSglangRouter`. This repository's own
+SGLang images (`images/sglang-confidential`, `images/sglang-router`) were
+removed after v0.18.0.
+
+## What confidential-sglang checks, and what this repository checks
+
+confidential-sglang publishes a record only after its images workflow
+passes: the helper and router tests (`confidential/ci/python-tests.sh`,
+`confidential/router/run_router_tests.sh`), the two equal clean builds, and
+each image's `check-image.sh`. The helpers (`wait-for-model`, `fetch-model`,
+the HTTP, media and distributed hardening, the DCGM counters) and the
+router launcher live in its `confidential/` directory.
+
+`tests/images/engine-contract` checks the pinned engine as this chart runs
+it (`.github/workflows/engine-contract.yml`): the user, a read-only `/opt`,
+the helpers, the hardened routes, the refused logging settings, the
+FlashInfer kernels, the worker log policy, and the CPU simulator.

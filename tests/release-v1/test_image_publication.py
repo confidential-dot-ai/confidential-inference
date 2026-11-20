@@ -56,16 +56,16 @@ class ImagePublicationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             records = []
-            for name, character in (("gateway", "a"), ("sglang-confidential", "c")):
+            for name, character in (("gateway", "a"), ("maintenance-gateway", "c")):
                 path = root / f"{name}.json"
                 path.write_text(json.dumps(self.record(name, "sha256:" + character * 64)))
                 records.append(path)
-            merged = MODULE.merge(records, ["gateway", "sglang-confidential"])
+            merged = MODULE.merge(records, ["gateway", "maintenance-gateway"])
             self.assertEqual(
                 [entry["name"] for entry in merged["images"]],
                 [
                     "ghcr.io/confidential-dot-ai/confidential-inference/gateway",
-                    "ghcr.io/confidential-dot-ai/confidential-inference/sglang-confidential",
+                    "ghcr.io/confidential-dot-ai/confidential-inference/maintenance-gateway",
                 ],
             )
             with self.assertRaisesRegex(MODULE.PublicationError, "image set"):
@@ -80,11 +80,12 @@ class ImagePublicationTests(unittest.TestCase):
         audit = images[images.index("  reproducibility:"):images.index("  reproducibility-compare:")]
         self.assertEqual(audit.count("docker/build-push-action"), 1)
         self.assertIn("if: inputs.publish && matrix.pass == 1", audit)
-        self.assertIn("standard_pass_matrix", audit)
-        self.assertIn("needs: [select-images, reproducibility-sglang-compare]\n", images)
-        self.assertIn("needs: [select-images, publish-standard, publish-sglang]\n", images)
-        self.assertEqual(images.count("--reproducibility-digest"), 2)
-        self.assertEqual(images.count("--pushed-digest"), 2)
+        self.assertIn("outputs.pass_matrix", audit)
+        self.assertIn("needs: [select-images, publish]\n", images)
+        self.assertEqual(images.count("--reproducibility-digest"), 1)
+        self.assertEqual(images.count("--pushed-digest"), 1)
+        # The SGLang engine and router images come from confidential-sglang.
+        self.assertNotIn("sglang", images.replace("confidential-sglang", ""))
         self.assertIn("name: release-image-publication-${{ github.sha }}", images)
         self.assertNotIn("inputs.release_version", images)
         self.assertIn('select=(--tag "$RELEASE_TAG")', bundle)
@@ -121,35 +122,14 @@ class ImagePublicationTests(unittest.TestCase):
             self.assertNotIn("concurrency", job, name)
         self.assertIn("github.run_id", workflow["jobs"]["reproducibility"]["steps"][2]["with"]["name"])
 
-    def test_standard_images_publish_the_audited_archive(self):
+    def test_images_publish_the_audited_archive(self):
         images = (ROOT / ".github/workflows/release-images.yml").read_text()
-        standard = images[images.index("  publish-standard:"):images.index("  publish-sglang:")]
-        self.assertIn("name: release-oci-${{ matrix.image }}", standard)
-        self.assertIn("crane push /tmp/layout", standard)
-        self.assertIn("sha256sum --check --strict", standard)
-        self.assertNotIn("docker/build-push-action", standard)
-        self.assertNotIn("reproducibility-sglang", standard)
-
-    def test_sglang_publishes_the_audited_archive_without_a_third_build(self):
-        images = (ROOT / ".github/workflows/release-images.yml").read_text()
-        audit = images[images.index("  reproducibility-sglang-build:"):
-                       images.index("  reproducibility-sglang-compare:")]
-        self.assertEqual(audit.count("docker/build-push-action"), 1)
-        self.assertIn("if: inputs.publish && matrix.pass == 1", audit)
-        self.assertIn("name: release-oci-${{ matrix.image }}", audit)
-        self.assertIn("path: /mnt/release-oci/${{ matrix.image }}-1.tar", audit)
-        publish = images[images.index("  publish-sglang:"):images.index("  publication-manifest:")]
-        self.assertNotIn("docker/build-push-action", publish)
-        self.assertNotIn("setup-buildx-action", publish)
-        self.assertIn("needs: [select-images, reproducibility-sglang-compare]\n", publish)
+        publish = images[images.index("\n  publish:\n"):images.index("  publication-manifest:")]
+        self.assertIn("needs: [select-images, reproducibility-compare]\n", publish)
         self.assertIn("name: release-oci-${{ matrix.image }}", publish)
-        self.assertIn("name: release-platform-digest-${{ matrix.image }}", publish)
+        self.assertIn("crane push /tmp/layout", publish)
         self.assertIn("sha256sum --check --strict", publish)
-        # The archive must be the audited manifest before any byte is pushed.
-        check = publish.index('if [[ "$archived" != "$verified" ]]')
-        self.assertLess(check, publish.index("crane push /mnt/layout"))
-        self.assertIn("--pushed-digest", publish)
-        self.assertIn("--reproducibility-digest", publish)
+        self.assertNotIn("docker/build-push-action", publish)
 
     def test_publication_schema_is_valid(self):
         import jsonschema

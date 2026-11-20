@@ -53,8 +53,10 @@ collector is a second gate. It does not trust the agents or the senders.
 The SGLang workers and the SGLang router do not write their own output.
 Each runs under a supervisor that keeps the output in memory, never on
 stdout or disk, and writes only fixed events (`wait-for-model` in
-`images/sglang-confidential/wait_for_model.py`, the router launcher in
-`images/sglang-router/private_router.py`).
+confidential-sglang `confidential/helpers/wait_for_model.py`, the router
+launcher in confidential-sglang `confidential/router/private_router.py`).
+`tests/images/engine-contract` checks the pinned engine's `wait-for-model`
+output against the worker log policy.
 
 | Layer | Control | Source |
 |---|---|---|
@@ -66,8 +68,8 @@ stdout or disk, and writes only fixed events (`wait-for-model` in
 | Gateway | The audit record holds a key pseudonym, not the key record ID. | `TracingAuditSink`, `KeyPseudonyms` |
 | Gateway | The client address is used in memory for rate limits only. No log, metric, or event holds it. | `protection.rs` |
 | Maintenance gateway | The same HTTP library filter and panic hook. It sends no telemetry. | `services/maintenance-gateway/src/main.rs` |
-| Worker | `wait-for-model` keeps SGLang's output in memory and writes only `worker_ready`, `request_failed`, `gpu_oom`, `cuda_error`, `nccl_error`, `worker_error`, `worker_exit` and `jit_compile`. A traceback becomes the exception type and one SGLang code location; the message is dropped. An unknown error is `unclassified`. | `images/sglang-confidential/wait_for_model.py`, `tests/images/sglang-confidential/test_server_output.py` |
-| Router | The launcher keeps the router's output in memory and writes only the reviewed events. | `images/sglang-router/private_router.py` |
+| Worker | `wait-for-model` keeps SGLang's output in memory and writes only `worker_ready`, `request_failed`, `gpu_oom`, `cuda_error`, `nccl_error`, `worker_error`, `worker_exit` and `jit_compile`. A traceback becomes the exception type and one SGLang code location; the message is dropped. An unknown error is `unclassified`. | confidential-sglang `confidential/helpers/wait_for_model.py`, `confidential/tests/helpers/test_server_output.py`; `tests/images/engine-contract` |
+| Router | The launcher keeps the router's output in memory and writes only the reviewed events. | confidential-sglang `confidential/router/private_router.py`, `confidential/tests/router/test_private_router.py` |
 | Node log agent | Reads `/var/log/pods` read-only. Takes namespace, pod and container from the file path. Keeps a record only when the log policy lists its source and event (or, for a C8s or collector source, its level and message). Keeps only the listed fields, checks each one against its pattern, and drops the others. A statement that fails does not log (`error_mode: silent`) and the record is dropped. | `templates/node-log-agent.yaml`, `transform/classify` |
 | Node log agent | In a message of a text source, replaces Bearer tokens, `Authorization`, `User-Agent` and `X-Api-Key` values, and IPv4 and IPv6 addresses, and cuts it to 256 characters. | `transform/classify` |
 | Node log agent | Counts every record it reads, kept or dropped, by source: `node_log_agent.records{source, kept}`. | `count` connector |
@@ -166,10 +168,11 @@ Gateway bodies. The log policy lets only these leave:
 | `request_id` | A UUID (Universally Unique Identifier) that the gateway makes for each request. The caller gets it in `x-ci-request-id`. A customer can give it to support, and support can find the record. It is never the caller's own `x-request-id`. |
 | `key_ref` | The pseudonym of the API key record: `kp_` and the first 96 bits of HMAC-SHA256. The key is derived from the API key pepper, a secret of each environment that only the gateway and the admin hold. It lets support find the requests of one key. A log reader without the pepper cannot find the key. `null` for routes without a key. |
 
-Router bodies: the fixed events of `images/sglang-router/README.md` with the
+Router bodies: the fixed events of confidential-sglang
+`confidential/router/README.md` with the
 fields `event`, `role`, `status`, `code`, `timestamp` and `source_revision`.
 
-Worker bodies (`images/sglang-confidential/README.md`):
+Worker bodies (confidential-sglang `confidential/helpers/wait_for_model.py`):
 
 | Event | Fields | Reason |
 |---|---|---|

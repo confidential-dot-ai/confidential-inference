@@ -200,7 +200,7 @@ spec:
               drop: ["ALL"]
           # The launcher runs sglang_router.launch_router, keeps its output in
           # memory, and writes only reviewed JSON events to stdout
-          # (images/sglang-router/README.md).
+          # (confidential-sglang confidential/router/README.md).
           command: ["python3", "/usr/local/bin/ci-sglang-router"]
           args:
             # The router watches the worker pods of this namespace (upstream

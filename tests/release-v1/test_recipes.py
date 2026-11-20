@@ -48,7 +48,6 @@ def release_images() -> dict[str, str]:
     """Chart image keys of a release: the spec's external images plus the fixture record."""
     pin = CSR.release_pin({"record": RECORD}, FIXTURES)
     images = {key: value for key, value in MAN.read_spec()["images"].items() if "@" in value}
-    images["sglangConfidential"] = "ghcr.io/confidential-dot-ai/confidential-inference/sglang-confidential@sha256:" + "1" * 64
     images["gateway"] = "ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:" + "2" * 64
     return {**images, **CSR.chart_images(pin)}
 

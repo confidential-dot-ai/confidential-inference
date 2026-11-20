@@ -13,8 +13,8 @@ container name from the log file path (no Kubernetes API access):
   a gateway message is not on this list.
 - sglang-router, inference-worker: JSON events of fixed names. Only the listed
   fields leave, each checked: a string field against its pattern, an
-  integer field as a number. images/sglang-router/README.md and
-  images/sglang-confidential/README.md give the events.
+  integer field as a number. confidential-sglang confidential/router/README.md
+  and confidential/helpers/wait_for_model.py give the events.
 - text sources (c8s, telemetry-collector, node-log-agent): the level and the
   message of a JSON or slog text line, with Bearer tokens, addresses and user
   agents replaced and the message cut to 256 characters. These components

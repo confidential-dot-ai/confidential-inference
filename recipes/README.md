@@ -42,7 +42,7 @@ error.
 | `schema` | `confidential.ai/recipe/v1` | |
 | `name` | The directory name: lowercase letters, digits, `.` and `-`, at most 63 characters | |
 | `description` | One line, at most 500 characters | |
-| `engine.image` | The chart image key of the engine: `confidentialSglangEngine` (confidential-sglang) or `sglangConfidential` (this repository, until its removal) | `inference.engineImage` |
+| `engine.image` | The chart image key of the engine: `confidentialSglangEngine` (the confidential-sglang engine image) | `inference.engineImage` |
 | `engine.flashinferDisableJit` | `true` when the engine image carries every FlashInfer kernel the model needs. FlashInfer then fails a missing kernel instead of compiling it inside the scheduler | `inference.flashinferDisableJit` |
 | `replica.workers` | The worker pods, 1 to 64 | `inference.replicas` |
 | `replica.gpusPerWorker` | The GPUs of one worker (its tensor parallel size), 1 to 8 | `inference.gpusPerReplica` |
@@ -62,7 +62,7 @@ error.
 | `worker.extraArgs` | Other SGLang flags, each `--flag` or `--flag=value`. A flag that the chart sets itself is refused (`CHART_FLAGS` in the script) | `inference.workerExtraArgs` |
 | `routing.kind` | `sglang-router` | |
 | `routing.policy` | `cache_aware`, the policy the chart's router runs | |
-| `routing.image` | Optional. The router chart image key: `confidentialSglangRouter` or `sglangRouter` | `router.image` |
+| `routing.image` | Optional. The router chart image key: `confidentialSglangRouter`, also the chart default | `router.image` |
 | `behavior.apis` | The public APIs the model serves: any of `chat`, `completions`, `responses`, `messages`. Each maps to `{}` or `{minOutputTokens: N}`, the least `max_tokens` a request of that API must ask for | |
 | `behavior.warmup` | The request shapes that warm a worker before it takes traffic: `{api, promptTokens, maxTokens, sampling: {temperature, topP (optional), topK (optional)}}`. `maxTokens` is at least the API's `minOutputTokens`, and the shape fits in `contextLength`. At least one shape sets `topK` or `topP`: the first such request can compile a FlashInfer sampling kernel (67 s on 2026-11-19) | |
 
