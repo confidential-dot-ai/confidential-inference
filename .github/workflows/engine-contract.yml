@@ -1,0 +1,94 @@
+# The engine image contract (tests/images/engine-contract). It runs the
+# engine image with Docker, without a GPU. On demand, it tests the given
+# image. On a pull request that changes the test or release/spec.yaml, it
+# tests the engine image that release/spec.yaml pins (the `images.engine`
+# of its confidential-sglang record). The placeholder record
+# images-000000000000, or no pin, skips the image tests with a notice.
+name: Engine image contract
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: The engine image, pinned by digest (repository@sha256:...)
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - tests/images/engine-contract/**
+      - release/spec.yaml
+      - release/inputs/confidential-sglang/**
+      - .github/workflows/engine-contract.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-contract-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      TMPDIR: /mnt/tmp
+      ENGINE_CONTRACT_TMPDIR: /mnt/tmp
+    steps:
+      - name: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: install test deps
+        run: |
+          python3 -m pip install --user --break-system-packages --require-hashes \
+            --requirement scripts/requirements-release-signing.txt
+
+      - name: select the image
+        id: image
+        env:
+          INPUT_IMAGE: ${{ inputs.image }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            image=$INPUT_IMAGE
+          else
+            image=$(python3 tests/images/engine-contract/pinned_engine.py release/spec.yaml)
+          fi
+          if [ -z "$image" ]; then
+            echo "::notice::release/spec.yaml pins no engine image (or only the placeholder record): the image tests are skipped"
+          elif ! printf '%s' "$image" | grep -Eq '^[^[:space:]@]+@sha256:[0-9a-f]{64}$'; then
+            echo "::error::the engine image must be pinned by digest: $image"
+            exit 1
+          fi
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+
+      # The engine image is about 36 GB unpacked. Move the Docker data root to
+      # /mnt and remove preinstalled tools to make room.
+      - name: free disk space
+        if: steps.image.outputs.image != ''
+        run: |
+          sudo rm -rf -- /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache \
+            /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell /usr/local/julia* \
+            /usr/lib/jvm /opt/microsoft /usr/local/share/chromium /usr/local/lib/node_modules \
+            /usr/share/miniconda /usr/local/share/boost /opt/az 2>/dev/null || true
+          sudo service docker stop
+          sudo mkdir -p /mnt/docker-data /mnt/tmp
+          sudo chown "$(id -u):$(id -g)" /mnt/tmp
+          printf '{"data-root":"/mnt/docker-data"}\n' | sudo tee /etc/docker/daemon.json
+          sudo rm -rf /var/lib/docker
+          sudo service docker start
+          test "$(docker info --format '{{.DockerRootDir}}')" = /mnt/docker-data
+          df -h / /mnt
+
+      - name: pull the image
+        if: steps.image.outputs.image != ''
+        env:
+          ENGINE_IMAGE: ${{ steps.image.outputs.image }}
+        run: docker pull --quiet "$ENGINE_IMAGE"
+
+      - name: test the contract
+        env:
+          ENGINE_IMAGE: ${{ steps.image.outputs.image }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          mkdir -p /mnt/tmp 2>/dev/null || sudo install -d -o "$(id -u)" /mnt/tmp
+          python3 -m unittest discover -v -s tests/images/engine-contract -p 'test_*.py'

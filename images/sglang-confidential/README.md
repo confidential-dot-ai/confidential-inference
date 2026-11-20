@@ -128,3 +128,26 @@ Build and publication use the existing Image Preparation workflow, including
 its independent rebuild audit. Deploy only published images with verified
 pipeline evidence and a signed release. A local build is not a candidate
 release image.
+
+## Image contract test
+
+`tests/images/engine-contract` checks one engine image by digest. It runs
+the image with Docker, with no GPU and no network, as uid 1001 on a
+read-only root. It checks the user and `HOME=/tmp`, that uid 1001 can write
+nothing below `/opt`, the helpers in `/usr/local/bin`, the hardened route
+list, the refused logging settings, the prebuilt FlashInfer sampling kernel
+of each `flashinfer_jit_cache` provider (sm100a and sm103a), and that
+`wait-for-model` writes only events of the worker log policy. The test
+docstring lists each check.
+
+```sh
+ENGINE_IMAGE=<repository>@sha256:<digest> \
+  python3 -m unittest discover -s tests/images/engine-contract -p 'test_*.py'
+```
+
+Without `ENGINE_IMAGE` the image tests are skipped. The `Engine image
+contract` workflow runs the test on demand for a given image, and on a pull
+request that changes the test, `release/spec.yaml` or the
+confidential-sglang record inputs, for the engine of the record that the
+spec pins (docs/confidential-sglang-images.md). The placeholder record
+`images-000000000000` skips the image tests.
