@@ -64,7 +64,8 @@ error.
 | `routing.policy` | `cache_aware`, the policy the chart's router runs | |
 | `routing.image` | Optional. The router chart image key: `confidentialSglangRouter` or `sglangRouter` | `router.image` |
 | `behavior.apis` | The public APIs the model serves: any of `chat`, `completions`, `responses`, `messages`. Each maps to `{}` or `{minOutputTokens: N}`, the least `max_tokens` a request of that API must ask for | |
-| `behavior.warmup` | The request shapes that warm a worker before it takes traffic: `{api, promptTokens, maxTokens, sampling: {temperature, topP (optional), topK (optional)}}`. `maxTokens` is at least the API's `minOutputTokens`, and the shape fits in `contextLength`. At least one shape sets `topK` or `topP`: the first such request can compile a FlashInfer sampling kernel (67 s on 2026-11-19) | |
 
-`behavior` has no chart value. Validation and warm-up tools read it from the
-recipe in the release.
+`behavior` has no chart value. Validation tools read it from the recipe in
+the release. A recipe sets no warm-up: the chart runs confidential-sglang's
+`confidential_cold_path` warmup on every worker (`--warmups`), before the
+server listens, so a worker is Ready only once it is warm.

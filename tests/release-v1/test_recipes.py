@@ -200,11 +200,11 @@ class RecipeTests(unittest.TestCase):
         args = container["args"]
         server = args[args.index("sglang.launch_server") + 1:]
         # confidential-sglang recipes/qwen35-0.8b/container/serve.sh, plus the
-        # recipe's context length and the chart's model path.
+        # chart's cold-path warmup, the recipe's context length and the chart's model path.
         self.assertEqual([arg for arg in server if not arg.startswith("--model-path=")], [
             "--served-model-name=Qwen/Qwen3.5-0.8B", "--revision=2fc06364715b967f1860aea9cf38778875588b17",
             "--tool-call-parser=qwen3_coder", "--reasoning-parser=qwen3", "--tp=1", "--moe-runner-backend=auto",
-            "--context-length=262144", "--mem-fraction-static=0.90", "--chunked-prefill-size=4096",
+            "--warmups=confidential_cold_path", "--context-length=262144", "--mem-fraction-static=0.90", "--chunked-prefill-size=4096",
             "--swa-full-tokens-ratio=0.1", "--enable-metrics", "--enable-cache-report", "--host=0.0.0.0",
             "--port=30000"])
         env = {item["name"]: item.get("value") for item in container["env"]}
@@ -237,11 +237,8 @@ class RecipeTests(unittest.TestCase):
             (set_path("name", value="other"), "differs from its directory"),
             (set_path("extra", value=1), "unknown fields"),
             (set_path("behavior", "apis", "embeddings", value={}), "behavior.apis keys"),
-            (set_path("behavior", "warmup", value=[
-                {"api": "chat", "promptTokens": 8, "maxTokens": 8, "sampling": {"temperature": 0}}]), "topK"),
-            (set_path("behavior", "warmup", value=[
-                {"api": "responses", "promptTokens": 8, "maxTokens": 8,
-                 "sampling": {"temperature": 0.6, "topK": 20}}]), "maxTokens must be an integer from 16"),
+            (set_path("behavior", "warmup", value=[]), "unknown fields"),
+            (set_path("worker", "extraArgs", value=["--warmups=other"]), "which the chart sets"),
         ]
         for edit, message in cases:
             with self.subTest(message=message):

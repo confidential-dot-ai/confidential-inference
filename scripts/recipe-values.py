@@ -56,7 +56,7 @@ CHART_FLAGS = {
     "--tensor-parallel-size", "--moe-runner-backend", "--speculative-algorithm", "--context-length",
     "--max-running-requests", "--mem-fraction-static", "--chunked-prefill-size", "--swa-full-tokens-ratio",
     "--enable-metrics", "--enable-cache-report", "--enable-trace", "--trace-modules", "--otlp-traces-endpoint",
-    "--host", "--port", "--log-dir", "--log-requests", "--log-requests-level",
+    "--host", "--port", "--log-dir", "--log-requests", "--log-requests-level", "--warmups",
 }
 # The chart's router runs this one routing policy (templates/sglang-router.yaml).
 ROUTING_POLICIES = ("cache_aware",)
@@ -168,36 +168,15 @@ def check(recipe: Any, directory_name: str) -> None:
     if "image" in routing:
         require(routing["image"] in ROUTER_IMAGES, f"routing.image must be one of {list(ROUTER_IMAGES)}")
 
-    behavior = fields(recipe["behavior"], "behavior", {"apis", "warmup"})
+    behavior = fields(recipe["behavior"], "behavior", {"apis"})
     apis = behavior["apis"]
     require(isinstance(apis, dict) and apis and set(apis) <= set(APIS), f"behavior.apis keys must be from {list(APIS)}")
     for name, api in apis.items():
         fields(api if api is not None else {}, f"behavior.apis.{name}", set(), {"minOutputTokens"})
         if api and "minOutputTokens" in api:
             integer(api["minOutputTokens"], f"behavior.apis.{name}.minOutputTokens", 1, context)
-    warmup = behavior["warmup"]
-    require(isinstance(warmup, list) and warmup, "behavior.warmup must list at least one request shape")
-    sampled = False
-    for index, shape in enumerate(warmup):
-        where = f"behavior.warmup[{index}]"
-        fields(shape, where, {"api", "promptTokens", "maxTokens", "sampling"})
-        require(shape["api"] in apis, f"{where}.api must be one of behavior.apis")
-        prompt = integer(shape["promptTokens"], f"{where}.promptTokens", 1, context)
-        minimum = (apis[shape["api"]] or {}).get("minOutputTokens", 1)
-        output = integer(shape["maxTokens"], f"{where}.maxTokens", minimum, context)
-        require(prompt + output <= context, f"{where} is longer than model.contextLength")
-        sampling = fields(shape["sampling"], f"{where}.sampling", {"temperature"}, {"topP", "topK"})
-        number(sampling["temperature"], f"{where}.sampling.temperature", 0, 2)
-        if "topP" in sampling:
-            number(sampling["topP"], f"{where}.sampling.topP", 0.01, 1)
-        if "topK" in sampling:
-            integer(sampling["topK"], f"{where}.sampling.topK", 1, 1000)
-        sampled = sampled or "topK" in sampling or "topP" in sampling
-    # The first top-k/top-p request can compile a FlashInfer sampling kernel
-    # (about 67 s on 2026-11-19). A warm-up shape with top-k or top-p runs
-    # that path before the worker takes traffic.
-    require(sampled, "behavior.warmup needs a shape with sampling.topK or sampling.topP")
-
+    # No warm-up field: the chart runs confidential-sglang's warmup on every worker
+    # (--warmups=confidential_cold_path), before the server listens.
 
 def check_model_manifest(model: dict[str, Any], data: bytes) -> None:
     require("sha256:" + hashlib.sha256(data).hexdigest() == "sha256:" + model["manifestSha256"],
