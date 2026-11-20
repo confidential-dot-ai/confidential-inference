@@ -315,8 +315,9 @@ class PinnedEngineTests(unittest.TestCase):
             self.assertEqual(result.stdout, "")
             inputs = Path(directory) / "inputs"
             inputs.mkdir()
-            fixture = ROOT / "tests/release-v1/fixtures/confidential-sglang/images-0123456789ab.json"
-            (inputs / fixture.name).write_bytes(fixture.read_bytes())
+            # A record in confidential-sglang's format, checked by scripts/confidential_sglang_release.py.
+            fixture = Path(__file__).resolve().parents[2] / "release-v1/fixtures/confidential-sglang/images-0123456789ab.json"
+            (inputs / "images-0123456789ab.json").write_bytes(fixture.read_bytes())
             spec.write_text(yaml.safe_dump({"confidentialSglang": {"record": "images-0123456789ab"}}))
             result = subprocess.run(["python3", str(Path(__file__).with_name("pinned_engine.py")), str(spec),
                                      str(inputs)], text=True, capture_output=True, check=True)

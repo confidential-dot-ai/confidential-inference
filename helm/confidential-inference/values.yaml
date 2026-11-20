@@ -340,6 +340,14 @@ router:
       # The default is a documentation address (RFC 5737) that reaches no
       # API server.
       address: 192.0.2.30
+      # The IPv4 ranges that the address can be in, for an environment that
+      # sets the address only at deploy time, after the release render of
+      # the allowlist. Each range is one allowlist exit on the port, in place
+      # of the exact address. Each is a.b.c.d/n with n from 16 to 32 (C8s
+      # refuses an exit broader than /16), at most 8. The router's node must
+      # not be in a range: C8s refuses an exit to the node's own address.
+      # Empty: the exit is the exact address.
+      cidrs: []
       port: 6443
       # The name the router checks in the API server's certificate. Every
       # API server certificate names kubernetes.default.svc.

@@ -23,8 +23,8 @@ internal release runbook describes:
 The script never learns a value from a running container. A value that no
 pinned source can give (for example a node IP) is an error. Two exceptions:
 a DaemonSet container may read its node name (`spec.nodeName`), and the pods
-of a StatefulSet with several replicas differ in HOSTNAME (and a
-`metadata.name` variable). Such an entry is `env: match`, with that variable
+of a StatefulSet differ in HOSTNAME (and a `metadata.name` variable), whatever
+its replica count, so that a scale needs no new allowlist. Such an entry is `env: match`, with that variable
 `present` and every other variable `exact`.
 
 `c8s allowlist derive` from the pinned c8s release builds each entry, so c8s
@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import ipaddress
 import json
 import re
 import subprocess
@@ -228,16 +229,18 @@ def expand(value: str, known: dict[str, str]) -> str:
 def pod_name(controller: dict[str, Any]) -> Any:
     """The pod's name, or OPEN_VALUE when its pods differ in name.
 
-    A StatefulSet of several replicas names its pods <name>-0, <name>-1 and
-    so on, and the StatefulSet controller sets each pod's hostname to that
-    name. All of them claim one allowlist entry, so the entry requires
-    HOSTNAME (and a `metadata.name` variable) and admits any value.
+    A StatefulSet names its pods <name>-0, <name>-1 and so on, and the
+    StatefulSet controller sets each pod's hostname to that name. All of them
+    claim one allowlist entry, so the entry requires HOSTNAME (and a
+    `metadata.name` variable) and admits any value. This is so for every
+    replica count: the StatefulSet can scale at runtime (for example from 1
+    to 2 pods), and a scale must not need a new allowlist.
     """
     kind = controller["kind"]
     name = controller["metadata"]["name"]
     pod = controller["spec"]["template"]["spec"]
     if kind == "StatefulSet":
-        return f"{name}-0" if int(controller["spec"].get("replicas", 1)) == 1 else OPEN_VALUE
+        return OPEN_VALUE
     if pod.get("hostname"):
         return pod["hostname"]
     raise GenerationError(
@@ -246,8 +249,7 @@ def pod_name(controller: dict[str, Any]) -> Any:
 
 
 # The value of a variable that differs per pod of one entry: a DaemonSet's
-# node name (`spec.nodeName`), or the pod name of a StatefulSet with several
-# replicas. C8s `match` admits it with `present`; no other variable is left
+# node name (`spec.nodeName`), or the pod name of a StatefulSet. C8s `match` admits it with `present`; no other variable is left
 # open.
 OPEN_VALUE = object()
 NODE_NAME_VALUE = OPEN_VALUE
@@ -516,6 +518,37 @@ def is_carved_out(container: dict[str, Any], core_digests: set[str], release: st
     return digest in core_digests and bool(command) and command[0] in INJECTED_ENTRYPOINTS
 
 
+# The controller annotation that names the ranges of an exit whose address the
+# deployment sets after the release render (router.discovery.apiServer.cidrs).
+EGRESS_CIDRS_ANNOTATION = "inference.confidential.ai/egress-cidrs"
+# C8s refuses an exit broader than /16 (pkg/allowlist minEgressBits4) and
+# more than 8 exits in one entry (MaxEgress).
+MIN_EGRESS_PREFIX = 16
+MAX_EGRESS = 8
+# The IPv4 ranges no C8s exit may overlap (pkg/allowlist nonUnicastRanges).
+NON_UNICAST_RANGES = tuple(ipaddress.IPv4Network(text) for text in
+                           ("0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/3"))
+
+
+def egress_ranges(label: str, value: str) -> list[str]:
+    """The IPv4 ranges of an egress-cidrs annotation, each checked as C8s checks it."""
+    ranges = []
+    for text in value.split(","):
+        try:
+            network = ipaddress.IPv4Network(text, strict=True)
+        except ValueError as error:
+            raise GenerationError(f"{label}: {EGRESS_CIDRS_ANNOTATION} has a bad IPv4 range {text!r}: {error}") from error
+        if "/" not in text or network.prefixlen < MIN_EGRESS_PREFIX:
+            raise GenerationError(
+                f"{label}: {EGRESS_CIDRS_ANNOTATION} range {text} must be a.b.c.d/n with n from {MIN_EGRESS_PREFIX} to 32")
+        if any(network.overlaps(special) for special in NON_UNICAST_RANGES):
+            raise GenerationError(f"{label}: {EGRESS_CIDRS_ANNOTATION} range {text} is not a range of unicast hosts")
+        ranges.append(str(network))
+    if len(set(ranges)) != len(ranges) or len(ranges) > MAX_EGRESS:
+        raise GenerationError(f"{label}: {EGRESS_CIDRS_ANNOTATION} must name at most {MAX_EGRESS} distinct ranges")
+    return ranges
+
+
 def declared_egress(controller: dict[str, Any], item: dict[str, Any]) -> list[dict[str, Any]]:
     """The exits of a policy item that declares `egress` (C8s #1047).
 
@@ -523,16 +556,26 @@ def declared_egress(controller: dict[str, Any], item: dict[str, Any]) -> list[di
     so the chart value that names the destination is also the exit. A pod
     with hostAliases whose item declares no egress is refused: without the
     exit, the node drops every connection to those addresses.
+
+    A controller with the egress-cidrs annotation gets one exit per range on
+    the declared port, in place of its hostAliases addresses. The deployment
+    sets such an address after the release render (the router's API server
+    address), so the render knows only the ranges the address can be in.
     """
     aliases = controller["spec"]["template"]["spec"].get("hostAliases", [])
+    annotation = controller.get("metadata", {}).get("annotations", {}).get(EGRESS_CIDRS_ANNOTATION)
     if "egress" not in item:
-        if aliases:
+        if aliases or annotation is not None:
             raise GenerationError(f"{item['controller']}: its pod pins hostAliases addresses, and the policy declares no egress")
         return []
-    if not aliases:
+    if annotation is not None:
+        cidrs = egress_ranges(item["controller"], annotation)
+    elif aliases:
+        cidrs = [f"{alias['ip']}/32" for alias in aliases]
+    else:
         raise GenerationError(f"{item['controller']}: declares egress, and its pod has no hostAliases address")
-    return sorted(({"cidr": f"{alias['ip']}/32", "port": item["egress"]["port"]} for alias in aliases),
-                  key=lambda exit: (exit["cidr"], exit["port"]))
+    return sorted(({"cidr": cidr, "port": item["egress"]["port"]} for cidr in cidrs),
+                  key=lambda exit: (ipaddress.ip_network(exit["cidr"]), exit["port"]))
 
 
 def derive(

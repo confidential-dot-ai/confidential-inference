@@ -198,9 +198,9 @@ class EnvironmentTests(unittest.TestCase):
         return GEN.container_env(obj, container, configs, POLICY, cdi)
 
     def test_image_env_last_value_wins_and_platform_values_are_added(self):
-        values = self.env(controller())
+        values = self.env(controller(kind="Deployment", hostname="agent"))
         self.assertEqual(values["PATH"], "/bin")
-        self.assertEqual(values["HOSTNAME"], "worker-0")
+        self.assertEqual(values["HOSTNAME"], "agent")
         self.assertEqual(values["KUBERNETES_SERVICE_HOST"], "10.53.0.1")
         self.assertEqual(values["KUBERNETES_PORT_443_TCP"], "tcp://10.53.0.1:443")
 
@@ -210,9 +210,9 @@ class EnvironmentTests(unittest.TestCase):
             {"name": "C", "value": "$(B)-y-$$(B)"},
             {"name": "POD", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
         ]}
-        values = self.env(controller(container=container))
+        values = self.env(controller(kind="Deployment", hostname="agent", container=container))
         self.assertEqual(values["C"], "x-y-$(B)")
-        self.assertEqual(values["POD"], "worker-0")
+        self.assertEqual(values["POD"], "agent")
 
     def test_node_specific_values_are_refused(self):
         container = {"name": "app", "image": IMAGE, "env": [
@@ -234,28 +234,35 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(policy["variables"]["HOSTNAME"], {"exact": "agent"})
         self.assertEqual(GEN.env_policy({"A": "1"}), {"policy": "exact", "values": {"A": "1"}})
 
-    def test_the_pods_of_a_statefulset_with_several_replicas_differ_only_in_hostname(self):
+    def test_the_pods_of_a_statefulset_differ_only_in_hostname_for_every_replica_count(self):
         """One StatefulSet runs every worker under one entry: inference-worker-0, -1, ...
 
         The entry requires HOSTNAME and a metadata.name variable and admits
-        any value; every other variable stays exact. One replica keeps
-        HOSTNAME exact.
+        any value; every other variable stays exact. This holds for one
+        replica too: CI scales the StatefulSet from 1 to 2 pods at runtime,
+        and inference-worker-1 must match the same entry.
         """
         container = {"name": "app", "image": IMAGE, "env": [
             {"name": "POD", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}}]}
-        workers = controller(container=container)
-        workers["spec"]["replicas"] = 2
-        values = self.env(workers)
-        self.assertIs(values["HOSTNAME"], GEN.OPEN_VALUE)
-        self.assertIs(values["POD"], GEN.OPEN_VALUE)
-        policy = GEN.env_policy(values)
-        self.assertEqual(policy["policy"], "match")
-        self.assertEqual({name for name, rule in policy["variables"].items() if "exact" not in rule}, {"HOSTNAME", "POD"})
-        self.assertEqual(policy["variables"]["A"], {"exact": "1"})
+        for replicas in (None, 0, 1, 2, 8):
+            with self.subTest(replicas=replicas):
+                workers = controller(container=container)
+                if replicas is None:
+                    del workers["spec"]["replicas"]
+                else:
+                    workers["spec"]["replicas"] = replicas
+                values = self.env(workers)
+                self.assertIs(values["HOSTNAME"], GEN.OPEN_VALUE)
+                self.assertIs(values["POD"], GEN.OPEN_VALUE)
+                policy = GEN.env_policy(values)
+                self.assertEqual(policy["policy"], "match")
+                self.assertEqual({name for name, rule in policy["variables"].items() if "exact" not in rule},
+                                 {"HOSTNAME", "POD"})
+                self.assertEqual(policy["variables"]["A"], {"exact": "1"})
+                self.assertNotIn("worker-0", json.dumps(policy))
         # The StatefulSet controller sets each pod's hostname to its name.
         workers["spec"]["template"]["spec"]["hostname"] = "fixed"
         self.assertIs(GEN.pod_name(workers), GEN.OPEN_VALUE)
-        self.assertEqual(self.env(controller())["HOSTNAME"], "worker-0")
 
     def test_service_links_and_random_pod_names_are_refused(self):
         obj = controller()
@@ -1298,8 +1305,16 @@ class RenderTests(unittest.TestCase):
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
         self.assertEqual(args[:2], ["--service-discovery",
                                     "--service-discovery-namespace=confidential-inference-staging"])
-        # The API server address is the router's one exit (C8s #1047).
-        self.assertEqual(allowlist["workloads"]["sglang-router"]["egress"], [{"cidr": "192.0.2.30/32", "port": 6443}])
+        # Staging sets the API server address at deploy time, so the router's
+        # exit is the range it can be in (router.discovery.apiServer.cidrs),
+        # and the pod still dials the deploy-time address (C8s #1047).
+        self.assertEqual(allowlist["workloads"]["sglang-router"]["egress"], [{"cidr": "10.48.64.0/18", "port": 6443}])
+        self.assertEqual(router["metadata"]["annotations"], {GEN.EGRESS_CIDRS_ANNOTATION: "10.48.64.0/18"})
+        self.assertEqual(router["spec"]["template"]["spec"]["hostAliases"],
+                         [{"ip": "192.0.2.30", "hostnames": ["kubernetes-api"]}])
+        production = next(item for item in rendered(PRODUCTION) if item.get("kind") == "Deployment"
+                          and item.get("metadata", {}).get("name") == "sglang-router")
+        self.assertNotIn(GEN.EGRESS_CIDRS_ANNOTATION, production["metadata"].get("annotations", {}))
         changed = json.loads(json.dumps(allowlist))
         changed["workloads"].pop("inference-worker")
         with self.assertRaisesRegex(REN.ManifestError, "entries differ"):

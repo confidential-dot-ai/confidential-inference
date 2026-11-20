@@ -277,8 +277,7 @@
           "pattern": "^images-[0-9a-f]{12}$"
         },
         "recordAsset": {
-          "type": "string",
-          "pattern": "^(images|images-[0-9a-f]{12})\\.json$"
+          "pattern": "^images-[0-9a-f]{12}\\.json$"
         },
         "recordSha256": {
           "description": "The SHA-256 of the record asset.",
@@ -288,7 +287,7 @@
           "$ref": "#/$defs/gitCommit"
         },
         "runId": {
-          "description": "The publishing run ID. Its repository, attempt and workflow are bound by recordSha256.",
+          "description": "The confidential-sglang workflow run that built and pushed the images.",
           "type": "integer",
           "minimum": 1
         },

@@ -44,7 +44,7 @@ SPEC = ROOT / "release/spec.yaml"
 INPUTS = ROOT / "release/inputs/confidential-sglang"
 REPOSITORY = "confidential-dot-ai/confidential-sglang"
 RECORD_SCHEMA = "confidential.ai/confidential-sglang-images/v1"
-ASSET = "images.json"
+# The record asset of release images-<12hex> is images-<12hex>.json.
 RECORD = re.compile(r"images-[0-9a-f]{12}")
 # The record name in release/spec.yaml until confidential-sglang publishes
 # its first record. The release build refuses it.
@@ -54,7 +54,6 @@ IMAGE_PREFIX = "ghcr.io/confidential-dot-ai/confidential-sglang/"
 CHART_KEYS = {"engine": "confidentialSglangEngine", "router": "confidentialSglangRouter"}
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
-IMAGE = re.compile(re.escape(IMAGE_PREFIX) + r"[a-z0-9][a-z0-9._/-]*")
 MAX_RECORD_BYTES = 65536
 
 
@@ -77,73 +76,66 @@ def validate_name(name: Any) -> str:
     return name
 
 
+# The run that may publish a record: confidential-sglang's images workflow on main, started from
+# confidential-sglang or, while Actions are off there, from confidential-sglang-ci (which only calls it).
+RUN_REPOSITORIES = {REPOSITORY, "confidential-dot-ai/confidential-sglang-ci"}
+RECORD_KEYS = {"schema", "repository", "sourceCommit", "run", "images"}
+OPTIONAL_RECORD_KEYS = {"sourceDateEpoch"}
+
+
 def validate_record(record: Any, name: str) -> dict[str, Any]:
-    """Check one record and that it is the record `name` names."""
-    if isinstance(record, dict) and "run" in record:
-        validate_record(published_images(record), name)
-        return record
-    require(isinstance(record, dict) and set(record) == {"schema", "repository", "sourceCommit", "runId", "images"},
-            "the record holds exactly schema, repository, sourceCommit, runId and images")
+    """Check one record (confidential-sglang `confidential/ci/release_record.py`, schema v1) and that it
+    is the record `name` names. Return it normalized: images by component with image, digest and
+    buildDigests, and the run ID as runId."""
+    require(isinstance(record, dict) and RECORD_KEYS <= set(record) <= RECORD_KEYS | OPTIONAL_RECORD_KEYS,
+            f"the record holds exactly {sorted(RECORD_KEYS)} (and optionally {sorted(OPTIONAL_RECORD_KEYS)})")
     require(record["schema"] == RECORD_SCHEMA, f"the record schema is not {RECORD_SCHEMA}")
-    require(record["repository"] == REPOSITORY, f"the record repository is not {REPOSITORY}")
+    require(record["repository"] == f"https://github.com/{REPOSITORY}",
+            f"the record repository is not https://github.com/{REPOSITORY}")
     commit = record["sourceCommit"]
     require(isinstance(commit, str) and COMMIT.fullmatch(commit) is not None, "record sourceCommit is not a full commit")
     require(name == f"images-{commit[:12]}", f"the record {name} names source commit {commit}")
-    run_id = record["runId"]
-    require(isinstance(run_id, int) and not isinstance(run_id, bool) and run_id > 0, "record runId is not a run ID")
-    images = record["images"]
-    require(isinstance(images, dict) and set(images) == set(CHART_KEYS),
-            f"record images are exactly {sorted(CHART_KEYS)}")
-    for component, entry in images.items():
-        require(isinstance(entry, dict) and set(entry) == {"image", "digest", "buildDigests"},
-                f"record images.{component} holds exactly image, digest and buildDigests")
-        require(isinstance(entry["image"], str) and IMAGE.fullmatch(entry["image"]) is not None
-                and "@" not in entry["image"] and ":" not in entry["image"],
-                f"record images.{component}.image is not an untagged {IMAGE_PREFIX} name")
-        require(isinstance(entry["digest"], str) and DIGEST.fullmatch(entry["digest"]) is not None,
-                f"record images.{component}.digest is not a SHA-256 digest")
-        builds = entry["buildDigests"]
-        # Two clean builds with equal digests: the reproducibility evidence
-        # that replaces this repository's own build proof.
-        require(isinstance(builds, list) and len(builds) == 2 and all(build == entry["digest"] for build in builds),
-                f"record images.{component} needs two build digests equal to its digest")
-    return record
-
-
-def published_images(record: dict[str, Any]) -> dict[str, Any]:
-    """Validate publisher metadata and adapt its images to the existing pin shape."""
-    require(set(record) == {"schema", "repository", "sourceCommit", "sourceDateEpoch", "run", "images"},
-            "published record fields differ")
-    require(record["repository"] == f"https://github.com/{REPOSITORY}", "published record repository differs")
-    require(type(record["sourceDateEpoch"]) is int and record["sourceDateEpoch"] > 0, "invalid sourceDateEpoch")
+    if "sourceDateEpoch" in record:
+        require(type(record["sourceDateEpoch"]) is int and record["sourceDateEpoch"] > 0,
+                "record sourceDateEpoch is not a positive integer")
     run = record["run"]
     require(isinstance(run, dict) and set(run) == {"repository", "id", "attempt", "url", "workflow"},
-            "published run fields differ")
+            "record run holds exactly repository, id, attempt, url and workflow")
+    run_id = run.get("id")
+    require(isinstance(run_id, int) and not isinstance(run_id, bool) and run_id > 0, "record run.id is not a run ID")
     repository = run["repository"]
-    require(isinstance(repository, str) and re.fullmatch(
-        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}", repository),
-        "invalid run repository")
-    require(all(type(run[key]) is int and run[key] > 0 for key in ("id", "attempt")), "invalid run id/attempt")
-    require(run["url"] == f"https://github.com/{repository}/actions/runs/{run['id']}/attempts/{run['attempt']}",
-            "run URL differs")
-    require(isinstance(run["workflow"], str) and re.fullmatch(
-        re.escape(repository) + r"/\.github/workflows/[^/@\s]+\.ya?ml@(?:refs/(?:heads|tags)/[^\s]+|[0-9a-f]{40})",
-        run["workflow"]), "invalid run workflow")
+    require(isinstance(repository, str) and repository in RUN_REPOSITORIES,
+            f"record run.repository is not one of {sorted(RUN_REPOSITORIES)}")
+    attempt = run["attempt"]
+    require(type(attempt) is int and attempt > 0, "record run.attempt is not a positive integer")
+    require(run["url"] == f"https://github.com/{repository}/actions/runs/{run_id}/attempts/{attempt}",
+            "record run.url does not name its repository, run ID and attempt")
+    # Like this repository's own rule (find-image-publication-run.py): trust only runs on main.
+    require(run["workflow"] == f"{repository}/.github/workflows/images.yml@refs/heads/main",
+            "record run.workflow is not its repository's images workflow on main")
     images = record["images"]
     require(isinstance(images, list) and all(isinstance(entry, dict) for entry in images)
             and [entry.get("name") for entry in images] == sorted(CHART_KEYS),
-            "published images must be engine and router, in order")
-    entries = {}
+            f"record images are exactly {sorted(CHART_KEYS)}, once each")
+    normalized: dict[str, dict[str, Any]] = {}
     for entry in images:
-        require(set(entry) == {"name", "image", "digest", "reference", "tag", "builds"},
-                "published image fields differ")
+        require(set(entry) == {"name", "image", "digest", "builds", "reference", "tag"},
+                "record image holds exactly name, image, digest, builds, reference and tag")
         component = entry["name"]
-        require(entry["image"] == IMAGE_PREFIX + component, "published image name differs")
-        require(entry["reference"] == f"{entry['image']}@{entry['digest']}", "published image reference differs")
-        require(entry["tag"] == f"sha-{record['sourceCommit']}", "published image tag differs")
-        entries[component] = {"image": entry["image"], "digest": entry["digest"], "buildDigests": entry["builds"]}
-    return {"schema": record["schema"], "repository": REPOSITORY, "sourceCommit": record["sourceCommit"],
-            "runId": run["id"], "images": entries}
+        image, digest, builds = entry.get("image"), entry.get("digest"), entry.get("builds")
+        require(image == IMAGE_PREFIX + component,
+                f"record image {component} is not the untagged {IMAGE_PREFIX + component} image")
+        require(isinstance(digest, str) and DIGEST.fullmatch(digest) is not None,
+                f"record image {component} digest is not a SHA-256 digest")
+        # Two clean builds with equal digests: the reproducibility evidence that replaces this
+        # repository's own build proof.
+        require(isinstance(builds, list) and len(builds) == 2 and all(build == digest for build in builds),
+                f"record image {component} needs two build digests equal to its digest")
+        require(entry["reference"] == f"{image}@{digest}", f"record image {component} reference is not image@digest")
+        require(entry["tag"] == f"sha-{commit}", f"record image {component} tag is not sha-<sourceCommit>")
+        normalized[component] = {"image": image, "digest": digest, "buildDigests": list(builds)}
+    return {"schema": record["schema"], "repository": REPOSITORY, "sourceCommit": commit, "runId": run_id,
+            "images": normalized}
 
 
 def read_record(name: str, inputs: Path = INPUTS) -> tuple[bytes, dict[str, Any]]:
@@ -167,14 +159,10 @@ def release_pin(spec_section: Any, inputs: Path = INPUTS) -> dict[str, Any]:
     require(isinstance(spec_section, dict) and set(spec_section) == {"record"},
             "confidentialSglang holds exactly record")
     data, record = read_record(spec_section["record"], inputs)
-    asset = ASSET
-    if "run" in record:
-        asset = f"{spec_section['record']}.json"
-        record = published_images(record)
     return {
         "repository": REPOSITORY,
         "record": spec_section["record"],
-        "recordAsset": asset,
+        "recordAsset": f"{spec_section['record']}.json",
         "recordSha256": sha256(data),
         "sourceCommit": record["sourceCommit"],
         "runId": record["runId"],
