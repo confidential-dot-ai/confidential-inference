@@ -79,6 +79,7 @@ object per line, at most 4096 bytes, with no free text:
 | `nccl_error` | `code`, `location` |
 | `worker_error` | `error_class`, `exception`, `location` |
 | `worker_exit` | `exit_code`, `signal` |
+| `jit_compile` | `cache`, `files` (a kernel compiled after `worker_ready`) |
 
 Every event also has the `event` key. `exception` is the exception type name
 only; the message is always discarded. `location` is the last SGLang
@@ -90,6 +91,22 @@ as `worker_error`. The supervisor also writes `worker_exit` with exit code 1
 when it stops before the server starts (model check failure or timeout).
 The model-mount progress and rejection messages stay on stderr; they contain
 no request data.
+
+`jit_compile` reports a kernel that a compiler built at run time. Such a
+compile blocks the SGLang scheduler. On 2026-11-19 a 67-second FlashInfer
+sampling compile on the first top-k/top-p request let the liveness probe
+kill both staging workers. A compiled kernel is also not part of the
+measured image. After `worker_ready`, every 5 seconds, the supervisor lists
+the cache directories of each compiler in the image: FlashInfer, Triton,
+torch inductor, DeepGEMM, the SGLang JIT kernels, the CUDA driver PTX cache,
+TileLang, CuTe DSL, TVM-FFI, and any other file below `~/.cache`. It compares
+file names and sizes, and reads no content. Files that exist at
+`worker_ready` (startup compiles) are not reported. `cache` is one of
+`flashinfer`, `triton`, `inductor`, `deep_gemm`, `sglang_jit`, `cuda`,
+`tilelang`, `cute_dsl`, `tvm_ffi` and `other`; `files` is the number of new
+or changed files in one scan. The event holds no path or file name. The
+directories, and the source that sets each one, are listed in
+`wait_for_model.py`.
 
 `--private-server-output` is still accepted, but it does nothing: the output
 is always private. Native CUDA and application error text is not available

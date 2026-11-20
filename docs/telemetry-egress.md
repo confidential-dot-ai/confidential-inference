@@ -66,7 +66,7 @@ stdout or disk, and writes only fixed events (`wait-for-model` in
 | Gateway | The audit record holds a key pseudonym, not the key record ID. | `TracingAuditSink`, `KeyPseudonyms` |
 | Gateway | The client address is used in memory for rate limits only. No log, metric, or event holds it. | `protection.rs` |
 | Maintenance gateway | The same HTTP library filter and panic hook. It sends no telemetry. | `services/maintenance-gateway/src/main.rs` |
-| Worker | `wait-for-model` keeps SGLang's output in memory and writes only `worker_ready`, `request_failed`, `gpu_oom`, `cuda_error`, `nccl_error`, `worker_error` and `worker_exit`. A traceback becomes the exception type and one SGLang code location; the message is dropped. An unknown error is `unclassified`. | `images/sglang-confidential/wait_for_model.py`, `tests/images/sglang-confidential/test_server_output.py` |
+| Worker | `wait-for-model` keeps SGLang's output in memory and writes only `worker_ready`, `request_failed`, `gpu_oom`, `cuda_error`, `nccl_error`, `worker_error`, `worker_exit` and `jit_compile`. A traceback becomes the exception type and one SGLang code location; the message is dropped. An unknown error is `unclassified`. | `images/sglang-confidential/wait_for_model.py`, `tests/images/sglang-confidential/test_server_output.py` |
 | Router | The launcher keeps the router's output in memory and writes only the reviewed events. | `images/sglang-router/private_router.py` |
 | Node log agent | Reads `/var/log/pods` read-only. Takes namespace, pod and container from the file path. Keeps a record only when the log policy lists its source and event (or, for a C8s or collector source, its level and message). Keeps only the listed fields, checks each one against its pattern, and drops the others. A statement that fails does not log (`error_mode: silent`) and the record is dropped. | `templates/node-log-agent.yaml`, `transform/classify` |
 | Node log agent | In a message of a text source, replaces Bearer tokens, `Authorization`, `User-Agent` and `X-Api-Key` values, and IPv4 and IPv6 addresses, and cuts it to 256 characters. | `transform/classify` |
@@ -178,6 +178,7 @@ Worker bodies (`images/sglang-confidential/README.md`):
 | `gpu_oom`, `cuda_error`, `nccl_error` | `code`, `location` | GPU faults by a fixed code. |
 | `worker_error` | `error_class`, `exception`, `location` | An error that no request owns. Unknown errors are `unclassified`. |
 | `worker_exit` | `exit_code`, `signal` | The server stopped. |
+| `jit_compile` | `cache`, `files` | A kernel compiled after `worker_ready`. `cache` is a fixed compiler name, never a path; `files` is a count. A run-time compile stalls the worker and is not part of the measured image. |
 
 `exception` is a Python type name and `location` is a frame of SGLang code
 (`sglang/<path>.py:<line>`). Both are checked against a pattern; neither can

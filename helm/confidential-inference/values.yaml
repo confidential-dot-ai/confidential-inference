@@ -269,6 +269,16 @@ inference:
   toolCallParser: deepseekv4
   speculativeAlgorithm: DSPARK
   moeRunnerBackend: flashinfer_mxfp4
+  # Set FLASHINFER_DISABLE_JIT=1 on the model worker. FlashInfer 0.7.2 then
+  # raises MissingJITCacheError instead of compiling a kernel that the image
+  # does not carry (flashinfer/jit/core.py). A run-time compile stalls the
+  # SGLang scheduler: on 2026-11-19 a 67-second sampling compile let the
+  # liveness probe kill both staging workers. A compiled kernel is also not
+  # part of the measured image. Keep false until the worker image carries
+  # every FlashInfer kernel the model uses (today's image has no prebuilt JIT
+  # cache, so true stops the first sampling request). The C8s allowlist pins
+  # the worker env, so a change needs a new release render.
+  flashinferDisableJit: false
   workerExtraArgs: []
   # Unused: wait-for-model always keeps SGLang's output in memory and writes
   # only the fixed worker events (images/sglang-confidential/README.md). The

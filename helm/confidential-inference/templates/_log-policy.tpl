@@ -61,7 +61,7 @@ structured:
       status: {int: true}
       code: {int: true}
   inference-worker:
-    events: [worker_ready, request_failed, gpu_oom, cuda_error, nccl_error, worker_error, worker_exit]
+    events: [worker_ready, request_failed, gpu_oom, cuda_error, nccl_error, worker_error, worker_exit, jit_compile]
     fields:
       model_revision: {string: '^[0-9a-f]{40}$'}
       gpus: {int: true}
@@ -78,6 +78,10 @@ structured:
       code: {string: '^(cudaError[A-Za-z]{1,40}|nccl[A-Za-z]{1,40}|timeout|unknown)$'}
       exit_code: {int: true}
       signal: {string: '^SIG[A-Z0-9]{1,12}$'}
+      # jit_compile: a kernel compiled after worker_ready. The cache is a
+      # fixed name, never a path; files is a count.
+      cache: {string: '^(flashinfer|triton|inductor|deep_gemm|sglang_jit|cuda|tilelang|cute_dsl|tvm_ffi|other)$'}
+      files: {int: true}
 textSources: [c8s, telemetry-collector, node-log-agent]
 # The containers C8s injects into a member pod (C8s v0.101.5
 # pkg/workloadclaims). The front door's namespace (c8s.frontDoorNamespace) and

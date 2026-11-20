@@ -5,11 +5,13 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import re
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -35,7 +37,15 @@ KEYS = {
     "nccl_error": {"event", "code", "location"},
     "worker_error": {"event", "error_class", "exception", "location"},
     "worker_exit": {"event", "exit_code", "signal"},
+    "jit_compile": {"event", "cache", "files"},
 }
+CACHES = {"flashinfer", "triton", "inductor", "deep_gemm", "sglang_jit", "cuda", "tilelang", "cute_dsl", "tvm_ffi",
+          "other"}
+# The cache variables a test must not inherit from the machine that runs it.
+CACHE_ENV = ("SGLANG_CACHE_DIR", "FLASHINFER_WORKSPACE_BASE", "TRITON_CACHE_DIR", "TRITON_HOME",
+             "TORCHINDUCTOR_CACHE_DIR", "DG_JIT_CACHE_DIR", "DJ_JIT_CACHE_DIR", "SGLANG_DG_CACHE_DIR",
+             "SGLANG_JIT_CACHE_DIR", "CUDA_CACHE_PATH", "TILELANG_CACHE_DIR", "CUTE_DSL_CACHE_DIR",
+             "SGLANG_CUTE_AOT_CACHE_DIR", "TVM_FFI_CACHE_DIR")
 EXCEPTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,95}$")
 LOCATION = re.compile(r"^[A-Za-z0-9_./-]{1,160}:[0-9]{1,7}$")
 ERROR_CLASS = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
@@ -66,6 +76,10 @@ def assert_contract(test: unittest.TestCase, event: dict) -> None:
         test.assertRegex(event["model_revision"], r"^[0-9a-f]{40}$")
         test.assertIsInstance(event["gpus"], int)
         test.assertIsInstance(event["load_seconds"], int)
+    if event["event"] == "jit_compile":
+        test.assertIn(event["cache"], CACHES)
+        test.assertIsInstance(event["files"], int)
+        test.assertGreaterEqual(event["files"], 1)
     if event["event"] == "worker_exit":
         test.assertTrue(event["exit_code"] is None or isinstance(event["exit_code"], int))
         test.assertTrue(event["signal"] is None or re.fullmatch(r"SIG[A-Z0-9]+", event["signal"]))
@@ -269,10 +283,140 @@ class ClassifierTests(unittest.TestCase):
         self.assertTrue(all(event["exception"] is None for event in errors), errors)
 
 
+class CompileWatcherTests(unittest.TestCase):
+    """Run-time kernel compiles after worker_ready are reported (see wait_for_model.py).
+
+    On 2026-11-19 a 67 s FlashInfer JIT compile of the sampling module, on the
+    first top-k/top-p request, let the liveness probe kill both staging
+    workers. These tests make such a compile visible as a fixed event,
+    independent of probe timing.
+    """
+
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.home = Path(os.path.realpath(self._directory.name))
+        self.environ = {"HOME": str(self.home), "TMPDIR": str(self.home)}
+        self.events: list[dict] = []
+        self.watcher = wfm.CompileWatcher(self.emit, lambda: wfm.compile_cache_roots(self.environ))
+
+    def tearDown(self) -> None:
+        self._directory.cleanup()
+
+    def emit(self, event: dict) -> None:
+        self.assertTrue(wfm.valid_event(event), event)
+        assert_contract(self, event)
+        self.events.append(event)
+
+    def write(self, relative: str, data: bytes = b"x") -> Path:
+        path = self.home / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+    def test_pod_roots_cover_every_compiler_and_the_sglang_redirect(self) -> None:
+        roots = set(wfm.compile_cache_roots({"HOME": "/tmp", "TMPDIR": "/tmp"}))
+        real = os.path.realpath("/tmp")
+        expected = {
+            ("flashinfer", ".cache/sglang/.cache/flashinfer"), ("flashinfer", ".cache/flashinfer"),
+            ("triton", ".cache/sglang/triton"), ("triton", ".triton"),
+            ("inductor", ".cache/sglang/inductor"),
+            ("deep_gemm", ".cache/sglang/deep_gemm"), ("deep_gemm", ".dj"),
+            ("sglang_jit", ".cache/sglang/jit"),
+            ("cuda", ".cache/sglang/nv"), ("cuda", ".nv/ComputeCache"),
+            ("tilelang", ".cache/sglang/tilelang"), ("tilelang", ".tilelang"),
+            ("cute_dsl", ".cache/sglang/cute_aot"), ("cute_dsl", "cutlass_python_cache"),
+            ("tvm_ffi", ".cache/tvm-ffi"),
+            ("other", ".cache/sglang"), ("other", ".cache"),
+        }
+        self.assertLessEqual({(name, os.path.join(real, path)) for name, path in expected}, roots)
+        self.assertEqual(set(wfm.COMPILE_CACHES), {name for name, _path in roots})
+
+    def test_environment_overrides_are_watched(self) -> None:
+        environ = {**self.environ, "TRITON_CACHE_DIR": "/x/triton", "FLASHINFER_WORKSPACE_BASE": "/x/fi",
+                   "DG_JIT_CACHE_DIR": "/x/dg:/x/dg-readonly", "SGLANG_CACHE_DIR": "~/sgl",
+                   "CUDA_CACHE_PATH": "/x/nv", "SGLANG_JIT_CACHE_DIR": "/x/jit"}
+        roots = set(wfm.compile_cache_roots(environ))
+        for pair in (("triton", "/x/triton"), ("flashinfer", "/x/fi/.cache/flashinfer"), ("deep_gemm", "/x/dg"),
+                     ("deep_gemm", "/x/dg-readonly"), ("cuda", "/x/nv"), ("sglang_jit", "/x/jit"),
+                     ("triton", f"{self.home}/sgl/triton"), ("other", f"{self.home}/sgl")):
+            self.assertIn(pair, roots)
+
+    def test_startup_files_are_the_baseline(self) -> None:
+        self.write(".cache/sglang/.cache/flashinfer/0.7.2/100a/cached_ops/norm/norm.so")
+        self.write(".cache/sglang/triton/abc/kernel.cubin")
+        self.watcher.start()
+        self.assertEqual([], self.watcher.check())
+        self.assertEqual([], self.events)
+
+    def test_a_file_after_ready_is_one_event_per_cache(self) -> None:
+        self.write(".cache/sglang/.cache/flashinfer/0.7.2/100a/cached_ops/norm/norm.so")
+        self.watcher.start()
+        self.write(".cache/sglang/.cache/flashinfer/0.7.2/100a/cached_ops/sampling/sampling.so")
+        self.write(".cache/sglang/.cache/flashinfer/0.7.2/100a/cached_ops/sampling/sampling.cuda.o")
+        self.write(".cache/sglang/triton/def/kernel.cubin")
+        self.write(".nv/ComputeCache/a/b/0")
+        self.watcher.check()
+        self.assertEqual([{"event": "jit_compile", "cache": "flashinfer", "files": 2},
+                          {"event": "jit_compile", "cache": "triton", "files": 1},
+                          {"event": "jit_compile", "cache": "cuda", "files": 1}], self.events)
+        self.watcher.check()
+        self.assertEqual(3, len(self.events))
+
+    def test_every_cache_name_is_reported_under_its_own_name(self) -> None:
+        self.watcher.start()
+        paths = {
+            "flashinfer": ".cache/flashinfer/cubins/x.cubin", "triton": ".triton/cache/k/k.so",
+            "inductor": "torchinductor_uid_1001/ab/c.py", "deep_gemm": ".cache/sglang/deep_gemm/cache/k/k.cubin",
+            "sglang_jit": ".cache/sglang/jit/sm100/mod/build-1/mod.so", "cuda": ".cache/sglang/nv/ComputeCache/0",
+            "tilelang": ".tilelang/cache/k.so", "cute_dsl": "uid/cutlass_python_cache/k.mlir",
+            "tvm_ffi": ".cache/tvm-ffi/m/m.so", "other": ".cache/unknown-compiler/k.bin",
+        }
+        for path in paths.values():
+            self.write(path)
+        self.watcher.check()
+        self.assertEqual([{"event": "jit_compile", "cache": name, "files": 1} for name in wfm.COMPILE_CACHES],
+                         self.events)
+
+    def test_a_cache_hit_touch_is_not_a_compile_but_a_rewrite_is(self) -> None:
+        marker = self.write(".cache/sglang/deep_gemm/cache/k.abc/.committed", b"")
+        ninja_log = self.write(".cache/sglang/.cache/flashinfer/0.7.2/100a/cached_ops/.ninja_log", b"a\n")
+        self.watcher.start()
+        os.utime(marker, (time.time() + 100, time.time() + 100))
+        self.watcher.check()
+        self.assertEqual([], self.events)
+        ninja_log.write_bytes(b"a\nb\n")
+        self.watcher.check()
+        self.assertEqual([{"event": "jit_compile", "cache": "flashinfer", "files": 1}], self.events)
+
+    def test_a_deleted_file_is_not_a_compile(self) -> None:
+        old = self.write(".cache/sglang/jit/sm100/mod/build-1/mod.so")
+        self.watcher.start()
+        old.unlink()
+        self.watcher.check()
+        self.assertEqual([], self.events)
+
+    def test_events_hold_no_path_or_file_name(self) -> None:
+        self.watcher.start()
+        self.write(f".cache/sglang/triton/{MARKER}/{MARKER}.cubin")
+        self.watcher.check()
+        self.assertEqual(1, len(self.events))
+        self.assertNotIn(MARKER, json.dumps(self.events))
+        self.assertFalse(wfm.valid_event({"event": "jit_compile", "cache": MARKER, "files": 1}))
+        self.assertFalse(wfm.valid_event({"event": "jit_compile", "cache": "triton", "files": 0}))
+        self.assertFalse(wfm.valid_event({"event": "jit_compile", "cache": "triton", "files": 1, "path": "/x"}))
+
+    def test_a_scan_is_bounded(self) -> None:
+        for index in range(5):
+            self.write(f".cache/sglang/triton/{index}")
+        found = wfm.scan_compile_caches(wfm.compile_cache_roots(self.environ), max_files=3)
+        self.assertEqual(3, sum(len(files) for files in found.values()))
+
+
 class SupervisionTests(unittest.TestCase):
     """run_server against a tiny fake server, without the model check."""
 
-    def run_child(self, child_code: str, extra: list[str] | None = None, timeout: float = 20) -> tuple[int, str, str]:
+    def run_child(self, child_code: str, extra: list[str] | None = None, timeout: float = 20,
+                  home: str | None = None) -> tuple[int, str, str]:
         driver = (
             "import sys, time, importlib.util\n"
             f"spec = importlib.util.spec_from_file_location('wait_for_model', {str(SCRIPT)!r})\n"
@@ -280,13 +424,16 @@ class SupervisionTests(unittest.TestCase):
             "from pathlib import Path\n"
             "command = [sys.executable, '-c', sys.argv[1], *sys.argv[3:]]\n"
             f"raise SystemExit(m.run_server(command, {REVISION!r}, started=time.monotonic(),"
-            " dev_dir=Path(sys.argv[2]), health_interval=0.1))\n"
+            " dev_dir=Path(sys.argv[2]), health_interval=0.1, scan_interval=0.1))\n"
         )
-        with tempfile.TemporaryDirectory() as dev:
+        with tempfile.TemporaryDirectory() as dev, tempfile.TemporaryDirectory() as own_home:
             for name in ("nvidia0", "nvidia1", "nvidiactl", "nvidia-uvm"):
                 Path(dev, name).touch()
+            # The compile watcher lists HOME and TMPDIR: never the caches of this machine.
+            env = {key: value for key, value in os.environ.items() if key not in CACHE_ENV}
+            env["HOME"] = env["TMPDIR"] = home or own_home
             result = subprocess.run([sys.executable, "-c", driver, child_code, dev, *(extra or [])],
-                                    capture_output=True, timeout=timeout)
+                                    capture_output=True, timeout=timeout, env=env)
         return result.returncode, result.stdout.decode(), result.stderr.decode()
 
     def events(self, stdout: str) -> list[dict]:
@@ -345,6 +492,36 @@ class SupervisionTests(unittest.TestCase):
         self.assertEqual(["worker_ready", "worker_exit"], [e["event"] for e in events])
         self.assertEqual(REVISION, events[0]["model_revision"])
         self.assertEqual(2, events[0]["gpus"])
+
+    def test_a_compile_after_worker_ready_is_reported_once(self) -> None:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        code = (
+            "import http.server, os, sys, threading, time\n"
+            "home = os.environ['HOME']\n"
+            "def put(path):\n"
+            "    path = os.path.join(home, path); os.makedirs(os.path.dirname(path), exist_ok=True)\n"
+            "    open(path, 'wb').write(b'x')\n"
+            "put('.cache/sglang/.cache/flashinfer/0.7.2/100a/cached_ops/norm/norm.so')\n"
+            "class H(http.server.BaseHTTPRequestHandler):\n"
+            "    def do_GET(self):\n"
+            "        self.send_response(200); self.end_headers()\n"
+            "    def log_message(self, *a):\n"
+            "        pass\n"
+            "s = http.server.HTTPServer(('127.0.0.1', int(sys.argv[2])), H)\n"
+            "threading.Thread(target=s.serve_forever, daemon=True).start()\n"
+            "time.sleep(0.8)\n"
+            f"put('.cache/sglang/.cache/flashinfer/0.7.2/100a/cached_ops/{MARKER}/{MARKER}.so')\n"
+            "time.sleep(0.8)\n"
+        )
+        returncode, stdout, _stderr = self.run_child(code, ["--port", str(port)])
+        self.assertEqual(0, returncode)
+        self.assertNotIn(MARKER, stdout)
+        events = self.events(stdout)
+        self.assertEqual([{"event": "jit_compile", "cache": "flashinfer", "files": 1}],
+                         [event for event in events if event["event"] == "jit_compile"])
+        self.assertEqual(["worker_ready", "jit_compile", "worker_exit"], [e["event"] for e in events])
 
     def test_server_port_parsing(self) -> None:
         self.assertEqual(30000, wfm.server_port(["python3", "-m", "sglang.launch_server"]))
