@@ -125,6 +125,7 @@
         "toolCallParser": {"type": "string"},
         "speculativeAlgorithm": {"type": "string"},
         "moeRunnerBackend": {"type": "string"},
+        "flashinferDisableJit": {"type": "boolean"},
         "workerExtraArgs": {"type": "array", "items": {"type": "string"}},
         "contextLength": {"type": "integer", "minimum": 0, "maximum": 16777216},
         "maxRunningRequests": {"type": "integer", "minimum": 0, "maximum": 65536},

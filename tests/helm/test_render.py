@@ -636,6 +636,7 @@ def main() -> None:
     assert production_settings['firstTokenTimeoutSeconds'] == 3600
     assert production_settings['streamIdleTimeoutSeconds'] == 60
     check_long_request_limits(production)
+    check_flashinfer_disable_jit(production)
     production_workers = [item for item in production if item['kind'] == 'StatefulSet'
                           and item['metadata']['name'].startswith('inference-worker-')]
     assert len(production_workers) == 2
@@ -1052,6 +1053,35 @@ def check_long_request_limits(production: list[dict]) -> None:
         assert [arg for arg in container_args if arg.startswith('--context-length')] == ['--context-length=1048576']
         assert [arg for arg in container_args if arg.startswith('--max-running-requests')] == [
             '--max-running-requests=8']
+
+
+def check_flashinfer_disable_jit(production: list[dict]) -> None:
+    """inference.flashinferDisableJit sets FLASHINFER_DISABLE_JIT=1 on the model worker only.
+
+    A FlashInfer compile at run time stalls the SGLang scheduler; on
+    2026-11-19 one let the liveness probe kill both staging workers. The
+    default stays false: today's worker image carries no prebuilt FlashInfer
+    JIT cache, so the flag would fail its first sampling request. The default
+    render must not change, because the C8s allowlist pins the worker env.
+    """
+    def worker_env(documents):
+        workers = [item for item in documents if item['kind'] == 'StatefulSet'
+                   and item['metadata']['name'].startswith('inference-worker-')]
+        assert workers
+        return [{item['name']: item.get('value') for item in worker['spec']['template']['spec']['containers'][0]['env']}
+                for worker in workers]
+    assert all('FLASHINFER_DISABLE_JIT' not in env for env in worker_env(production))
+    production_files = ('-f', str(ROOT / 'tests/fixtures/deployments/production-values.yaml'),
+                        '-f', str(ROOT / 'tests/release-v1/fixtures/release-values.yaml'))
+    enabled = render(*production_files, '--set', 'inference.flashinferDisableJit=true')
+    assert all(env.get('FLASHINFER_DISABLE_JIT') == '1' for env in worker_env(enabled))
+    # The CPU simulator has no FlashInfer: the flag renders nothing there.
+    simulator = render('--set', 'inference.flashinferDisableJit=true')
+    assert all('FLASHINFER_DISABLE_JIT' not in env for env in worker_env(simulator))
+    rejected = subprocess.run(['helm', 'template', 'flag-test', str(CHART), *NEUTRAL_MODE,
+                               '--set-string', 'inference.flashinferDisableJit=yes'],
+                              capture_output=True, text=True)
+    assert rejected.returncode != 0 and 'flashinferDisableJit' in rejected.stderr, rejected.stderr
 
 
 if __name__ == "__main__":

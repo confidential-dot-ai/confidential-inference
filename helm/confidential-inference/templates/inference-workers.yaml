@@ -230,6 +230,11 @@ spec:
               value: {{ $.Values.inference.simulator.outputMode | quote }}
             - name: PYTHONPATH
               value: /opt/confidential-inference/sglang-simulator/src
+            {{- else if $.Values.inference.flashinferDisableJit }}
+            # FlashInfer fails a kernel that the image does not carry instead
+            # of compiling it at run time (values.yaml explains why).
+            - name: FLASHINFER_DISABLE_JIT
+              value: "1"
             {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
