@@ -54,7 +54,6 @@ IMAGE_PREFIX = "ghcr.io/confidential-dot-ai/confidential-sglang/"
 CHART_KEYS = {"engine": "confidentialSglangEngine", "router": "confidentialSglangRouter"}
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
-IMAGE = re.compile(re.escape(IMAGE_PREFIX) + r"[a-z0-9][a-z0-9._/-]*")
 MAX_RECORD_BYTES = 65536
 
 
@@ -96,32 +95,44 @@ def validate_record(record: Any, name: str) -> dict[str, Any]:
     commit = record["sourceCommit"]
     require(isinstance(commit, str) and COMMIT.fullmatch(commit) is not None, "record sourceCommit is not a full commit")
     require(name == f"images-{commit[:12]}", f"the record {name} names source commit {commit}")
+    if "sourceDateEpoch" in record:
+        require(type(record["sourceDateEpoch"]) is int and record["sourceDateEpoch"] > 0,
+                "record sourceDateEpoch is not a positive integer")
     run = record["run"]
-    require(isinstance(run, dict), "record run is not an object")
+    require(isinstance(run, dict) and set(run) == {"repository", "id", "attempt", "url", "workflow"},
+            "record run holds exactly repository, id, attempt, url and workflow")
     run_id = run.get("id")
     require(isinstance(run_id, int) and not isinstance(run_id, bool) and run_id > 0, "record run.id is not a run ID")
-    require(run.get("repository") in RUN_REPOSITORIES, f"record run.repository is not one of {sorted(RUN_REPOSITORIES)}")
+    repository = run["repository"]
+    require(isinstance(repository, str) and repository in RUN_REPOSITORIES,
+            f"record run.repository is not one of {sorted(RUN_REPOSITORIES)}")
+    attempt = run["attempt"]
+    require(type(attempt) is int and attempt > 0, "record run.attempt is not a positive integer")
+    require(run["url"] == f"https://github.com/{repository}/actions/runs/{run_id}/attempts/{attempt}",
+            "record run.url does not name its repository, run ID and attempt")
     # Like this repository's own rule (find-image-publication-run.py): trust only runs on main.
-    require(isinstance(run.get("workflow"), str) and run["workflow"].endswith("@refs/heads/main"),
-            "record run.workflow is not a workflow on main")
+    require(run["workflow"] == f"{repository}/.github/workflows/images.yml@refs/heads/main",
+            "record run.workflow is not its repository's images workflow on main")
     images = record["images"]
-    require(isinstance(images, list) and sorted(entry.get("name") for entry in images if isinstance(entry, dict))
-            == sorted(CHART_KEYS) and len(images) == len(CHART_KEYS),
+    require(isinstance(images, list) and all(isinstance(entry, dict) for entry in images)
+            and [entry.get("name") for entry in images] == sorted(CHART_KEYS),
             f"record images are exactly {sorted(CHART_KEYS)}, once each")
     normalized: dict[str, dict[str, Any]] = {}
     for entry in images:
+        require(set(entry) == {"name", "image", "digest", "builds", "reference", "tag"},
+                "record image holds exactly name, image, digest, builds, reference and tag")
         component = entry["name"]
         image, digest, builds = entry.get("image"), entry.get("digest"), entry.get("builds")
-        require(isinstance(image, str) and IMAGE.fullmatch(image) is not None and "@" not in image and ":" not in image,
-                f"record image {component} is not an untagged {IMAGE_PREFIX} name")
+        require(image == IMAGE_PREFIX + component,
+                f"record image {component} is not the untagged {IMAGE_PREFIX + component} image")
         require(isinstance(digest, str) and DIGEST.fullmatch(digest) is not None,
                 f"record image {component} digest is not a SHA-256 digest")
         # Two clean builds with equal digests: the reproducibility evidence that replaces this
         # repository's own build proof.
         require(isinstance(builds, list) and len(builds) == 2 and all(build == digest for build in builds),
                 f"record image {component} needs two build digests equal to its digest")
-        require(entry.get("reference") in (None, f"{image}@{digest}"), f"record image {component} reference is not image@digest")
-        require(entry.get("tag") in (None, f"sha-{commit}"), f"record image {component} tag is not sha-<sourceCommit>")
+        require(entry["reference"] == f"{image}@{digest}", f"record image {component} reference is not image@digest")
+        require(entry["tag"] == f"sha-{commit}", f"record image {component} tag is not sha-<sourceCommit>")
         normalized[component] = {"image": image, "digest": digest, "buildDigests": list(builds)}
     return {"schema": record["schema"], "repository": REPOSITORY, "sourceCommit": commit, "runId": run_id,
             "images": normalized}
@@ -136,6 +147,7 @@ def read_record(name: str, inputs: Path = INPUTS) -> tuple[bytes, dict[str, Any]
     path = inputs / f"{name}.json"
     try:
         data = path.read_bytes()
+        require(len(data) <= MAX_RECORD_BYTES, "the record is too large")
         record = json.loads(data)
     except (OSError, json.JSONDecodeError) as error:
         raise RecordError(f"cannot read the record {path}: {error}") from error
@@ -168,7 +180,7 @@ def chart_images(pin: dict[str, Any]) -> dict[str, str]:
 def download(name: str, directory: Path,
              run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> bytes:
     """Download the record asset of release `name` with gh."""
-    asset = f"{name}.json"
+    asset = f"{validate_name(name)}.json"
     result = run(["gh", "release", "download", name, "--repo", REPOSITORY, "--pattern", asset,
                   "--dir", str(directory), "--clobber"], text=True, capture_output=True, check=False)
     require(result.returncode == 0, f"cannot download {asset} of {REPOSITORY} {name}: {result.stderr.strip()}")

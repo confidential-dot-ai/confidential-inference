@@ -44,19 +44,26 @@ is the first 12 hex digits of the source commit, with one asset,
 
 `scripts/confidential_sglang_release.py` checks:
 
-- The record holds exactly these fields; `sourceDateEpoch` is optional.
+- The record holds exactly these fields; `sourceDateEpoch` is optional and,
+  when present, is a positive integer. Records are at most 64 KiB.
 - `sourceCommit` is the commit the release name names.
-- `images` holds `engine` and `router`, once each. `image` is an untagged
-  name below `ghcr.io/confidential-dot-ai/confidential-sglang/`.
+- `images` holds `engine` and `router`, once each and sorted by name. Each
+  `image` is that component's exact untagged name below
+  `ghcr.io/confidential-dot-ai/confidential-sglang/`; its `reference` and
+  `tag` must match its digest and source commit.
 - `builds` are the digests of the two clean builds. Both must equal
   `digest`. They replace this repository's own two-build image audit.
 - `run` is a run of the images workflow **on `main`**, in
   confidential-sglang or in `confidential-sglang-ci`. That repository only
   calls `confidential-sglang/.github/workflows/images.yml@main` with a
   commit, while Actions are off in confidential-sglang.
+- The run ID and attempt are positive integers. Its URL names that
+  repository, ID and attempt; its workflow names that repository's
+  `.github/workflows/images.yml@refs/heads/main`.
 
 The manifest stores the record normalized: each image by digest with its
-`buildDigests`, and the run ID as `runId`.
+`buildDigests`, and the run ID as `runId`. Its record hash binds the original
+bytes, including the run repository, attempt and workflow.
 
 ## The pin
 
