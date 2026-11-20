@@ -117,18 +117,21 @@ spec:
             - --balance-rel-threshold=1.5
             - --eviction-interval-secs=60
             - --max-tree-size=67108864
-            - --health-check-endpoint=/health
-            # SGLang's /health generates one token and polls once a second, so
-            # under load one check can take seconds. One slow check must not
-            # eject a worker (with one worker, every request gets 503), so
-            # this uses the upstream failure threshold and timeout: 3
-            # consecutive failures, 5 s each.
-            # A worker that gets SIGTERM answers /health with 503 at once and
-            # drains (upstream SGLang). The router stops picking it after 3
-            # checks, within 6 s. A request that fails on it in that window
-            # opens its circuit after 2 failures, and the router's retries (5
-            # by default) go to another worker. A dead pod IP fails in 2 s,
-            # not the default 10 s connect timeout.
+            # The router checks each worker with /health_generate, a 1-token
+            # generation: a worker gets traffic only while its scheduler
+            # answers. The worker's own /health does not generate (the worker
+            # liveness probe uses it), so it would not see a stalled scheduler.
+            - --health-check-endpoint=/health_generate
+            # /health_generate polls once a second, so under load one check
+            # can take seconds. One slow check must not eject a worker (with
+            # one worker, every request gets 503), so this uses the upstream
+            # failure threshold and timeout: 3 consecutive failures, 5 s each.
+            # A worker that gets SIGTERM answers /health_generate with 503 at
+            # once and drains (upstream SGLang). The router stops picking it
+            # after 3 checks, within 6 s. A request that fails on it in that
+            # window opens its circuit after 2 failures, and the router's
+            # retries (5 by default) go to another worker. A dead pod IP fails
+            # in 2 s, not the default 10 s connect timeout.
             - --health-check-interval-secs=2
             - --health-check-timeout-secs=5
             - --health-failure-threshold=3

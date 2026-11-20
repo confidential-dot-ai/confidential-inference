@@ -217,6 +217,10 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            # /health answers without a generation; /health_generate still
+            # generates one token. The probes below explain the split.
+            - name: SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION
+              value: "false"
             {{- if $modelMount }}
             - name: HF_HUB_OFFLINE
               value: "1"
@@ -259,17 +263,35 @@ spec:
             limits:
               nvidia.com/gpu: {{ $.Values.inference.gpusPerReplica }}
             {{- end }}
+          # The probes use two SGLang endpoints (http_server.py health_generate).
+          # With SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=false, /health answers
+          # 200 without a generation once the server is up, and 503 while it
+          # starts or drains. /health_generate runs a 1-token generation and
+          # waits for the scheduler.
+          #
+          # Liveness must not generate. On 2026-11-19 the first top-k request
+          # made each staging worker JIT-compile a FlashInfer kernel for about
+          # 67 s inside the scheduler. A generating /health could not answer,
+          # and the liveness probe killed both workers mid-compile. A busy
+          # scheduler is not a dead process: liveness restarts only a server
+          # whose HTTP process stopped answering.
+          #
+          # Startup and readiness do generate. A worker gets traffic only
+          # after it produced a token, and a stalled scheduler takes the pod
+          # out of the Service endpoints (and out of the router) until it
+          # answers again, without a restart.
+          #
+          # c8s >= v0.64 forwards only HTTP probes through the per-pod mesh.
           startupProbe:
             httpGet:
-              path: /health
+              path: /health_generate
               port: inference
             periodSeconds: 15
             failureThreshold: 240
             timeoutSeconds: 5
-          # c8s >= v0.64 forwards only HTTP probes through the per-pod mesh.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health_generate
               port: inference
             periodSeconds: 10
             timeoutSeconds: 5
