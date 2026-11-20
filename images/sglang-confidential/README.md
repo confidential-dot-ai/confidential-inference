@@ -147,6 +147,7 @@ ENGINE_IMAGE=<repository>@sha256:<digest> \
 
 Without `ENGINE_IMAGE` the image tests are skipped. The `Engine image
 contract` workflow runs the test on demand for a given image, and on a pull
-request that changes the test or `release/spec.yaml`, for the engine image
-that the spec pins. A spec without an engine pin, or with an all-zero
-placeholder digest, skips the image tests.
+request that changes the test, `release/spec.yaml` or the
+confidential-sglang record inputs, for the engine of the record that the
+spec pins (docs/confidential-sglang-images.md). The placeholder record
+`images-000000000000` skips the image tests.

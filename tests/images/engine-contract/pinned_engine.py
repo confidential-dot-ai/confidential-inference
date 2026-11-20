@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Print the engine image that release/spec.yaml pins, or nothing.
 
-The pin is the first value under a key that names the engine (for example
-`images.engine` or `confidentialSglang.engine`): an image reference with a
-digest, or a mapping with `reference`/`image` and `digest`. A missing pin,
-or a placeholder digest (all zeros), prints nothing. Then the contract
-workflow skips the image tests.
+The spec pins the engine by a confidential-sglang release record
+(`confidentialSglang.record: images-<12hex>`, docs/confidential-sglang-images.md).
+The record bytes are release/inputs/confidential-sglang/<record>.json; the
+engine is its `images.engine` image and digest. Without a record, the pin is
+the first value under a key that names the engine: an image reference with
+a digest, or a mapping with `reference`/`image` and `digest`. A missing pin,
+the placeholder record images-000000000000, or an all-zero digest prints
+nothing. Then the contract workflow skips the image tests.
 """
 from __future__ import annotations
+
+import json
 
 import re
 import sys
@@ -44,9 +49,24 @@ def find(node: Any) -> str | None:
     return None
 
 
+PLACEHOLDER_RECORD = "images-000000000000"
+
+
+def from_record(spec: dict, inputs: Path) -> str | None:
+    """The engine of the pinned confidential-sglang record, or None."""
+    section = spec.get("confidentialSglang") if isinstance(spec, dict) else None
+    name = section.get("record") if isinstance(section, dict) else None
+    if not isinstance(name, str) or name == PLACEHOLDER_RECORD:
+        return None
+    record = json.loads((inputs / f"{name}.json").read_text())
+    return reference(record["images"]["engine"])
+
+
 def main() -> int:
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[3] / "release/spec.yaml"
-    found = find(yaml.safe_load(path.read_text()))
+    inputs = Path(sys.argv[2]) if len(sys.argv) > 2 else path.parent / "inputs/confidential-sglang"
+    spec = yaml.safe_load(path.read_text())
+    found = from_record(spec, inputs) if isinstance(spec, dict) and "confidentialSglang" in spec else find(spec)
     if found and not found.endswith(PLACEHOLDER):
         print(found)
     return 0

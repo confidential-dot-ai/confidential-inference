@@ -309,6 +309,18 @@ class PinnedEngineTests(unittest.TestCase):
             result = subprocess.run(["python3", str(Path(__file__).with_name("pinned_engine.py")), str(spec)],
                                     text=True, capture_output=True, check=True)
             self.assertEqual(result.stdout, "")
+            spec.write_text(yaml.safe_dump({"confidentialSglang": {"record": "images-000000000000"}}))
+            result = subprocess.run(["python3", str(Path(__file__).with_name("pinned_engine.py")), str(spec)],
+                                    text=True, capture_output=True, check=True)
+            self.assertEqual(result.stdout, "")
+            inputs = Path(directory) / "inputs"
+            inputs.mkdir()
+            (inputs / "images-0123456789ab.json").write_text(json.dumps(
+                {"images": {"engine": {"image": "ghcr.io/x/engine", "digest": digest}}}))
+            spec.write_text(yaml.safe_dump({"confidentialSglang": {"record": "images-0123456789ab"}}))
+            result = subprocess.run(["python3", str(Path(__file__).with_name("pinned_engine.py")), str(spec),
+                                     str(inputs)], text=True, capture_output=True, check=True)
+            self.assertEqual(result.stdout.strip(), "ghcr.io/x/engine@" + digest)
 
 
 if __name__ == "__main__":

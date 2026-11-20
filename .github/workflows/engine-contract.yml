@@ -1,9 +1,9 @@
 # The engine image contract (tests/images/engine-contract). It runs the
 # engine image with Docker, without a GPU. On demand, it tests the given
 # image. On a pull request that changes the test or release/spec.yaml, it
-# tests the engine image that release/spec.yaml pins. A spec without an
-# engine pin, or with a placeholder digest (all zeros), skips the image
-# tests with a notice.
+# tests the engine image that release/spec.yaml pins (the `images.engine`
+# of its confidential-sglang record). The placeholder record
+# images-000000000000, or no pin, skips the image tests with a notice.
 name: Engine image contract
 
 on:
@@ -17,6 +17,7 @@ on:
     paths:
       - tests/images/engine-contract/**
       - release/spec.yaml
+      - release/inputs/confidential-sglang/**
       - .github/workflows/engine-contract.yml
 
 permissions:
@@ -53,7 +54,7 @@ jobs:
             image=$(python3 tests/images/engine-contract/pinned_engine.py release/spec.yaml)
           fi
           if [ -z "$image" ]; then
-            echo "::notice::release/spec.yaml pins no engine image digest (or only a placeholder): the image tests are skipped"
+            echo "::notice::release/spec.yaml pins no engine image (or only the placeholder record): the image tests are skipped"
           elif ! printf '%s' "$image" | grep -Eq '^[^[:space:]@]+@sha256:[0-9a-f]{64}$'; then
             echo "::error::the engine image must be pinned by digest: $image"
             exit 1
