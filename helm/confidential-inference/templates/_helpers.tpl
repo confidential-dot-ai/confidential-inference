@@ -23,6 +23,25 @@ router-headless
 {{/* The router's Kubernetes client files: token, CA and kubeconfig. */}}
 {{- define "confidential-inference.routerKubernetesDirectory" -}}/mnt/c8s-data/kubernetes{{- end }}
 
+{{/* An IPv4 address as an integer. */}}
+{{- define "confidential-inference.ipv4Integer" -}}
+{{- $octets := splitList "." . -}}
+{{- add (mul (atoi (index $octets 0)) 16777216) (mul (atoi (index $octets 1)) 65536) (mul (atoi (index $octets 2)) 256) (atoi (index $octets 3)) -}}
+{{- end }}
+
+{{/*
+"true" when the IPv4 address `.address` is in the IPv4 range `.cidr`
+(a.b.c.d/n), else "false".
+*/}}
+{{- define "confidential-inference.ipv4InRange" -}}
+{{- $parts := splitList "/" .cidr -}}
+{{- $size := 1 -}}
+{{- range until (sub 32 (atoi (index $parts 1)) | int) }}{{ $size = mul $size 2 }}{{ end -}}
+{{- $address := include "confidential-inference.ipv4Integer" .address | int64 -}}
+{{- $network := include "confidential-inference.ipv4Integer" (index $parts 0) | int64 -}}
+{{- eq (div $address $size) (div $network $size) -}}
+{{- end }}
+
 {{/*
 The distinct inference nodes, as a JSON list.
 */}}
