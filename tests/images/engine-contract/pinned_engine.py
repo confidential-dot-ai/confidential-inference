@@ -31,7 +31,7 @@ def reference(value: Any) -> str | None:
     if isinstance(value, dict):
         if isinstance(value.get("image"), str) and PINNED.fullmatch(value["image"]):
             return value["image"]
-        name = value.get("reference") or value.get("repository")
+        name = value.get("reference") or value.get("repository") or value.get("image")
         if isinstance(name, str) and isinstance(value.get("digest"), str):
             candidate = f"{name}@{value['digest']}"
             return candidate if PINNED.fullmatch(candidate) else None
