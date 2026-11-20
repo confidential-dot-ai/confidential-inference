@@ -247,7 +247,8 @@ jobs:
   # which freed more root space and still failed identically). One clean
   # sglang build fits on a runner; two in sequence do not. Give each clean build its own runner
   # instead: two independent jobs record a small manifest/digest each,
-  # and a third job compares the two recordings.
+  # and a third job compares the two recordings. Pass #1 also uploads its
+  # OCI archive, which the publish job pushes.
   reproducibility-sglang-build:
     name: 'rebuild ${{ matrix.image }} #${{ matrix.pass }}'
     if: >-
@@ -373,6 +374,18 @@ jobs:
           path: /tmp/${{ matrix.image }}-${{ matrix.pass }}.digest
           if-no-files-found: error
           retention-days: 1
+
+      # The publish job pushes these audited bytes. It does not build again.
+      # The archive is ~10 GB of already compressed layers: no zip compression.
+      - name: upload oci archive
+        if: inputs.publish && matrix.pass == 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-oci-${{ matrix.image }}
+          path: /mnt/release-oci/${{ matrix.image }}-1.tar
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
   reproducibility-sglang-compare:
     name: compare ${{ matrix.image }}
@@ -510,9 +523,12 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # The sglang OCI archive (~20 GB) is too large to pass between jobs, so the
-  # publish job builds it once more and pushes only a digest equal to the
-  # audited one. No unaudited sglang bytes reach the registry.
+  # The sglang image is published from the OCI archive that audit pass #1
+  # built and the compare job proved, as the standard images are. It does not
+  # build a third time (run 44050126659: the third build took 50 of the
+  # job's 54 minutes). No unaudited sglang bytes reach the registry: the
+  # archive's manifest digest must equal the compared digest before the push,
+  # and the record step checks the pushed digest again.
   publish-sglang:
     name: publish ${{ matrix.image }}
     if: >-
@@ -523,7 +539,7 @@ jobs:
       needs.reproducibility-sglang-compare.result == 'success'
     needs: [select-images, reproducibility-sglang-compare]
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select-images.outputs.large_matrix) }}
@@ -535,40 +551,51 @@ jobs:
       - name: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: get source epoch
-        id: source
-        run: printf 'epoch=%s\n' "$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
-
       - name: download digest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-platform-digest-${{ matrix.image }}
           path: /tmp/verified-digest
 
-      - name: free disk space
+      # The archive and its unpacked layout (~10 GB each) go on the runner's
+      # larger /mnt disk.
+      - name: prepare disk
         run: |
-          echo "--- disk before cleanup ---"
-          df -h / /mnt || true
-          sudo rm -rf -- /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache \
-            /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell /usr/local/julia* \
-            /usr/local/lib/heroku /opt/az /usr/local/share/boost /usr/share/miniconda \
-            2>/dev/null || true
-          sudo apt-get clean
-          sudo swapoff -a || true
-          sudo rm -f /mnt/swapfile /swapfile 2>/dev/null || true
-          sudo service docker stop
-          sudo mkdir -p /mnt/docker-data
-          printf '{"data-root":"/mnt/docker-data"}\n' | sudo tee /etc/docker/daemon.json
-          sudo rm -rf /var/lib/docker
-          sudo service docker start
-          echo "--- disk after cleanup ---"
+          sudo mkdir -p /mnt/audited /mnt/layout
+          sudo chown "$(id -u):$(id -g)" /mnt/audited /mnt/layout
           df -h / /mnt
 
-      - name: setup buildx
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: download oci archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          version: ${{ env.BUILDX_VERSION }}
-          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+          name: release-oci-${{ matrix.image }}
+          path: /mnt/audited
+
+      - name: unpack oci archive
+        env:
+          VERIFIED_DIGEST_FILE: /tmp/verified-digest/${{ matrix.image }}.platform-digest
+          ARCHIVE: /mnt/audited/${{ matrix.image }}-1.tar
+        run: |
+          tar -xf "$ARCHIVE" -C /mnt/layout
+          rm -f -- "$ARCHIVE"
+          verified="$(tr -d '\n' < "$VERIFIED_DIGEST_FILE")"
+          [[ "$verified" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$(jq '.manifests | length' /mnt/layout/index.json)" = 1
+          archived="$(jq -r '.manifests[0].digest' /mnt/layout/index.json)"
+          if [[ "$archived" != "$verified" ]]; then
+            echo "The archive manifest $archived is not the audited digest $verified." >&2
+            exit 1
+          fi
+          df -h /mnt
+
+      - name: install crane
+        run: |
+          curl -fsSL -o /tmp/crane.tar.gz \
+            https://github.com/google/go-containerregistry/releases/download/v0.21.6/go-containerregistry_Linux_x86_64.tar.gz
+          echo "7ebbdcd05b652345c1f5105f8475e518534b90d66f3bdb50017be63f426ea435  /tmp/crane.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf /tmp/crane.tar.gz -C /tmp crane
+          sudo install -m 0755 /tmp/crane /usr/local/bin/crane
 
       - name: login ghcr
         uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
@@ -577,32 +604,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: build and push image
-        id: build
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          build-args: |
-            SOURCE_REVISION=${{ matrix.revision }}
-            SOURCE_DATE_EPOCH=${{ matrix.epoch }}
-          platforms: linux/amd64
-          no-cache: true
-          outputs: type=image,name=ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}:sha-${{ github.sha }},push=true,rewrite-timestamp=true
-          labels: |
-            org.opencontainers.image.title=${{ matrix.title }}
-            org.opencontainers.image.source=https://github.com/confidential-dot-ai/confidential-inference
-            org.opencontainers.image.revision=${{ matrix.revision }}
-            org.opencontainers.image.version=sha-${{ matrix.revision }}
-          # The pushed object must have the same digest as the deterministic
-          # platform manifest. Extra attestations create a different index
-          # digest, so release image provenance is the publication manifest.
-          provenance: false
-          sbom: false
+      - name: push image
+        id: push
+        env:
+          IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}
+        run: |
+          crane push /mnt/layout "$IMAGE_NAME:sha-$GITHUB_SHA" --image-refs /tmp/refs.txt
+          reference="$(tr -d '\n' < /tmp/refs.txt)"
+          test "${reference%@*}" = "$IMAGE_NAME"
+          printf 'digest=%s\n' "${reference#*@}" >> "$GITHUB_OUTPUT"
 
       - name: record image digest
         env:
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
           IMAGE_NAME: ghcr.io/confidential-dot-ai/confidential-inference/${{ matrix.image }}
           BASE_REF: ${{ needs.select-images.outputs.base_ref }}
           BASE_REF_COMMIT: ${{ needs.select-images.outputs.base_ref_commit }}

@@ -3,7 +3,7 @@
   "info": {
     "title": "Confidential Inference Public Gateway API",
     "version": "1.0.0",
-    "description": "This contract defines the real public API of the Rust gateway in services/gateway. The gateway sits behind the c8s tls-lb, which terminates public TLS inside the TEE and forwards HTTP to the gateway process. `/v1/chat/completions`, `/v1/completions`, and `/v1/responses` are OpenAI-compatible: request and response bodies follow the OpenAI chat-completions, legacy-completions, and Responses API shapes. The SGLang worker serves `/v1/responses` natively and the sglang-router forwards it; the gateway does not translate it. The gateway itself validates only the `model` field on inference requests (services/gateway/src/lib.rs, `proxy_inference`); it forwards the rest of the body to the upstream sglang-router unchanged. Bearer tokens authenticate with `Authorization: Bearer <api-key>` (services/gateway/src/lib.rs, `authenticate`). Every response carries an `X-Request-ID` header (services/gateway/src/lib.rs, `request_id`); a caller may supply this header on the request, and the gateway echoes a valid value back or generates one. Every response also carries a fresh server-generated `X-CI-Request-ID`, which identifies the internal audit record and upstream request. Caller values cannot set this ID. It is exposed to browser clients. The caller-facing `X-Request-ID` is never used as the audit ID. The gateway sends the router an `X-SMG-Routing-Key` header that keeps one conversation on one inference worker (services/gateway/src/routing_key.rs); a caller may supply its own conversation key in the same header."
+    "description": "This contract defines the real public API of the Rust gateway in services/gateway. The gateway sits behind the c8s tls-lb, which terminates public TLS inside the TEE and forwards HTTP to the gateway process. `/v1/chat/completions`, `/v1/completions`, and `/v1/responses` are OpenAI-compatible: request and response bodies follow the OpenAI chat-completions, legacy-completions, and Responses API shapes. The SGLang worker serves `/v1/responses` natively and the sglang-router forwards it; the gateway does not translate it. The gateway translates `/v1/messages` to Chat Completions. On the OpenAI routes, the gateway itself validates the `model` field on inference requests (services/gateway/src/lib.rs, `proxy_inference`); it forwards the rest of the body to the upstream sglang-router unchanged. Bearer tokens authenticate with `Authorization: Bearer <api-key>` (services/gateway/src/lib.rs, `authenticate`). Every response carries an `X-Request-ID` header (services/gateway/src/lib.rs, `request_id`); a caller may supply this header on the request, and the gateway echoes a valid value back or generates one. Every response also carries a fresh server-generated `X-CI-Request-ID`, which identifies the internal audit record and upstream request. Caller values cannot set this ID. It is exposed to browser clients. The caller-facing `X-Request-ID` is never used as the audit ID. The gateway sends the router an `X-SMG-Routing-Key` header that keeps one conversation on one inference worker (services/gateway/src/routing_key.rs); a caller may supply its own conversation key in the same header."
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [
@@ -245,6 +245,244 @@
         }
       }
     },
+    "/v1/messages": {
+      "post": {
+        "operationId": "createMessage",
+        "tags": [
+          "inference"
+        ],
+        "summary": "Create an Anthropic-compatible message",
+        "description": "The gateway converts Messages requests to Chat Completions on the hosted model. Use the full conversation in each request. Text, image blocks, custom tool definitions, tool_use, tool_result, system text, stop_sequences and tool_choice are supported. Set stream to true for Messages SSE events. The final message_delta carries token counts because Chat Completions reports usage at the end. Cache reads are excluded from input_tokens and reported in cache_read_input_tokens. Cache-control hints are accepted but do not guarantee a cache entry. Customer metadata is discarded. Thinking controls, server tools, documents and other unsupported fields return 400. This route does not add Claude model weights or implement count_tokens. A matched stop string is reported as stop_sequence when the upstream supplies matched_stop. Otherwise a normal stop is reported as end_turn. Authorization takes precedence over x-api-key. Version and beta headers do not enable provider-specific features.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "anthropicApiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RoutingKey"
+          },
+          {
+            "in": "header",
+            "name": "anthropic-version",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Accepted for SDK compatibility."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "model",
+                  "messages",
+                  "max_tokens"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string"
+                  },
+                  "messages": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "role",
+                        "content"
+                      ],
+                      "properties": {
+                        "role": {
+                          "enum": [
+                            "user",
+                            "assistant"
+                          ]
+                        },
+                        "content": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "max_tokens": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "system": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "object"
+                        }
+                      }
+                    ]
+                  },
+                  "stream": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  },
+                  "tool_choice": {
+                    "type": "object"
+                  },
+                  "temperature": {
+                    "type": "number"
+                  },
+                  "top_p": {
+                    "type": "number"
+                  },
+                  "top_k": {
+                    "type": "integer"
+                  },
+                  "stop_sequences": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "metadata": {
+                    "type": "object"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "example": {
+                "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+                "max_tokens": 128,
+                "messages": [
+                  {
+                    "role": "user",
+                    "content": "Say hello."
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A Messages JSON object, or message_start, content_block_start/delta/stop, message_delta, and message_stop SSE events. An interrupted or invalid upstream stream ends with an error event.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "type",
+                    "role",
+                    "model",
+                    "content",
+                    "usage",
+                    "stop_reason",
+                    "stop_sequence"
+                  ],
+                  "properties": {
+                    "type": {
+                      "const": "message"
+                    },
+                    "role": {
+                      "const": "assistant"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "content": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "usage": {
+                      "type": "object"
+                    },
+                    "stop_reason": {
+                      "enum": [
+                        "end_turn",
+                        "max_tokens",
+                        "tool_use",
+                        "refusal",
+                        "stop_sequence"
+                      ]
+                    },
+                    "stop_sequence": {
+                      "type": ["string", "null"]
+                    }
+                  }
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Messages error envelope. Existing key, body, model and capacity limits apply. Retry-After is preserved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "error"
+                  ],
+                  "properties": {
+                    "type": {
+                      "const": "error"
+                    },
+                    "error": {
+                      "type": "object",
+                      "required": [
+                        "type",
+                        "message"
+                      ],
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/responses": {
       "post": {
         "operationId": "createResponse",
@@ -424,6 +662,7 @@
       }
     },
     "securitySchemes": {
+      "anthropicApiKey": {"type": "apiKey", "in": "header", "name": "x-api-key"},
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",

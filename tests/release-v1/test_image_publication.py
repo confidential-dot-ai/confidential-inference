@@ -130,6 +130,27 @@ class ImagePublicationTests(unittest.TestCase):
         self.assertNotIn("docker/build-push-action", standard)
         self.assertNotIn("reproducibility-sglang", standard)
 
+    def test_sglang_publishes_the_audited_archive_without_a_third_build(self):
+        images = (ROOT / ".github/workflows/release-images.yml").read_text()
+        audit = images[images.index("  reproducibility-sglang-build:"):
+                       images.index("  reproducibility-sglang-compare:")]
+        self.assertEqual(audit.count("docker/build-push-action"), 1)
+        self.assertIn("if: inputs.publish && matrix.pass == 1", audit)
+        self.assertIn("name: release-oci-${{ matrix.image }}", audit)
+        self.assertIn("path: /mnt/release-oci/${{ matrix.image }}-1.tar", audit)
+        publish = images[images.index("  publish-sglang:"):images.index("  publication-manifest:")]
+        self.assertNotIn("docker/build-push-action", publish)
+        self.assertNotIn("setup-buildx-action", publish)
+        self.assertIn("needs: [select-images, reproducibility-sglang-compare]\n", publish)
+        self.assertIn("name: release-oci-${{ matrix.image }}", publish)
+        self.assertIn("name: release-platform-digest-${{ matrix.image }}", publish)
+        self.assertIn("sha256sum --check --strict", publish)
+        # The archive must be the audited manifest before any byte is pushed.
+        check = publish.index('if [[ "$archived" != "$verified" ]]')
+        self.assertLess(check, publish.index("crane push /mnt/layout"))
+        self.assertIn("--pushed-digest", publish)
+        self.assertIn("--reproducibility-digest", publish)
+
     def test_publication_schema_is_valid(self):
         import jsonschema
         schema = json.loads((ROOT / "api/image-publication-manifest.schema.json").read_text())
