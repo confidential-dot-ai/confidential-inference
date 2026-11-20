@@ -92,6 +92,12 @@ class ConfidentialSglangPinTests(unittest.TestCase):
             "images are exactly": (changed(lambda r: r["images"].pop()), RECORD),
             "run.id": (changed(lambda r: r["run"].update(id="1")), RECORD),
             "run.repository": (changed(lambda r: r["run"].update(repository="someone/else")), RECORD),
+            # The archived confidential-sglang-ci, even with a consistent URL and workflow.
+            "run.repository is not": (changed(lambda r: r["run"].update(
+                repository="confidential-dot-ai/confidential-sglang-ci",
+                url="https://github.com/confidential-dot-ai/confidential-sglang-ci/actions/runs/1/attempts/1",
+                workflow="confidential-dot-ai/confidential-sglang-ci/.github/workflows/images.yml@refs/heads/main")),
+                RECORD),
             "on main": (changed(lambda r: r["run"].update(workflow="x/y/.github/workflows/images.yml@refs/heads/dev")), RECORD),
         }
         for message, (record, name) in cases.items():
