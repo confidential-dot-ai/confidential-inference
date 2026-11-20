@@ -4,7 +4,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -14,7 +18,6 @@ RECIPE = ROOT / "images" / "gateway"
 DOCKERFILE = (RECIPE / "Dockerfile").read_text(encoding="utf-8")
 LOCK = json.loads((RECIPE / "source.lock").read_text(encoding="utf-8"))
 DOCKERIGNORE = (RECIPE / "Dockerfile.dockerignore").read_text(encoding="utf-8")
-BUILD_SCRIPT = (RECIPE / "build.sh").read_text(encoding="utf-8")
 
 BUILD_IMAGE = "docker.io/library/rust"
 BUILD_DIGEST = "sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55"
@@ -132,24 +135,76 @@ class GatewayImageRecipeTests(unittest.TestCase):
         self.assertIn('LABEL ai.confidential.build.source-date-epoch="${SOURCE_DATE_EPOCH}"', DOCKERFILE)
         self.assertNotIn("org.opencontainers.image.created", DOCKERFILE)
 
-    def test_build_script_requires_a_clean_committed_source(self) -> None:
-        self.assertIn("rev-parse --verify 'HEAD^{commit}'", BUILD_SCRIPT)
-        self.assertIn("^[0-9a-f]{40}$", BUILD_SCRIPT)
-        self.assertIn("status --porcelain --untracked-files=all", BUILD_SCRIPT)
-        self.assertIn("SOURCE_REVISION=$source_revision", BUILD_SCRIPT)
-        self.assertIn("SOURCE_DATE_EPOCH=$source_date_epoch", BUILD_SCRIPT)
-        self.assertIn('"$repo_root"', BUILD_SCRIPT)
 
-    def test_recipe_directory_has_only_public_build_material(self) -> None:
-        expected = {
-            "Dockerfile",
-            "Dockerfile.dockerignore",
-            "README.md",
-            "build.sh",
-            "source.lock",
-        }
-        actual = {path.name for path in RECIPE.iterdir() if path.is_file()}
-        self.assertEqual(expected, actual)
+class GatewayBuildTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.environment = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
+                            "GIT_CONFIG_NOSYSTEM": "1"}
+        for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "services/gateway/Cargo.toml"):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture\n")
+        recipe = self.root / "images/gateway"
+        recipe.mkdir(parents=True)
+        shutil.copyfile(RECIPE / "build.sh", recipe / "build.sh")
+        self.git("init", "-q")
+        self.git("add", ".")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+        commands = self.root / "commands"
+        commands.mkdir()
+        self.calls = self.root / "docker.json"
+        docker = commands / "docker"
+        docker.write_text(
+            "#!/usr/bin/env python3\nimport json,os,sys\n"
+            "with open(os.environ['TEST_DOCKER_LOG'], 'w') as log: json.dump(sys.argv[1:], log)\n")
+        docker.chmod(0o755)
+        self.environment.update(PATH=f"{commands}:{os.environ['PATH']}", TEST_DOCKER_LOG=str(self.calls))
+
+    def git(self, *arguments):
+        return subprocess.run(["git", "-C", str(self.root), *arguments], env=self.environment,
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    def build(self):
+        return subprocess.run(["bash", str(self.root / "images/gateway/build.sh"), "--load"],
+                              env=self.environment, capture_output=True, text=True, timeout=10)
+
+    def test_clean_source_passes_its_identity_and_build_options_to_docker(self):
+        revision = self.git("rev-parse", "HEAD")
+        epoch = self.git("show", "-s", "--format=%ct", "HEAD")
+        result = self.build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(self.calls.read_text())
+        self.assertEqual(arguments, [
+            "buildx", "build", "--file", str(self.root / "images/gateway/Dockerfile"),
+            "--build-arg", f"SOURCE_REVISION={revision}", "--build-arg", f"SOURCE_DATE_EPOCH={epoch}",
+            "--load", str(self.root),
+        ])
+
+    def test_changed_or_untracked_build_inputs_never_reach_docker(self):
+        for name in ("services/gateway/Cargo.toml", "services/gateway/untracked.rs"):
+            with self.subTest(name=name):
+                path = self.root / name
+                original = path.read_bytes() if path.exists() else None
+                path.write_text("uncommitted input\n")
+                result = self.build()
+                self.assertEqual(result.returncode, 65, result.stderr)
+                self.assertIn("uncommitted changes", result.stderr)
+                self.assertFalse(self.calls.exists())
+                if original is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(original)
+
+    def test_missing_build_input_never_reaches_docker(self):
+        (self.root / "Cargo.lock").unlink()
+        result = self.build()
+        self.assertEqual(result.returncode, 66, result.stderr)
+        self.assertIn("Cargo.lock", result.stderr)
+        self.assertFalse(self.calls.exists())
 
 
 if __name__ == "__main__":

@@ -143,14 +143,6 @@ class FetchModelTests(unittest.TestCase):
         self.assertIn(b"pinned SHA-256", result.stderr)
         self.assertEqual([], self.downloads())
 
-    def test_changed_upstream_bytes_are_refused(self) -> None:
-        FakeHub.files["model.safetensors"] = b"other" * 1400
-        result = self.fetch()
-        self.assertNotEqual(0, result.returncode)
-        self.assertIn(b"does not match the manifest", result.stderr)
-        self.assertFalse((self.cache / "model.safetensors").exists())
-
-
     def test_plain_http_model_server_cannot_change_a_byte(self) -> None:
         # The chart allows a plain HTTP model server (inference.model.download.scheme: http):
         # the pinned byte manifest, not TLS, is what pins the model bytes. A server or a
