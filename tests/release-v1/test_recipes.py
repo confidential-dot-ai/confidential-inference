@@ -100,51 +100,6 @@ class ConfidentialSglangPinTests(unittest.TestCase):
         with self.assertRaisesRegex(MAN.ManifestError, "come from confidentialSglang.record"):
             MAN.validate_spec({**spec, "images": images})
 
-    def test_a_selected_publisher_cannot_be_overridden_by_the_record(self):
-        record = fixture_record()
-        repository = "example/engine"
-        record["repository"] = repository
-        for component, image in record["images"].items():
-            image["image"] = f"ghcr.io/{repository}/{component}"
-        with tempfile.TemporaryDirectory() as temporary:
-            inputs = Path(temporary)
-            (inputs / f"{RECORD}.json").write_text(json.dumps(record))
-            with self.assertRaisesRegex(CSR.RecordError, "repository is not"):
-                CSR.release_pin({"record": RECORD}, inputs)
-            pin = CSR.release_pin({"record": RECORD, "repository": repository}, inputs)
-            self.assertEqual(pin["repository"], repository)
-            self.assertTrue(pin["images"]["engine"]["reference"].startswith("ghcr.io/example/engine/"))
-            record["images"]["engine"]["image"] = "ghcr.io/other/engine/image"
-            with self.assertRaisesRegex(CSR.RecordError, "untagged"):
-                CSR.validate_record(record, RECORD, repository)
-
-    def test_invalid_publisher_is_rejected_before_download(self):
-        for repository in (None, "https://example.test/repo", "../escape", "--repo=x", "a/b/c", "a/b\nx"):
-            with self.subTest(repository=repository), self.assertRaisesRegex(CSR.RecordError, "owner/repository"):
-                CSR.repository_of({"record": RECORD, "repository": repository})
-
-    def test_manifest_accepts_only_a_valid_spec_publisher(self):
-        spec = MAN.read_spec()
-        spec["confidentialSglang"]["repository"] = "example/engine"
-        self.assertEqual(MAN.validate_spec(spec), spec)
-        spec["confidentialSglang"]["repository"] = "https://example.test/repo"
-        with self.assertRaisesRegex(MAN.ManifestError, "owner/repository"):
-            MAN.validate_spec(spec)
-
-    def test_pin_downloads_from_the_selected_publisher(self):
-        repository = "example/engine"
-        record = fixture_record()
-        record["repository"] = repository
-        for component, image in record["images"].items():
-            image["image"] = f"ghcr.io/{repository}/{component}"
-        with tempfile.TemporaryDirectory() as temporary:
-            spec = Path(temporary) / "spec.yaml"
-            spec.write_text(f"confidentialSglang:\n  repository: {repository}\n  record: {CSR.PLACEHOLDER}\n")
-            with mock.patch.object(CSR, "download", return_value=json.dumps(record).encode()) as download:
-                CSR.pin(RECORD, spec, Path(temporary) / "inputs")
-            self.assertEqual(download.call_args.kwargs, {"repository": repository})
-            self.assertIn(f"repository: {repository}", spec.read_text())
-
     def test_pin_writes_the_record_and_changes_one_line(self):
         with tempfile.TemporaryDirectory() as temporary:
             spec = Path(temporary) / "spec.yaml"
@@ -166,10 +121,6 @@ class ConfidentialSglangPinTests(unittest.TestCase):
         config = {"env": ["HOME=/tmp"], "entrypoint": [], "cmd": []}
         with mock.patch.dict(render.ALLOWLIST_GENERATOR, {"image_config": lambda _image: config}):
             self.assertEqual(render.image_configs([image])[image], config)
-            selected = "ghcr.io/example/engine/engine@sha256:" + "e" * 64
-            self.assertEqual(render.image_configs([selected], "example/engine")[selected], config)
-            with self.assertRaisesRegex(render.ManifestError, "no record"):
-                render.image_configs([selected])
         with self.assertRaisesRegex(render.ManifestError, "no record"):
             render.image_configs(["docker.io/library/other@sha256:" + "e" * 64])
 

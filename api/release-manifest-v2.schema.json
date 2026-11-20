@@ -269,9 +269,7 @@
       ],
       "properties": {
         "repository": {
-          "description": "The engine publisher selected by the reviewed release specification.",
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$"
+          "const": "confidential-dot-ai/confidential-sglang"
         },
         "record": {
           "description": "The GitHub release of the record: images-<first 12 hex of sourceCommit>.",
@@ -279,7 +277,8 @@
           "pattern": "^images-[0-9a-f]{12}$"
         },
         "recordAsset": {
-          "const": "images.json"
+          "type": "string",
+          "pattern": "^(images|images-[0-9a-f]{12})\\.json$"
         },
         "recordSha256": {
           "description": "The SHA-256 of the record asset.",
@@ -289,7 +288,7 @@
           "$ref": "#/$defs/gitCommit"
         },
         "runId": {
-          "description": "The confidential-sglang workflow run that built and pushed the images.",
+          "description": "The publishing run ID. Its repository, attempt and workflow are bound by recordSha256.",
           "type": "integer",
           "minimum": 1
         },

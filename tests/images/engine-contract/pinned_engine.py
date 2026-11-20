@@ -4,7 +4,7 @@
 The spec pins the engine by a confidential-sglang release record
 (`confidentialSglang.record: images-<12hex>`, docs/confidential-sglang-images.md).
 The record bytes are release/inputs/confidential-sglang/<record>.json; the
-engine is its `images.engine` image and digest. Without a record, the pin is
+release validator resolves the engine image and digest. Without a record, the pin is
 the first value under a key that names the engine: an image reference with
 a digest, or a mapping with `reference`/`image` and `digest`. A missing pin,
 the placeholder record images-000000000000, or an all-zero digest prints
@@ -12,14 +12,15 @@ nothing. Then the contract workflow skips the image tests.
 """
 from __future__ import annotations
 
-import json
-
 import re
 import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
+import confidential_sglang_release as CSR  # noqa: E402
 
 PINNED = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}")
 PLACEHOLDER = "sha256:" + "0" * 64
@@ -58,8 +59,7 @@ def from_record(spec: dict, inputs: Path) -> str | None:
     name = section.get("record") if isinstance(section, dict) else None
     if not isinstance(name, str) or name == PLACEHOLDER_RECORD:
         return None
-    record = json.loads((inputs / f"{name}.json").read_text())
-    return reference(record["images"]["engine"])
+    return CSR.release_pin(section, inputs)["images"]["engine"]["reference"]
 
 
 def main() -> int:

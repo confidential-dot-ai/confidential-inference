@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Pin engine and router images from the publisher selected in release/spec.yaml.
+"""Pin the images that confidential-dot-ai/confidential-sglang publishes.
 
 confidential-sglang builds one SGLang engine image and one router image. Its
 image workflow builds each image twice on clean runners, requires equal
 digests, pushes the image, and publishes a release record: the JSON asset
-`images.json` of the GitHub release `images-<12hex>`, where <12hex> is the
+`images-<12hex>.json` of the GitHub release `images-<12hex>`, where <12hex> is the
 first 12 hex digits of the source commit. docs/confidential-sglang-images.md
 describes the record.
 
@@ -13,8 +13,7 @@ Release-images build proof for them. It carries the confidential-sglang
 record instead, as it carries the C8s release for the C8s images:
 
 - release/spec.yaml `confidentialSglang.record` names the record, for
-  example `images-0123456789ab`. Optional `repository` selects its publisher;
-  it defaults to confidential-dot-ai/confidential-sglang.
+  example `images-0123456789ab`. That one line is the pin.
 - release/inputs/confidential-sglang/<record>.json holds the record bytes.
   `pin` downloads them and writes the file and the line.
 - The release build (scripts/build-release-manifest.py) reads the file,
@@ -44,17 +43,18 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "release/spec.yaml"
 INPUTS = ROOT / "release/inputs/confidential-sglang"
 REPOSITORY = "confidential-dot-ai/confidential-sglang"
-REPOSITORY_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
 RECORD_SCHEMA = "confidential.ai/confidential-sglang-images/v1"
 ASSET = "images.json"
 RECORD = re.compile(r"images-[0-9a-f]{12}")
 # The record name in release/spec.yaml until confidential-sglang publishes
 # its first record. The release build refuses it.
 PLACEHOLDER = "images-000000000000"
+IMAGE_PREFIX = "ghcr.io/confidential-dot-ai/confidential-sglang/"
 # Each record component and its chart image key (values.yaml `images`).
 CHART_KEYS = {"engine": "confidentialSglangEngine", "router": "confidentialSglangRouter"}
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
+IMAGE = re.compile(re.escape(IMAGE_PREFIX) + r"[a-z0-9][a-z0-9._/-]*")
 MAX_RECORD_BYTES = 65536
 
 
@@ -77,25 +77,15 @@ def validate_name(name: Any) -> str:
     return name
 
 
-def repository_of(section: Any) -> str:
-    """The reviewed spec chooses the publisher; a downloaded record cannot change it."""
-    require(isinstance(section, dict) and set(section) in ({"record"}, {"record", "repository"}),
-            "confidentialSglang holds record and an optional repository")
-    repository = section.get("repository", REPOSITORY)
-    require(isinstance(repository, str) and REPOSITORY_NAME.fullmatch(repository) is not None,
-            "confidentialSglang.repository must be a GitHub owner/repository")
-    return repository
-
-
-def validate_record(record: Any, name: str, repository: str = REPOSITORY) -> dict[str, Any]:
+def validate_record(record: Any, name: str) -> dict[str, Any]:
     """Check one record and that it is the record `name` names."""
+    if isinstance(record, dict) and "run" in record:
+        validate_record(published_images(record), name)
+        return record
     require(isinstance(record, dict) and set(record) == {"schema", "repository", "sourceCommit", "runId", "images"},
             "the record holds exactly schema, repository, sourceCommit, runId and images")
     require(record["schema"] == RECORD_SCHEMA, f"the record schema is not {RECORD_SCHEMA}")
-    repository_of({"record": name, "repository": repository})
-    require(record["repository"] == repository, f"the record repository is not {repository}")
-    image_prefix = f"ghcr.io/{repository.lower()}/"
-    image_pattern = re.compile(re.escape(image_prefix) + r"[a-z0-9][a-z0-9._/-]*")
+    require(record["repository"] == REPOSITORY, f"the record repository is not {REPOSITORY}")
     commit = record["sourceCommit"]
     require(isinstance(commit, str) and COMMIT.fullmatch(commit) is not None, "record sourceCommit is not a full commit")
     require(name == f"images-{commit[:12]}", f"the record {name} names source commit {commit}")
@@ -107,9 +97,9 @@ def validate_record(record: Any, name: str, repository: str = REPOSITORY) -> dic
     for component, entry in images.items():
         require(isinstance(entry, dict) and set(entry) == {"image", "digest", "buildDigests"},
                 f"record images.{component} holds exactly image, digest and buildDigests")
-        require(isinstance(entry["image"], str) and image_pattern.fullmatch(entry["image"]) is not None
+        require(isinstance(entry["image"], str) and IMAGE.fullmatch(entry["image"]) is not None
                 and "@" not in entry["image"] and ":" not in entry["image"],
-                f"record images.{component}.image is not an untagged {image_prefix} name")
+                f"record images.{component}.image is not an untagged {IMAGE_PREFIX} name")
         require(isinstance(entry["digest"], str) and DIGEST.fullmatch(entry["digest"]) is not None,
                 f"record images.{component}.digest is not a SHA-256 digest")
         builds = entry["buildDigests"]
@@ -120,7 +110,43 @@ def validate_record(record: Any, name: str, repository: str = REPOSITORY) -> dic
     return record
 
 
-def read_record(name: str, inputs: Path = INPUTS, repository: str = REPOSITORY) -> tuple[bytes, dict[str, Any]]:
+def published_images(record: dict[str, Any]) -> dict[str, Any]:
+    """Validate publisher metadata and adapt its images to the existing pin shape."""
+    require(set(record) == {"schema", "repository", "sourceCommit", "sourceDateEpoch", "run", "images"},
+            "published record fields differ")
+    require(record["repository"] == f"https://github.com/{REPOSITORY}", "published record repository differs")
+    require(type(record["sourceDateEpoch"]) is int and record["sourceDateEpoch"] > 0, "invalid sourceDateEpoch")
+    run = record["run"]
+    require(isinstance(run, dict) and set(run) == {"repository", "id", "attempt", "url", "workflow"},
+            "published run fields differ")
+    repository = run["repository"]
+    require(isinstance(repository, str) and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}", repository),
+        "invalid run repository")
+    require(all(type(run[key]) is int and run[key] > 0 for key in ("id", "attempt")), "invalid run id/attempt")
+    require(run["url"] == f"https://github.com/{repository}/actions/runs/{run['id']}/attempts/{run['attempt']}",
+            "run URL differs")
+    require(isinstance(run["workflow"], str) and re.fullmatch(
+        re.escape(repository) + r"/\.github/workflows/[^/@\s]+\.ya?ml@(?:refs/(?:heads|tags)/[^\s]+|[0-9a-f]{40})",
+        run["workflow"]), "invalid run workflow")
+    images = record["images"]
+    require(isinstance(images, list) and all(isinstance(entry, dict) for entry in images)
+            and [entry.get("name") for entry in images] == sorted(CHART_KEYS),
+            "published images must be engine and router, in order")
+    entries = {}
+    for entry in images:
+        require(set(entry) == {"name", "image", "digest", "reference", "tag", "builds"},
+                "published image fields differ")
+        component = entry["name"]
+        require(entry["image"] == IMAGE_PREFIX + component, "published image name differs")
+        require(entry["reference"] == f"{entry['image']}@{entry['digest']}", "published image reference differs")
+        require(entry["tag"] == f"sha-{record['sourceCommit']}", "published image tag differs")
+        entries[component] = {"image": entry["image"], "digest": entry["digest"], "buildDigests": entry["builds"]}
+    return {"schema": record["schema"], "repository": REPOSITORY, "sourceCommit": record["sourceCommit"],
+            "runId": run["id"], "images": entries}
+
+
+def read_record(name: str, inputs: Path = INPUTS) -> tuple[bytes, dict[str, Any]]:
     """Return the bytes and the checked record of `name` from release/inputs/confidential-sglang/."""
     validate_name(name)
     require(name != PLACEHOLDER,
@@ -129,20 +155,26 @@ def read_record(name: str, inputs: Path = INPUTS, repository: str = REPOSITORY) 
     path = inputs / f"{name}.json"
     try:
         data = path.read_bytes()
+        require(len(data) <= MAX_RECORD_BYTES, "the record is too large")
         record = json.loads(data)
     except (OSError, json.JSONDecodeError) as error:
         raise RecordError(f"cannot read the record {path}: {error}") from error
-    return data, validate_record(record, name, repository)
+    return data, validate_record(record, name)
 
 
 def release_pin(spec_section: Any, inputs: Path = INPUTS) -> dict[str, Any]:
     """The manifest block of the pin: the record, its SHA-256, and each image by digest."""
-    repository = repository_of(spec_section)
-    data, record = read_record(spec_section["record"], inputs, repository)
+    require(isinstance(spec_section, dict) and set(spec_section) == {"record"},
+            "confidentialSglang holds exactly record")
+    data, record = read_record(spec_section["record"], inputs)
+    asset = ASSET
+    if "run" in record:
+        asset = f"{spec_section['record']}.json"
+        record = published_images(record)
     return {
-        "repository": repository,
+        "repository": REPOSITORY,
         "record": spec_section["record"],
-        "recordAsset": ASSET,
+        "recordAsset": asset,
         "recordSha256": sha256(data),
         "sourceCommit": record["sourceCommit"],
         "runId": record["runId"],
@@ -158,14 +190,13 @@ def chart_images(pin: dict[str, Any]) -> dict[str, str]:
 
 
 def download(name: str, directory: Path,
-             run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-             *, repository: str = REPOSITORY) -> bytes:
+             run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> bytes:
     """Download the record asset of release `name` with gh."""
-    repository_of({"record": name, "repository": repository})
-    result = run(["gh", "release", "download", name, "--repo", repository, "--pattern", ASSET,
+    asset = f"{validate_name(name)}.json"
+    result = run(["gh", "release", "download", name, "--repo", REPOSITORY, "--pattern", asset,
                   "--dir", str(directory), "--clobber"], text=True, capture_output=True, check=False)
-    require(result.returncode == 0, f"cannot download {ASSET} of {repository} {name}: {result.stderr.strip()}")
-    data = (directory / ASSET).read_bytes()
+    require(result.returncode == 0, f"cannot download {asset} of {REPOSITORY} {name}: {result.stderr.strip()}")
+    data = (directory / asset).read_bytes()
     require(len(data) <= MAX_RECORD_BYTES, "the record is too large")
     return data
 
@@ -174,20 +205,17 @@ SPEC_LINE = re.compile(r"^(  record: )(images-[0-9a-f]{12})([ \t]*(?:#.*)?)$", r
 
 
 def pin(name: str, spec: Path = SPEC, inputs: Path = INPUTS,
-        fetch: Callable[[str, Path], bytes] | None = None) -> None:
+        fetch: Callable[[str, Path], bytes] = download) -> None:
     """Download and check record `name`, write it to inputs/, and set the one spec line."""
     validate_name(name)
     require(name != PLACEHOLDER, "the placeholder is not a published record")
-    import yaml
-
-    text = spec.read_text(encoding="utf-8")
-    repository = repository_of(yaml.safe_load(text).get("confidentialSglang"))
     with tempfile.TemporaryDirectory(prefix="confidential-sglang-record-") as directory:
-        data = fetch(name, Path(directory)) if fetch else download(name, Path(directory), repository=repository)
+        data = fetch(name, Path(directory))
     try:
-        validate_record(json.loads(data), name, repository)
+        validate_record(json.loads(data), name)
     except json.JSONDecodeError as error:
         raise RecordError(f"the record is not JSON: {error}") from error
+    text = spec.read_text(encoding="utf-8")
     matches = SPEC_LINE.findall(text)
     require(len(matches) == 1, f"{spec} must set confidentialSglang.record on one line")
     inputs.mkdir(parents=True, exist_ok=True)

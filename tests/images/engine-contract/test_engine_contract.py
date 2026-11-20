@@ -315,12 +315,13 @@ class PinnedEngineTests(unittest.TestCase):
             self.assertEqual(result.stdout, "")
             inputs = Path(directory) / "inputs"
             inputs.mkdir()
-            (inputs / "images-0123456789ab.json").write_text(json.dumps(
-                {"images": {"engine": {"image": "ghcr.io/x/engine", "digest": digest}}}))
+            fixture = ROOT / "tests/release-v1/fixtures/confidential-sglang/images-0123456789ab.json"
+            (inputs / fixture.name).write_bytes(fixture.read_bytes())
             spec.write_text(yaml.safe_dump({"confidentialSglang": {"record": "images-0123456789ab"}}))
             result = subprocess.run(["python3", str(Path(__file__).with_name("pinned_engine.py")), str(spec),
                                      str(inputs)], text=True, capture_output=True, check=True)
-            self.assertEqual(result.stdout.strip(), "ghcr.io/x/engine@" + digest)
+            self.assertEqual(result.stdout.strip(),
+                             "ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:" + "e" * 64)
 
 
 if __name__ == "__main__":

@@ -71,6 +71,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CHART = ROOT / "helm/confidential-inference"
 MAN = runpy.run_path(str(ROOT / "scripts/build-release-manifest.py"))
 ALLOWLIST_GENERATOR = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
+CONFIDENTIAL_SGLANG_IMAGES = confidential_sglang_release.IMAGE_PREFIX
 ManifestError = MAN["ManifestError"]
 require = MAN["require"]
 sha256 = MAN["sha256"]
@@ -225,7 +226,7 @@ def rendered_images(documents: list[dict[str, Any]]) -> list[str]:
     return sorted(images)
 
 
-def image_configs(images: list[str], publisher: str = confidential_sglang_release.REPOSITORY) -> dict[str, Any]:
+def image_configs(images: list[str]) -> dict[str, Any]:
     """Return the image configuration of every rendered image.
 
     release/inputs/image-config.json records each image that neither this
@@ -233,15 +234,13 @@ def image_configs(images: list[str], publisher: str = confidential_sglang_releas
     confidential-sglang image (scripts/confidential_sglang_release.py) are
     read from the registry by digest.
     """
-    confidential_sglang_release.repository_of({"record": "", "repository": publisher})
-    publisher_images = f"ghcr.io/{publisher.lower()}/"
     record = MAN["read_json"](release_spec.IMAGE_CONFIG)
     require(isinstance(record, dict), "release image configuration is not a mapping")
     require(not any(image.startswith(release_spec.REPOSITORY_IMAGES) for image in record),
             "release/inputs/image-config.json must not record a repository image")
     for image in images:
         if image not in record:
-            require(image.startswith((release_spec.REPOSITORY_IMAGES, publisher_images)),
+            require(image.startswith((release_spec.REPOSITORY_IMAGES, CONFIDENTIAL_SGLANG_IMAGES)),
                     f"release/inputs/image-config.json has no record for {image}")
             try:
                 record[image] = ALLOWLIST_GENERATOR["image_config"](image)
@@ -357,8 +356,7 @@ def render(
         config_images = set(images)
         if ALLOWLIST_GENERATOR["c8s_at_least"](feature, (0, 44, 0)):
             config_images.update(spec["c8s"]["coreImages"])
-        configs = image_configs(sorted(config_images),
-                                confidential_sglang_release.repository_of(spec["confidentialSglang"]))
+        configs = image_configs(sorted(config_images))
         try:
             allowlist_bytes = ALLOWLIST_GENERATOR["generate"](
                 deployment, c8s, canonical_tool, overlay=overlay_path, image_env=configs, c8s=spec["c8s"],

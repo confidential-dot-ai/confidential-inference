@@ -1,46 +1,62 @@
 # confidential-sglang images
 
-The publisher selected in `release/spec.yaml` builds the SGLang engine image
-and router image. It defaults to `confidential-dot-ai/confidential-sglang`.
-This repository defines how they run (the chart, the
+`confidential-dot-ai/confidential-sglang` builds the SGLang engine image and
+the router image. This repository defines how they run (the chart, the
 recipes, the contracts) and signs framework releases that pin them. It pins
 them as it pins C8s: by a release record of the repository that builds them,
 not by its own image publication.
 
 ## The release record
 
-The publisher's image workflow must build each image twice on clean
-runners, require equal digests, and push those exact bytes. It then creates the
+confidential-sglang's image workflow builds each image twice on clean
+runners, requires equal digests, and pushes the image. It then creates the
 GitHub release `images-<12hex>`, where `<12hex>` is the first 12 hex digits
-of the source commit, with one asset, `images.json`:
+of the source commit, with one asset, `images-<12hex>.json`:
 
 ```json
 {
   "schema": "confidential.ai/confidential-sglang-images/v1",
-  "repository": "confidential-dot-ai/confidential-sglang",
+  "repository": "https://github.com/confidential-dot-ai/confidential-sglang",
   "sourceCommit": "<40 hex>",
-  "runId": 19000000001,
-  "images": {
-    "engine": {
-      "image": "ghcr.io/confidential-dot-ai/confidential-sglang/<name>",
+  "sourceDateEpoch": 1795169221,
+  "run": {
+    "repository": "example/builds",
+    "id": 19000000001,
+    "attempt": 1,
+    "url": "https://github.com/example/builds/actions/runs/19000000001/attempts/1",
+    "workflow": "example/builds/.github/workflows/images.yml@refs/heads/main"
+  },
+  "images": [
+    {
+      "name": "engine",
+      "image": "ghcr.io/confidential-dot-ai/confidential-sglang/engine",
       "digest": "sha256:<64 hex>",
-      "buildDigests": ["sha256:<64 hex>", "sha256:<64 hex>"]
+      "reference": "ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:<64 hex>",
+      "tag": "sha-<40 hex>",
+      "builds": ["sha256:<64 hex>", "sha256:<64 hex>"]
     },
-    "router": {
-      "image": "ghcr.io/confidential-dot-ai/confidential-sglang/<name>",
+    {
+      "name": "router",
+      "image": "ghcr.io/confidential-dot-ai/confidential-sglang/router",
       "digest": "sha256:<64 hex>",
-      "buildDigests": ["sha256:<64 hex>", "sha256:<64 hex>"]
+      "reference": "ghcr.io/confidential-dot-ai/confidential-sglang/router@sha256:<64 hex>",
+      "tag": "sha-<40 hex>",
+      "builds": ["sha256:<64 hex>", "sha256:<64 hex>"]
     }
-  }
+  ]
 }
 ```
 
 - The record holds exactly these fields.
-- `repository` must equal the publisher selected by the reviewed specification.
-- `image` is an untagged name below `ghcr.io/<lowercase repository>/`.
-- `buildDigests` are the digests of the two clean builds. Both must equal
+- `images` contains exactly `engine`, then `router`; each image uses that exact
+  name below `ghcr.io/confidential-dot-ai/confidential-sglang/`.
+- `builds` are the digests of the two clean builds. Both must equal
   `digest`. They replace this repository's own two-build image audit.
-- `runId` is the workflow run that built and pushed the images.
+- `reference` must match the image and digest; `tag` must name `sourceCommit`.
+- `run` identifies the publishing workflow, repository, positive run ID and
+  attempt. Its repository can differ from the fixed source repository when
+  another repository calls the reusable workflow. The URL and workflow must
+  agree with that run repository; the record cannot change the source publisher.
 
 ## The pin
 
@@ -48,7 +64,6 @@ of the source commit, with one asset, `images.json`:
 
 ```yaml
 confidentialSglang:
-  repository: confidential-dot-ai/confidential-sglang  # optional; this is the default
   record: images-0123456789ab
 ```
 
@@ -59,21 +74,11 @@ To pin a published record:
 python3 scripts/confidential_sglang_release.py pin images-0123456789ab
 ```
 
-The script downloads `images.json` with `gh` from the selected repository,
-checks its repository and image namespace, writes the input file, and changes
-the record line only. Review the specification and record together. A record
-cannot choose a different publisher. For a private publisher, the caller needs
-read access; neither credentials nor source files belong in the record.
+The script downloads `images-<12hex>.json` with `gh`, checks it, writes the input
+file, and changes the record line only. Review both and commit them.
 
-The record, repository name, source commit and image references become framework
-release metadata. Only select a publisher whose metadata may be distributed with
-the framework. Private images also need pull access in contract CI and at runtime.
-The two-build record does not replace the engine image contract tests or GPU
-validation; a new publisher must satisfy those requirements before deployment.
-
-`images-000000000000` is the placeholder until confidential-sglang publishes
-its first record. The release build refuses it, so no framework release is
-built until the record is pinned.
+`images-000000000000` is the placeholder for an unselected record. The release
+build refuses it until a published record is reviewed and pinned.
 
 ## In a framework release
 
@@ -81,8 +86,14 @@ The release build reads the record file and adds its images to the release
 images by chart image key: `engine` as `images.confidentialSglangEngine` and
 `router` as `images.confidentialSglangRouter`. The signed manifest binds
 `confidentialSglang`: the record name, the asset name, the SHA-256 of the
-record bytes, the source commit, the run ID, and each image with its two
-build digests.
+original record bytes, the source commit, `run.id` as `runId`, and each image
+with its two build digests as `buildDigests`. Hashing the unchanged bytes also
+binds the run repository, attempt, workflow and source timestamp. The image
+contract selector uses the same validator.
+
+Previously checked-in records with `runId`, an image map and `buildDigests`
+remain readable; their manifest asset name remains `images.json`. New downloads
+use the named asset and the published list format above.
 
 `scripts/render-allowlist.py` reads the image configuration (`ENV`,
 `ENTRYPOINT`, `CMD`) of a confidential-sglang image from the registry by
