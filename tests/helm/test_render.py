@@ -177,7 +177,7 @@ def check_model_download() -> None:
         documents = render_values(download_values(), "--set", f"inference.mode={mode}",
                                   "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
         worker = next(item for item in documents if item["kind"] == "StatefulSet"
-                      and item["metadata"]["name"] == "inference-worker-0")
+                      and item["metadata"]["name"] == "inference-worker")
         template = worker["spec"]["template"]
         pod = template["spec"]
         assert "confidential.ai/c8s-volumes" not in template["metadata"]["annotations"], mode
@@ -237,7 +237,7 @@ def check_model_download_scheme() -> None:
         documents = render_values(download_values(**download), "--set", "inference.mode=model",
                                   "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
         worker = next(item for item in documents if item["kind"] == "StatefulSet"
-                      and item["metadata"]["name"] == "inference-worker-0")
+                      and item["metadata"]["name"] == "inference-worker")
         container = worker["spec"]["template"]["spec"]["containers"][0]
         script = container["command"][2]
         assert f"/usr/local/bin/fetch-model --endpoint={endpoint} fetch " in script, (download, script)
@@ -492,11 +492,13 @@ def check_telemetry_collector() -> None:
     documents = render(*TELEMETRY, "--set", "telemetry.traces.enabled=true")
     pods = {item["metadata"]["name"]: item["spec"]["template"]["spec"] for item in documents
             if item["kind"] in {"Deployment", "StatefulSet"}}
-    # The collector and (stateless, #223) the gateway are the only pods with
-    # an exit; each exit is a hostAliases address and its one ipBlock. The
-    # CDS rule on TCP 8443 is the only other ipBlock.
+    # The collector, (stateless, #223) the gateway and the router (the API
+    # server, for service discovery) are the only pods with an exit; each
+    # exit is a hostAliases address. The collector's and the gateway's have
+    # their one ipBlock; the router's API server is a node, so its rule names
+    # only the port. The CDS rule on TCP 8443 is the only other ipBlock.
     exits = {name for name, pod in pods.items() if pod.get("hostAliases")}
-    assert "telemetry-collector" in exits and exits <= {"telemetry-collector", "gateway"}, exits
+    assert "telemetry-collector" in exits and exits <= {"telemetry-collector", "gateway", "sglang-router"}, exits
     collector = pods["telemetry-collector"]
     assert collector["hostAliases"] == [{"ip": "203.0.113.7", "hostnames": ["relay.example.com"]}]
     assert PINNED.match(collector["containers"][0]["image"])
@@ -513,7 +515,7 @@ def check_telemetry_collector() -> None:
     blocks = [peer["ipBlock"]["cidr"] for policy in policies.values()
               for rule in policy["spec"].get("egress", []) if {"protocol": "TCP", "port": 8443} not in rule.get("ports", [])
               for peer in rule.get("to", []) if "ipBlock" in peer]
-    addresses = {alias["ip"] + "/32" for name in exits for alias in pods[name]["hostAliases"]}
+    addresses = {alias["ip"] + "/32" for name in exits - {"sglang-router"} for alias in pods[name]["hostAliases"]}
     assert sorted(blocks) == sorted(addresses) and "203.0.113.7/32" in blocks, blocks
 
     config = collector_config(documents)
@@ -524,6 +526,10 @@ def check_telemetry_collector() -> None:
     jobs = config["receivers"]["prometheus"]["config"]["scrape_configs"]
     assert [job["job_name"] for job in jobs] == ["gateway", "sglang-router", "inference-worker-0", "inference-worker-1",
                                                  "otelcol"]
+    # The StatefulSet's pods have stable names in the headless Service.
+    assert [job["static_configs"][0]["targets"] for job in jobs[2:4]] == [
+        ["inference-worker-0.inference-workers.default.svc.cluster.local:30000"],
+        ["inference-worker-1.inference-workers.default.svc.cluster.local:30000"]]
     # The collector scrapes its own otelcol_* metrics on loopback; every
     # series carries `cluster` (kube-state-metrics has its own `deployment`).
     assert jobs[-1]["static_configs"][0]["targets"] == ["127.0.0.1:8888"]
@@ -639,8 +645,8 @@ def main() -> None:
     check_flashinfer_disable_jit(production)
     check_worker_probes(production)
     production_workers = [item for item in production if item['kind'] == 'StatefulSet'
-                          and item['metadata']['name'].startswith('inference-worker-')]
-    assert len(production_workers) == 2
+                          and item['metadata']['name'] == 'inference-worker']
+    assert len(production_workers) == 1 and production_workers[0]['spec']['replicas'] == 2
     for worker in production_workers:
         container = worker['spec']['template']['spec']['containers'][0]
         context_args = [arg for arg in container['args'] if arg.startswith('--context-length')]
@@ -701,15 +707,17 @@ def main() -> None:
                           and item['metadata']['name'] == 'sglang-router')
     router_container = next(item for item in runtime_router['spec']['template']['spec']['containers']
                             if item['name'] == 'sglang-router')
-    assert [item['name'] for item in router_container['env']] == ['CI_ROUTER_MODEL_ROUTES']
+    assert [item['name'] for item in router_container['env']] == ['CI_ROUTER_MODEL_ROUTES', 'KUBECONFIG']
     routes = json.loads(router_container['env'][0]['value'])
     assert routes == {'schemaVersion': 1, 'routes': {'public-a': ['backend-a'], 'public-b': ['backend-b']}}
     assert settings['catalogModelIds'] == settings['inferenceModelIds'] == sorted(routes['routes'])
     assert settings['routerService'] == 'router-headless'
     router_slot = next(item for item in runtime_documents if item['kind'] == 'Service' and item['metadata']['name'] == settings['routerService'])
     assert router_slot['spec']['clusterIP'] == 'None'
-    assert not any(item['kind'] == 'ConfigMap' for item in runtime_documents)
-    assert 'volumeMounts' not in router_container
+    # The router's one ConfigMap is its Kubernetes client configuration.
+    assert [item['metadata']['name'] for item in runtime_documents if item['kind'] == 'ConfigMap'] == [
+        'sglang-router-kubeconfig']
+    assert [mount['mountPath'] for mount in router_container['volumeMounts']] == ['/mnt/c8s-data/kubernetes']
     for removed in ('GATEWAY_MODEL', 'GATEWAY_INFERENCE_CONCURRENCY',
                     'GATEWAY_MAXIMUM_BODY_BYTES', 'GATEWAY_UPSTREAM_TIMEOUT_SECONDS'):
         assert removed not in runtime_gateway.env
@@ -730,7 +738,7 @@ def main() -> None:
         if item["kind"] in {"Deployment", "StatefulSet", "DaemonSet"}
     ]
     names = {item["metadata"]["name"] for item in workloads}
-    assert {"gateway", "sglang-router", "inference-worker-0", "inference-worker-1"}.issubset(names)
+    assert {"gateway", "sglang-router", "inference-worker"}.issubset(names)
     assert not any(item["kind"] == "PersistentVolume" for item in documents)
     assert not any(container["name"] == "cds-attest" for workload in workloads
                    for container in workload["spec"]["template"]["spec"]["containers"])
@@ -826,9 +834,7 @@ def main() -> None:
         for container in router["spec"]["template"]["spec"]["containers"]
         if container["name"] == "sglang-router"
     )
-    assert router_args[:3] == ["--worker-urls", "http://inference-worker-0-0.inference-workers:30000",
-                               "http://inference-worker-1-0.inference-workers:30000"]
-    assert not any(arg.startswith("--service-discovery") for arg in router_args)
+    check_router_discovery(inference_documents)
     assert router["spec"]["strategy"]["rollingUpdate"] == {
         "maxUnavailable": 0,
         "maxSurge": 1,
@@ -838,14 +844,12 @@ def main() -> None:
         if item["kind"] == "Service" and item["metadata"]["name"] == "sglang-router"
     )
     assert "publishNotReadyAddresses" not in router_service["spec"]
-    assert not any(item["kind"] in {"Role", "RoleBinding"} and item["metadata"]["name"] == "sglang-router-pods"
-                   for item in inference_documents)
 
     # The attested GPU count annotation defaults to the per-pod allocation and
     # can be overridden when several workers share one node's GPUs.
     worker = next(
         item for item in inference_documents
-        if item["metadata"]["name"] == "inference-worker-0"
+        if item["metadata"]["name"] == "inference-worker"
         and item["kind"] in {"Deployment", "StatefulSet"}
     )
     worker_annotations = worker["spec"]["template"]["metadata"]["annotations"]
@@ -861,7 +865,7 @@ def main() -> None:
     ]
     override_worker = next(
         item for item in override_documents
-        if item["metadata"]["name"] == "inference-worker-0"
+        if item["metadata"]["name"] == "inference-worker"
         and item["kind"] in {"Deployment", "StatefulSet"}
     )
     override_annotations = override_worker["spec"]["template"]["metadata"]["annotations"]
@@ -875,16 +879,15 @@ def main() -> None:
         for rule in router_network_policy["spec"]["egress"]
         for port in rule.get("ports", [])
     }
-    assert router_egress_ports == {30000}
+    assert router_egress_ports == {30000, 6443}
 
     workers = [
         item for item in inference_documents
         if item["kind"] == "StatefulSet"
-        and item["metadata"]["name"].startswith("inference-worker-")
+        and item["metadata"]["name"] == "inference-worker"
     ]
-    assert len(workers) == 2
+    assert len(workers) == 1 and workers[0]["spec"]["replicas"] == 2
     for worker in workers:
-        worker_index = worker["metadata"]["name"].removeprefix("inference-worker-")
         worker_pod = worker["spec"]["template"]
         sglang_args = next(
             container["args"]
@@ -892,10 +895,7 @@ def main() -> None:
             if container["name"] == "sglang"
         )
         assert sglang_args.count("--tool-call-parser=deepseekv4") == 1
-        assert (
-            worker["spec"]["template"]["metadata"]["annotations"]["confidential.ai/cw"]
-            == f"inference-worker-{worker_index}"
-        )
+        assert worker["spec"]["template"]["metadata"]["annotations"]["confidential.ai/cw"] == "inference-worker"
 
     simulator_documents = [
         item for item in yaml.safe_load_all(
@@ -908,11 +908,10 @@ def main() -> None:
     simulator_workers = [
         item for item in simulator_documents
         if item["kind"] == "StatefulSet"
-        and item["metadata"]["name"].startswith("inference-worker-")
+        and item["metadata"]["name"] == "inference-worker"
     ]
-    assert len(simulator_workers) == 2
+    assert len(simulator_workers) == 1 and simulator_workers[0]["spec"]["replicas"] == 2
     for worker in simulator_workers:
-        worker_index = worker["metadata"]["name"].removeprefix("inference-worker-")
         pod = worker["spec"]["template"]
         assert "confidential.ai/c8s-volumes" not in pod["metadata"]["annotations"]
         container = next(
@@ -921,7 +920,7 @@ def main() -> None:
         assert container["command"] == ["python3"]
         assert "sglang_simulator.simulation.sglang.launch_server" in container["args"]
         assert "--chat-template=chatml" in container["args"]
-        assert f"--random-seed={worker_index}" in container["args"]
+        assert "--random-seed=0" in container["args"]
         assert "nvidia.com/gpu" not in container["resources"].get("requests", {})
         assert "nvidia.com/gpu" not in container["resources"].get("limits", {})
         environment = {item["name"]: item["value"] for item in container["env"]}
@@ -969,8 +968,10 @@ def main() -> None:
     router_slot = next(item for item in staging_documents if item["kind"] == "Service" and item["metadata"]["name"] == settings["routerService"])
     assert router_slot["spec"]["clusterIP"] == "None"
     assert routes["routes"] == {model: [model]}
-    # The only ConfigMap is the byte manifest of the staging model download.
-    assert [item["metadata"]["name"] for item in staging_documents if item["kind"] == "ConfigMap"] == ["model-manifest"]
+    # The ConfigMaps are the router's Kubernetes client configuration and the
+    # byte manifest of the staging model download.
+    assert sorted(item["metadata"]["name"] for item in staging_documents if item["kind"] == "ConfigMap") == [
+        "model-manifest", "sglang-router-kubeconfig"]
     assert not any(container["name"] == "cds-attest" for document in staging_documents
                    if document["kind"] in {"Deployment", "StatefulSet"}
                    for container in document["spec"]["template"]["spec"]["containers"])
@@ -999,6 +1000,7 @@ def main() -> None:
     check_model_cache()
     check_model_download()
     check_model_download_scheme()
+    check_worker_placement()
     check_front_door_namespace()
     check_c8s_admission()
     check_telemetry_collector()
@@ -1047,7 +1049,7 @@ def check_long_request_limits(production: list[dict]) -> None:
                        '--set-json', 'inference.workerExtraArgs=["--sampling-backend=pytorch"]')
     assert accepted.returncode == 0, accepted.stderr
     workers = [item for item in yaml.safe_load_all(accepted.stdout) if item and item['kind'] == 'StatefulSet'
-               and item['metadata']['name'].startswith('inference-worker-')]
+               and item['metadata']['name'] == 'inference-worker']
     assert workers
     for worker in workers:
         container_args = worker['spec']['template']['spec']['containers'][0]['args']
@@ -1067,7 +1069,7 @@ def check_flashinfer_disable_jit(production: list[dict]) -> None:
     """
     def worker_env(documents):
         workers = [item for item in documents if item['kind'] == 'StatefulSet'
-                   and item['metadata']['name'].startswith('inference-worker-')]
+                   and item['metadata']['name'] == 'inference-worker']
         assert workers
         return [{item['name']: item.get('value') for item in worker['spec']['template']['spec']['containers'][0]['env']}
                 for worker in workers]
@@ -1083,6 +1085,85 @@ def check_flashinfer_disable_jit(production: list[dict]) -> None:
                                '--set-string', 'inference.flashinferDisableJit=yes'],
                               capture_output=True, text=True)
     assert rejected.returncode != 0 and 'flashinferDisableJit' in rejected.stderr, rejected.stderr
+
+
+def check_router_discovery(documents: list[dict]) -> None:
+    """The router finds the workers with Kubernetes service discovery.
+
+    One StatefulSet runs every worker under one C8s entry. The router watches
+    its pods through the API server's own address (its allowlist exit), with
+    a kubeconfig, a projected token and a Role that reads pods only.
+    """
+    def one(kind, name):
+        (item,) = [item for item in documents if item["kind"] == kind and item["metadata"]["name"] == name]
+        return item
+    router = one("Deployment", "sglang-router")
+    pod = router["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    args = container["args"]
+    assert not any(arg.startswith("--worker-urls") or "inference-worker-0" in arg for arg in args), args
+    namespace = next(arg for arg in args if arg.startswith("--service-discovery-namespace=")).partition("=")[2]
+    assert args[:5] == ["--service-discovery", f"--service-discovery-namespace={namespace}",
+                        "--service-discovery-port=30000", "--selector=app.kubernetes.io/component=inference-worker",
+                        "--selector=confidential.ai/traffic-eligible=true"], args
+    assert pod["hostAliases"] == [{"ip": "192.0.2.30", "hostnames": ["kubernetes-api"]}]
+    assert pod["serviceAccountName"] == "sglang-router"
+    env = {item["name"]: item["value"] for item in container["env"]}
+    assert env["KUBECONFIG"] == "/mnt/c8s-data/kubernetes/kubeconfig"
+    assert container["volumeMounts"] == [{"name": "kubernetes", "mountPath": "/mnt/c8s-data/kubernetes", "readOnly": True}]
+    (volume,) = pod["volumes"]
+    sources = volume["projected"]["sources"]
+    assert sources[0] == {"serviceAccountToken": {"path": "token", "expirationSeconds": 3600}}
+    assert [source["configMap"]["name"] for source in sources[1:]] == ["kube-root-ca.crt", "sglang-router-kubeconfig"]
+    config = yaml.safe_load(one("ConfigMap", "sglang-router-kubeconfig")["data"]["kubeconfig"])
+    cluster = config["clusters"][0]["cluster"]
+    assert cluster == {"server": "https://192.0.2.30:6443", "certificate-authority": "/mnt/c8s-data/kubernetes/ca.crt",
+                       "tls-server-name": "kubernetes.default.svc"}
+    assert config["users"][0]["user"] == {"tokenFile": "/mnt/c8s-data/kubernetes/token"}
+    assert config["contexts"][0]["context"]["namespace"] == namespace
+    # The service account mounts no token of its own; the Role reads pods only.
+    account = one("ServiceAccount", "sglang-router")
+    assert account["automountServiceAccountToken"] is False
+    assert one("Role", "sglang-router-pods")["rules"] == [
+        {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch"]}]
+    binding = one("RoleBinding", "sglang-router-pods")
+    assert binding["roleRef"]["name"] == "sglang-router-pods"
+    assert binding["subjects"] == [{"kind": "ServiceAccount", "name": "sglang-router", "namespace": namespace}]
+    # The workers: one StatefulSet, one entry, and the label the router selects.
+    (worker,) = [item for item in documents if item["kind"] == "StatefulSet"]
+    assert worker["metadata"]["name"] == "inference-worker"
+    assert worker["spec"]["podManagementPolicy"] == "Parallel"
+    template = worker["spec"]["template"]
+    assert template["metadata"]["annotations"]["confidential.ai/cw"] == "inference-worker"
+    assert template["metadata"]["labels"]["confidential.ai/traffic-eligible"] == "true"
+    assert template["metadata"]["labels"]["app.kubernetes.io/component"] == "inference-worker"
+
+
+def check_worker_placement() -> None:
+    """A downloading worker is placed by the scheduler; a C8s volume worker stays on its nodes."""
+    def worker_pod(*arguments, values=None):
+        if values is not None:
+            documents = render_values(values, *arguments)
+        else:
+            documents = render(*arguments)
+        (worker,) = [item for item in documents if item["kind"] == "StatefulSet"]
+        return worker["spec"]["template"]["spec"]
+    # The default: every worker on scheduling.inferenceNodeName.
+    assert worker_pod()["nodeSelector"] == {"kubernetes.io/hostname": "inference-node"}
+    # C8s model volumes: the listed nodes.
+    pod = worker_pod("--set-json", 'scheduling.inferenceNodeNames=["node-a","node-b"]')
+    assert "nodeSelector" not in pod
+    (term,) = pod["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"]
+    assert term == {"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In",
+                                           "values": ["node-a", "node-b"]}]}
+    # Model download: no hostname, only the optional node labels.
+    download = download_values()
+    pod = worker_pod(values=download)
+    assert "nodeSelector" not in pod and "affinity" not in pod
+    download["scheduling"] = {"inferenceNodeNames": ["node-a"],
+                              "inferenceNodeSelector": {"inference.confidential.ai/role": "gpu"}}
+    pod = worker_pod(values=download)
+    assert pod["nodeSelector"] == {"inference.confidential.ai/role": "gpu"} and "affinity" not in pod
 
 
 def check_worker_probes(production: list[dict]) -> None:

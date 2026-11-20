@@ -1,7 +1,7 @@
 {{- define "confidential-inference.source.inference-workers" -}}
 {{- if .Values.inference.enabled }}
 {{- if dig "pd" "enabled" false .Values.inference }}
-{{- fail "inference.pd was removed: the chart runs aggregated workers only (inference-worker-N)" }}
+{{- fail "inference.pd was removed: the chart runs aggregated workers only (inference-worker)" }}
 {{- end }}
 {{- if and (gt (int .Values.inference.gpusPerReplica) 0) (eq (len .Values.inference.gpuArchitectures) 0) }}
 {{- fail "inference.gpuArchitectures is required when inference.gpusPerReplica is greater than zero" }}
@@ -35,44 +35,56 @@ spec:
 {{- fail "inference.model.cache is unsupported on C8s v0.99.29: the worker mounts /var/lib/models read-only; use inference.model.download or the c8s model volume" }}
 {{- end }}
 {{- $download := .Values.inference.model.download.enabled }}
-{{- range $index := until (int .Values.inference.replicas) }}
-{{- $simulatorMode := eq $.Values.inference.mode "simulator" }}
-{{- $modelMount := or (not $simulatorMode) $.Values.inference.simulator.validateModelMount }}
+{{- $simulatorMode := eq .Values.inference.mode "simulator" }}
+{{- $modelMount := or (not $simulatorMode) .Values.inference.simulator.validateModelMount }}
 {{- $volumeName := "" }}
 {{- $modelPath := "" }}
 {{- if $modelMount }}
-{{- $volumeName = index $.Values.inference.model.volumeNames $index }}
-{{- $modelPath = printf "%s/%s" $.Values.inference.model.volumeDirectory $volumeName }}
+{{- /* Every replica reads the same model path. A C8s model volume is
+       node-local, so each node holds its own copy under this one name. */}}
+{{- if not .Values.inference.model.volumeNames }}
+{{- fail "inference.model.volumeNames needs one name: the model directory of every worker" }}
 {{- end }}
-{{- $attestedWorkload := index $.Values.inference.attestedWorkloads $index }}
+{{- $volumeName = first .Values.inference.model.volumeNames }}
+{{- $modelPath = printf "%s/%s" .Values.inference.model.volumeDirectory $volumeName }}
+{{- end }}
 {{- $fetch := and $modelMount $download }}
 ---
+# One StatefulSet runs every worker: pods inference-worker-0 to
+# inference-worker-<replicas - 1>. All of them are one C8s workload: the
+# confidential.ai/cw annotation names one allowlist entry
+# (inference.attestedWorkload), and many pods may claim one entry. The
+# router finds the Ready pods by label (templates/sglang-router.yaml).
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: inference-worker-{{ $index }}
+  name: inference-worker
   labels:
     {{- include "confidential-inference.labels" $ | nindent 4 }}
     app.kubernetes.io/component: inference-worker
-    app.kubernetes.io/instance: inference-worker-{{ $index }}
 spec:
   serviceName: inference-workers
-  replicas: 1
+  replicas: {{ int $.Values.inference.replicas }}
+  # Start and stop the workers together. A worker can need more than 30
+  # minutes to load, and no worker depends on another one.
+  podManagementPolicy: Parallel
   updateStrategy:
     type: OnDelete
     rollingUpdate: null
   selector:
     matchLabels:
       {{- include "confidential-inference.selector" (dict "root" $ "component" "inference-worker") | nindent 6 }}
-      app.kubernetes.io/instance: inference-worker-{{ $index }}
   template:
     metadata:
       labels:
         {{- include "confidential-inference.selector" (dict "root" $ "component" "inference-worker") | nindent 8 }}
-        app.kubernetes.io/instance: inference-worker-{{ $index }}
         confidential.ai/environment: {{ $.Values.environment | quote }}
+        # The router discovers only pods with this label set to "true"
+        # (images/sglang-router, worker-withdrawal.patch). A new router does
+        # not pick up a pod relabeled "false".
+        confidential.ai/traffic-eligible: "true"
       annotations:
-        confidential.ai/cw: inference-worker-{{ $index }}
+        confidential.ai/cw: {{ $.Values.inference.attestedWorkload | quote }}
         {{- if and $modelMount (not $download) }}
         confidential.ai/c8s-volumes: {{ printf "%s=%s" $volumeName $.Values.inference.model.c8sVolumeSource | quote }}
         confidential.ai/c8s-volume-dir: {{ $.Values.inference.model.volumeDirectory | quote }}
@@ -86,8 +98,28 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ $.Values.inference.port | quote }}
     spec:
+      {{- if $download }}
+      # A downloading worker needs no node-local state, so the scheduler
+      # places it: on a node with a free GPU (resources below) and, when it
+      # is set, with the labels of scheduling.inferenceNodeSelector.
+      {{- with $.Values.scheduling.inferenceNodeSelector }}
       nodeSelector:
-        kubernetes.io/hostname: {{ include "confidential-inference.inferenceNodeName" (dict "root" $ "index" $index) | quote }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- else if $.Values.scheduling.inferenceNodeNames }}
+      # A C8s model volume is node-local: run only on the listed nodes.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: {{ include "confidential-inference.inferenceNodeNames" $ }}
+      {{- else }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ $.Values.scheduling.inferenceNodeName | quote }}
+      {{- end }}
       {{- if $fetch }}
       # The model source addresses are also the pod's allowlist exits.
       {{- include "confidential-inference.modelDownloadHostAliases" $ | nindent 6 }}
@@ -152,7 +184,7 @@ spec:
             - --chat-template={{ $.Values.inference.simulator.chatTemplate }}
             - --max-total-tokens={{ $.Values.inference.simulator.maxTotalTokens }}
             - --max-running-requests={{ $.Values.inference.simulator.maxRunningRequests }}
-            - --random-seed={{ $index }}
+            - --random-seed=0
             - --enable-metrics
             - --enable-cache-report
             - --host=0.0.0.0
@@ -315,7 +347,6 @@ spec:
         {{- if $fetch }}
         {{- include "confidential-inference.modelDownloadVolumes" $ | nindent 8 }}
         {{- end }}
-{{- end }}
 {{- end }}
 
 {{- end -}}

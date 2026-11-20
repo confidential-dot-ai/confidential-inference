@@ -87,7 +87,7 @@ FILES = {
         j(event="worker_http_error", role="router", status=502, url=f"http://x/{MARK}", request_id=MARK),
         j(event=f"router_{MARK}", role="router"),
     ],
-    (f"{NAMESPACE}_inference-worker-0-0_{UID}3", "sglang"): [
+    (f"{NAMESPACE}_inference-worker-0_{UID}3", "sglang"): [
         j(event="worker_ready", model_revision=REVISION, gpus=1, load_seconds=42),
         j(event="request_failed", error_class="invalid_request", http_status=400, phase="http",
           input_tokens_bucket="unknown", duration_ms=None, exception=None, location=None),
@@ -99,7 +99,7 @@ FILES = {
         j(event="jit_compile", cache=f"/tmp/.cache/{MARK}", files=1, path=f"/tmp/{MARK}.so"),
         f"[2026-11-16 10:00:00 TP0] Prefill batch. prompt={MARK} Authorization: Bearer {TOKEN}",
     ],
-    (f"{NAMESPACE}_inference-worker-0-0_{UID}3", "c8s-cert"): [
+    (f"{NAMESPACE}_inference-worker-0_{UID}3", "c8s-cert"): [
         f'time=2026-11-16T10:00:00Z level=INFO msg="certificate issued to {CLIENT}" workload={MARK}',
     ],
     (f"c8s-router_router-5f6-q1w2e_{UID}4", "router"): [

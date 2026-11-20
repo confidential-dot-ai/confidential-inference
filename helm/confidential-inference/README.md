@@ -61,25 +61,67 @@ or routes change changes the gateway's or the router's pod template, so it
 rolls that pod. A release that changes neither the gateway image nor its
 settings does not roll the gateway.
 
-The inference workers use `updateStrategy: OnDelete`. Helm updates their
-StatefulSets, but a worker keeps its old pod until you delete it. Each worker
-is its own StatefulSet with its own C8s workload and model volume, so neither
-a StatefulSet `RollingUpdate` nor a PodDisruptionBudget keeps one worker
-serving: both StatefulSets would roll at once, and a PodDisruptionBudget does
-not apply to controller updates. Roll them one at a time:
+The inference workers use `updateStrategy: OnDelete`. One StatefulSet,
+`inference-worker`, runs every worker: pods `inference-worker-0` to
+`inference-worker-<replicas - 1>`. Helm updates the StatefulSet, but a worker
+keeps its old pod until you delete it. Roll the workers one at a time, so
+that the others keep serving:
 
 ```sh
-for worker in inference-worker-0 inference-worker-1; do
-  revision=$(kubectl -n "$NS" get statefulset "$worker" -o jsonpath='{.status.updateRevision}')
-  kubectl -n "$NS" delete pod "$worker-0"
-  # The new pod starts after the old one frees its GPUs; model load and
-  # tuning take about 35 minutes.
-  until [ "$(kubectl -n "$NS" get pod "$worker-0" \
+revision=$(kubectl -n "$NS" get statefulset inference-worker -o jsonpath='{.status.updateRevision}')
+for index in $(seq 0 $(( $(kubectl -n "$NS" get statefulset inference-worker -o jsonpath='{.spec.replicas}') - 1 ))); do
+  pod="inference-worker-$index"
+  kubectl -n "$NS" delete pod "$pod"
+  # The new pod starts after the old one frees its GPUs; a large model takes
+  # about 35 minutes to load and tune.
+  until [ "$(kubectl -n "$NS" get pod "$pod" \
       -o jsonpath='{.metadata.labels.controller-revision-hash}')" = "$revision" ]; do sleep 10; done
-  kubectl -n "$NS" wait --for=condition=Ready "pod/$worker-0" --timeout=60m
+  kubectl -n "$NS" wait --for=condition=Ready "pod/$pod" --timeout=60m
   # Send one chat completion through the router before the next worker.
 done
 ```
+
+## Workers and the router
+
+All worker pods are one C8s workload: the `confidential.ai/cw` annotation
+names the allowlist entry `inference.attestedWorkload` (default
+`inference-worker`), and every pod claims it. The pods differ only in their
+name, so the entry requires `HOSTNAME` and admits any value
+(`scripts/generate-release-allowlist.py`). The deployment's allowlist policy
+has one item for them: `{"name": "inference-worker", "controller":
+"StatefulSet/inference-worker"}`.
+
+The scheduler places a worker that downloads its model
+(`inference.model.download`): on a node with free GPUs and, when it is set,
+with the labels of `scheduling.inferenceNodeSelector`. A worker that reads a
+C8s model volume runs only on the nodes of `scheduling.inferenceNodeNames`
+(or on `scheduling.inferenceNodeName`), because the volume is node-local.
+Every worker uses the first name of `inference.model.volumeNames`.
+
+The router finds the workers with Kubernetes service discovery. It watches
+the pods of its namespace with the labels
+`app.kubernetes.io/component=inference-worker` and
+`confidential.ai/traffic-eligible=true`. It adds each pod that is Running and
+Ready (readiness is a 1-token generation, `/health_generate`) at
+`<pod IP>:<inference.port>`, and removes a pod when it is deleted. Its own
+health checks (`/health_generate`, 3 failures) stop traffic to a listed
+worker whose scheduler does not answer, until it answers again.
+
+A C8s mesh member cannot reach the API server through the `kubernetes`
+Service: the Service address is in a cluster range, so the mesh captures the
+connection. The router dials the API server's own address,
+`router.discovery.apiServer.address` (default: a documentation address that
+reaches no API server). That address is the router's one allowlist exit, so
+the deployment's allowlist policy must declare `"egress": {"port": <port>}`
+for `Deployment/sglang-router`, with `router.discovery.apiServer.port`. The
+router reads a kubeconfig, its service account token and the cluster CA
+from one projected volume below `/mnt/c8s-data/kubernetes`, and checks the
+API server certificate for `router.discovery.apiServer.serverName`
+(`kubernetes.default.svc`). The Role `sglang-router-pods` lets it get, list
+and watch pods in its namespace only.
+
+The API server is outside the trust boundary, as DNS is: it only selects
+the worker addresses. The mesh authenticates every worker connection.
 
 ## Model download
 
@@ -187,7 +229,7 @@ recipe in values only, for example:
 
 ## Prefill/decode layout (removed)
 
-The chart runs aggregated workers only (`inference-worker-N`, one complete
+The chart runs aggregated workers only (`inference-worker`, one complete
 SGLang server each, behind the router). The prefill/decode layout
 (`inference-pd`) and its pairs (`sglang-pair`) were removed: neither the
 production recipe nor the staging recipe uses them. `inference.pd.enabled`

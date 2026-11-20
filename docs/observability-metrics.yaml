@@ -136,10 +136,10 @@ recordingRules:
     promql: sum by (environment, type) (rate(gen_ai_client_token_usage[5m]))
   - record: confidential:active_replicas
     source: kube_statefulset_status_replicas_ready
-    promql: sum by (environment) (kube_statefulset_status_replicas_ready{statefulset=~"inference-worker-.*"})
+    promql: sum by (environment) (kube_statefulset_status_replicas_ready{statefulset="inference-worker"})
   - record: confidential:desired_replicas
     source: kube_statefulset_replicas
-    promql: sum by (environment) (kube_statefulset_replicas{statefulset=~"inference-worker-.*"})
+    promql: sum by (environment) (kube_statefulset_replicas{statefulset="inference-worker"})
   - record: confidential:requests_per_second:by_api_key
     source: gateway_requests
     gatewayOnly: true

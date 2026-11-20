@@ -155,6 +155,13 @@ spec:
         {{- if .Values.inference.enabled }}
         - {protocol: TCP, port: {{ .Values.inference.port }}}
         {{- end }}
+    # Service discovery: the API server's own address (router.discovery).
+    # C8s, not this policy, limits it to that one address, the router's
+    # allowlist exit. The API server runs on a node, which Cilium classifies
+    # as a host identity, not a CIDR peer, so the rule names only the port
+    # (like the mesh port).
+    - ports:
+        - {protocol: TCP, port: {{ .Values.router.discovery.apiServer.port }}}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

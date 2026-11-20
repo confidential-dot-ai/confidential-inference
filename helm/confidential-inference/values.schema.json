@@ -28,6 +28,7 @@
         "gatewayNodeName": {"$ref": "#/definitions/kubernetesName"},
         "inferenceNodeName": {"$ref": "#/definitions/kubernetesName"},
         "inferenceNodeNames": {"type": "array", "items": {"$ref": "#/definitions/kubernetesName"}},
+        "inferenceNodeSelector": {"type": "object", "additionalProperties": {"type": "string", "maxLength": 63}},
         "routerNodeName": {"anyOf": [{"const": ""}, {"$ref": "#/definitions/kubernetesName"}]}
       }
     },
@@ -104,7 +105,7 @@
     },
     "inference": {
       "type": "object",
-      "required": ["enabled", "mode", "replicas", "gpusPerReplica", "gpuArchitectures", "attestedWorkloads", "port", "metricsPort", "autoscaling", "model", "simulator"],
+      "required": ["enabled", "mode", "replicas", "gpusPerReplica", "gpuArchitectures", "attestedWorkload", "port", "metricsPort", "autoscaling", "model", "simulator"],
       "properties": {
         "enabled": {"type": "boolean"},
         "mode": {"enum": ["model", "simulator"]},
@@ -114,10 +115,9 @@
         "gpuArchitectures": {
           "type": "array", "uniqueItems": true, "items": {"enum": ["HOPPER", "BLACKWELL", "LS10"]}
         },
+        "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
         "attestedWorkloads": {
           "type": "array",
-          "minItems": 1,
-          "maxItems": 2,
           "uniqueItems": true,
           "items": {"$ref": "#/definitions/workloadPolicyName"}
         },
@@ -371,9 +371,26 @@
     },
     "router": {
       "type": "object",
-      "required": ["attestedWorkload", "requestTimeoutSeconds", "maxConcurrentRequests", "queueSize", "queueTimeoutSeconds"],
+      "required": ["attestedWorkload", "discovery", "requestTimeoutSeconds", "maxConcurrentRequests", "queueSize", "queueTimeoutSeconds"],
       "properties": {
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
+        "discovery": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["apiServer"],
+          "properties": {
+            "apiServer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["address", "port", "serverName"],
+              "properties": {
+                "address": {"type": "string", "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$"},
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                "serverName": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"}
+              }
+            }
+          }
+        },
         "requestTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 172800},
         "image": {"enum": ["", "sglangRouter", "confidentialSglangRouter"]},
         "maxConcurrentRequests": {"type": "integer", "minimum": 0, "maximum": 65536},
