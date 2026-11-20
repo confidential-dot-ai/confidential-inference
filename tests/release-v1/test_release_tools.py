@@ -67,7 +67,7 @@ RELEASE_IMAGES = yaml.safe_load(OVERLAY.read_text())["images"]
 # Its program is signed in chart argv; this synthetic digest tests packaging.
 REPOSITORY_CONFIGS[RELEASE_IMAGES["rolloutClient"]] = {
     "entrypoint": [], "cmd": ["python3"],
-    "env": REPOSITORY_CONFIGS[RELEASE_IMAGES["sglangRouter"]]["env"][:],
+    "env": REPOSITORY_CONFIGS[RELEASE_IMAGES["confidentialSglangRouter"]]["env"][:],
 }
 
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
@@ -795,11 +795,11 @@ class FrameworkReleaseTests(unittest.TestCase):
         return base
 
     def test_an_unchanged_image_keeps_the_digest_of_the_signed_base_release(self):
-        sglang = "ghcr.io/confidential-dot-ai/confidential-inference/sglang-confidential"
-        evidence = publication({sglang: published_release_images()[sglang]}, base_ref="v0.16.9")
+        rollout = "ghcr.io/confidential-dot-ai/confidential-inference/rollout-client"
+        evidence = publication({rollout: published_release_images()[rollout]}, base_ref="v0.16.9")
         manifest = json.loads(build_framework(evidence, self.base_release())["release-bundle.json"])
         self.assertEqual(manifest["images"]["gateway"], RELEASE_IMAGES["gateway"])
-        self.assertEqual(manifest["imagePublication"]["images"], {sglang: published_release_images()[sglang]})
+        self.assertEqual(manifest["imagePublication"]["images"], {rollout: published_release_images()[rollout]})
 
     def test_a_release_of_the_earlier_format_is_a_valid_base(self):
         # The published v0.15.15 manifest, a v1 release with a -staging-free tag.

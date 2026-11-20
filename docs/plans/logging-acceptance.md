@@ -32,8 +32,8 @@ These tests run without a cluster. They must pass on the release commit.
 |---|---|
 | 2, 3: no marker, client address, user agent or Bearer token leaves the agent and the collector | `tests/telemetry/test_node_log_agent.py` (needs Docker) |
 | 2: the collector drops unreviewed bodies and fields | `tests/telemetry/test_collector.py` (needs Docker) |
-| 2: the worker supervisor emits no marker from prompts, exception messages, code lines or access-log paths; tracebacks become a type and an SGLang location; unknown errors are `unclassified` | `tests/images/sglang-confidential/test_server_output.py` |
-| 2: the router launcher emits only contract keys | `tests/images/sglang-router/test_private_router.py` |
+| 2: the worker supervisor emits no marker from prompts, exception messages, code lines or access-log paths; tracebacks become a type and an SGLang location; unknown errors are `unclassified` | confidential-sglang `confidential/tests/helpers/test_server_output.py`; `tests/images/engine-contract` (the pinned image) |
+| 2: the router launcher emits only contract keys | confidential-sglang `confidential/tests/router/test_private_router.py` |
 | 2: every gateway line is JSON, with a listed message or the audit record | `cargo test -p confidential-gateway --test log_privacy` |
 | 6: the agent has a read-only `/var/log/pods` mount, no other host path, no secret, no service account token, no exit | `tests/helm/test_render.py` (`check_node_log_agent`) |
 | 6: the agent's allowlist entry pins its argv and mounts, admits only `NODE_NAME` as an open variable, and has no secrets grant and no egress | `tests/release-v1/fixtures/staging-allowlist.json` (entry `node-log-agent`), `tests/release-v1` |

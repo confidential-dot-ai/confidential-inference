@@ -22,7 +22,15 @@ with a /tmp tmpfs, as the chart runs it. They check:
 - the supervisor: wait-for-model checks a model and runs a fake server
   that prints request text. Its stdout holds only events of the worker log
   policy (templates/_log-policy.tpl) with valid fields, and neither stdout
-  nor stderr holds the server output.
+  nor stderr holds the server output;
+- the CPU simulator: the worker command that the chart renders for
+  inference.mode=simulator starts in the image, answers /health and
+  completes one chat request.
+
+confidential-dot-ai/confidential-sglang builds the image and tests its
+helpers (`confidential/helpers`, `confidential/tests/helpers`) before it
+publishes a release record; these tests check the result as this
+repository's chart runs it.
 
 Run:
 
@@ -66,12 +74,30 @@ def load(name: str, path: Path):
     return module
 
 
-HARDEN_HTTP = load("harden_http", ROOT / "images/sglang-confidential/harden_http.py")
-# The routes harden_http.py keeps (tests/images/sglang-confidential/test_http_policy.py).
-HTTP_POLICY = load("test_http_policy", ROOT / "tests/images/sglang-confidential/test_http_policy.py")
+# The settings that log or dump request data. The image's build-time
+# hardening (confidential-sglang confidential/helpers/harden_http.py,
+# REFUSED_SERVER_ARGS) makes launch_server refuse each one.
+REFUSED_SERVER_ARGS = (
+    "log_requests", "log_requests_target", "crash_dump_folder",
+    "export_metrics_to_file", "export_metrics_to_file_dir",
+    "debug_tensor_dump_output_folder", "debug_tensor_dump_input_file",
+    "msprobe_dump_config", "forward_hooks", "spec_trace_dir",
+)
+# The routes of http_server.py that the hardening keeps (confidential-sglang
+# confidential/tests/helpers/test_http_policy.py SERVING_ROUTES).
+SERVING_ROUTES = {
+    "/", "/health", "/health_generate", "/model_info", "/get_model_info", "/server_info",
+    "/get_server_info", "/generate", "/encode", "/classify",
+    "/parse_function_call", "/separate_reasoning", "/v1/completions", "/v1/chat/completions",
+    "/v1/embeddings", "/v1/classify", "/v1/tokenize", "/tokenize", "/v1/detokenize", "/detokenize",
+    "/v1/audio/transcriptions", "/v1/realtime", "/v1/models", "/v1/models/{model:path}", "/v1/score",
+    "/v1/responses", "/v1/responses/{response_id}", "/v1/responses/{response_id}/cancel",
+    "/v1/rerank", "/api/chat", "/api/generate", "/api/tags", "/api/show", "/v1/messages",
+    "/v1/messages/count_tokens", "/ping", "/invocations", "/vertex_generate",
+}
 # /v1/loads (v1_loads_router) and /metrics (--enable-metrics) are outside
-# http_server.py; the two pinned sources keep /get_load or /ready.
-ALLOWED_ROUTES = HTTP_POLICY.SERVING_ROUTES | {"/get_load", "/ready", "/v1/loads", "/metrics"}
+# http_server.py; the pinned sources keep /get_load or /ready.
+ALLOWED_ROUTES = SERVING_ROUTES | {"/get_load", "/ready", "/v1/loads", "/metrics"}
 # Paths that must never be served, whatever the allowlist above says.
 FORBIDDEN_ROUTE = re.compile(
     r"weight|profile|flush|memory_occupation|lora|expert_distribution|internal_state|abort|"
@@ -129,6 +155,61 @@ server.shutdown()
 '''
 
 
+# Runs the chart's simulator worker command (argv and env from the rendered
+# StatefulSet) and sends it one health check and one chat request over
+# loopback. Prints one result line; the server's own output is discarded.
+SIMULATOR = r'''
+import json, os, subprocess, sys, time, urllib.request
+spec = json.loads(sys.argv[1])
+server = subprocess.Popen(spec["argv"], env={**os.environ, **spec["env"]},
+                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+base = "http://127.0.0.1:%d" % spec["port"]
+result = {"health": None, "chat": None}
+deadline = time.monotonic() + spec["timeout"]
+try:
+    while time.monotonic() < deadline and server.poll() is None:
+        try:
+            with urllib.request.urlopen(base + "/health", timeout=5) as response:
+                result["health"] = response.status
+                break
+        except Exception:
+            time.sleep(2)
+    if result["health"] == 200:
+        body = json.dumps({"model": spec["model"], "max_tokens": 8, "temperature": 0,
+                           "messages": [{"role": "user", "content": "Say hello."}]}).encode()
+        request = urllib.request.Request(base + "/v1/chat/completions", data=body,
+                                         headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=120) as response:
+            reply = json.loads(response.read())
+        result["chat"] = {"status": response.status, "choices": len(reply.get("choices") or []),
+                          "content": isinstance(reply["choices"][0]["message"].get("content"), str)}
+finally:
+    result["exit"] = server.poll()
+    server.terminate()
+    try:
+        _, stderr = server.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        server.kill()
+        _, stderr = server.communicate()
+    if result["chat"] is None:
+        result["stderr"] = stderr.decode(errors="replace")[-4000:]
+    print("ENGINE-CONTRACT-RESULT " + json.dumps(result), flush=True)
+'''
+
+
+def simulator_worker() -> dict:
+    """The worker container that the chart renders for inference.mode=simulator, with this image."""
+    rendered = subprocess.run(
+        ["helm", "template", "contract", str(ROOT / "helm/confidential-inference"),
+         "--set", "inference.mode=simulator", "--set", f"images.confidentialSglangEngine={IMAGE}"],
+        text=True, capture_output=True, check=True).stdout
+    for document in yaml.safe_load_all(rendered):
+        if document and document.get("kind") == "StatefulSet" and document["metadata"]["name"] == "inference-worker":
+            return next(container for container in document["spec"]["template"]["spec"]["containers"]
+                        if container["name"] == "sglang")
+    raise AssertionError("the chart renders no inference-worker StatefulSet")
+
+
 def docker(*arguments: str, timeout: int = 900) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["docker", *arguments], text=True, capture_output=True, timeout=timeout, check=False)
 
@@ -156,7 +237,7 @@ def image_config() -> dict:
 @functools.lru_cache(maxsize=None)
 def probe() -> dict:
     result = docker(*run_args("--entrypoint", "python3"), IMAGE, "-c", PROBE,
-                    json.dumps(list(HARDEN_HTTP.REFUSED_SERVER_ARGS)), json.dumps(ARCHITECTURES))
+                    json.dumps(list(REFUSED_SERVER_ARGS)), json.dumps(ARCHITECTURES))
     lines = [line for line in result.stdout.splitlines() if line.startswith(MARKER)]
     if result.returncode or len(lines) != 1:
         raise AssertionError(f"the probe failed ({result.returncode}): {result.stderr[-4000:]}")
@@ -273,6 +354,25 @@ class EngineContractTests(unittest.TestCase):
         self.assertIn("worker_ready", events, result.stderr[-2000:])
         self.assertEqual(records[-1], {"event": "worker_exit", "exit_code": 0, "signal": None})
         self.assertEqual(result.returncode, 0)
+
+
+    def test_simulator_mode_serves_a_chat_request(self) -> None:
+        worker = simulator_worker()
+        self.assertEqual(worker["image"], IMAGE)
+        argv = [*worker.get("command", []), *worker.get("args", [])]
+        env = {item["name"]: item["value"] for item in worker.get("env", []) if "value" in item}
+        port = next(int(arg.split("=", 1)[1]) for arg in argv if arg.startswith("--port="))
+        model = next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--served-model-name="))
+        spec = {"argv": argv, "env": env, "port": port, "model": model, "timeout": 600}
+        # The worker's root filesystem is writable (no readOnlyRootFilesystem);
+        # /dev/shm is a memory emptyDir.
+        result = docker(*run_args("--shm-size", "1g", "--entrypoint", "python3", read_only=False), IMAGE,
+                        "-c", SIMULATOR, json.dumps(spec), timeout=900)
+        lines = [line for line in result.stdout.splitlines() if line.startswith(MARKER)]
+        self.assertEqual(len(lines), 1, result.stderr[-4000:])
+        outcome = json.loads(lines[0].removeprefix(MARKER))
+        self.assertEqual(outcome["health"], 200, outcome)
+        self.assertEqual(outcome["chat"], {"status": 200, "choices": 1, "content": True}, outcome)
 
 
 class PolicyCheckTests(unittest.TestCase):

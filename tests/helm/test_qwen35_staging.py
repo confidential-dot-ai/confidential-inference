@@ -1,4 +1,4 @@
-"""The Qwen3.5-0.8B staging recipe: values only, on the one engine image.
+"""The Qwen3.5-0.8B staging recipe: values only, on the confidential-sglang engine image.
 
 Two workers, one GPU each. Each worker downloads the model at start from a
 model server (inference.model.download, plain HTTP on an internal address)
@@ -21,7 +21,7 @@ MANIFEST = DEPLOYMENTS / "qwen35-0.8b-model-manifest.json"
 MODEL = "Qwen/Qwen3.5-0.8B"
 REVISION = "2fc06364715b967f1860aea9cf38778875588b17"
 MANIFEST_SHA256 = "625963f6a7f159fd2a3e8ad97642a11ac275d1735adaadca8df39452b9fbd8fa"
-ENGINE = yaml.safe_load(RELEASE_VALUES.read_text())["images"]["sglangConfidential"]
+ENGINE = yaml.safe_load(RELEASE_VALUES.read_text())["images"]["confidentialSglangEngine"]
 
 
 def render(*layers: str, extra: tuple[str, ...] = (), check: bool = True) -> subprocess.CompletedProcess:
@@ -55,13 +55,12 @@ class Qwen35StagingTests(unittest.TestCase):
         self.documents = documents(render("qwen35-staging-values.yaml"))
 
     def test_release_names_one_engine_image(self):
-        spec = yaml.safe_load((ROOT / "release/spec.yaml").read_text())["images"]
-        self.assertEqual("ghcr.io/confidential-dot-ai/confidential-inference/sglang-confidential",
-                         spec["sglangConfidential"])
-        self.assertTrue(ENGINE.startswith(spec["sglangConfidential"] + "@sha256:"))
-        engines = [key for key, value in spec.items()
-                   if "/confidential-inference/sglang" in value and key != "sglangRouter"]
-        self.assertEqual(["sglangConfidential"], engines)
+        # The engine comes from the confidential-sglang record (release/spec.yaml
+        # confidentialSglang), never from the spec's own images.
+        spec = yaml.safe_load((ROOT / "release/spec.yaml").read_text())
+        self.assertEqual([], [key for key, value in spec["images"].items() if "sglang" in value])
+        self.assertRegex(spec["confidentialSglang"]["record"], r"^images-[0-9a-f]{12}$")
+        self.assertTrue(ENGINE.startswith("ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:"))
 
     def test_two_workers_run_qwen_on_one_gpu_each(self):
         found = workers(self.documents)
@@ -150,9 +149,19 @@ class Qwen35StagingTests(unittest.TestCase):
             self.assertNotEqual(0, result.returncode, extra)
 
     def test_engine_image_is_required(self):
-        result = render("qwen35-staging-values.yaml", extra=("--set", "images.sglangConfidential=null"), check=False)
+        result = render("qwen35-staging-values.yaml", extra=("--set", "images.confidentialSglangEngine=null"),
+                        check=False)
         self.assertNotEqual(0, result.returncode)
-        self.assertIn("sglangConfidential", result.stderr)
+        self.assertIn("confidentialSglangEngine", result.stderr)
+
+    def test_the_removed_engine_and_router_keys_fail(self):
+        for key in ("sglangConfidential", "sglangRouter"):
+            image = f"ghcr.io/confidential-dot-ai/confidential-inference/{key}@sha256:" + "5" * 64
+            result = render("qwen35-staging-values.yaml", extra=("--set", f"images.{key}={image}"), check=False)
+            self.assertNotEqual(0, result.returncode, key)
+        result = render("qwen35-staging-values.yaml", extra=("--set", "inference.engineImage=sglangConfidential"),
+                        check=False)
+        self.assertNotEqual(0, result.returncode)
 
     def test_pd_cannot_be_enabled(self):
         result = render(extra=("--set", "inference.pd.enabled=true"), check=False)

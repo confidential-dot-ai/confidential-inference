@@ -29,7 +29,12 @@ scheduling:
 
 images:
   gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:13334810afe09f9ec722eed6fc19c4a64e87b406e926ce383a54dd2ede01fea1
-  sglangConfidential: ghcr.io/confidential-dot-ai/confidential-inference/sglang-confidential@sha256:2c9d540bd0b61648fb2e50d3a0ec244d0671f7314a8f9b43c51e91135739f81b
+  # The engine and router images of confidential-dot-ai/confidential-sglang
+  # (record images-d0169679925d). The engine runs every worker, the CPU
+  # simulator included (inference.mode: simulator). A release sets both from
+  # release/spec.yaml confidentialSglang (docs/confidential-sglang-images.md).
+  confidentialSglangEngine: ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:8fa664cea485ee500aa9000eb7aa540cd08e5133db604fbda6c0528c07ac4f1d
+  confidentialSglangRouter: ghcr.io/confidential-dot-ai/confidential-sglang/router@sha256:609ab202467daa7fc94d089e98a7ca4fa651fbe4c473b731b6f07d51abf4f3f6
   telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849  # 0.163.2
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: ghcr.io/confidential-dot-ai/confidential-inference/kube-state-metrics@sha256:89c1fe0bbd01800eb7475825467b29d0268273e7c5be7b574c72b3370b5fc3f0
@@ -290,7 +295,7 @@ inference:
   flashinferDisableJit: false
   workerExtraArgs: []
   # Unused: wait-for-model always keeps SGLang's output in memory and writes
-  # only the fixed worker events (images/sglang-confidential/README.md). The
+  # only the fixed worker events (templates/_log-policy.tpl). The
   # key stays so that existing environment values still render.
   privateServerOutput: false
   gpuMetricsEnabled: true
@@ -360,7 +365,7 @@ router:
   # gateway.protection.upstreamTimeoutSeconds, so the gateway, not the
   # router, ends a long request. The upstream default is 1800.
   requestTimeoutSeconds: 14460
-  # Router admission (images/sglang-router, admission-caps.patch). 0 renders
+  # Router admission (--max-concurrent-requests). 0 renders
   # no flag: the router admits every request and the workers queue them.
   # A value above 0 is a concurrency ceiling (429 above it, after a wait in a
   # queue of queueSize for up to queueTimeoutSeconds); the chart refuses a

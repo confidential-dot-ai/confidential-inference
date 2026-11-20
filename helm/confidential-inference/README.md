@@ -233,9 +233,10 @@ a worker serve other bytes.
 
 ## Worker image
 
-Every worker runs the one engine image, `images.sglangConfidential`
-(`images/sglang-confidential`, plain upstream SGLang). The image holds no
-model. The values choose the model, its parsers and its source. A model is a
+Every worker runs the confidential-sglang engine image,
+`images.confidentialSglangEngine` (`docs/confidential-sglang-images.md`), in
+both modes: `inference.mode=simulator` runs its CPU simulator. The router runs
+`images.confidentialSglangRouter`. The image holds no model. The values choose the model, its parsers and its source. A model is a
 recipe in values only, for example:
 
 - `tests/fixtures/deployments/production-values.yaml`: DeepSeek-V4.1 on a C8s

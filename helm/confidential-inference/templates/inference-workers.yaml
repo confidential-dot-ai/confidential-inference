@@ -80,7 +80,7 @@ spec:
         {{- include "confidential-inference.selector" (dict "root" $ "component" "inference-worker") | nindent 8 }}
         confidential.ai/environment: {{ $.Values.environment | quote }}
         # The router discovers only pods with this label set to "true"
-        # (images/sglang-router, worker-withdrawal.patch). A new router does
+        # (the confidential-sglang router's worker withdrawal). A new router does
         # not pick up a pod relabeled "false".
         confidential.ai/traffic-eligible: "true"
       annotations:

@@ -9,7 +9,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/confidential-inference/sglang-confidential@sha256:f71189078bc75d28ea614be96a834a5502a14f4b1aafafb336d5e44750077809": {
+  "ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": {
     "env": [
       "PATH=/opt/dsv41/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "NVARCH=x86_64",
@@ -52,26 +52,27 @@
       "UV_COMPILE_BYTECODE=0",
       "UV_NO_CACHE=1",
       "PYTHONDONTWRITEBYTECODE=1",
+      "CI_DIAGNOSTIC_SOURCE_REVISION=d0169679925d16c0886ad923d864a8df71aba702",
       "HOME=/tmp"
     ],
-    "entrypoint": [
-      "/opt/nvidia/nvidia_entrypoint.sh"
-    ],
+    "entrypoint": [],
     "cmd": []
   },
-  "ghcr.io/confidential-dot-ai/confidential-inference/sglang-router@sha256:7440bead8020d969b5ebe69c0689ba894edb2d2fd2a406bb16d346a86770918f": {
-    "cmd": [],
-    "entrypoint": [
-      "python3",
-      "-m",
-      "sglang_router.launch_router"
-    ],
+  "ghcr.io/confidential-dot-ai/confidential-sglang/router@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": {
     "env": [
       "PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "LANG=C.UTF-8",
       "GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305",
-      "PYTHON_VERSION=3.12.15",
-      "PYTHON_SHA256=c2c4321961fab0fb999d66e0cecf521c2ab3994c7992873ea99e306c1094fd5a"
-    ]
+      "PYTHON_VERSION=3.12.16",
+      "PYTHON_SHA256=b5796915dc45ff745cfb4e990a7e7c93d6f546328a102ce31448d69ebc37575c",
+      "CI_DIAGNOSTIC_SOURCE_REVISION=d0169679925d16c0886ad923d864a8df71aba702",
+      "PYTHONDONTWRITEBYTECODE=1",
+      "HOME=/tmp"
+    ],
+    "entrypoint": [
+      "python3",
+      "/usr/local/bin/ci-sglang-router"
+    ],
+    "cmd": []
   }
 }

@@ -1,14 +1,14 @@
 # Staging with a real model: Qwen3.5-0.8B, two workers with one GPU each
 # behind the SGLang router. It is a model recipe in values only: the workers
-# run the one engine image (images/sglang-confidential, images.sglangConfidential),
+# run the confidential-sglang engine image (images.confidentialSglangEngine),
 # and get the model at each start from a model server (inference.model.download).
 # No model is in an image. Helm applies this layer after production-values.yaml
 # and staging-values.yaml. It is a test fixture: a staging environment copies
 # it and sets its own nodes and its own model server.
 #
 # Flags follow SGLang's Qwen3.5 cookbook page: qwen3_coder tool calls, the
-# qwen3 reasoning parser, the model's default context. The engine (upstream
-# SGLang a7fd2e1) registers Qwen3_5ForConditionalGeneration, the architecture
+# qwen3 reasoning parser, the model's default context. The confidential-sglang
+# engine registers Qwen3_5ForConditionalGeneration, the architecture
 # in the pinned config.json, and both parsers. production-values.yaml sets the
 # DeepSeek-V4 parsers and workerExtraArgs; this layer replaces them.
 inference:

@@ -16,6 +16,7 @@ on:
   pull_request:
     paths:
       - tests/images/engine-contract/**
+      - helm/confidential-inference/templates/inference-workers.yaml
       - release/spec.yaml
       - release/inputs/confidential-sglang/**
       - .github/workflows/engine-contract.yml
@@ -42,6 +43,12 @@ jobs:
         run: |
           python3 -m pip install --user --break-system-packages --require-hashes \
             --requirement scripts/requirements-release-signing.txt
+
+      # The simulator test renders the chart's worker command.
+      - name: install helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.14.4
 
       - name: select the image
         id: image

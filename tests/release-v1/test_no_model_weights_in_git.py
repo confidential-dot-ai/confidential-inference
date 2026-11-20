@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 # The byte manifests of the model recipes in the deployment values layers.
 MANIFESTS = (ROOT / "tests/fixtures/deployments/qwen35-0.8b-model-manifest.json",)
 WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".gguf", ".onnx", ".msgpack", ".h5", ".npz")
