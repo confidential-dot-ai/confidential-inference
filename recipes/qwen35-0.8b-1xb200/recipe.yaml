@@ -1,0 +1,60 @@
+# Qwen3.5-0.8B, one worker on one B200. recipes/README.md describes the fields.
+# The worker argv matches confidential-sglang recipes/qwen35-0.8b
+# (container/serve.sh on branch recipe-qwen35-0.8b): every flag there is one
+# the chart sets, so extraArgs is empty.
+schema: confidential.ai/recipe/v1
+name: qwen35-0.8b-1xb200
+description: Qwen3.5-0.8B on the confidential-sglang engine, one worker on one B200, cache-aware routing.
+engine:
+  # The confidential-sglang engine image (release/spec.yaml confidentialSglang).
+  image: confidentialSglangEngine
+  # The engine image carries the FlashInfer JIT cache for sm100a and sm103a
+  # (the engine image contract test checks it), so a missing kernel fails the request
+  # instead of a 67 s compile inside the scheduler.
+  flashinferDisableJit: true
+replica:
+  workers: 1
+  gpusPerWorker: 1
+  gpuArchitectures: [BLACKWELL]
+  attestedGpuCount: 1
+model:
+  repository: Qwen/Qwen3.5-0.8B
+  revision: 2fc06364715b967f1860aea9cf38778875588b17
+  # The byte manifest that fetch-model and wait-for-model check every byte
+  # against. Its SHA-256 is the pin.
+  manifest: model-manifest.json
+  manifestSha256: 625963f6a7f159fd2a3e8ad97642a11ac275d1735adaadca8df39452b9fbd8fa
+  checkFiles: [config.json, tokenizer_config.json]
+  # The model's own default (262,144 tokens), stated so the chart passes it.
+  contextLength: 262144
+worker:
+  # Parsers per SGLang docs/cookbook/autoregressive/Qwen/Qwen3.5.mdx.
+  toolCallParser: qwen3_coder
+  reasoningParser: qwen3
+  # A dense model without MoE layers or a draft model.
+  moeRunnerBackend: auto
+  speculativeAlgorithm: ""
+  maxRunningRequests: 0
+  extraArgs: []
+routing:
+  kind: sglang-router
+  policy: cache_aware
+  # The confidential-sglang router image (release/spec.yaml confidentialSglang).
+  image: confidentialSglangRouter
+behavior:
+  apis:
+    chat: {}
+    completions: {}
+    # A reasoning model can spend short outputs on reasoning: a Responses
+    # request asks for at least 16 output tokens.
+    responses: {minOutputTokens: 16}
+    messages: {}
+  # The request shapes that warm a worker before it takes traffic. The
+  # top-k/top-p shape runs the sampling path that compiled a FlashInfer
+  # kernel for 67 s on the first such request (2026-11-19).
+  warmup:
+    - {api: chat, promptTokens: 32, maxTokens: 16, sampling: {temperature: 0}}
+    - {api: chat, promptTokens: 32, maxTokens: 16, sampling: {temperature: 0.7, topP: 0.8, topK: 20}}
+    - {api: completions, promptTokens: 4096, maxTokens: 1, sampling: {temperature: 0}}
+    - {api: responses, promptTokens: 32, maxTokens: 16, sampling: {temperature: 0.6, topP: 0.95, topK: 20}}
+    - {api: messages, promptTokens: 32, maxTokens: 16, sampling: {temperature: 0.6, topP: 0.95, topK: 20}}

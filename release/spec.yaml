@@ -38,3 +38,15 @@ images:
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
   c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:cf052edd113edffbd60067bb9623c9ce643a2036157d56d4dc9b5827bc504a1a
+# The engine and router images of confidential-dot-ai/confidential-sglang,
+# pinned like C8s: by the confidential-sglang release record, not by our own
+# image publication. `record` names the record (images-<first 12 hex of its
+# source commit>); release/inputs/confidential-sglang/<record>.json holds its
+# bytes, and the release build adds both images as images.confidentialSglangEngine
+# and images.confidentialSglangRouter. Pin a record with
+# `scripts/confidential_sglang_release.py pin images-<12hex>`; it changes the
+# record line only (docs/confidential-sglang-images.md).
+# images-000000000000 is the PLACEHOLDER until confidential-sglang publishes
+# its first record. The release build refuses to build a release with it.
+confidentialSglang:
+  record: images-000000000000

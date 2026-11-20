@@ -137,6 +137,7 @@ jobs:
             dist/release-tag-commit.txt
             dist/image-publication-manifest.json
             dist/cds-manifest.json
+            dist/recipes.json
             dist/*.tgz
           if-no-files-found: error
           retention-days: 90
@@ -242,4 +243,5 @@ jobs:
             "dist/release-tag-commit.txt#Signed tag commit" \
             "dist/image-publication-manifest.json#Image publication evidence" \
             "dist/cds-manifest.json#CDS guest image manifest" \
+            "dist/recipes.json#Recipes" \
             dist/*.tgz
