@@ -22,11 +22,11 @@ is the first 12 hex digits of the source commit, with one asset,
   "sourceCommit": "<40 hex>",
   "sourceDateEpoch": 1795169221,
   "run": {
-    "id": 44716530121,
+    "id": 44811154899,
     "attempt": 1,
-    "repository": "confidential-dot-ai/confidential-sglang-ci",
-    "workflow": "confidential-dot-ai/confidential-sglang-ci/.github/workflows/images.yml@refs/heads/main",
-    "url": "https://github.com/confidential-dot-ai/confidential-sglang-ci/actions/runs/44716530121/attempts/1"
+    "repository": "confidential-dot-ai/confidential-sglang",
+    "workflow": "confidential-dot-ai/confidential-sglang/.github/workflows/images.yml@refs/heads/main",
+    "url": "https://github.com/confidential-dot-ai/confidential-sglang/actions/runs/44811154899/attempts/1"
   },
   "images": [
     {
@@ -53,10 +53,10 @@ is the first 12 hex digits of the source commit, with one asset,
   `tag` must match its digest and source commit.
 - `builds` are the digests of the two clean builds. Both must equal
   `digest`. They replace this repository's own two-build image audit.
-- `run` is a run of the images workflow **on `main`**, in
-  confidential-sglang or in `confidential-sglang-ci`. That repository only
-  calls `confidential-sglang/.github/workflows/images.yml@main` with a
-  commit, while Actions are off in confidential-sglang.
+- `run` is a run of the images workflow **on `main`** in confidential-sglang
+  itself. Records from any other repository are refused, including those of
+  the archived `confidential-sglang-ci`, which built the first record
+  (`images-d0169679925d`) while Actions were off in confidential-sglang.
 - The run ID and attempt are positive integers. Its URL names that
   repository, ID and attempt; its workflow names that repository's
   `.github/workflows/images.yml@refs/heads/main`.

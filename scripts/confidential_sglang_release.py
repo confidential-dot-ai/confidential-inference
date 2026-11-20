@@ -76,9 +76,9 @@ def validate_name(name: Any) -> str:
     return name
 
 
-# The run that may publish a record: confidential-sglang's images workflow on main, started from
-# confidential-sglang or, while Actions are off there, from confidential-sglang-ci (which only calls it).
-RUN_REPOSITORIES = {REPOSITORY, "confidential-dot-ai/confidential-sglang-ci"}
+# The only run that may publish a record: confidential-sglang's own images workflow on main. (The
+# first record, images-d0169679925d, came from confidential-sglang-ci, now archived, which called
+# that workflow while Actions were off in confidential-sglang. It is no longer accepted.)
 RECORD_KEYS = {"schema", "repository", "sourceCommit", "run", "images"}
 OPTIONAL_RECORD_KEYS = {"sourceDateEpoch"}
 
@@ -104,8 +104,7 @@ def validate_record(record: Any, name: str) -> dict[str, Any]:
     run_id = run.get("id")
     require(isinstance(run_id, int) and not isinstance(run_id, bool) and run_id > 0, "record run.id is not a run ID")
     repository = run["repository"]
-    require(isinstance(repository, str) and repository in RUN_REPOSITORIES,
-            f"record run.repository is not one of {sorted(RUN_REPOSITORIES)}")
+    require(repository == REPOSITORY, f"record run.repository is not {REPOSITORY}")
     attempt = run["attempt"]
     require(type(attempt) is int and attempt > 0, "record run.attempt is not a positive integer")
     require(run["url"] == f"https://github.com/{repository}/actions/runs/{run_id}/attempts/{attempt}",

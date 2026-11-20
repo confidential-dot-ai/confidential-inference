@@ -27,9 +27,9 @@
   "run": {
     "attempt": 1,
     "id": 19000000001,
-    "repository": "confidential-dot-ai/confidential-sglang-ci",
-    "url": "https://github.com/confidential-dot-ai/confidential-sglang-ci/actions/runs/19000000001/attempts/1",
-    "workflow": "confidential-dot-ai/confidential-sglang-ci/.github/workflows/images.yml@refs/heads/main"
+    "repository": "confidential-dot-ai/confidential-sglang",
+    "url": "https://github.com/confidential-dot-ai/confidential-sglang/actions/runs/19000000001/attempts/1",
+    "workflow": "confidential-dot-ai/confidential-sglang/.github/workflows/images.yml@refs/heads/main"
   },
   "schema": "confidential.ai/confidential-sglang-images/v1",
   "sourceCommit": "0123456789abcdef0123456789abcdef01234567",
