@@ -72,6 +72,15 @@ REPOSITORY_CONFIGS[RELEASE_IMAGES["rolloutClient"]] = {
 
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 LOCK = ROOT / "release/inputs/c8s-source-lock.json"
+# A confidential-sglang release record for the build tests. release/spec.yaml
+# pins the placeholder until confidential-sglang publishes, and the build
+# refuses the placeholder.
+SGLANG_RECORD = "images-0123456789ab"
+SGLANG_INPUTS = FIXTURES / "confidential-sglang"
+
+
+def fixture_sglang_pin(_spec=None) -> dict:
+    return MAN.confidential_sglang_release.release_pin({"record": SGLANG_RECORD}, SGLANG_INPUTS)
 
 
 @functools.cache
@@ -123,6 +132,7 @@ def build_framework(evidence: dict, base: dict | None = None, tag: str = "v0.17.
         stack.enter_context(mock.patch.object(MAN, "changed_paths", return_value=[]))
         stack.enter_context(mock.patch.object(MAN.release_signature, "verify_release_signature"))
         stack.enter_context(mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"))
+        stack.enter_context(mock.patch.object(MAN, "confidential_sglang", fixture_sglang_pin))
         return MAN.build(tag, MAN.CHART, LOCK, "d" * 40, evidence_path, download_dir)
 
 
@@ -631,10 +641,10 @@ class FrameworkReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(MAN.ManifestError, 'c8s.release'):
                 MAN.validate_spec({**spec, 'c8s': {**spec['c8s'], 'release': version}})
 
-    def test_the_spec_holds_only_c8s_and_images(self):
+    def test_the_spec_holds_only_c8s_images_and_the_confidential_sglang_record(self):
         spec = MAN.read_spec()
         for key, value in (("version", "v0.14.0"), ("model", {}), ("publicHostnames", ["api.example.invalid"])):
-            with self.subTest(key=key), self.assertRaisesRegex(MAN.ManifestError, "exactly c8s and images"):
+            with self.subTest(key=key), self.assertRaisesRegex(MAN.ManifestError, "exactly c8s, images and confidentialSglang"):
                 MAN.validate_spec({**spec, key: value})
 
     def test_the_spec_names_each_image_correctly(self):
@@ -659,7 +669,8 @@ class FrameworkReleaseTests(unittest.TestCase):
 
     def test_the_framework_manifest_names_the_software_and_no_deployment_value(self):
         files = build_framework(publication(published_release_images()))
-        self.assertEqual(sorted(files), ["cds-manifest.json", "confidential-inference-0.17.0.tgz", "release-bundle.json"])
+        self.assertEqual(sorted(files), ["cds-manifest.json", "confidential-inference-0.17.0.tgz", "recipes.json",
+                                         "release-bundle.json"])
         manifest = json.loads(files["release-bundle.json"])
         spec = MAN.read_spec()
         self.assertEqual(manifest["schema"], "confidential.ai/release-manifest/v2")
@@ -670,7 +681,10 @@ class FrameworkReleaseTests(unittest.TestCase):
         })
         self.assertEqual(manifest["source"], {"repository": REPOSITORY, "commit": "d" * 40})
         self.assertEqual(manifest["imagePublication"]["sourceCommit"], "b" * 40)
-        self.assertEqual(manifest["images"], RELEASE_IMAGES)
+        sglang = fixture_sglang_pin()
+        self.assertEqual(manifest["images"], {**RELEASE_IMAGES, **MAN.confidential_sglang_release.chart_images(sglang)})
+        self.assertEqual(manifest["confidentialSglang"], sglang)
+        self.assertEqual(manifest["recipes"]["sha256"], MAN.sha256(files["recipes.json"]))
         self.assertEqual(manifest["c8s"], {"release": spec["c8s"]["release"], "sourceCommit": spec["c8s"]["sourceCommit"],
                                            "coreImages": sorted(spec["c8s"]["coreImages"]),
                                            "seedImages": MAN.seed_images(spec["c8s"])})
@@ -1084,7 +1098,7 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(files["allowlist.json"], STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n"))
         self.assertEqual(yaml.safe_load(files["release-values.yaml"]),
                          {"environment": "staging", "deployment": STAGING_DEPLOYMENT,
-                          "images": RELEASE_IMAGES, "frameworkRelease": {
+                          "images": framework_manifest()["images"], "frameworkRelease": {
                              "name": "v0.17.0", "bundleSha256": MAN.sha256(framework_bytes())}})
         record = json.loads(files["render.json"])
         self.assertEqual(record["environment"], "staging")

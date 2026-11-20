@@ -89,7 +89,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: sglang-router
-          image: {{ default .Values.images.sglangConfidential .Values.images.sglangRouter }}
+          image: {{ include "confidential-inference.routerImage" . }}
           imagePullPolicy: IfNotPresent
           # The same non-root user as the workers, which run this image under
           # the restricted Pod Security level the c8s node enforces.

@@ -63,6 +63,7 @@ from typing import Any
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import confidential_sglang_release
 import release_signature
 import release_spec
 
@@ -70,6 +71,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CHART = ROOT / "helm/confidential-inference"
 MAN = runpy.run_path(str(ROOT / "scripts/build-release-manifest.py"))
 ALLOWLIST_GENERATOR = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
+CONFIDENTIAL_SGLANG_IMAGES = confidential_sglang_release.IMAGE_PREFIX
 ManifestError = MAN["ManifestError"]
 require = MAN["require"]
 sha256 = MAN["sha256"]
@@ -227,8 +229,10 @@ def rendered_images(documents: list[dict[str, Any]]) -> list[str]:
 def image_configs(images: list[str]) -> dict[str, Any]:
     """Return the image configuration of every rendered image.
 
-    release/inputs/image-config.json records each image that this repository
-    does not build. A repository image is read from the registry by digest.
+    release/inputs/image-config.json records each image that neither this
+    repository nor confidential-sglang builds. A repository image and a
+    confidential-sglang image (scripts/confidential_sglang_release.py) are
+    read from the registry by digest.
     """
     record = MAN["read_json"](release_spec.IMAGE_CONFIG)
     require(isinstance(record, dict), "release image configuration is not a mapping")
@@ -236,7 +240,7 @@ def image_configs(images: list[str]) -> dict[str, Any]:
             "release/inputs/image-config.json must not record a repository image")
     for image in images:
         if image not in record:
-            require(image.startswith(release_spec.REPOSITORY_IMAGES),
+            require(image.startswith((release_spec.REPOSITORY_IMAGES, CONFIDENTIAL_SGLANG_IMAGES)),
                     f"release/inputs/image-config.json has no record for {image}")
             try:
                 record[image] = ALLOWLIST_GENERATOR["image_config"](image)

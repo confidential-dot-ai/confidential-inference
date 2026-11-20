@@ -25,6 +25,7 @@ image digests. The release commit is the image source commit.
 | `node-manifest.json` | `fetch-node-manifest.py` | The C8s `manifest.json` of the node image. It holds MRTD, RTMR1, and RTMR2 |
 | `cds-manifest.json` | `fetch-node-manifest.py` | The C8s `manifest.json` of the CDS guest image. The release manifest binds its SHA-256 as `cdsImage.manifestSha256`, and the release publishes it as an asset; a deployment's `cds-pin.json` takes its launch digest from it |
 | `inputs/image-config.json` | `generate-release-allowlist.py --refresh-image-config` | The `ENV`, `ENTRYPOINT`, and `CMD` of every image in `spec.yaml` that this repository does not build, and of the C8s core images. Review the diff by hand |
+| `inputs/confidential-sglang/images-<12hex>.json` | `confidential_sglang_release.py pin` | The confidential-sglang release record that `spec.yaml` `confidentialSglang.record` names: the engine and router images by digest, their source commit, run ID and two build digests (`docs/confidential-sglang-images.md`) |
 | `inputs/cdi/nvidia-<driver>.json` | A person, from a reviewed record | The NVIDIA CDI environment variables and driver mounts of one driver version |
 | `inputs/c8s-source-lock.json` | `bump-c8s.py` | The pinned C8s commits and source hashes. The signed manifest records its path and digest |
 | `inputs/c8s-attestation-protocols/<commit>.json` | `bump-c8s.py` | The attestation protocol of each C8s commit. `check-c8s-protocol-lockstep.py` compares them with the source lock |
@@ -41,9 +42,10 @@ evidence:
 
 | Asset | Contents |
 | --- | --- |
-| `release-bundle.json` | The framework release manifest. The workflow signs it. It must match `api/release-manifest-v2.schema.json`. It names every image digest (`images`), the C8s release and core images (`c8s`), the node image and its measurements, the CDS guest image (`cdsImage`), the chart, and the source lock |
+| `release-bundle.json` | The framework release manifest. The workflow signs it. It must match `api/release-manifest-v2.schema.json`. It names every image digest (`images`), the C8s release and core images (`c8s`), the node image and its measurements, the CDS guest image (`cdsImage`), the confidential-sglang record (`confidentialSglang`), the recipes (`recipes`), the chart, and the source lock |
 | `confidential-inference-X.Y.Z.tgz` | The chart package at version X.Y.Z (the tag without `v`). The manifest binds its SHA-256 as `chart.archiveSha256` and the registry reference the publish job pushes it to as `chart.reference` (`ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference:X.Y.Z`). `chart.sha256` is the tree hash of `helm/confidential-inference` at the tag |
 | `cds-manifest.json` | The C8s `manifest.json` of the pinned CDS guest image (`release/cds-manifest.json`). The manifest binds its SHA-256 as `cdsImage.manifestSha256` |
+| `recipes.json` | Every recipe of `recipes/` with its files (`recipes/README.md`). The manifest binds its SHA-256 as `recipes.sha256` and the SHA-256 of each `recipe.yaml` |
 
 The build takes the image digests from two signed sources:
 

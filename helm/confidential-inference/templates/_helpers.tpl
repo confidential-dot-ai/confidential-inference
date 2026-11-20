@@ -234,9 +234,21 @@ holds no model; the worker gets the model from a model server
 (inference.model.download) or a C8s model volume. */}}
 {{- define "confidential-inference.workerImage" -}}
 {{- if hasKey .Values.inference "workerImage" -}}
-{{- fail "inference.workerImage was removed: every worker runs the one engine image, images.sglangConfidential; choose the model with inference.model" -}}
+{{- fail "inference.workerImage was removed: every worker runs the one engine image, images[inference.engineImage]; choose the model with inference.model" -}}
 {{- end -}}
-{{- required "images.sglangConfidential is required" .Values.images.sglangConfidential -}}
+{{- $key := .Values.inference.engineImage | default "sglangConfidential" -}}
+{{- required (printf "images.%s is required (inference.engineImage)" $key) (index .Values.images $key) -}}
+{{- end }}
+
+{{/* The router image: images[router.image] when a recipe names one
+(confidentialSglangRouter), else images.sglangRouter, else the engine image
+images.sglangConfidential. */}}
+{{- define "confidential-inference.routerImage" -}}
+{{- if .Values.router.image -}}
+{{- required (printf "images.%s is required (router.image)" .Values.router.image) (index .Values.images .Values.router.image) -}}
+{{- else -}}
+{{- default .Values.images.sglangConfidential .Values.images.sglangRouter -}}
+{{- end -}}
 {{- end }}
 
 {{/* The --max-running-requests of one worker: the simulator value, the

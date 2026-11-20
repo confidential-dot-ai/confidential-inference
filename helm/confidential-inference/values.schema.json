@@ -39,6 +39,8 @@
         "gateway": {"$ref": "#/definitions/image"},
         "sglangConfidential": {"$ref": "#/definitions/image"},
         "sglangRouter": {"$ref": "#/definitions/image"},
+        "confidentialSglangEngine": {"$ref": "#/definitions/image"},
+        "confidentialSglangRouter": {"$ref": "#/definitions/image"},
         "rolloutClient": {"$ref": "#/definitions/image"},
         "telemetryCollector": {"$ref": "#/definitions/image"},
         "nodeExporter": {"$ref": "#/definitions/image"},
@@ -126,6 +128,7 @@
         "speculativeAlgorithm": {"type": "string"},
         "moeRunnerBackend": {"type": "string"},
         "flashinferDisableJit": {"type": "boolean"},
+        "engineImage": {"enum": ["sglangConfidential", "confidentialSglangEngine"]},
         "workerExtraArgs": {"type": "array", "items": {"type": "string"}},
         "contextLength": {"type": "integer", "minimum": 0, "maximum": 16777216},
         "maxRunningRequests": {"type": "integer", "minimum": 0, "maximum": 65536},
@@ -372,6 +375,7 @@
       "properties": {
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
         "requestTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 172800},
+        "image": {"enum": ["", "sglangRouter", "confidentialSglangRouter"]},
         "maxConcurrentRequests": {"type": "integer", "minimum": 0, "maximum": 65536},
         "queueSize": {"type": "integer", "minimum": 0, "maximum": 65536},
         "queueTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600}
