@@ -637,6 +637,7 @@ def main() -> None:
     assert production_settings['streamIdleTimeoutSeconds'] == 60
     check_long_request_limits(production)
     check_flashinfer_disable_jit(production)
+    check_worker_probes(production)
     production_workers = [item for item in production if item['kind'] == 'StatefulSet'
                           and item['metadata']['name'].startswith('inference-worker-')]
     assert len(production_workers) == 2
@@ -1082,6 +1083,34 @@ def check_flashinfer_disable_jit(production: list[dict]) -> None:
                                '--set-string', 'inference.flashinferDisableJit=yes'],
                               capture_output=True, text=True)
     assert rejected.returncode != 0 and 'flashinferDisableJit' in rejected.stderr, rejected.stderr
+
+
+def check_worker_probes(production: list[dict]) -> None:
+    """Liveness does not generate; startup, readiness and the router do.
+
+    On 2026-11-19 a 67 s FlashInfer JIT compile stalled each staging worker's
+    scheduler. /health then ran a generation, so the liveness probe killed
+    both workers mid-compile. With SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION
+    false, /health answers without the scheduler and /health_generate still
+    generates one token (SGLang http_server.py health_generate).
+    """
+    for documents in (production, render()):
+        workers = [item for item in documents if item['kind'] == 'StatefulSet'
+                   and item['metadata']['name'].startswith('inference-worker')]
+        assert workers
+        for worker in workers:
+            container = worker['spec']['template']['spec']['containers'][0]
+            env = {item['name']: item.get('value') for item in container['env']}
+            assert env['SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION'] == 'false'
+            paths = {probe: container[probe]['httpGet']['path']
+                     for probe in ('startupProbe', 'readinessProbe', 'livenessProbe')}
+            assert paths == {'startupProbe': '/health_generate', 'readinessProbe': '/health_generate',
+                             'livenessProbe': '/health'}, paths
+        router = next(item for item in documents if item['kind'] == 'Deployment'
+                      and item['metadata']['name'] == 'sglang-router')
+        args = router['spec']['template']['spec']['containers'][0]['args']
+        assert [arg for arg in args if arg.startswith('--health-check-endpoint')] == [
+            '--health-check-endpoint=/health_generate'], args
 
 
 if __name__ == "__main__":
