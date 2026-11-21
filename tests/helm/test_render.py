@@ -1083,6 +1083,17 @@ def check_cold_path_warmup(production: list[dict]) -> None:
                               '--set', 'inference.workerExtraArgs[0]=--warmups=other'],
                              capture_output=True, text=True)
     assert refused.returncode != 0 and 'sets --warmups' in refused.stderr, refused.stderr
+    engine_set = ('--set', 'inference.engineImage=confidentialSglangEngine',
+                  '--set', 'images.confidentialSglangEngine=ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:' + '0' * 64)
+    # argparse takes a unique prefix: --warmup would replace the chart's --warmups.
+    abbreviated = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files, *engine_set,
+                                  '--set', 'inference.workerExtraArgs[0]=--warmup=other'], capture_output=True, text=True)
+    assert abbreviated.returncode != 0 and 'sets --warmups' in abbreviated.stderr, abbreviated.stderr
+    # The warmup's longest prompt is 32,768 tokens; a shorter context length would fail at startup.
+    short = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files, *engine_set,
+                            '--set-json', 'inference.workerExtraArgs=[]', '--set', 'inference.contextLength=8192'], capture_output=True, text=True)
+    assert short.returncode != 0 and 'below 32,770' in short.stderr, short.stderr
+    assert render(*production_files, *engine_set, '--set-json', 'inference.workerExtraArgs=[]', '--set', 'inference.contextLength=65536')
 
 
 def check_flashinfer_disable_jit(production: list[dict]) -> None:

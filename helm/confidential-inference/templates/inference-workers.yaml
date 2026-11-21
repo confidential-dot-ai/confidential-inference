@@ -9,11 +9,20 @@
 {{- range $flag, $value := dict "--context-length" .Values.inference.contextLength "--max-running-requests" .Values.inference.maxRunningRequests "--warmups" (ternary "confidential_cold_path" "" (eq (.Values.inference.engineImage | default "sglangConfidential") "confidentialSglangEngine")) }}
 {{- if $value }}
 {{- range $.Values.inference.workerExtraArgs }}
-{{- if or (eq . $flag) (hasPrefix (printf "%s=" $flag) .) }}
+{{- $given := index (splitList "=" .) 0 }}
+{{- /* SGLang's argparse accepts a unique prefix of a flag (--warmup for --warmups). */}}
+{{- if and (hasPrefix "--" $given) (gt (len $given) 2) (hasPrefix $given $flag) }}
 {{- fail (printf "inference.workerExtraArgs sets %s, which the chart value sets too: remove it from workerExtraArgs" $flag) }}
 {{- end }}
 {{- end }}
 {{- end }}
+{{- end }}
+{{- /* The cold-path warmup's prefill step sends prompts of up to 32,768 tokens
+(confidential-sglang warmup.py prefill_shapes). SGLang refuses a prompt at or above
+the context length, and the server would fail at startup. Until the warmup caps its
+lengths at the context length, a shorter context length is refused here. */}}
+{{- if and (eq (.Values.inference.engineImage | default "sglangConfidential") "confidentialSglangEngine") .Values.inference.contextLength (lt (int .Values.inference.contextLength) 32770) }}
+{{- fail (printf "inference.contextLength %d is below 32,770, the longest cold-path warmup prompt plus one token" (int .Values.inference.contextLength)) }}
 {{- end }}
 apiVersion: v1
 kind: Service

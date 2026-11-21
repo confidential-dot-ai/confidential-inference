@@ -160,7 +160,9 @@ def check(recipe: Any, directory_name: str) -> None:
     for argument in extra:
         text(argument, "worker.extraArgs item", FLAG)
         flag = argument.split("=", 1)[0]
-        require(flag not in CHART_FLAGS, f"worker.extraArgs sets {flag}, which the chart sets: use its recipe field")
+        # SGLang's argparse also accepts a unique prefix of a flag (--warmup for --warmups).
+        taken = sorted(chart for chart in CHART_FLAGS if len(flag) > 2 and chart.startswith(flag))
+        require(not taken, f"worker.extraArgs sets {taken[0] if taken else flag}, which the chart sets: use its recipe field")
 
     routing = fields(recipe["routing"], "routing", {"kind", "policy"}, {"image"})
     require(routing["kind"] == "sglang-router", "routing.kind must be sglang-router")

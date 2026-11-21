@@ -239,6 +239,7 @@ class RecipeTests(unittest.TestCase):
             (set_path("behavior", "apis", "embeddings", value={}), "behavior.apis keys"),
             (set_path("behavior", "warmup", value=[]), "unknown fields"),
             (set_path("worker", "extraArgs", value=["--warmups=other"]), "which the chart sets"),
+            (set_path("worker", "extraArgs", value=["--warmup=other"]), "sets --warmups, which the chart sets"),
         ]
         for edit, message in cases:
             with self.subTest(message=message):
