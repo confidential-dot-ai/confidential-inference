@@ -643,6 +643,7 @@ def main() -> None:
     assert production_settings['streamIdleTimeoutSeconds'] == 60
     check_long_request_limits(production)
     check_flashinfer_disable_jit(production)
+    check_cold_path_warmup(production)
     check_worker_probes(production)
     production_workers = [item for item in production if item['kind'] == 'StatefulSet'
                           and item['metadata']['name'] == 'inference-worker']
@@ -1057,6 +1058,31 @@ def check_long_request_limits(production: list[dict]) -> None:
         assert [arg for arg in container_args if arg.startswith('--context-length')] == ['--context-length=1048576']
         assert [arg for arg in container_args if arg.startswith('--max-running-requests')] == [
             '--max-running-requests=8']
+
+
+def check_cold_path_warmup(production: list[dict]) -> None:
+    """Every confidential-sglang engine worker runs --warmups=confidential_cold_path,
+    before the server listens (staging-39086210fdc6 compiled 20 kernels after
+    ready without it). This repository's own image has no such warmup, so its
+    worker gets none, and only the chart may set --warmups."""
+    def worker_args(documents):
+        workers = [item for item in documents if item['kind'] == 'StatefulSet'
+                   and item['metadata']['name'] == 'inference-worker']
+        assert workers
+        return [worker['spec']['template']['spec']['containers'][0]['args'] for worker in workers]
+    production_files = ('-f', str(ROOT / 'tests/fixtures/deployments/production-values.yaml'),
+                        '-f', str(ROOT / 'tests/release-v1/fixtures/release-values.yaml'))
+    assert all(not any(a.startswith('--warmups') for a in args) for args in worker_args(production))
+    engine = render(*production_files, '--set', 'inference.engineImage=confidentialSglangEngine',
+                    '--set', 'images.confidentialSglangEngine=ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:' + '0' * 64)
+    for args in worker_args(engine):
+        assert [a for a in args if a.startswith('--warmups')] == ['--warmups=confidential_cold_path'], args
+    refused = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files,
+                              '--set', 'inference.engineImage=confidentialSglangEngine',
+                              '--set', 'images.confidentialSglangEngine=ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:' + '0' * 64,
+                              '--set', 'inference.workerExtraArgs[0]=--warmups=other'],
+                             capture_output=True, text=True)
+    assert refused.returncode != 0 and 'sets --warmups' in refused.stderr, refused.stderr
 
 
 def check_flashinfer_disable_jit(production: list[dict]) -> None:

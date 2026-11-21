@@ -6,7 +6,7 @@
 {{- if and (gt (int .Values.inference.gpusPerReplica) 0) (eq (len .Values.inference.gpuArchitectures) 0) }}
 {{- fail "inference.gpuArchitectures is required when inference.gpusPerReplica is greater than zero" }}
 {{- end }}
-{{- range $flag, $value := dict "--context-length" .Values.inference.contextLength "--max-running-requests" .Values.inference.maxRunningRequests "--warmups" "confidential_cold_path" }}
+{{- range $flag, $value := dict "--context-length" .Values.inference.contextLength "--max-running-requests" .Values.inference.maxRunningRequests "--warmups" (ternary "confidential_cold_path" "" (eq (.Values.inference.engineImage | default "sglangConfidential") "confidentialSglangEngine")) }}
 {{- if $value }}
 {{- range $.Values.inference.workerExtraArgs }}
 {{- if or (eq . $flag) (hasPrefix (printf "%s=" $flag) .) }}
@@ -224,12 +224,14 @@ spec:
             {{- if $.Values.inference.speculativeAlgorithm }}
             - --speculative-algorithm={{ $.Values.inference.speculativeAlgorithm }}
             {{- end }}
+            {{- if eq ($.Values.inference.engineImage | default "sglangConfidential") "confidentialSglangEngine" }}
             # confidential-sglang's cold-path warmup (python/sglang/srt/entrypoints/warmup.py):
             # prefill lengths, every sampling path and decode batch sizes, run in the
             # server lifespan before it listens. The probes and the router see the
             # worker only when it is warm (staging-39086210fdc6 compiled 20 kernels
-            # after ready without it).
+            # after ready without it). This repository's own image does not have it.
             - --warmups=confidential_cold_path
+            {{- end }}
             {{- range $.Values.inference.workerExtraArgs }}
             - {{ . | quote }}
             {{- end }}
