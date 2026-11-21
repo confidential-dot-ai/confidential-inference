@@ -371,7 +371,7 @@
     },
     "router": {
       "type": "object",
-      "required": ["attestedWorkload", "discovery", "requestTimeoutSeconds", "maxConcurrentRequests", "queueSize", "queueTimeoutSeconds"],
+      "required": ["attestedWorkload", "discovery", "requestTimeoutSeconds", "maxConcurrentRequests", "queueSize", "queueTimeoutSeconds", "workerWaitSeconds"],
       "properties": {
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
         "discovery": {
@@ -399,7 +399,8 @@
         "image": {"enum": ["", "sglangRouter", "confidentialSglangRouter"]},
         "maxConcurrentRequests": {"type": "integer", "minimum": 0, "maximum": 65536},
         "queueSize": {"type": "integer", "minimum": 0, "maximum": 65536},
-        "queueTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600}
+        "queueTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "workerWaitSeconds": {"type": "integer", "minimum": 0, "maximum": 600}
       }
     },
     "telemetry": {

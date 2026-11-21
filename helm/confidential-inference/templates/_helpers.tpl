@@ -256,6 +256,15 @@ images.sglangConfidential. */}}
 {{- end -}}
 {{- end }}
 
+{{/* "true" when the router runs this repository's patched router,
+images.sglangRouter (images/sglang-router/patches). Flags that only those
+patches add render only then: the confidential-sglang router and the engine
+image's upstream router do not parse them. */}}
+{{- define "confidential-inference.routerPatched" -}}
+{{- $key := .Values.router.image | default "sglangRouter" -}}
+{{- if and (eq $key "sglangRouter") .Values.images.sglangRouter -}}true{{- end -}}
+{{- end }}
+
 {{/* The --max-running-requests of one worker: the simulator value, the
 chart value, or the flag in workerExtraArgs. 0 when the worker uses its own
 default. */}}
