@@ -131,6 +131,10 @@ spec:
             # The settings are environment, so the exact allowlist pins them.
             - name: GATEWAY_RUNTIME_CONFIG
               value: {{ include "confidential-inference.gatewaySettings" . | quote }}
+            {{- if .Values.modelIdentity.enabled }}
+            - name: C8S_MESH_PEER_WORKLOADS
+              value: {{ .Values.router.attestedWorkload | quote }}
+            {{- end }}
             - name: GATEWAY_ADMIN_CONFIG_FILE
               value: {{ printf "/run/c8s/secrets/%s" .Values.gateway.c8sSecrets.adminConfig.name | quote }}
             # What the gateway sends and where: pinned in the allowlist with

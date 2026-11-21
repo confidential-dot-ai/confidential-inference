@@ -1,6 +1,7 @@
 {{- /* The gateway settings and the router routes are environment, so the
        exact allowlist pins them, and a change rolls the pod. */}}
 {{- define "confidential-inference.modelRoutes" -}}
+{{- include "confidential-inference.checkModelIdentity" . -}}
 {{- $routes := .Values.runtimeConfig.modelRoutes }}
 {{- if not $routes }}
 {{- $routes = dict .Values.inference.model.name (list .Values.inference.model.name) }}
