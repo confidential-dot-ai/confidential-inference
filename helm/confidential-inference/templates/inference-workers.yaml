@@ -6,14 +6,25 @@
 {{- if and (gt (int .Values.inference.gpusPerReplica) 0) (eq (len .Values.inference.gpuArchitectures) 0) }}
 {{- fail "inference.gpuArchitectures is required when inference.gpusPerReplica is greater than zero" }}
 {{- end }}
-{{- range $flag, $value := dict "--context-length" .Values.inference.contextLength "--max-running-requests" .Values.inference.maxRunningRequests }}
+{{- range $flag, $value := dict "--context-length" .Values.inference.contextLength "--max-running-requests" .Values.inference.maxRunningRequests "--warmups" (ternary "confidential_cold_path" "" (eq (.Values.inference.engineImage | default "sglangConfidential") "confidentialSglangEngine")) }}
 {{- if $value }}
 {{- range $.Values.inference.workerExtraArgs }}
-{{- if or (eq . $flag) (hasPrefix (printf "%s=" $flag) .) }}
+{{- $given := index (splitList "=" .) 0 }}
+{{- /* SGLang's argparse accepts a unique prefix of a flag (--warmup for --warmups). */}}
+{{- if and (hasPrefix "--" $given) (gt (len $given) 2) (hasPrefix $given $flag) }}
 {{- fail (printf "inference.workerExtraArgs sets %s, which the chart value sets too: remove it from workerExtraArgs" $flag) }}
 {{- end }}
 {{- end }}
 {{- end }}
+{{- end }}
+{{- /* The cold-path warmup's prefill step sends prompts of up to 32,768 tokens
+(confidential-sglang warmup.py prefill_shapes). SGLang refuses a prompt at or above
+the context length, and the server would fail at startup. Until the warmup caps its
+lengths at the context length, a shorter context length is refused here. */}}
+{{- /* So the context length is required here (it may not come from workerExtraArgs, which
+the flag check above then refuses, or from the model's unknown default). */}}
+{{- if and (eq (.Values.inference.engineImage | default "sglangConfidential") "confidentialSglangEngine") (lt (int (.Values.inference.contextLength | default 0)) 32770) }}
+{{- fail (printf "inference.contextLength is required with the confidential-sglang engine and must be at least 32,770, the longest cold-path warmup prompt plus one token (it is %d)" (int (.Values.inference.contextLength | default 0))) }}
 {{- end }}
 apiVersion: v1
 kind: Service
@@ -223,6 +234,14 @@ spec:
             - --moe-runner-backend={{ $.Values.inference.moeRunnerBackend }}
             {{- if $.Values.inference.speculativeAlgorithm }}
             - --speculative-algorithm={{ $.Values.inference.speculativeAlgorithm }}
+            {{- end }}
+            {{- if eq ($.Values.inference.engineImage | default "sglangConfidential") "confidentialSglangEngine" }}
+            # confidential-sglang's cold-path warmup (python/sglang/srt/entrypoints/warmup.py):
+            # prefill lengths, every sampling path and decode batch sizes, run in the
+            # server lifespan before it listens. The probes and the router see the
+            # worker only when it is warm (staging-39086210fdc6 compiled 20 kernels
+            # after ready without it). This repository's own image does not have it.
+            - --warmups=confidential_cold_path
             {{- end }}
             {{- range $.Values.inference.workerExtraArgs }}
             - {{ . | quote }}
