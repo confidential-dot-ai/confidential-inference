@@ -21,8 +21,10 @@
 (confidential-sglang warmup.py prefill_shapes). SGLang refuses a prompt at or above
 the context length, and the server would fail at startup. Until the warmup caps its
 lengths at the context length, a shorter context length is refused here. */}}
-{{- if and (eq (.Values.inference.engineImage | default "sglangConfidential") "confidentialSglangEngine") .Values.inference.contextLength (lt (int .Values.inference.contextLength) 32770) }}
-{{- fail (printf "inference.contextLength %d is below 32,770, the longest cold-path warmup prompt plus one token" (int .Values.inference.contextLength)) }}
+{{- /* So the context length is required here (it may not come from workerExtraArgs, which
+the flag check above then refuses, or from the model's unknown default). */}}
+{{- if and (eq (.Values.inference.engineImage | default "sglangConfidential") "confidentialSglangEngine") (lt (int (.Values.inference.contextLength | default 0)) 32770) }}
+{{- fail (printf "inference.contextLength is required with the confidential-sglang engine and must be at least 32,770, the longest cold-path warmup prompt plus one token (it is %d)" (int (.Values.inference.contextLength | default 0))) }}
 {{- end }}
 apiVersion: v1
 kind: Service

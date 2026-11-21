@@ -1073,27 +1073,34 @@ def check_cold_path_warmup(production: list[dict]) -> None:
     production_files = ('-f', str(ROOT / 'tests/fixtures/deployments/production-values.yaml'),
                         '-f', str(ROOT / 'tests/release-v1/fixtures/release-values.yaml'))
     assert all(not any(a.startswith('--warmups') for a in args) for args in worker_args(production))
-    engine = render(*production_files, '--set', 'inference.engineImage=confidentialSglangEngine',
-                    '--set', 'images.confidentialSglangEngine=ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:' + '0' * 64)
+    engine_set = ('--set', 'inference.engineImage=confidentialSglangEngine',
+                  '--set', 'images.confidentialSglangEngine=ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:' + '0' * 64)
+    sized = (*engine_set, '--set-json', 'inference.workerExtraArgs=[]', '--set', 'inference.contextLength=65536')
+    engine = render(*production_files, *sized)
     for args in worker_args(engine):
         assert [a for a in args if a.startswith('--warmups')] == ['--warmups=confidential_cold_path'], args
-    refused = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files,
-                              '--set', 'inference.engineImage=confidentialSglangEngine',
-                              '--set', 'images.confidentialSglangEngine=ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:' + '0' * 64,
+    refused = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files, *sized,
                               '--set', 'inference.workerExtraArgs[0]=--warmups=other'],
                              capture_output=True, text=True)
     assert refused.returncode != 0 and 'sets --warmups' in refused.stderr, refused.stderr
-    engine_set = ('--set', 'inference.engineImage=confidentialSglangEngine',
-                  '--set', 'images.confidentialSglangEngine=ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:' + '0' * 64)
     # argparse takes a unique prefix: --warmup would replace the chart's --warmups.
-    abbreviated = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files, *engine_set,
+    abbreviated = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files, *sized,
                                   '--set', 'inference.workerExtraArgs[0]=--warmup=other'], capture_output=True, text=True)
     assert abbreviated.returncode != 0 and 'sets --warmups' in abbreviated.stderr, abbreviated.stderr
     # The warmup's longest prompt is 32,768 tokens; a shorter context length would fail at startup.
     short = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files, *engine_set,
                             '--set-json', 'inference.workerExtraArgs=[]', '--set', 'inference.contextLength=8192'], capture_output=True, text=True)
-    assert short.returncode != 0 and 'below 32,770' in short.stderr, short.stderr
+    assert short.returncode != 0 and 'at least 32,770' in short.stderr, short.stderr
     assert render(*production_files, *engine_set, '--set-json', 'inference.workerExtraArgs=[]', '--set', 'inference.contextLength=65536')
+    # The context length may not come from workerExtraArgs or the model's default.
+    unset = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files, *engine_set,
+                            '--set-json', 'inference.workerExtraArgs=["--context-length=8192"]',
+                            '--set', 'inference.contextLength=0'], capture_output=True, text=True)
+    assert unset.returncode != 0 and 'contextLength is required' in unset.stderr, unset.stderr
+    given = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files, *engine_set,
+                            '--set-json', 'inference.workerExtraArgs=["--context=8192"]',
+                            '--set', 'inference.contextLength=65536'], capture_output=True, text=True)
+    assert given.returncode != 0 and 'sets --context-length' in given.stderr, given.stderr
 
 
 def check_flashinfer_disable_jit(production: list[dict]) -> None:
