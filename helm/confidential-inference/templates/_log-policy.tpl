@@ -82,6 +82,9 @@ structured:
       # fixed name, never a path; files is a count.
       cache: {string: '^(flashinfer|triton|inductor|deep_gemm|sglang_jit|cuda|tilelang|cute_dsl|tvm_ffi|other)$'}
       files: {int: true}
+      # The Triton kernels that compiled: their function names in code (file
+      # stems of the Triton cache), at most 8, comma-joined; empty otherwise.
+      kernels: {string: '^([A-Za-z_][A-Za-z0-9_]{0,63}(,[A-Za-z_][A-Za-z0-9_]{0,63}){0,7})?$'}
 textSources: [c8s, telemetry-collector, node-log-agent]
 # The containers C8s injects into a member pod (C8s v0.101.5
 # pkg/workloadclaims). The front door's namespace (c8s.frontDoorNamespace) and

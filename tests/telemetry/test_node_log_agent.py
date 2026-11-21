@@ -97,6 +97,8 @@ FILES = {
         j(event="worker_exit", exit_code=None, signal="SIGKILL", prompt=MARK),
         j(event="jit_compile", cache="flashinfer", files=2),
         j(event="jit_compile", cache=f"/tmp/.cache/{MARK}", files=1, path=f"/tmp/{MARK}.so"),
+        j(event="jit_compile", cache="triton", files=3, kernels="_fwd_kernel,fused_gdn_gating"),
+        j(event="jit_compile", cache="triton", files=1, kernels=f"/tmp/{MARK}/x.cubin"),
         f"[2026-11-16 10:00:00 TP0] Prefill batch. prompt={MARK} Authorization: Bearer {TOKEN}",
     ],
     (f"{NAMESPACE}_inference-worker-0_{UID}3", "c8s-cert"): [
@@ -131,7 +133,11 @@ EXPECTED = {
                          {"event": "worker_error"},
                          {"event": "worker_exit", "exit_code": None, "signal": "SIGKILL"},
                          {"event": "jit_compile", "cache": "flashinfer", "files": 2},
-                         {"event": "jit_compile", "files": 1}],
+                         {"event": "jit_compile", "files": 1},
+                         # Kernel names are identifiers; anything else (a path) is dropped.
+                         {"event": "jit_compile", "cache": "triton", "files": 3,
+                          "kernels": "_fwd_kernel,fused_gdn_gating"},
+                         {"event": "jit_compile", "cache": "triton", "files": 1}],
     "c8s": [{"msg": "certificate issued to [ip]", "level": "info"},
             {"msg": "upstream [ip] slow; Authorization=[REDACTED]", "level": "warn"}],
     "telemetry-collector": [{"msg": "Exporting failed. Will retry the request after interval.", "level": "warn"}],

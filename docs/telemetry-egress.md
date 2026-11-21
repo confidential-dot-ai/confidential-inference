@@ -178,7 +178,7 @@ Worker bodies (`images/sglang-confidential/README.md`):
 | `gpu_oom`, `cuda_error`, `nccl_error` | `code`, `location` | GPU faults by a fixed code. |
 | `worker_error` | `error_class`, `exception`, `location` | An error that no request owns. Unknown errors are `unclassified`. |
 | `worker_exit` | `exit_code`, `signal` | The server stopped. |
-| `jit_compile` | `cache`, `files` | A kernel compiled after `worker_ready`. `cache` is a fixed compiler name, never a path; `files` is a count. A run-time compile stalls the worker and is not part of the measured image. |
+| `jit_compile` | `cache`, `files`, `kernels` | A kernel compiled after `worker_ready`. `cache` is a fixed compiler name, never a path; `files` is a count; `kernels` names the Triton kernels by their function names in code (at most 8, comma-joined; empty for other caches). A run-time compile stalls the worker and is not part of the measured image. |
 
 `exception` is a Python type name and `location` is a frame of SGLang code
 (`sglang/<path>.py:<line>`). Both are checked against a pattern; neither can
