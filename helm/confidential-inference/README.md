@@ -287,3 +287,34 @@ The gateway sends an `X-SMG-Routing-Key` header on every request it can
 identify a conversation for (`services/gateway/src/routing_key.rs`). The
 removed PD router's `manual` policy read it. The aggregated router's
 `cache_aware` policy does not: it picks a worker by prefix match and load.
+
+## Model identity
+
+`modelIdentity.enabled: true` pins the model manifest SHA-256 in the worker's
+startup arguments. Set `inference.engineImage: confidentialSglangEngine` to a
+released image that supports `--model-manifest-sha256`. The digest is taken
+from the `revisionMetadata` entry of `inference.model.mountVerification`.
+The generic worker checks every file before it starts the engine, regardless
+of whether the files came from a download or an immutable C8s volume.
+
+The gateway's exact `C8S_MESH_PEER_WORKLOADS` environment value permits only
+`router.attestedWorkload`; the router's permits only
+`inference.attestedWorkload`. The measured C8s node binds this value to its
+mesh endpoint. Each outbound connection requires a CDS-authenticated peer
+with that matched workload under the same allowlist digest. Kubernetes
+worker discovery can select an address but cannot authorize its identity.
+The allowlist renderer refuses a pinned C8s CLI without this enforcement.
+A framework release must pin the new C8s node/core images and engine before
+this mode can be deployed; the mode defaults to disabled.
+
+This first version supports one model with any number of regular worker
+replicas. Public aliases may point only to that model. Workload overrides,
+extra engine arguments, prefill/decode pairs, and speculative model inputs
+are refused so they cannot replace the checked model. A declared network
+exit cannot cover the inference hop. All of these checks keep the existing
+`c8s.allowlist/v1` format.
+
+The startup check does not protect subsequent disk reads. A scratch download
+still needs storage-integrity protection; that is separate from these model
+and routing pins. Existing streams and certificate lifetimes also do not
+provide instantaneous policy revocation.

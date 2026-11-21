@@ -1,5 +1,10 @@
 environment: example
 
+# Requires the C8s peer-workload enforcer and the generic confidential-sglang
+# manifest check. The release renderer refuses an older C8s CLI.
+modelIdentity:
+  enabled: false
+
 # The deployment name, for example staging-0123456789ab: one immutable
 # snapshot of the environment. Only scripts/render-allowlist.py sets it
 # (--deployment); a deployment values file cannot. The telemetry collector
