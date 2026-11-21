@@ -23,7 +23,7 @@ use confidential_gateway::{
     log_privacy,
     metrics::{GatewayMetrics, metrics_router},
     protection::ProtectionConfig,
-    router_with_usage,
+    router_with_routing_keys, routing_key,
     settings::GatewaySettings,
 };
 use hyper_util::rt::{TokioExecutor, TokioTimer};
@@ -217,6 +217,7 @@ async fn main() -> Result<()> {
     let metrics = Arc::new(GatewayMetrics::new(args.environment.clone()));
     let pepper = wait_for_bounded_file(&args.api_key_pepper_file, 4_096, secret_wait)?;
     let key_pseudonyms = log_privacy::KeyPseudonyms::from_pepper(&pepper);
+    let routing_keys = routing_key::RoutingKeys::from_pepper(&pepper);
     let keys = Arc::new(
         KeyStore::new(pepper, &args.environment)
             .map_err(|_| anyhow::anyhow!("the API key pepper must be at least 32 bytes"))?
@@ -261,7 +262,7 @@ async fn main() -> Result<()> {
         tokio::spawn(recorder.clone().deliver(admin.clone()));
         recorder
     });
-    let public = router_with_usage(
+    let public = router_with_routing_keys(
         GatewayConfig {
             catalog_model_ids,
             inference_model_ids,
@@ -275,6 +276,7 @@ async fn main() -> Result<()> {
         metrics.clone(),
         http,
         usage.clone(),
+        Some(routing_keys),
     );
     let public = with_instance_header(public, args.gateway_instance_id.as_deref())?;
     let admin_certificate =

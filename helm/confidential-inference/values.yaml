@@ -360,6 +360,19 @@ router:
   # gateway.protection.upstreamTimeoutSeconds, so the gateway, not the
   # router, ends a long request. The upstream default is 1800.
   requestTimeoutSeconds: 14460
+  # cache_aware: one router picks a worker by prefix match and load.
+  # consistent_hashing: each conversation's routing key (the gateway derives it
+  # from the API key pepper, so every gateway agrees) maps to one worker, and
+  # every router with the same worker list maps it to the same one. Use it when
+  # more than one router serves the same workers.
+  policy: cache_aware
+  # consistent_hashing only: a worker takes a conversation's request while it
+  # has fewer than ceil(factor x (requests in flight + 1) / healthy workers) in
+  # flight from this router; past that the request goes to the next worker on
+  # the ring. Bounds how unevenly the hash splits conversations. 0 = no bound.
+  # Only images.sglangRouter has the patch: the flag renders only when the
+  # router runs that image (router.image empty or sglangRouter).
+  consistentHashingLoadFactor: 1.25
   # Router admission (images/sglang-router, admission-caps.patch). 0 renders
   # no flag: the router admits every request and the workers queue them.
   # A value above 0 is a concurrency ceiling (429 above it, after a wait in a

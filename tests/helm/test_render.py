@@ -643,6 +643,7 @@ def main() -> None:
     assert production_settings['streamIdleTimeoutSeconds'] == 60
     check_long_request_limits(production)
     check_worker_wait()
+    check_router_policy()
     check_flashinfer_disable_jit(production)
     check_worker_probes(production)
     production_workers = [item for item in production if item['kind'] == 'StatefulSet'
@@ -1080,6 +1081,27 @@ def check_worker_wait() -> None:
         ['--worker-wait-secs=5']
     assert wait_args('--set', 'router.workerWaitSeconds=0') == []
     assert wait_args('--set', 'router.image=confidentialSglangRouter') == []
+
+
+def check_router_policy() -> None:
+    """router.policy picks the policy flags; the bounded-load factor renders
+    only for this repository's patched router (consistent-hash-bounded-load.patch)."""
+    def policy_args(*arguments):
+        documents = [item for item in yaml.safe_load_all(helm(
+            'template', 'confidential-inference', str(CHART), '--namespace', 'confidential-inference',
+            '-f', str(ROOT / 'tests/fixtures/deployments/production-values.yaml'),
+            '-f', str(ROOT / 'tests/release-v1/fixtures/release-values.yaml'),
+            '--set', 'images.confidentialSglangRouter=ghcr.io/example/router@sha256:' + 'f' * 64,
+            *arguments)) if item]
+        router = next(item for item in documents if item['kind'] == 'Deployment'
+                      and item['metadata']['name'] == 'sglang-router')
+        return [arg for arg in router['spec']['template']['spec']['containers'][0]['args']
+                if arg.startswith(('--policy', '--consistent-hashing', '--cache-threshold'))]
+    assert policy_args() == ['--policy=cache_aware', '--cache-threshold=0.3']
+    assert policy_args('--set', 'router.policy=consistent_hashing') == \
+        ['--policy=consistent_hashing', '--consistent-hashing-load-factor=1.25']
+    assert policy_args('--set', 'router.policy=consistent_hashing', '--set', 'router.image=confidentialSglangRouter') == \
+        ['--policy=consistent_hashing']
 
 
 def check_flashinfer_disable_jit(production: list[dict]) -> None:

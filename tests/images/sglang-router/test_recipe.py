@@ -31,6 +31,7 @@ EXPECTED_PATCHES = [
     ("patches/client-errors.patch", "beeb92df439945d48d1a68a51bf853078481846a0fb8b436cacf071ccffa4761"),
     # Hold a request while no worker is available (--worker-wait-secs).
     ("patches/worker-wait.patch", "a4a35e3e39a4d74cb6b56bece6d96bfd1936fddbb3a345c5d23c3ff1b72b161c"),
+    ("patches/consistent-hash-bounded-load.patch", "1ed303329ea7589beecd1a232f63ce261301e4439c5b65d96a4c893cb4e86216"),
 ]
 
 
