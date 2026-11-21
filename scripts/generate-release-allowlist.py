@@ -52,6 +52,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -685,6 +686,35 @@ def canonicalize(document: dict[str, Any], tool: Path | None) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+def refuse_peer_egress(containers: dict[str, Any], exits: list[dict[str, Any]]) -> None:
+    """Declared exits bypass the mesh and cannot cover a restricted inference hop."""
+    if not any(env.get("name") == "C8S_MESH_PEER_WORKLOADS"
+               for container in containers.values() for env in container.get("env", [])):
+        return
+    peer_ports = set()
+    for container in containers.values():
+        for arg in container.get("args", []):
+            if arg.startswith("--service-discovery-port="):
+                peer_ports.add(int(arg.split("=", 1)[1]))
+        for env in container.get("env", []):
+            if env.get("name") in {"GATEWAY_INFERENCE_URL", "INFERENCE_UPSTREAM_URL"}:
+                peer_ports.add(urlsplit(env["value"]).port or 80)
+    if any(exit["port"] in peer_ports for exit in exits):
+        raise GenerationError("a peer-restricted inference hop cannot also be a declared egress exit")
+
+
+def require_peer_workload_support(rendered: dict[str, Any], executable: Path) -> None:
+    """A pinned old node must never silently ignore a requested peer restriction."""
+    requested = any(
+        env.get("name") == "C8S_MESH_PEER_WORKLOADS"
+        for controller in rendered.values()
+        for container in controller["spec"]["template"]["spec"].get("containers", [])
+        for env in container.get("env", [])
+    )
+    if requested and "C8S_MESH_PEER_WORKLOADS" not in run([str(executable), "armtls-mesh", "--help"]).decode():
+        raise GenerationError("modelIdentity requires a C8s release with enforced mesh peer workloads")
+
+
 def generate(
     deployment: release_spec.Deployment,
     executable: Path,
@@ -706,6 +736,7 @@ def generate(
     verify_c8s_binary(executable, c8s["sourceCommit"], c8s["release"])
     node_image = f"{c8s['nodeImage']['reference']}@{c8s['nodeImage']['digest']}"
     rendered = controllers(render_chart(policy, deployment, overlay))
+    require_peer_workload_support(rendered, executable)
     expected = {item["controller"] for item in policy["workloads"]}
     if set(rendered) != expected:
         raise GenerationError(
@@ -754,6 +785,7 @@ def generate(
                     if not (c["digest"] in core_digests and argv0(c) in INJECTED_ENTRYPOINTS)
                 ]
         if exits := declared_egress(controller, item):
+            refuse_peer_egress(containers, exits)
             # C8s #1049: CDS refuses an entry with exits unless it is pinned
             # like a secrets grant: no host mount rule, no open argv.
             for container in entry.get("initContainers", []) + entry.get("containers", []):

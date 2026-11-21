@@ -174,6 +174,9 @@ download stops fetch-model at once. */}}
 {{- define "confidential-inference.modelDownloadCommand" -}}
 {{- $download := .Values.inference.model.download -}}
 {{- $fetch := printf "/usr/local/bin/fetch-model --endpoint=%s fetch --path=%s --manifest=%s/manifest.json --manifest-sha256=%s --revision-metadata=%s" (include "confidential-inference.modelDownloadEndpoint" .) (include "confidential-inference.modelDownloadDirectory" .) (include "confidential-inference.modelManifestDirectory" .) (include "confidential-inference.modelDownloadManifestSha256" .) .Values.inference.model.mountVerification.revisionMetadata -}}
+{{- if .Values.modelIdentity.enabled -}}
+{{- $fetch = printf "%s --repository=%s --revision=%s" $fetch (include "confidential-inference.shellArgument" .Values.inference.model.name) (include "confidential-inference.shellArgument" .Values.inference.model.revision) -}}
+{{- end -}}
 {{- list "/bin/sh" "-c" (printf "trap 'kill $f 2>/dev/null; wait $f; exit 143' TERM INT; %s & f=$!; wait $f || exit $?; trap - TERM INT; exec \"$@\"" $fetch) "sh" | toJson -}}
 {{- end }}
 

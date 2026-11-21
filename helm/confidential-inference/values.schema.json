@@ -3,6 +3,10 @@
   "type": "object",
   "required": ["environment", "imagePullSecret", "images", "scheduling", "gateway", "inference", "router", "telemetry", "kubeStateMetrics", "frameworkRelease", "attestationReceipts"],
   "properties": {
+    "modelIdentity": {
+      "type": "object", "additionalProperties": false, "required": ["enabled"],
+      "properties": {"enabled": {"type": "boolean"}}
+    },
     "stagingValidation": {
       "type": "object", "additionalProperties": false, "required": ["enabled"],
       "properties": {"enabled": {"type": "boolean"}}

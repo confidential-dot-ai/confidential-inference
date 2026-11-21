@@ -199,6 +199,9 @@ spec:
             - --expected-repository={{ $.Values.inference.model.name }}
             - --expected-revision={{ $.Values.inference.model.revision }}
             - --revision-metadata={{ $.Values.inference.model.mountVerification.revisionMetadata }}
+            {{- if $.Values.modelIdentity.enabled }}
+            - --model-manifest-sha256={{ include "confidential-inference.modelManifestSha256" $ }}
+            {{- end }}
             {{- range $file := include "confidential-inference.expectedFiles" $ | fromJsonArray }}
             - --expected-file={{ $file }}
             {{- end }}

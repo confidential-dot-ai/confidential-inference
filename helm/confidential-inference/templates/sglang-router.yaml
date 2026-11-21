@@ -263,6 +263,10 @@ spec:
             # Environment, so the exact allowlist pins the routes.
             - name: CI_ROUTER_MODEL_ROUTES
               value: {{ include "confidential-inference.routerRoutes" . | quote }}
+            {{- if .Values.modelIdentity.enabled }}
+            - name: C8S_MESH_PEER_WORKLOADS
+              value: {{ .Values.inference.attestedWorkload | quote }}
+            {{- end }}
             # The Kubernetes client reads this file before the in-cluster
             # default (kube-rs Config::infer).
             - name: KUBECONFIG
