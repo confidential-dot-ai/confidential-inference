@@ -49,4 +49,4 @@ images:
 # images-000000000000 is the PLACEHOLDER until confidential-sglang publishes
 # its first record. The release build refuses to build a release with it.
 confidentialSglang:
-  record: images-1ea0cdcdbd18
+  record: images-b33e66f3d091
