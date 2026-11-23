@@ -71,6 +71,21 @@ def named(found: list[dict], kind: str, name: str) -> dict:
     return next(item for item in found if item["kind"] == kind and item["metadata"]["name"] == name)
 
 
+def worker_layout() -> list[dict]:
+    """The chart rendered without inference.layout, from the production example values."""
+    return documents(subprocess.run(
+        ["helm", "template", "example", str(CHART), "--namespace", NAMESPACE,
+         "--values", str(ROOT / "tests/fixtures/deployments/production-values.yaml"),
+         "--values", str(RELEASE_VALUES)], text=True, capture_output=True, check=True))
+
+
+def hostname_variable(statefulset: dict) -> str:
+    """The HOSTNAME that the StatefulSet's one container sets."""
+    [container] = statefulset["spec"]["template"]["spec"]["containers"]
+    [hostname] = [item["value"] for item in container["env"] if item["name"] == "HOSTNAME"]
+    return hostname
+
+
 def pair_config(found: list[dict]) -> dict:
     container = named(found, "StatefulSet", "inference-pair")["spec"]["template"]["spec"]["containers"][0]
     args = container["args"]
@@ -92,6 +107,12 @@ class PairLayoutTests(unittest.TestCase):
             routers = sorted(item["metadata"]["name"] for item in found
                              if item["kind"] == "Deployment" and item["metadata"]["name"].startswith("pd-router-"))
             self.assertEqual(routers, [f"pd-router-{index}" for index in range(replicas)])
+
+    def test_the_pair_and_the_worker_set_a_fixed_hostname_variable(self):
+        pair = named(self.two, "StatefulSet", "inference-pair")
+        worker = named(worker_layout(), "StatefulSet", "inference-worker")
+        self.assertEqual(hostname_variable(pair), "inference-pair")
+        self.assertEqual(hostname_variable(worker), "inference-worker")
 
     def test_the_pair_pod_runs_one_container_with_four_gpus(self):
         template = named(self.documents, "StatefulSet", "inference-pair")["spec"]["template"]
@@ -535,10 +556,7 @@ class PairLayoutTests(unittest.TestCase):
 
     def test_the_worker_layout_renders_as_before(self):
         """Without inference.layout, no pair object renders and the router finds the workers."""
-        result = subprocess.run(["helm", "template", "example", str(CHART), "--namespace", NAMESPACE,
-                                 "--values", str(ROOT / "tests/fixtures/deployments/production-values.yaml"),
-                                 "--values", str(RELEASE_VALUES)], text=True, capture_output=True, check=True)
-        found = documents(result)
+        found = worker_layout()
         names = {item["metadata"]["name"] for item in found}
         self.assertIn("inference-worker", names)
         self.assertFalse({"inference-pair", "pd-router-0", "pd-router-paths", "pair-ingress"} & names)
