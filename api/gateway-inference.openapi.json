@@ -962,25 +962,27 @@
     },
     "responses": {
       "InvalidJson": {
-        "description": "The body is not valid JSON (`invalid_json`), or `model` is missing (`model_required`), or `model` does not name the one authorized inference model (`model_not_authorized`, also returned with status 401).",
+        "description": "The body is not valid JSON (`invalid_json`), or `model` is missing (`model_required`), or `model` does not name the one authorized inference model (`model_not_authorized`, also returned with status 401). A request parameter that the served model does not support (the gateway settings `unsupportedParameters`, from the recipe's `behavior.unsupportedParameters`) set to a refused value gets `unsupported_parameter`, before the router; the message names the parameter.",
         "content": {
           "application/json": {
             "schema": {"$ref": "#/components/schemas/GatewayError"},
             "examples": {
               "invalidJson": {"value": {"error": {"code": "invalid_json", "message": "Bad Request"}}},
-              "modelRequired": {"value": {"error": {"code": "model_required", "message": "Bad Request"}}}
+              "modelRequired": {"value": {"error": {"code": "model_required", "message": "Bad Request"}}},
+              "unsupportedParameter": {"value": {"error": {"code": "unsupported_parameter", "message": "The model does not support the request parameter `n` with this value. Remove it."}}}
             }
           }
         }
       },
       "InvalidResponsesRequest": {
-        "description": "The body is not valid JSON (`invalid_json`), `model` is missing (`model_required`), or the request asks for server-side state (`stateful_responses_not_supported`): a non-null `previous_response_id` or `conversation`, or `store` or `background` with a value other than `false` or `null`. The message names the refused field.",
+        "description": "The body is not valid JSON (`invalid_json`), `model` is missing (`model_required`), or the request asks for server-side state (`stateful_responses_not_supported`): a non-null `previous_response_id` or `conversation`, or `store` or `background` with a value other than `false` or `null`. The message names the refused field. A request parameter that the served model does not support (the gateway settings `unsupportedParameters`, from the recipe's `behavior.unsupportedParameters`) set to a refused value gets `unsupported_parameter`, before the router; the message names the parameter.",
         "content": {
           "application/json": {
             "schema": {"$ref": "#/components/schemas/GatewayError"},
             "examples": {
               "invalidJson": {"value": {"error": {"code": "invalid_json", "message": "Bad Request"}}},
-              "statefulRequest": {"value": {"error": {"code": "stateful_responses_not_supported", "message": "The gateway keeps no response state. Remove `previous_response_id`, and send the full input with each request."}}}
+              "statefulRequest": {"value": {"error": {"code": "stateful_responses_not_supported", "message": "The gateway keeps no response state. Remove `previous_response_id`, and send the full input with each request."}}},
+              "unsupportedParameter": {"value": {"error": {"code": "unsupported_parameter", "message": "The model does not support the request parameter `n` with this value. Remove it."}}}
             }
           }
         }

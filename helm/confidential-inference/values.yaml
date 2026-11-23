@@ -133,6 +133,11 @@ gateway:
   admin:
     url: https://admin.example.invalid/api/usage/ingest
     address: 192.0.2.10
+  # The request parameters the served model does not support: a recipe sets
+  # them (behavior.unsupportedParameters, scripts/recipe-values.py). Each is
+  # {name, allowed: [values]}; the gateway answers a request that sets one to
+  # any value but null or an allowed one with 400 unsupported_parameter.
+  unsupportedParameters: []
   usage:
     # Send one usage event per request to the admin.
     enabled: false

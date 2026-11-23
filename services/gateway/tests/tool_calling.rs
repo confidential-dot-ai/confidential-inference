@@ -210,6 +210,7 @@ fn app(address: SocketAddr, metrics: Arc<GatewayMetrics>) -> Router {
             maximum_body_bytes: 1_024 * 1_024,
             upstream_timeout: Duration::from_secs(5),
             protection: confidential_gateway::protection::ProtectionConfig::default(),
+            unsupported_parameters: Vec::new(),
         },
         Arc::new(Keys),
         Arc::new(Audit),

@@ -17,6 +17,10 @@
 {{- range $key := list "maximumBodyBytes" "bodyMemoryBytes" "upstreamTimeoutSeconds" "firstTokenTimeoutSeconds" "bodyTimeoutSeconds" "streamIdleTimeoutSeconds" "globalRequestConcurrency" "perAddressConcurrency" "inferenceConcurrency" "inferenceQueue" "queueTimeoutSeconds" "perKeyConcurrency" "attestationConcurrency" "requestsPerAddressPerSecond" }}
 {{- $_ := set $settings $key (index $.Values.gateway.protection $key) }}
 {{- end }}
+{{- /* Only when set, so the settings of a chart without them stay the same. */}}
+{{- with .Values.gateway.unsupportedParameters }}
+{{- $_ := set $settings "unsupportedParameters" . }}
+{{- end }}
 {{- toJson $settings }}
 {{- end }}
 

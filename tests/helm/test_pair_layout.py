@@ -132,6 +132,23 @@ class PairLayoutTests(unittest.TestCase):
             "/opt/dsv41/bin/python", "/opt/sglang/recipes/deepseek-v41/launcher/hold_engram_cache.py",
             "--model", MODEL_PATH, "--ready-file", "/run/dsv41/engram.ready"])
 
+    def test_the_gateway_settings_carry_the_unsupported_parameters(self):
+        container = named(self.documents, "Deployment", "gateway")["spec"]["template"]["spec"]["containers"][0]
+        env = {item["name"]: item.get("value") for item in container["env"]}
+        settings = json.loads(env["GATEWAY_RUNTIME_CONFIG"])
+        self.assertEqual(settings["unsupportedParameters"], [
+            {"name": "n", "allowed": [1]},
+            {"name": "best_of", "allowed": [1]},
+            {"name": "min_p", "allowed": [0]},
+            {"name": "logprobs", "allowed": [False]},
+            {"name": "top_logprobs", "allowed": [0]},
+        ])
+        # The chart schema checks the shape.
+        bad = {**self.values, "gateway": {"unsupportedParameters": [{"name": "n", "when": 2}]}}
+        result = render(values=bad, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupportedParameters", result.stderr)
+
     def test_parallel_start_is_on_by_default_and_absent_when_off(self):
         self.assertIs(True, pair_config(self.documents)["parallelStart"])
         self.assertNotIn("parallelStart", pair_config(documents(render("--set", "inference.pair.parallelStart=false"))))

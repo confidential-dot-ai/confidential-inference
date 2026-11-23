@@ -96,8 +96,9 @@ error.
 | `routing.policy` | `cache_aware`, the policy the chart's router runs | |
 | `routing.image` | Optional (`pair`: `confidentialSglangRouter`, which also runs each replica's PD router). The router chart image key: `confidentialSglangRouter` or `sglangRouter` | `router.image` |
 | `behavior.apis` | The public APIs the model serves: any of `chat`, `completions`, `responses`, `messages`. Each maps to `{}` or `{minOutputTokens: N}`, the least `max_tokens` a request of that API must ask for | |
+| `behavior.unsupportedParameters` | Optional. The request parameters the model does not support, 1 to 64 entries `{name: <body field>, allowed: [<value>, ...]}`. The gateway answers a request that sets one to any value but `null` or an `allowed` value with HTTP 400 `unsupported_parameter`, before the router. `allowed` is optional (none: every non-null value is refused) and holds booleans, numbers or strings; numbers compare by value. On the Responses API, an `include` of `message.output_text.logprobs` counts as `logprobs: true`. Example: `{name: n, allowed: [1]}` refuses `n` > 1 | `gateway.unsupportedParameters` |
 
-`behavior` has no chart value. Validation tools read it from the recipe in
+`behavior.apis` has no chart value. Validation tools read it from the recipe in
 the release. A recipe sets no warm-up: the chart runs confidential-sglang's
 `confidential_cold_path` warmup on every worker (`--warmups`, both workers of
 a pair too), before the server listens, so a worker (and a pair) is Ready only

@@ -710,6 +710,8 @@ def main() -> None:
     assert not any(name.startswith(('GATEWAY_C8S_', 'GATEWAY_RELEASE_')) for name in gateway_environment)
     production_settings = json.loads(gateway_environment['GATEWAY_RUNTIME_CONFIG'])
     assert production_settings['maximumBodyBytes'] == 2097152
+    # No unsupported parameter by default: the settings keep their earlier keys.
+    assert 'unsupportedParameters' not in production_settings
     # Refuse a chart value that the published gateway cannot start with: the
     # gateway accepts 1024 to 67108864 bytes (64 MiB).
     def render_body_limit(value):
