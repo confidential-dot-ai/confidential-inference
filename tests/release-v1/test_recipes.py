@@ -37,12 +37,7 @@ MAN = load("build_release_manifest_recipes", "scripts/build-release-manifest.py"
 FIXTURES = ROOT / "tests/release-v1/fixtures/confidential-sglang"
 RECORD = "images-0123456789ab"
 QWEN = ROOT / "recipes/qwen35-0.8b-1xb200/recipe.yaml"
-LAYOUT = "dsv41-262k"
 CHART = ROOT / "helm/confidential-inference"
-
-
-def fixture_pin() -> dict:
-    return CSR.release_pin({"record": RECORD}, FIXTURES)
 
 
 def fixture_record() -> dict:
@@ -123,25 +118,15 @@ class ConfidentialSglangPinTests(unittest.TestCase):
             shutil.copy(ROOT / "release/spec.yaml", spec)
             inputs = Path(temporary) / "inputs"
             data = (FIXTURES / f"{RECORD}.json").read_bytes()
-            layout = (FIXTURES / "layouts" / RECORD / f"{LAYOUT}.json").read_bytes()
-            CSR.pin(RECORD, spec, inputs, fetch=lambda name, _directory: data,
-                    extract=lambda _reference: {LAYOUT: layout})
+            CSR.pin(RECORD, spec, inputs, fetch=lambda name, _directory: data)
             old = (ROOT / "release/spec.yaml").read_text().splitlines()
             new = spec.read_text().splitlines()
             changed = [(a, b) for a, b in zip(old, new) if a != b]
             self.assertEqual(len(changed), 1)
             self.assertEqual(changed[0][1], f"  record: {RECORD}")
             self.assertEqual((inputs / f"{RECORD}.json").read_bytes(), data)
-            # The engine image's layouts, bound by SHA-256 in the manifest.
-            self.assertEqual((inputs / "layouts" / RECORD / f"{LAYOUT}.json").read_bytes(), layout)
-            self.assertEqual(CSR.release_pin({"record": RECORD}, inputs)["layouts"], {LAYOUT: CSR.sha256(layout)})
             with self.assertRaisesRegex(CSR.RecordError, "names source commit"):
                 CSR.pin("images-111111111111", spec, inputs, fetch=lambda name, _directory: data)
-            # A layout built from another commit than the record's is refused.
-            other = layout.replace(b"0123456789abcdef0123456789abcdef01234567", b"1" * 40)
-            with self.assertRaisesRegex(CSR.RecordError, "not the record's source commit"):
-                CSR.pin(RECORD, spec, inputs, fetch=lambda name, _directory: data,
-                        extract=lambda _reference: {LAYOUT: other})
 
     def test_render_reads_a_confidential_sglang_image_config_from_the_registry(self):
         render = load("render_allowlist_recipes", "scripts/render-allowlist.py")
@@ -171,10 +156,10 @@ class RecipeTests(unittest.TestCase):
         values = RV.values(RV.load(QWEN), release_images())
         inference = values["inference"]
         self.assertEqual({key: inference[key] for key in (
-            "mode", "layout", "engineImage", "gpusPerReplica", "gpuArchitectures", "attestedGpuCount",
+            "mode", "engineImage", "replicas", "gpusPerReplica", "gpuArchitectures", "attestedGpuCount",
             "contextLength", "toolCallParser", "reasoningParser", "moeRunnerBackend", "workerExtraArgs",
             "flashinferDisableJit")}, {
-            "mode": "model", "layout": "worker", "engineImage": "confidentialSglangEngine", "gpusPerReplica": 1,
+            "mode": "model", "engineImage": "confidentialSglangEngine", "replicas": 1, "gpusPerReplica": 1,
             "gpuArchitectures": ["BLACKWELL"], "attestedGpuCount": 1, "contextLength": 262144,
             "toolCallParser": "qwen3_coder", "reasoningParser": "qwen3", "moeRunnerBackend": "auto",
             "workerExtraArgs": [], "flashinferDisableJit": True})
@@ -189,8 +174,7 @@ class RecipeTests(unittest.TestCase):
         ])
         self.assertEqual(inference["model"]["download"]["manifest"], (QWEN.parent / "model-manifest.json").read_text())
         self.assertEqual(values["router"], {"image": "confidentialSglangRouter"})
-        # No environment value: no replica count, model server, node, or router API server.
-        self.assertNotIn("replicas", inference)
+        # No environment value: no model server, node, or router API server.
         self.assertNotIn("hosts", inference["model"]["download"])
         self.assertNotIn("enabled", inference["model"]["download"])
         self.assertNotIn("scheduling", values)
@@ -249,10 +233,7 @@ class RecipeTests(unittest.TestCase):
             (set_path("model", "revision", value="1" * 40), "another revision"),
             (set_path("model", "checkFiles", value=["missing.json"]), "no SHA-256 for missing.json"),
             (set_path("replica", "gpuArchitectures", value=["AMPERE"]), "gpuArchitectures"),
-            (set_path("schema", value="confidential.ai/recipe/v1"), "recipe schema"),
-            (set_path("replica", "workers", value=2), "replica.workers was removed"),
-            (set_path("replica", "layout", value="pd"), "replica.layout"),
-            (set_path("replica", "plan", value=LAYOUT), "unknown fields"),
+            (set_path("schema", value="confidential.ai/recipe/v2"), "recipe schema"),
             (set_path("name", value="other"), "differs from its directory"),
             (set_path("extra", value=1), "unknown fields"),
             (set_path("behavior", "apis", "embeddings", value={}), "behavior.apis keys"),
@@ -274,8 +255,7 @@ class RecipeTests(unittest.TestCase):
             RV.values(RV.load(QWEN), images)
 
     def test_the_release_ships_every_recipe(self):
-        with mock.patch.object(CSR, "INPUTS", FIXTURES):
-            data, binding = MAN.recipes_file(release_images(), fixture_pin())
+        data, binding = MAN.recipes_file(release_images())
         self.assertEqual(binding["file"], "recipes.json")
         self.assertEqual(binding["sha256"], MAN.sha256(data))
         shipped = json.loads(data)
@@ -285,79 +265,7 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(shipped["recipes"]["qwen35-0.8b-1xb200"]["recipe.yaml"], QWEN.read_text())
         self.assertEqual(binding["recipes"]["qwen35-0.8b-1xb200"], MAN.sha256(QWEN.read_bytes()))
         # The same tree gives the same bytes.
-        with mock.patch.object(CSR, "INPUTS", FIXTURES):
-            self.assertEqual(MAN.recipes_file(release_images(), fixture_pin())[0], data)
-
-
-class LayoutImageTests(unittest.TestCase):
-    """confidential_sglang_release.image_layouts reads the layouts from the image layers, top first."""
-
-    @staticmethod
-    def layer(files: dict[str, bytes]) -> bytes:
-        import io
-        import tarfile
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-            for name, data in files.items():
-                info = tarfile.TarInfo(name)
-                info.size = len(data)
-                archive.addfile(info, io.BytesIO(data))
-        return buffer.getvalue()
-
-    def crane(self, layers: list[bytes]):
-        reference = "ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:" + "e" * 64
-        digests = [f"sha256:{index:064x}" for index in range(len(layers))]
-        manifest = {"layers": [{"digest": digest, "size": len(data), "mediaType":
-                                "application/vnd.oci.image.layer.v1.tar+gzip"} for digest, data in zip(digests, layers)]}
-        calls = []
-
-        def run(command, **_kwargs):
-            calls.append(command[1])
-            if command[1] == "manifest":
-                return subprocess.CompletedProcess(command, 0, stdout=json.dumps(manifest).encode(), stderr=b"")
-            digest = command[2].split("@", 1)[1]
-            return subprocess.CompletedProcess(command, 0, stdout=layers[digests.index(digest)], stderr=b"")
-        return reference, run, calls
-
-    def test_the_layers_merge_and_the_upper_file_wins(self):
-        old = self.layer({"opt/sglang/layouts/a.json": b"old", "opt/sglang/layouts/c.json": b"c"})
-        new = self.layer({"opt/sglang/layouts/a.json": b"new", "opt/sglang/layouts/b.json": b"b"})
-        top = self.layer({"opt/sglang/SOURCE_RECORD.json": b"{}"})
-        reference, run, calls = self.crane([old, new, top])
-        # c.json of the lower layer stays: an upper layer that replaces a.json hides nothing else.
-        self.assertEqual(CSR.image_layouts(reference, run), {"a": b"new", "b": b"b", "c": b"c"})
-        self.assertEqual(calls, ["manifest", "blob", "blob", "blob"])
-
-    def test_the_reader_stops_at_the_first_large_layer(self):
-        below = self.layer({"opt/sglang/layouts/hidden.json": b"x"})
-        large = self.layer({"usr/lib/big": bytes(range(256)) * 64 + __import__("os").urandom(8192)})
-        layouts = self.layer({"opt/sglang/layouts/a.json": b"a"})
-        reference, run, calls = self.crane([below, large, layouts])
-        with mock.patch.object(CSR, "MAX_LAYER_BYTES", len(layouts) + 1):
-            self.assertGreater(len(large), CSR.MAX_LAYER_BYTES)
-            self.assertEqual(CSR.image_layouts(reference, run), {"a": b"a"})
-            self.assertEqual(calls, ["manifest", "blob"])
-            reference, run, _ = self.crane([layouts, large])
-            with self.assertRaisesRegex(CSR.RecordError, "has no opt/sglang/layouts/"):
-                CSR.image_layouts(reference, run)
-
-    def test_a_removed_layout_or_no_layout_is_refused(self):
-        base = self.layer({"opt/sglang/layouts/a.json": b"a"})
-        removed = self.layer({"opt/sglang/layouts/.wh.a.json": b""})
-        reference, run, _ = self.crane([base, removed])
-        with self.assertRaisesRegex(CSR.RecordError, "removes opt/sglang/layouts/a.json"):
-            CSR.image_layouts(reference, run)
-        reference, run, _ = self.crane([self.layer({"usr/bin/x": b"x"})])
-        with self.assertRaisesRegex(CSR.RecordError, "has no opt/sglang/layouts/"):
-            CSR.image_layouts(reference, run)
-        with self.assertRaisesRegex(CSR.RecordError, "not pinned by digest"):
-            CSR.image_layouts("ghcr.io/x/engine:latest", run)
-
-    def test_check_image_compares_the_committed_layouts_with_the_image(self):
-        committed = (FIXTURES / "layouts" / RECORD / f"{LAYOUT}.json").read_bytes()
-        CSR.check_image(RECORD, FIXTURES, extract=lambda _reference: {LAYOUT: committed})
-        with self.assertRaisesRegex(CSR.RecordError, "differ from the layouts of its engine image"):
-            CSR.check_image(RECORD, FIXTURES, extract=lambda _reference: {LAYOUT: committed + b" "})
+        self.assertEqual(MAN.recipes_file(release_images())[0], data)
 
 
 if __name__ == "__main__":
