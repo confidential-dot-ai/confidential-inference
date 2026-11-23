@@ -149,6 +149,11 @@ class PairLayoutTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsupportedParameters", result.stderr)
 
+    def test_flashinfer_jit_is_off_only_when_the_values_say_so(self):
+        values = {**self.values, "inference": {**self.values["inference"], "flashinferDisableJit": False}}
+        for worker in pair_config(documents(render(values=values)))["workers"]:
+            self.assertNotIn("FLASHINFER_DISABLE_JIT", worker["env"])
+
     def test_parallel_start_is_on_by_default_and_absent_when_off(self):
         self.assertIs(True, pair_config(self.documents)["parallelStart"])
         self.assertNotIn("parallelStart", pair_config(documents(render("--set", "inference.pair.parallelStart=false"))))
@@ -165,8 +170,10 @@ class PairLayoutTests(unittest.TestCase):
             self.assertEqual(worker["command"], [
                 "/opt/dsv41/bin/python", "-m", "sglang.launch_server", f"--model-path={MODEL_PATH}",
                 f"--served-model-name={MODEL}", "--host=0.0.0.0", "--warmups=confidential_cold_path", *plan["args"]])
+            # The recipe's engine.flashinferDisableJit: true.
             self.assertEqual(worker["env"], {**plan["env"], "HF_HUB_OFFLINE": "1",
-                                             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false"})
+                                             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
+                                             "FLASHINFER_DISABLE_JIT": "1"})
             self.assertIn("MC_INTRANODE_NVLINK", worker["env"])
             self.assertNotIn("CUDA_VISIBLE_DEVICES", worker["env"])
 
