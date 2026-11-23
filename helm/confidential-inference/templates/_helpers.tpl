@@ -301,6 +301,19 @@ hostAliases:
 {{/* The image of the worker containers: the one SGLang engine image. It
 holds no model; the worker gets the model from a model server
 (inference.model.download) or a C8s model volume. */}}
+{{/* The NoExecute tolerations of a node the control plane loses
+(scheduling.nodeLossTolerationSeconds), in a pod spec. Kubernetes adds the
+same two with 300 s when a pod has none. */}}
+{{- define "confidential-inference.nodeLossTolerations" -}}
+tolerations:
+  {{- range $key := list "node.kubernetes.io/unreachable" "node.kubernetes.io/not-ready" }}
+  - key: {{ $key }}
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: {{ int $.Values.scheduling.nodeLossTolerationSeconds }}
+  {{- end }}
+{{- end }}
+
 {{- define "confidential-inference.workerImage" -}}
 {{- if hasKey .Values.inference "workerImage" -}}
 {{- fail "inference.workerImage was removed: every worker runs the one engine image, images[inference.engineImage]; choose the model with inference.model" -}}

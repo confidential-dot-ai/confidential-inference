@@ -26,6 +26,14 @@ scheduling:
   inferenceNodeSelector: {}
   # The router node. Empty uses inferenceNodeName.
   routerNodeName: ""
+  # How long the cache-aware router, the PD routers, the prefill/decode pairs
+  # and the aggregated workers stay bound to a node that the control plane marks unreachable or
+  # not ready (the node.kubernetes.io/unreachable and not-ready NoExecute
+  # tolerations). After that, Kubernetes evicts them; a pair then reloads
+  # its model, 15 minutes or more. 300 is Kubernetes' default. The
+  # environment sets it: a node that loses the control plane for minutes
+  # but keeps serving should keep its pods.
+  nodeLossTolerationSeconds: 300
 
 images:
   gateway: ghcr.io/confidential-dot-ai/confidential-inference/gateway@sha256:13334810afe09f9ec722eed6fc19c4a64e87b406e926ce383a54dd2ede01fea1
