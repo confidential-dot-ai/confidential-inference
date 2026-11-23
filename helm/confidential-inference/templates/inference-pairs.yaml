@@ -113,6 +113,8 @@ differ in the pair they reach, so each claims its own entry
 {{- $workers = append $workers (dict "role" $role "gpus" (int $worker.gpus) "ranks" (int $worker.gpus) "port" (int $worker.port) "command" $command "env" $env) }}
 {{- end }}
 {{- $config := dict "workers" $workers "modelGate" $gate "statusPort" (int $pair.statusPort) "progressTimeoutSeconds" (int $pair.progressTimeoutSeconds) "startupTimeoutSeconds" (int $pair.startupTimeoutSeconds) "shutdownTimeoutSeconds" (int $pair.shutdownTimeoutSeconds) }}
+{{- /* Only when set: an sglang-pair before confidential-sglang #30 refuses the key. */}}
+{{- if $pair.parallelStart }}{{ $_ := set $config "parallelStart" true }}{{ end }}
 apiVersion: v1
 kind: Service
 metadata:
