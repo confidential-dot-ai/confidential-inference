@@ -251,6 +251,15 @@ class PairLayoutTests(unittest.TestCase):
         longer = tolerations(documents(render("--set", "inference.replicas=2",
                                               "--set", "scheduling.nodeLossTolerationSeconds=1800")))
         self.assertEqual(longer, {name: expected(1800) for name in found})
+        # The aggregated workers (inference.layout worker) too.
+        for seconds in (300, 1800):
+            result = subprocess.run(["helm", "template", "example", str(CHART), "--namespace", NAMESPACE,
+                                     "--values", str(ROOT / "tests/fixtures/deployments/production-values.yaml"),
+                                     "--values", str(RELEASE_VALUES),
+                                     "--set", f"scheduling.nodeLossTolerationSeconds={seconds}"],
+                                    text=True, capture_output=True, check=True)
+            workers = named(documents(result), "StatefulSet", "inference-worker")
+            self.assertEqual(workers["spec"]["template"]["spec"]["tolerations"], expected(seconds))
         for bad in ("-1", "86401"):
             with self.subTest(value=bad):
                 result = render("--set", f"scheduling.nodeLossTolerationSeconds={bad}", check=False)
