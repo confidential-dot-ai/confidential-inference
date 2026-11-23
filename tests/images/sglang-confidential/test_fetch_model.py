@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import http.server
+import importlib.util
 import json
+import re
+import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -28,6 +32,8 @@ LFS = {"model.safetensors"}
 class FakeHub(http.server.BaseHTTPRequestHandler):
     files: dict[str, bytes] = {}
     requests: list[str] = []
+    ranged: list[tuple[str, int, int]] = []
+    ranges = True
 
     def do_GET(self) -> None:  # noqa: N802
         self.requests.append(self.path)
@@ -43,6 +49,17 @@ class FakeHub(http.server.BaseHTTPRequestHandler):
             body = json.dumps(entries).encode()
         elif self.path.startswith(prefix) and self.path[len(prefix):] in self.files:
             body = self.files[self.path[len(prefix):]]
+            match = re.fullmatch(r"bytes=(\d+)-(\d+)", self.headers.get("Range", ""))
+            if match and self.ranges:
+                start, end = int(match.group(1)), int(match.group(2))
+                self.ranged.append((self.path[len(prefix):], start, end))
+                part = body[start:end + 1]
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {start}-{start + len(part) - 1}/{len(body)}")
+                self.send_header("Content-Length", str(len(part)))
+                self.end_headers()
+                self.wfile.write(part)
+                return
         else:
             self.send_error(404)
             return
@@ -59,6 +76,8 @@ class FetchModelTests(unittest.TestCase):
     def setUp(self) -> None:
         FakeHub.files = dict(FILES)
         FakeHub.requests = []
+        FakeHub.ranged = []
+        FakeHub.ranges = True
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeHub)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
@@ -160,6 +179,45 @@ class FetchModelTests(unittest.TestCase):
         FakeHub.files["model.safetensors"] = body
         self.assertEqual(0, self.fetch().returncode)
         self.assertEqual(body, (self.cache / "model.safetensors").read_bytes())
+
+
+    def fetch_in_process(self, *endpoints: str, chunk: int = 1000) -> int:
+        # Small chunks make the test files span several byte ranges.
+        spec = importlib.util.spec_from_file_location("fetch_model_under_test", FETCH)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.CHUNK, module.ATTEMPTS = chunk, 2
+        module.time.sleep = lambda _seconds: None
+        argv = ["fetch-model", *[f"--endpoint={endpoint}" for endpoint in endpoints], "fetch",
+                "--path", str(self.cache), "--manifest", str(self.manifest),
+                "--manifest-sha256", self.digest, "--revision-metadata", METADATA]
+        saved, sys.argv = sys.argv, argv
+        try:
+            return module.main()
+        finally:
+            sys.argv = saved
+
+    def test_large_files_download_as_byte_ranges(self) -> None:
+        self.assertEqual(0, self.fetch_in_process(self.endpoint))
+        body = FILES["model.safetensors"]
+        self.assertEqual(body, (self.cache / "model.safetensors").read_bytes())
+        spans = sorted((start, end) for name, start, end in FakeHub.ranged if name == "model.safetensors")
+        self.assertEqual([(start, min(len(body), start + 1000) - 1) for start in range(0, len(body), 1000)], spans)
+
+    def test_a_dead_first_endpoint_falls_back_to_the_next(self) -> None:
+        with socket.socket() as closed:
+            closed.bind(("127.0.0.1", 0))
+            dead = f"http://127.0.0.1:{closed.getsockname()[1]}"
+        self.assertEqual(0, self.fetch_in_process(dead, self.endpoint))
+        for name, body in FILES.items():
+            self.assertEqual(body, (self.cache / name).read_bytes())
+
+    def test_a_server_that_ignores_ranges_is_refused(self) -> None:
+        FakeHub.ranges = False
+        self.assertEqual(1, self.fetch_in_process(self.endpoint))
+        self.assertFalse((self.cache / "model.safetensors").exists())
+        self.assertFalse((self.cache / "model.safetensors.partial").exists())
+        self.assertFalse((self.cache / METADATA).exists())
 
 
 if __name__ == "__main__":

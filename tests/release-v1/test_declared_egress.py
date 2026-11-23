@@ -29,6 +29,20 @@ class DeclaredEgressTests(unittest.TestCase):
         self.assertEqual(GEN["declared_egress"](controller(aliases), item),
                          [{"cidr": "203.0.113.7/32", "port": 443}, {"cidr": "203.0.113.9/32", "port": 443}])
 
+    def test_ports_give_each_address_each_port(self) -> None:
+        # A model mirror on 80 in the site and the model server on 443: one item, two ports.
+        item = {"controller": "StatefulSet/inference-pair", "egress": {"ports": [80, 443]}}
+        aliases = [{"ip": "10.48.176.17", "hostnames": ["mirror"]}, {"ip": "52.188.113.167", "hostnames": ["server"]}]
+        self.assertEqual(GEN["declared_egress"](controller(aliases), item), [
+            {"cidr": "10.48.176.17/32", "port": 80}, {"cidr": "10.48.176.17/32", "port": 443},
+            {"cidr": "52.188.113.167/32", "port": 80}, {"cidr": "52.188.113.167/32", "port": 443}])
+        for wrong in ([], [80, 80], ["80"], [0]):
+            with self.subTest(ports=wrong), self.assertRaisesRegex(GEN["GenerationError"], "distinct TCP ports"):
+                GEN["declared_egress"](controller(aliases), {**item, "egress": {"ports": wrong}})
+        many = [{"ip": f"203.0.113.{i}", "hostnames": [str(i)]} for i in range(5)]
+        with self.assertRaisesRegex(GEN["GenerationError"], "at most 8"):
+            GEN["declared_egress"](controller(many), item)
+
     def test_an_item_without_egress_has_no_exit(self) -> None:
         self.assertEqual(GEN["declared_egress"](controller([]), {"controller": "Deployment/gateway"}), [])
 
