@@ -371,10 +371,11 @@ inference:
     shutdownTimeoutSeconds: 30
     # Start prefill and decode together once the model gate is ready, instead
     # of decode after prefill is warm (sglang-pair parallelStart,
-    # confidential-sglang #30). Sequential start is measured: dsv41-262k on a
-    # 4x B200 was ready in 18.2 min with a warm kernel cache. Turn it on in
-    # the environment once the parallel boot is measured.
-    parallelStart: false
+    # confidential-sglang #30). dsv41-262k on a 4x B200 with a warm kernel
+    # cache (2026-11-23): sequential 18 min 12 s to /readyz, parallel 10 min
+    # 47 s and 11 min 1 s; host RAM peak 345 GiB of 881, no OOM. false starts
+    # decode after prefill is ready.
+    parallelStart: true
     # The C8s allowlist entry of every pair pod (confidential.ai/cw).
     attestedWorkload: inference-pair
     # The pair pod's request. Conservative, not measured: the Engram holder
