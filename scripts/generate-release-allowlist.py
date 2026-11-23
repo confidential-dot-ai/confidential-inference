@@ -574,8 +574,18 @@ def declared_egress(controller: dict[str, Any], item: dict[str, Any]) -> list[di
         cidrs = [f"{alias['ip']}/32" for alias in aliases]
     else:
         raise GenerationError(f"{item['controller']}: declares egress, and its pod has no hostAliases address")
-    return sorted(({"cidr": cidr, "port": item["egress"]["port"]} for cidr in cidrs),
-                  key=lambda exit: (ipaddress.ip_network(exit["cidr"]), exit["port"]))
+    # `ports`: more than one exit port (for example a model mirror on 80 and a model server on 443); every
+    # address gets each port. `port`: the one port.
+    egress = item["egress"]
+    ports = egress.get("ports") if "ports" in egress else [egress.get("port")]
+    if not (isinstance(ports, list) and ports and all(isinstance(port, int) and 0 < port < 65536 for port in ports)
+            and len(set(ports)) == len(ports)):
+        raise GenerationError(f"{item['controller']}: egress needs port, or ports: distinct TCP ports")
+    exits = [{"cidr": cidr, "port": port} for cidr in cidrs for port in ports]
+    if len(exits) > MAX_EGRESS:
+        raise GenerationError(f"{item['controller']}: {len(exits)} exits ({len(cidrs)} addresses x {len(ports)} ports); "
+                              f"C8s admits at most {MAX_EGRESS}")
+    return sorted(exits, key=lambda exit: (ipaddress.ip_network(exit["cidr"]), exit["port"]))
 
 
 def derive(
