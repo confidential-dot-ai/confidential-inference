@@ -207,6 +207,8 @@
                     "required": ["serverName", "address"],
                     "properties": {
                       "serverName": {"type": "string", "format": "hostname", "pattern": "^[A-Za-z0-9.-]+$"},
+                      "scheme": {"enum": ["https", "http"]},
+                      "port": {"type": "integer", "minimum": 1, "maximum": 65535},
                       "address": {"type": "string", "format": "ipv4", "pattern": "^[0-9]{1,3}(?:\\.[0-9]{1,3}){3}$"}
                     }
                   }
