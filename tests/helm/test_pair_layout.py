@@ -132,14 +132,14 @@ class PairLayoutTests(unittest.TestCase):
             "/opt/dsv41/bin/python", "/opt/sglang/recipes/deepseek-v41/launcher/hold_engram_cache.py",
             "--model", MODEL_PATH, "--ready-file", "/run/dsv41/engram.ready"])
 
-    def test_parallel_start_is_rendered_only_when_set(self):
-        self.assertNotIn("parallelStart", pair_config(self.documents))
-        self.assertIs(True, pair_config(documents(render("--set", "inference.pair.parallelStart=true")))["parallelStart"])
+    def test_parallel_start_is_on_by_default_and_absent_when_off(self):
+        self.assertIs(True, pair_config(self.documents)["parallelStart"])
+        self.assertNotIn("parallelStart", pair_config(documents(render("--set", "inference.pair.parallelStart=false"))))
 
     def test_both_workers_run_the_plan_with_the_chart_flags_and_the_warmup(self):
         config = pair_config(self.documents)
         self.assertEqual(set(config), {"workers", "modelGate", "statusPort", "progressTimeoutSeconds",
-                                       "startupTimeoutSeconds", "shutdownTimeoutSeconds"})
+                                       "startupTimeoutSeconds", "shutdownTimeoutSeconds", "parallelStart"})
         workers = config["workers"]
         self.assertEqual([w["role"] for w in workers], ["prefill", "decode"])
         for worker in workers:
