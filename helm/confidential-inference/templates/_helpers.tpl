@@ -170,11 +170,24 @@ fetch-model keeps the files that already match. */}}
 
 {{/* The command of the container that verifies the model: download, then
 exec the argv in the container args (wait-for-model). A stop during the
-download stops fetch-model at once. */}}
+download stops fetch-model at once.
+
+With more than one model source (the distinct endpoints of
+inference.model.download.hosts, in order), fetch-model tries each in turn
+until one gives every byte of the manifest: a cache in the cluster first, the
+model server last. fetch-model keeps the files that already match, so a later
+source fetches only what an earlier one did not give. No source is trusted:
+fetch-model and wait-for-model check every byte against the pinned manifest. */}}
 {{- define "confidential-inference.modelDownloadCommand" -}}
-{{- $download := .Values.inference.model.download -}}
-{{- $fetch := printf "/usr/local/bin/fetch-model --endpoint=%s fetch --path=%s --manifest=%s/manifest.json --manifest-sha256=%s --revision-metadata=%s" (include "confidential-inference.modelDownloadEndpoint" .) (include "confidential-inference.modelDownloadDirectory" .) (include "confidential-inference.modelManifestDirectory" .) (include "confidential-inference.modelDownloadManifestSha256" .) .Values.inference.model.mountVerification.revisionMetadata -}}
+{{- $endpoints := include "confidential-inference.modelDownloadEndpoints" . | fromJsonArray -}}
+{{- $arguments := printf "fetch --path=%s --manifest=%s/manifest.json --manifest-sha256=%s --revision-metadata=%s" (include "confidential-inference.modelDownloadDirectory" .) (include "confidential-inference.modelManifestDirectory" .) (include "confidential-inference.modelDownloadManifestSha256" .) .Values.inference.model.mountVerification.revisionMetadata -}}
+{{- if eq (len $endpoints) 1 -}}
+{{- $fetch := printf "/usr/local/bin/fetch-model --endpoint=%s %s" (first $endpoints) $arguments -}}
 {{- list "/bin/sh" "-c" (printf "trap 'kill $f 2>/dev/null; wait $f; exit 143' TERM INT; %s & f=$!; wait $f || exit $?; trap - TERM INT; exec \"$@\"" $fetch) "sh" | toJson -}}
+{{- else -}}
+{{- $fetch := printf "/usr/local/bin/fetch-model --endpoint=$e %s" $arguments -}}
+{{- list "/bin/sh" "-c" (printf "trap 'kill $f 2>/dev/null; wait $f; exit 143' TERM INT; for e in %s; do %s & f=$!; if wait $f; then f=; break; fi; echo \"fetch-model: $e failed; the next model source\" >&2; done; [ -z \"$f\" ] || exit 1; trap - TERM INT; exec \"$@\"" (join " " $endpoints) $fetch) "sh" | toJson -}}
+{{- end -}}
 {{- end }}
 
 {{/* The port of the model server and of the allowlist exits: download.port,
@@ -192,16 +205,67 @@ or the scheme's default (443 for https, 80 for http). */}}
 {{- end -}}
 {{- end }}
 
-{{/* The fetch-model endpoint: the first host, on the scheme and port of the
-model server. Plain http is allowed: fetch-model checks every byte against
-the pinned byte manifest, and the weights are public. */}}
+{{/* The fetch-model endpoints: one per distinct source of
+inference.model.download.hosts, in order. A host may set its own `scheme` and
+`port` (for example a plain HTTP mirror on port 80 in the site, in front of an
+https model server on 443); a host without them takes download.scheme and
+download.port (or the scheme's default port). Each address is one allowlist
+exit on its host's port (the policy item's egress `ports`). Plain http is
+allowed: fetch-model checks every byte against the pinned byte manifest, and
+the weights are public. */}}
+{{- define "confidential-inference.modelDownloadEndpoints" -}}
+{{- $root := . -}}
+{{- $endpoints := list -}}
+{{- range .Values.inference.model.download.hosts -}}
+{{- $scheme := include "confidential-inference.modelDownloadHostScheme" (dict "root" $root "host" .) -}}
+{{- $port := include "confidential-inference.modelDownloadHostPort" (dict "root" $root "host" .) -}}
+{{- $endpoint := printf "%s://%s" $scheme .serverName -}}
+{{- if ne $port (eq $scheme "http" | ternary "80" "443") -}}
+{{- $endpoint = printf "%s:%s" $endpoint $port -}}
+{{- end -}}
+{{- if not (has $endpoint $endpoints) -}}
+{{- $endpoints = append $endpoints $endpoint -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $endpoints -}}
+{{- end }}
+
+{{/* The scheme of one download host (dict root, host): its own, or download.scheme. */}}
+{{- define "confidential-inference.modelDownloadHostScheme" -}}
+{{- $scheme := .host.scheme | default (.root.Values.inference.model.download.scheme | default "https") -}}
+{{- if not (has $scheme (list "https" "http")) -}}
+{{- fail "inference.model.download.hosts[].scheme must be https or http" -}}
+{{- end -}}
+{{- $scheme -}}
+{{- end }}
+
+{{/* The port of one download host (dict root, host): its own, download.port, or the default of its scheme. */}}
+{{- define "confidential-inference.modelDownloadHostPort" -}}
+{{- if gt (int (.host.port | default 0)) 0 -}}
+{{- int .host.port -}}
+{{- else if .host.scheme -}}
+{{- eq .host.scheme "http" | ternary 80 443 -}}
+{{- else -}}
+{{- include "confidential-inference.modelDownloadPort" .root -}}
+{{- end -}}
+{{- end }}
+
+{{/* The distinct ports of the download hosts, in order, as a JSON list. */}}
+{{- define "confidential-inference.modelDownloadPorts" -}}
+{{- $root := . -}}
+{{- $ports := list -}}
+{{- range .Values.inference.model.download.hosts -}}
+{{- $port := include "confidential-inference.modelDownloadHostPort" (dict "root" $root "host" .) | int -}}
+{{- if not (has $port $ports) -}}
+{{- $ports = append $ports $port -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $ports -}}
+{{- end }}
+
+{{/* The first fetch-model endpoint. */}}
 {{- define "confidential-inference.modelDownloadEndpoint" -}}
-{{- $download := .Values.inference.model.download -}}
-{{- $scheme := $download.scheme | default "https" -}}
-{{- $port := include "confidential-inference.modelDownloadPort" . -}}
-{{- $default := eq $scheme "http" | ternary "80" "443" -}}
-{{- printf "%s://%s" $scheme (index $download.hosts 0).serverName -}}
-{{- if ne $port $default }}:{{ $port }}{{ end -}}
+{{- include "confidential-inference.modelDownloadEndpoints" . | fromJsonArray | first -}}
 {{- end }}
 
 {{/* The pinned addresses of the model source. Each is one allowlist exit. */}}
