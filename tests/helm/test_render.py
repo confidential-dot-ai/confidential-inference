@@ -537,6 +537,10 @@ def check_telemetry_collector() -> None:
         "host": "127.0.0.1", "port": 8888}
     labels = config["exporters"]["prometheusremotewrite"]["external_labels"]
     assert labels["cluster"] == "test-deployment" and "deployment" not in labels
+    # Without a deployment value (this render) there is no deployment_name; the render tool sets it.
+    assert "deployment_name" not in labels
+    named = collector_config(render(*TELEMETRY, "--set", "deployment=staging-0123456789ab"))
+    assert named["exporters"]["prometheusremotewrite"]["external_labels"]["deployment_name"] == "staging-0123456789ab"
     for job in jobs:
         (keep,) = job["metric_relabel_configs"]
         assert keep["action"] == "labelkeep"
