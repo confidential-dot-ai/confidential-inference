@@ -1,21 +1,34 @@
 #!/usr/bin/env python3
 """Check a recipe and render its Helm values for the confidential-inference chart.
 
-A recipe (recipes/<name>/recipe.yaml, schema confidential.ai/recipe/v1) says
-how one model runs: the engine image, one replica's GPUs, the model and its
-byte manifest, the worker arguments, the routing, and the API behavior that
-validation and warm-up expect. recipes/README.md documents every field.
+A recipe (recipes/<name>/recipe.yaml, schema confidential.ai/recipe/v2) says
+how one model runs: the engine image, what one replica is and its hardware,
+the model and its byte manifest, the worker arguments, the routing between
+replicas, and the API behavior that validation and warm-up expect.
+recipes/README.md documents every field.
 
-The values hold no environment setting: no model server address
-(inference.model.download.hosts), no node, no router API server address, no
-replica identity. Apply them before the environment values files. The
-framework release supplies the image digests (scripts/render-allowlist.py);
-the recipe names the chart image key only.
+A replica is one of two layouts:
+
+- `worker`: one aggregated SGLang worker pod. The recipe gives its flags.
+- `pair`: one prefill/decode pair. The recipe names a launch plan that the
+  engine image bakes (/opt/sglang/layouts/<plan>.json); the release pins its
+  bytes (release/inputs/confidential-sglang/layouts/<record>/). The values
+  carry the plan's worker and PD router arguments, less the flags the chart
+  sets itself.
+
+The values hold no environment setting: no replica count (inference.replicas),
+no model server address (inference.model.download.hosts), no node, no router
+API server address, no replica identity, no pod requests. Apply them before
+the environment values files. The framework release supplies the image
+digests (scripts/render-allowlist.py); the recipe names the chart image key
+only.
 
     python3 scripts/recipe-values.py recipes/qwen35-0.8b-1xb200/recipe.yaml \\
       [--release release-bundle.json] [--output values.yaml]
 
-Without --release, the image keys are checked against release/spec.yaml.
+Without --release, the image keys and the layouts are those of release/spec.yaml.
+With --release, a pair recipe's layout must have the SHA-256 that the
+release manifest binds (confidentialSglang.layouts).
 """
 
 from __future__ import annotations
@@ -32,7 +45,10 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 RECIPES = ROOT / "recipes"
-SCHEMA = "confidential.ai/recipe/v1"
+sys.path.insert(0, str(ROOT / "scripts"))
+import confidential_sglang_release  # noqa: E402
+
+SCHEMA = "confidential.ai/recipe/v2"
 MODEL_MANIFEST_SCHEMA = "confidential-benchmark/local-model-byte-manifest/v1"
 # wait-for-model reads the byte manifest under this name (values.yaml
 # inference.model.mountVerification.revisionMetadata).
@@ -41,7 +57,8 @@ NAME = re.compile(r"[a-z0-9][a-z0-9.-]{0,62}")
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
-PARSER = re.compile(r"[a-z0-9_]{0,64}")
+PARSER = re.compile(r"[a-z0-9_-]{0,64}")
+SPECULATIVE = re.compile(r"[A-Z0-9_]{0,32}")
 FLAG = re.compile(r"--[a-z0-9][a-z0-9-]*(=.*)?")
 # The files of a recipe directory.
 FILES = {"recipe.yaml", "model-manifest.json"}
@@ -49,6 +66,7 @@ ENGINE_IMAGES = ("sglangConfidential", "confidentialSglangEngine")
 ROUTER_IMAGES = ("sglangRouter", "confidentialSglangRouter")
 GPU_ARCHITECTURES = ("HOPPER", "BLACKWELL")
 APIS = ("chat", "completions", "responses", "messages")
+LAYOUTS = ("worker", "pair")
 # The SGLang flags that the chart sets itself (templates/inference-workers.yaml).
 # A recipe sets them through their own fields or not at all.
 CHART_FLAGS = {
@@ -58,6 +76,19 @@ CHART_FLAGS = {
     "--enable-metrics", "--enable-cache-report", "--enable-trace", "--trace-modules", "--otlp-traces-endpoint",
     "--host", "--port", "--log-dir", "--log-requests", "--log-requests-level", "--warmups",
 }
+# The worker flags of a pair plan that the chart sets itself
+# (templates/inference-pairs.yaml): the model path and name of the chart, the
+# pod address the replica's PD router reaches, and the cold-path warmup.
+PAIR_CHART_FLAGS = ("--model-path", "--served-model-name", "--host", "--warmups")
+# The cold-path warmup the chart runs on every worker (confidential-sglang
+# python/sglang/srt/entrypoints/warmup.py).
+WARMUP = "confidential_cold_path"
+# PD router flags of a plan that the chart sets itself (templates/pd-routers.yaml).
+PAIR_ROUTER_CHART_FLAGS = ("--pd-disaggregation", "--prefill", "--decode", "--host", "--port",
+                           "--prometheus-host", "--prometheus-port", "--request-timeout-secs",
+                           "--worker-startup-timeout-secs", "--service-discovery", "--log-dir", "--log-level")
+# Worker env names that sglang-pair sets (confidential-sglang pair_supervisor.py).
+PAIR_ENV = ("CUDA_VISIBLE_DEVICES", "SGLANG_HOST_IP")
 # The chart's router runs this one routing policy (templates/sglang-router.yaml).
 ROUTING_POLICIES = ("cache_aware",)
 
@@ -82,12 +113,6 @@ def fields(value: Any, where: str, required: set[str], optional: set[str] = froz
 def integer(value: Any, where: str, low: int, high: int) -> int:
     require(isinstance(value, int) and not isinstance(value, bool) and low <= value <= high,
             f"{where} must be an integer from {low} to {high}")
-    return value
-
-
-def number(value: Any, where: str, low: float, high: float) -> float:
-    require(isinstance(value, (int, float)) and not isinstance(value, bool) and low <= value <= high,
-            f"{where} must be a number from {low} to {high}")
     return value
 
 
@@ -125,10 +150,19 @@ def check(recipe: Any, directory_name: str) -> None:
     require(engine["image"] in ENGINE_IMAGES, f"engine.image must be one of {list(ENGINE_IMAGES)}")
     require(isinstance(engine["flashinferDisableJit"], bool), "engine.flashinferDisableJit must be true or false")
 
-    replica = fields(recipe["replica"], "replica", {"workers", "gpusPerWorker", "gpuArchitectures"},
-                     {"attestedGpuCount"})
-    integer(replica["workers"], "replica.workers", 1, 64)
-    gpus = integer(replica["gpusPerWorker"], "replica.gpusPerWorker", 1, 8)
+    replica = recipe["replica"]
+    require(isinstance(replica, dict), "replica must be a mapping")
+    require("workers" not in replica, "replica.workers was removed (recipe/v2): the deployment sets the replica "
+            "count (inference.replicas), not the recipe")
+    require(replica.get("layout") in LAYOUTS, f"replica.layout must be one of {list(LAYOUTS)}")
+    pair = replica["layout"] == "pair"
+    fields(replica, "replica", {"layout", "gpus", "gpuArchitectures"} | ({"plan"} if pair else set()),
+           {"attestedGpuCount"})
+    gpus = integer(replica["gpus"], "replica.gpus", 2 if pair else 1, 8)
+    if pair:
+        text(replica["plan"], "replica.plan", NAME)
+        require(engine["image"] == "confidentialSglangEngine",
+                "a pair replica needs engine.image confidentialSglangEngine, the image that bakes its plan")
     architectures = replica["gpuArchitectures"]
     require(isinstance(architectures, list) and architectures and len(set(architectures)) == len(architectures)
             and all(item in GPU_ARCHITECTURES for item in architectures),
@@ -148,27 +182,36 @@ def check(recipe: Any, directory_name: str) -> None:
             "model.checkFiles must be distinct file paths of the model")
     context = integer(model["contextLength"], "model.contextLength", 1, 16777216)
 
-    worker = fields(recipe["worker"], "worker", {"toolCallParser", "reasoningParser", "moeRunnerBackend",
-                                                 "speculativeAlgorithm", "maxRunningRequests", "extraArgs"})
-    for key in ("toolCallParser", "reasoningParser", "speculativeAlgorithm"):
-        text(worker[key], f"worker.{key}", PARSER if key != "speculativeAlgorithm" else re.compile(r"[A-Z0-9_]{0,32}"))
+    if pair:
+        # The plan holds every worker flag; these say what it must hold.
+        worker = fields(recipe["worker"], "worker", {"toolCallParser", "reasoningParser", "speculativeAlgorithm"})
+    else:
+        worker = fields(recipe["worker"], "worker", {"toolCallParser", "reasoningParser", "moeRunnerBackend",
+                                                     "speculativeAlgorithm", "maxRunningRequests", "extraArgs"})
+    text(worker["toolCallParser"], "worker.toolCallParser", PARSER)
+    text(worker["reasoningParser"], "worker.reasoningParser", PARSER)
+    text(worker["speculativeAlgorithm"], "worker.speculativeAlgorithm", SPECULATIVE)
     require(worker["toolCallParser"] != "", "worker.toolCallParser is required")
-    text(worker["moeRunnerBackend"], "worker.moeRunnerBackend", re.compile(r"[a-z0-9_]{1,64}"))
-    integer(worker["maxRunningRequests"], "worker.maxRunningRequests", 0, 65536)
-    extra = worker["extraArgs"]
-    require(isinstance(extra, list), "worker.extraArgs must be a list")
-    for argument in extra:
-        text(argument, "worker.extraArgs item", FLAG)
-        flag = argument.split("=", 1)[0]
-        # SGLang's argparse also accepts a unique prefix of a flag (--warmup for --warmups).
-        taken = sorted(chart for chart in CHART_FLAGS if len(flag) > 2 and chart.startswith(flag))
-        require(not taken, f"worker.extraArgs sets {taken[0] if taken else flag}, which the chart sets: use its recipe field")
+    if not pair:
+        text(worker["moeRunnerBackend"], "worker.moeRunnerBackend", re.compile(r"[a-z0-9_]{1,64}"))
+        integer(worker["maxRunningRequests"], "worker.maxRunningRequests", 0, 65536)
+        extra = worker["extraArgs"]
+        require(isinstance(extra, list), "worker.extraArgs must be a list")
+        for argument in extra:
+            text(argument, "worker.extraArgs item", FLAG)
+            flag = argument.split("=", 1)[0]
+            # SGLang's argparse also accepts a unique prefix of a flag (--warmup for --warmups).
+            taken = sorted(chart for chart in CHART_FLAGS if len(flag) > 2 and chart.startswith(flag))
+            require(not taken, f"worker.extraArgs sets {taken[0] if taken else flag}, which the chart sets: use its recipe field")
 
     routing = fields(recipe["routing"], "routing", {"kind", "policy"}, {"image"})
     require(routing["kind"] == "sglang-router", "routing.kind must be sglang-router")
     require(routing["policy"] in ROUTING_POLICIES, f"routing.policy must be one of {list(ROUTING_POLICIES)}")
     if "image" in routing:
         require(routing["image"] in ROUTER_IMAGES, f"routing.image must be one of {list(ROUTER_IMAGES)}")
+    if pair:
+        require(routing.get("image") == "confidentialSglangRouter",
+                "a pair replica needs routing.image confidentialSglangRouter: its PD router runs that image")
 
     behavior = fields(recipe["behavior"], "behavior", {"apis"})
     apis = behavior["apis"]
@@ -180,8 +223,9 @@ def check(recipe: Any, directory_name: str) -> None:
     # No warm-up field: the chart runs confidential-sglang's warmup on every worker
     # (--warmups=confidential_cold_path), before the server listens.
 
+
 def check_model_manifest(model: dict[str, Any], data: bytes) -> None:
-    require("sha256:" + hashlib.sha256(data).hexdigest() == "sha256:" + model["manifestSha256"],
+    require(hashlib.sha256(data).hexdigest() == model["manifestSha256"],
             "model-manifest.json differs from model.manifestSha256")
     try:
         manifest = json.loads(data)
@@ -205,34 +249,202 @@ def expected_files(recipe: dict[str, Any]) -> list[dict[str, str]]:
             *({"path": path, "sha256": files[path]} for path in recipe["model"]["checkFiles"])]
 
 
-def values(recipe: dict[str, Any], images: dict[str, Any]) -> dict[str, Any]:
-    """The chart values of a loaded recipe. `images` holds the chart image keys of the release."""
+def split_flags(argv: list[str], where: str) -> list[tuple[str, list[str]]]:
+    """An argv of flags as (flag, values) items, in order. `--flag=value` is one item with one value."""
+    items: list[tuple[str, list[str]]] = []
+    for argument in argv:
+        require(isinstance(argument, str), f"{where}: an argument is not a string")
+        if argument.startswith("--"):
+            flag, equals, value = argument.partition("=")
+            items.append((flag, [value] if equals else []))
+        else:
+            require(bool(items), f"{where}: {argument!r} follows no flag")
+            items[-1][1].append(argument)
+    return items
+
+
+def join_flags(items: list[tuple[str, list[str]]]) -> list[str]:
+    return [part for flag, values in items for part in (flag, *values)]
+
+
+def one(items: list[tuple[str, list[str]]], flag: str, where: str) -> str | None:
+    """The one value of `flag`, None when absent. A flag given twice or without one value is refused."""
+    found = [values for name, values in items if name == flag]
+    require(len(found) <= 1, f"{where} sets {flag} twice")
+    if not found:
+        return None
+    require(len(found[0]) == 1, f"{where}: {flag} needs one value")
+    return found[0][0]
+
+
+def pair_worker(worker: Any, role: str, layout: dict[str, Any], recipe: dict[str, Any]) -> dict[str, Any]:
+    """The chart values of one worker of a pair plan."""
+    where = f"layout {layout['layout']} worker {role}"
+    require(isinstance(worker, dict) and worker.get("name") == role, f"layout {layout['layout']}: the workers "
+            "must be one prefill and one decode, prefill first")
+    python = layout["paths"]["python"]
+    command = worker.get("command")
+    require(isinstance(command, list) and command[:3] == [python, "-m", "sglang.launch_server"],
+            f"{where}: the command is not {python} -m sglang.launch_server")
+    items = split_flags(command[3:], where)
+    require(one(items, "--model-path", where) == layout["paths"]["model"], f"{where}: --model-path is not paths.model")
+    require(one(items, "--disaggregation-mode", where) == role, f"{where}: --disaggregation-mode is not {role}")
+    warmups = one(items, "--warmups", where)
+    require(warmups in (None, WARMUP), f"{where} runs warmups {warmups}; the chart runs {WARMUP}")
+    tp = int(one(items, "--tp-size", where) or "1")
+    pp = int(one(items, "--pp-size", where) or "1")
+    require(one(items, "--dp-size", where) in (None, "1"), f"{where}: a pair worker runs DP size 1")
+    port = int(one(items, "--port", where) or "0")
+    require(1024 <= port <= 65534, f"{where}: --port is not a port from 1024 to 65534")
+    model, spec = recipe["model"], recipe["worker"]
+    for flag, expected, field in (("--context-length", str(model["contextLength"]), "model.contextLength"),
+                                  ("--tool-call-parser", spec["toolCallParser"], "worker.toolCallParser"),
+                                  ("--reasoning-parser", spec["reasoningParser"] or None, "worker.reasoningParser"),
+                                  ("--speculative-algorithm", spec["speculativeAlgorithm"] or None,
+                                   "worker.speculativeAlgorithm")):
+        found = one(items, flag, where)
+        require(found == expected, f"{where} sets {flag} {found}; the recipe's {field} is {expected}")
+    blocked = ("--log-requests", "--log-dir", "--enable-trace", "--crash-dump-folder", "--debug-tensor-dump-output-folder")
+    for flag, _ in items:
+        require(not any(flag == name for name in blocked), f"{where} sets {flag}, which the pair refuses")
+    env = worker.get("env")
+    require(isinstance(env, dict) and all(isinstance(key, str) and isinstance(value, str)
+                                         for key, value in env.items()), f"{where}: env is not a string map")
+    require(not any(key.startswith("SGLANG_PAIR_") for key in env), f"{where}: env sets an sglang-pair control")
+    entry = {
+        "gpus": tp * pp,
+        "port": port,
+        # Every flag but those of PAIR_CHART_FLAGS, in plan order.
+        "args": join_flags([(flag, values) for flag, values in items if flag not in PAIR_CHART_FLAGS]),
+        # sglang-pair gives each worker its GPUs and its loopback address.
+        "env": {key: value for key, value in sorted(env.items()) if key not in PAIR_ENV},
+    }
+    if role == "prefill":
+        bootstrap = one(items, "--disaggregation-bootstrap-port", where)
+        require(bootstrap is not None and bootstrap.isdigit(), f"{where}: no --disaggregation-bootstrap-port")
+        entry["bootstrapPort"] = int(bootstrap)
+    if role == "decode":
+        entry["maxRunningRequests"] = int(one(items, "--max-running-requests", where) or "0")
+    return entry
+
+
+def pair_router(router: Any, layout: dict[str, Any], prefill: dict[str, Any], decode: dict[str, Any]) -> dict[str, Any]:
+    """The chart values of a pair plan's PD router: its arguments less the chart's, its ports."""
+    where = f"layout {layout['layout']} router"
+    python = layout["paths"]["python"]
+    command = router.get("command") if isinstance(router, dict) else None
+    require(isinstance(command, list) and command[:3] == [python, "-m", "sglang_router.launch_router"],
+            f"{where}: the command is not {python} -m sglang_router.launch_router")
+    items = split_flags(command[3:], where)
+    require([values for flag, values in items if flag == "--pd-disaggregation"] == [[]],
+            f"{where} does not run --pd-disaggregation once")
+    loopback = "http://127.0.0.1:{}"
+    require([values for flag, values in items if flag == "--prefill"]
+            == [[loopback.format(prefill["port"]), str(prefill["bootstrapPort"])]],
+            f"{where}: --prefill is not the plan's one prefill")
+    require([values for flag, values in items if flag == "--decode"] == [[loopback.format(decode["port"])]],
+            f"{where}: --decode is not the plan's one decode")
+    port = int(one(items, "--port", where) or "0")
+    metrics = int(one(items, "--prometheus-port", where) or "0")
+    require(1024 <= port <= 65534 and 1024 <= metrics <= 65534 and port != metrics,
+            f"{where}: --port and --prometheus-port must be two ports from 1024 to 65534")
+    return {"port": port, "metricsPort": metrics,
+            "args": join_flags([(flag, values) for flag, values in items if flag not in PAIR_ROUTER_CHART_FLAGS])}
+
+
+def pair_values(recipe: dict[str, Any], layout: dict[str, Any]) -> dict[str, Any]:
+    """The inference.pair values of a pair recipe and its checked layout."""
+    plan, replica = layout.get("plan"), recipe["replica"]
+    name = replica["plan"]
+    require(isinstance(plan, dict) and isinstance(plan.get("workers"), list) and len(plan["workers"]) == 2,
+            f"layout {name} is not one prefill/decode pair")
+    require(layout.get("target", {}).get("gpu_count") == replica["gpus"],
+            f"layout {name} uses {layout.get('target', {}).get('gpu_count')} GPUs; replica.gpus is {replica['gpus']}")
+    paths = layout.get("paths")
+    require(isinstance(paths, dict) and all(isinstance(paths.get(key), str) and paths[key].startswith("/")
+                                            for key in ("python", "model", "engram_holder")),
+            f"layout {name}: paths.python, paths.model and paths.engram_holder must be absolute paths")
+    prefill = pair_worker(plan["workers"][0], "prefill", layout, recipe)
+    decode = pair_worker(plan["workers"][1], "decode", layout, recipe)
+    require(prefill["gpus"] + decode["gpus"] == replica["gpus"],
+            f"layout {name}: the workers use {prefill['gpus'] + decode['gpus']} GPUs; replica.gpus is {replica['gpus']}")
+    # sglang-pair gives prefill the first GPUs of the pod, then decode. The
+    # plan must agree, or its NVLink pairing would be another one.
+    visible = [plan["workers"][index].get("env", {}).get("CUDA_VISIBLE_DEVICES") for index in (0, 1)]
+    expected = [",".join(map(str, range(prefill["gpus"]))),
+                ",".join(map(str, range(prefill["gpus"], replica["gpus"])))]
+    require(visible == expected, f"layout {name}: the workers see GPUs {visible}; sglang-pair gives {expected}")
+    require(len({prefill["port"], decode["port"], prefill["bootstrapPort"]}) == 3,
+            f"layout {name}: the worker and bootstrap ports must differ")
+    router = pair_router(plan.get("router"), layout, prefill, decode)
+    require(router["port"] not in (prefill["port"], decode["port"]), f"layout {name}: the router port is a worker port")
+    return {
+        "plan": name,
+        "layoutSha256": layout["_sha256"],
+        "python": paths["python"],
+        "engramHolder": paths["engram_holder"],
+        "prefill": prefill,
+        "decode": decode,
+        "router": router,
+    }
+
+
+def release_layout(name: str, release: dict[str, Any] | None) -> dict[str, Any]:
+    """The checked layout `name` of the release's engine image."""
+    if release is not None:
+        section = release.get("confidentialSglang", {})
+        record = section.get("record")
+        bound = section.get("layouts", {}).get(name)
+        require(bound is not None, f"the release binds no layout {name} (confidentialSglang.layouts)")
+    else:
+        record = yaml.safe_load((ROOT / "release/spec.yaml").read_text(encoding="utf-8"))["confidentialSglang"]["record"]
+        bound = None
+    try:
+        layout = confidential_sglang_release.read_layout(record, name)
+    except confidential_sglang_release.RecordError as error:
+        raise RecipeError(str(error)) from error
+    require(bound is None or layout["_sha256"] == bound,
+            f"layout {name} of the checkout differs from the release ({layout['_sha256']}, not {bound})")
+    return layout
+
+
+def values(recipe: dict[str, Any], images: dict[str, Any], layout: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The chart values of a loaded recipe. `images` holds the chart image keys of the release, and
+    `layout` the checked layout of a pair recipe (release_layout)."""
     engine, replica, model, worker, routing = (recipe[key] for key in ("engine", "replica", "model", "worker",
                                                                        "routing"))
     require(engine["image"] in images, f"the release has no image {engine['image']} (engine.image)")
     if "image" in routing:
         require(routing["image"] in images, f"the release has no image {routing['image']} (routing.image)")
-    inference = {
+    pair = replica["layout"] == "pair"
+    inference: dict[str, Any] = {
         "mode": "model",
+        "layout": replica["layout"],
         "engineImage": engine["image"],
         "flashinferDisableJit": engine["flashinferDisableJit"],
-        "replicas": replica["workers"],
-        "gpusPerReplica": replica["gpusPerWorker"],
+        "gpusPerReplica": replica["gpus"],
         "gpuArchitectures": list(replica["gpuArchitectures"]),
-        "attestedGpuCount": replica.get("attestedGpuCount", replica["gpusPerWorker"]),
+        "attestedGpuCount": replica.get("attestedGpuCount", replica["gpus"]),
         "contextLength": model["contextLength"],
-        "maxRunningRequests": worker["maxRunningRequests"],
         "toolCallParser": worker["toolCallParser"],
         "reasoningParser": worker["reasoningParser"],
         "speculativeAlgorithm": worker["speculativeAlgorithm"],
-        "moeRunnerBackend": worker["moeRunnerBackend"],
-        "workerExtraArgs": list(worker["extraArgs"]),
-        "model": {
-            "name": model["repository"],
-            "revision": model["revision"],
-            "mountVerification": {"revisionMetadata": REVISION_METADATA, "expectedFileList": expected_files(recipe)},
-            "download": {"manifest": recipe["_modelManifest"]},
-        },
+    }
+    if pair:
+        require(layout is not None and layout.get("layout") == replica["plan"],
+                f"the pair recipe needs the layout {replica['plan']}")
+        inference["pair"] = pair_values(recipe, layout)
+    else:
+        inference.update({
+            "maxRunningRequests": worker["maxRunningRequests"],
+            "moeRunnerBackend": worker["moeRunnerBackend"],
+            "workerExtraArgs": list(worker["extraArgs"]),
+        })
+    inference["model"] = {
+        "name": model["repository"],
+        "revision": model["revision"],
+        "mountVerification": {"revisionMetadata": REVISION_METADATA, "expectedFileList": expected_files(recipe)},
+        "download": {"manifest": recipe["_modelManifest"]},
     }
     rendered: dict[str, Any] = {"inference": inference}
     if "image" in routing:
@@ -240,12 +452,17 @@ def values(recipe: dict[str, Any], images: dict[str, Any]) -> dict[str, Any]:
     return rendered
 
 
-def release_image_keys(release: Path | None) -> dict[str, Any]:
+def recipe_values(recipe: dict[str, Any], images: dict[str, Any], release: dict[str, Any] | None = None) -> dict[str, Any]:
+    """values() with the layout of a pair recipe read from the checkout (and checked against `release`)."""
+    replica = recipe["replica"]
+    layout = release_layout(replica["plan"], release) if replica["layout"] == "pair" else None
+    return values(recipe, images, layout)
+
+
+def release_image_keys(release: dict[str, Any] | None) -> dict[str, Any]:
     """The chart image keys of a framework release manifest, or of release/spec.yaml."""
     if release is not None:
-        return json.loads(release.read_text(encoding="utf-8"))["images"]
-    sys.path.insert(0, str(ROOT / "scripts"))
-    import confidential_sglang_release
+        return release["images"]
     import release_spec
 
     spec = release_spec.read_spec()
@@ -263,7 +480,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, help="the values file to write (default: stdout)")
     args = parser.parse_args()
     try:
-        output = dump(values(load(args.recipe), release_image_keys(args.release)))
+        release = json.loads(args.release.read_text(encoding="utf-8")) if args.release else None
+        output = dump(recipe_values(load(args.recipe), release_image_keys(release), release))
     except (RecipeError, OSError, KeyError, json.JSONDecodeError) as error:
         print(f"recipe-values: {error}", file=sys.stderr)
         return 1

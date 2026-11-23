@@ -82,7 +82,16 @@ python3 scripts/confidential_sglang_release.py pin images-0123456789ab
 ```
 
 The script downloads `images-<12hex>.json` with `gh`, checks it, writes the input
-file, and changes the record line only. Review both and commit them.
+file, and changes the record line only. It also copies every launch plan that
+the record's engine image bakes (`/opt/sglang/layouts/<name>.json`) to
+`release/inputs/confidential-sglang/layouts/<record>/`. It reads the image's
+layers by digest with `crane` from the top down and stops at the layouts
+layer, so it does not pull the image. Each layout must have confidential-sglang's
+layout schema, its own name, and the record's source commit as its revision.
+Review the files and commit them. `python3
+scripts/confidential_sglang_release.py check-image` compares them with the
+image again, and the engine contract workflow compares them with the pulled
+image on a pull request that changes the pin.
 
 `images-000000000000` is the placeholder until confidential-sglang publishes
 its first record. The release build refuses it, so no framework release is
@@ -94,8 +103,10 @@ The release build reads the record file and adds its images to the release
 images by chart image key: `engine` as `images.confidentialSglangEngine` and
 `router` as `images.confidentialSglangRouter`. The signed manifest binds
 `confidentialSglang`: the record name, the asset name, the SHA-256 of the
-record bytes, the source commit, the run ID, and each image with its two
-build digests.
+record bytes, the source commit, the run ID, each image with its two
+build digests, and the SHA-256 of each committed layout (`layouts`). A pair
+recipe names one of the layouts; the build refuses a pair recipe whose layout
+the release does not bind.
 
 `scripts/render-allowlist.py` reads the image configuration (`ENV`,
 `ENTRYPOINT`, `CMD`) of a confidential-sglang image from the registry by
