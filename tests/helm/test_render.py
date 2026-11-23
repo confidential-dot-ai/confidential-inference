@@ -256,6 +256,54 @@ def check_model_download_sources() -> None:
             assert f"for e in {expected}; do " in script, script
     hosts = [{"serverName": "c.example.invalid", "address": "10.95.0.80", "scheme": "ftp"}]
     assert "scheme" in render_values(download_values(hosts=hosts), success=False)
+    check_model_download_fallback_runs()
+
+
+def check_model_download_fallback_runs() -> None:
+    """Run the rendered two-source command with a fetch-model stub: the sources go in order, the first
+    success stops the loop and starts the check, all failures exit 1 without the check, and TERM stops
+    the running fetch at once without trying the next source."""
+    import os
+    import signal
+    import time
+    hosts = [{"serverName": "cache.example.invalid", "address": "10.95.0.80", "scheme": "http"},
+             {"serverName": "models.example.invalid", "address": "192.0.2.20"}]
+    documents = render_values(download_values(hosts=hosts), "--set", "inference.mode=model",
+                              "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
+    worker = next(item for item in documents if item["kind"] == "StatefulSet"
+                  and item["metadata"]["name"] == "inference-worker")
+    script = worker["spec"]["template"]["spec"]["containers"][0]["command"][2]
+    with tempfile.TemporaryDirectory() as directory:
+        log = Path(directory) / "log"
+        stub = Path(directory) / "fetch-model"
+        stub.write_text('#!/bin/sh\nendpoint=${1#--endpoint=}\necho "fetch $endpoint" >> "$LOG"\n'
+                        'case " $FAIL " in *" $endpoint "*) exit 7;; esac\n'
+                        '[ -n "$SLEEP" ] && exec sleep "$SLEEP"\nexit 0\n')
+        stub.chmod(0o755)
+        runnable = script.replace("/usr/local/bin/fetch-model", str(stub))
+        cache, server = "http://cache.example.invalid:443", "https://models.example.invalid"
+
+        def run(fail: str = "", sleep: str = "") -> tuple[int, list[str]]:
+            log.write_text("")
+            env = {**os.environ, "LOG": str(log), "FAIL": fail, "SLEEP": sleep}
+            done = subprocess.run(["/bin/sh", "-c", runnable, "sh", "sh", "-c", f'echo check >> "{log}"'],
+                                  env=env, capture_output=True, text=True, timeout=30)
+            return done.returncode, log.read_text().split("\n")[:-1]
+
+        assert run() == (0, [f"fetch {cache}", "check"])
+        assert run(fail=cache) == (0, [f"fetch {cache}", f"fetch {server}", "check"])
+        assert run(fail=f"{cache} {server}") == (1, [f"fetch {cache}", f"fetch {server}"])
+        log.write_text("")
+        process = subprocess.Popen(["/bin/sh", "-c", runnable, "sh", "sh", "-c", f'echo check >> "{log}"'],
+                                   env={**os.environ, "LOG": str(log), "FAIL": "", "SLEEP": "30"})
+        for _ in range(100):
+            if log.read_text():
+                break
+            time.sleep(0.05)
+        time.sleep(0.2)
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=10) == 143
+        assert log.read_text().split("\n")[:-1] == [f"fetch {cache}"], log.read_text()
 
 
 def check_model_download_scheme() -> None:
