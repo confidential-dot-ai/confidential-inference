@@ -37,12 +37,17 @@ MAN = load("build_release_manifest_recipes", "scripts/build-release-manifest.py"
 FIXTURES = ROOT / "tests/release-v1/fixtures/confidential-sglang"
 RECORD = "images-0123456789ab"
 QWEN = ROOT / "recipes/qwen35-0.8b-1xb200/recipe.yaml"
+DSV41 = ROOT / "recipes/deepseek-v41-flash-262k-4xb200/recipe.yaml"
 LAYOUT = "dsv41-262k"
 CHART = ROOT / "helm/confidential-inference"
 
 
 def fixture_pin() -> dict:
     return CSR.release_pin({"record": RECORD}, FIXTURES)
+
+
+def fixture_layout() -> dict:
+    return CSR.read_layout(RECORD, LAYOUT, FIXTURES)
 
 
 def fixture_record() -> dict:
@@ -287,6 +292,115 @@ class RecipeTests(unittest.TestCase):
         # The same tree gives the same bytes.
         with mock.patch.object(CSR, "INPUTS", FIXTURES):
             self.assertEqual(MAN.recipes_file(release_images(), fixture_pin())[0], data)
+        # A pin without the pair recipe's layout fails the release build.
+        pin = {key: value for key, value in fixture_pin().items() if key != "layouts"}
+        with mock.patch.object(CSR, "INPUTS", FIXTURES), self.assertRaisesRegex(MAN.ManifestError, "binds no layout"):
+            MAN.recipes_file(release_images(), pin)
+        self.assertEqual(shipped["recipes"]["deepseek-v41-flash-262k-4xb200"]["recipe.yaml"], DSV41.read_text())
+
+
+class PairRecipeTests(unittest.TestCase):
+    """The DeepSeek-V4.1 pair recipe: one replica is the engine image's launch plan dsv41-262k."""
+
+    def values(self, recipe: dict | None = None, layout: dict | None = None) -> dict:
+        loaded = RV.load(DSV41)
+        if recipe is not None:
+            loaded = {**recipe, "_modelManifest": loaded["_modelManifest"]}
+        return RV.values(loaded, release_images(), layout or fixture_layout())
+
+    def test_the_recipe_names_the_layout_and_copies_no_flag(self):
+        recipe = yaml.safe_load(DSV41.read_text())
+        self.assertEqual(recipe["replica"], {"layout": "pair", "plan": LAYOUT, "gpus": 4,
+                                             "gpuArchitectures": ["BLACKWELL"], "attestedGpuCount": 4})
+        self.assertNotIn("extraArgs", recipe["worker"])
+        self.assertEqual(recipe["model"]["repository"], "deepseek-ai/DeepSeek-V4.1-Flash-1017")
+        self.assertEqual(recipe["model"]["revision"], "1bae0e1088993b9b82de08f59de5be5a34e42170")
+        self.assertEqual(recipe["model"]["contextLength"], 262144)
+        self.assertEqual(sorted(recipe["behavior"]["apis"]), ["chat", "completions", "messages", "responses"])
+
+    def test_the_pair_values_come_from_the_layout(self):
+        inference = self.values()["inference"]
+        self.assertEqual((inference["layout"], inference["gpusPerReplica"], inference["attestedGpuCount"]),
+                         ("pair", 4, 4))
+        self.assertNotIn("replicas", inference)
+        pair = inference["pair"]
+        layout = fixture_layout()
+        self.assertEqual((pair["plan"], pair["layoutSha256"]), (LAYOUT, layout["_sha256"]))
+        prefill, decode = pair["prefill"], pair["decode"]
+        self.assertEqual((prefill["gpus"], prefill["port"], prefill["bootstrapPort"]), (2, 8041, 8999))
+        self.assertEqual((decode["gpus"], decode["port"], decode["maxRunningRequests"]), (2, 8042, 128))
+        for role, worker in (("prefill", prefill), ("decode", decode)):
+            plan = next(item for item in layout["plan"]["workers"] if item["name"] == role)["command"][3:]
+            # The plan's flags in order, less the four the chart sets.
+            kept = RV.join_flags([item for item in RV.split_flags(plan, role) if item[0] not in RV.PAIR_CHART_FLAGS])
+            self.assertEqual(worker["args"], kept)
+            for flag in ("--model-path", "--served-model-name", "--host", "--warmups"):
+                self.assertNotIn(flag, worker["args"])
+            self.assertIn("--speculative-algorithm", worker["args"])
+            self.assertNotIn("CUDA_VISIBLE_DEVICES", worker["env"])
+        self.assertEqual((pair["router"]["port"], pair["router"]["metricsPort"]), (8040, 29001))
+        self.assertEqual(pair["router"]["args"], ["--reject-video", "--disable-circuit-breaker", "--retry-max-retries",
+                                                  "2", "--max-concurrent-requests", "192", "--queue-size", "256",
+                                                  "--queue-timeout-secs", "30"])
+
+    def test_the_recipe_must_agree_with_its_layout(self):
+        def changed(edit):
+            recipe = yaml.safe_load(DSV41.read_text())
+            edit(recipe)
+            return recipe
+        cases = {
+            "--tool-call-parser": changed(lambda r: r["worker"].update(toolCallParser="deepseekv4")),
+            "--context-length": changed(lambda r: r["model"].update(contextLength=131072)),
+            "--speculative-algorithm": changed(lambda r: r["worker"].update(speculativeAlgorithm="")),
+            "uses 4 GPUs": changed(lambda r: r["replica"].update(gpus=8, attestedGpuCount=8)),
+        }
+        for message, recipe in cases.items():
+            with self.subTest(message=message), self.assertRaisesRegex(RV.RecipeError, message):
+                self.values(recipe)
+
+    def test_a_layout_the_chart_cannot_run_is_refused(self):
+        def changed(edit):
+            layout = copy.deepcopy(fixture_layout())
+            edit(layout["plan"])
+            return layout
+
+        def set_flag(role, flag, value):
+            def edit(plan):
+                command = plan["workers"][role]["command"]
+                command[command.index(flag) + 1] = value
+            return edit
+        cases = {
+            "runs warmups other": changed(lambda plan: plan["workers"][0]["command"].extend(["--warmups", "other"])),
+            "sglang-pair gives": changed(lambda plan: plan["workers"][1]["env"].update(CUDA_VISIBLE_DEVICES="0,1")),
+            "one prefill and one decode": changed(lambda plan: plan["workers"].reverse()),
+            "--disaggregation-mode is not decode": changed(set_flag(1, "--disaggregation-mode", "prefill")),
+            "sglang-pair control": changed(lambda plan: plan["workers"][0]["env"].update(SGLANG_PAIR_ROLE="x")),
+            "which the pair refuses": changed(lambda plan: plan["workers"][1]["command"].append("--log-requests")),
+            "--prefill is not": changed(lambda plan: plan["router"]["command"].__setitem__(
+                plan["router"]["command"].index("8999"), "9000")),
+        }
+        for message, layout in cases.items():
+            with self.subTest(message=message), self.assertRaisesRegex(RV.RecipeError, message):
+                self.values(layout=layout)
+
+    def test_with_a_release_the_layout_must_be_the_bound_one(self):
+        recipe = RV.load(DSV41)
+        pin = fixture_pin()
+        with mock.patch.object(CSR, "INPUTS", FIXTURES):
+            RV.recipe_values(recipe, release_images(), {"confidentialSglang": pin})
+            other = {**pin, "layouts": {LAYOUT: "sha256:" + "0" * 64}}
+            with self.assertRaisesRegex(RV.RecipeError, "differs from the release"):
+                RV.recipe_values(recipe, release_images(), {"confidentialSglang": other})
+            with self.assertRaisesRegex(RV.RecipeError, "binds no layout"):
+                RV.recipe_values(recipe, release_images(), {"confidentialSglang": {**pin, "layouts": {}}})
+
+    def test_the_pinned_engine_image_has_the_layout(self):
+        """release/spec.yaml's record: its committed layouts include dsv41-262k, built from its commit."""
+        record = MAN.read_spec()["confidentialSglang"]["record"]
+        layout = CSR.read_layout(record, LAYOUT)
+        self.assertEqual(layout["revision"], CSR.read_record(record)[1]["sourceCommit"])
+        self.assertIn(LAYOUT, CSR.release_pin({"record": record})["layouts"])
+        RV.recipe_values(RV.load(DSV41), RV.release_image_keys(None))
 
 
 class LayoutImageTests(unittest.TestCase):
