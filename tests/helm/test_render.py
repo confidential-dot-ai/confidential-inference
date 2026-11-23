@@ -187,9 +187,13 @@ def check_model_download() -> None:
         container = pod["containers"][0]
         shell, flag, script, name = container["command"]
         assert (shell, flag, name) == ("/bin/sh", "-c", "sh")
-        assert ("/usr/local/bin/fetch-model --endpoint=https://models.example.invalid fetch "
+        # Two sources: fetch-model tries each in order until one gives every byte.
+        assert script.startswith("trap 'kill $f 2>/dev/null; wait $f; exit 143' TERM INT; "
+                                 "for e in https://models.example.invalid https://cdn.example.invalid; do "), script
+        assert ("/usr/local/bin/fetch-model --endpoint=$e fetch "
                 f"--path=/mnt/c8s-data/model-download --manifest=/mnt/c8s-data/model-manifest/manifest.json "
                 f"--manifest-sha256={pin} --revision-metadata=.model-lock-local-manifest.json &") in script
+        assert '[ -z "$f" ] || exit 1; trap - TERM INT; exec "$@"' in script
         assert script.endswith('exec "$@"')
         assert container["args"][:3] == ["/usr/local/bin/wait-for-model", "--path=/mnt/c8s-data/models/model",
                                          "--plain-cache"], container["args"][:3]
@@ -223,6 +227,37 @@ def check_model_download() -> None:
         assert error in render_values(values, success=False), name
 
 
+def check_model_download_sources() -> None:
+    """One source keeps the one fetch-model command; distinct sources are tried in order, each with its own
+    scheme on the one exit port. The same server name twice is one source."""
+    import hashlib
+    pin = hashlib.sha256(MANIFEST.encode()).hexdigest()
+    single = [{"serverName": "models.example.invalid", "address": "192.0.2.20"}]
+    for hosts, download, expected in (
+            (single, {}, None),
+            (single + [{"serverName": "models.example.invalid", "address": "192.0.2.21"}], {}, None),
+            ([{"serverName": "model-cache.example.invalid", "address": "10.95.0.80", "scheme": "http"}] + single, {},
+             "http://model-cache.example.invalid:443 https://models.example.invalid"),
+            ([{"serverName": "model-cache.example.invalid", "address": "10.95.0.80"}] + single, {"scheme": "http"},
+             "http://model-cache.example.invalid http://models.example.invalid")):
+        documents = render_values(download_values(hosts=hosts, **download), "--set", "inference.mode=model",
+                                  "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
+        worker = next(item for item in documents if item["kind"] == "StatefulSet"
+                      and item["metadata"]["name"] == "inference-worker")
+        script = worker["spec"]["template"]["spec"]["containers"][0]["command"][2]
+        if expected is None:
+            scheme = download.get("scheme", "https")
+            assert script == ("trap 'kill $f 2>/dev/null; wait $f; exit 143' TERM INT; /usr/local/bin/fetch-model "
+                              f"--endpoint={scheme}://models.example.invalid fetch --path=/mnt/c8s-data/model-download "
+                              "--manifest=/mnt/c8s-data/model-manifest/manifest.json "
+                              f"--manifest-sha256={pin} --revision-metadata=.model-lock-local-manifest.json & f=$!; "
+                              'wait $f || exit $?; trap - TERM INT; exec "$@"'), script
+        else:
+            assert f"for e in {expected}; do " in script, script
+    hosts = [{"serverName": "c.example.invalid", "address": "10.95.0.80", "scheme": "ftp"}]
+    assert "scheme" in render_values(download_values(hosts=hosts), success=False)
+
+
 def check_model_download_scheme() -> None:
     """A plain HTTP model server: the byte manifest, not TLS, pins the model bytes.
 
@@ -234,7 +269,7 @@ def check_model_download_scheme() -> None:
             ({"scheme": "http"}, "http://models.example.invalid", 80),
             ({"scheme": "http", "port": 80}, "http://models.example.invalid", 80),
             ({"scheme": "http", "port": 8080}, "http://models.example.invalid:8080", 8080)):
-        documents = render_values(download_values(**download), "--set", "inference.mode=model",
+        documents = render_values(download_values(hosts=DOWNLOAD_HOSTS[:1], **download), "--set", "inference.mode=model",
                                   "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
         worker = next(item for item in documents if item["kind"] == "StatefulSet"
                       and item["metadata"]["name"] == "inference-worker")
@@ -1001,6 +1036,7 @@ def main() -> None:
     check_model_cache()
     check_model_download()
     check_model_download_scheme()
+    check_model_download_sources()
     check_worker_placement()
     check_router_exit_ranges()
     check_front_door_namespace()
