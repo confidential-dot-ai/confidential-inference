@@ -6,7 +6,7 @@
 //! (`GATEWAY_ADMIN_ENDPOINT`, `GATEWAY_USAGE_MODELS`). The key snapshot is
 //! served on the same origin at [`KEY_SNAPSHOT_PATH`]. The URL's host is the
 //! TLS name the gateway checks against the image's public roots. `token`, the
-//! only field of the CDS secret `/confidential-inference/gateway/product-usage`
+//! only field of the Trust Authority secret `/confidential-inference/gateway/product-usage`
 //! the gateway reads, authenticates it to the admin, which maps it to one
 //! environment and key realm. `tls_ca_pem` and `connect_address` are for
 //! tests against a local admin.
@@ -33,7 +33,7 @@ const FIRST_KEY_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 65_536;
 
-/// Fields of the CDS secret this client reads. Other fields of the secret
+/// Fields of the Trust Authority secret this client reads. Other fields of the secret
 /// are ignored.
 #[derive(Clone, Deserialize)]
 pub struct Config {

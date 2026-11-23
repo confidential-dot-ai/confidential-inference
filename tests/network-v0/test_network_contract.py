@@ -148,9 +148,9 @@ class NetworkContractTests(unittest.TestCase):
             )
         )
 
-    def cds_rules(self, documents: list[dict]) -> dict[str, list[dict]]:
-        """The egress rules on the CDS port that select each confidential workload."""
-        cds_port = self.port("c8s-credential-release")["cvmPort"]
+    def ta_rules(self, documents: list[dict]) -> dict[str, list[dict]]:
+        """The egress rules on the Trust Authority port that select each confidential workload."""
+        ta_port = self.port("c8s-credential-release")["cvmPort"]
         policies = [item for item in documents if item["kind"] == "NetworkPolicy"]
         return {
             workload["metadata"]["name"]: [
@@ -158,43 +158,62 @@ class NetworkContractTests(unittest.TestCase):
                 for policy in policies
                 if selects(policy["spec"]["podSelector"], workload["spec"]["template"]["metadata"]["labels"])
                 for rule in policy["spec"].get("egress", [])
-                if any(port.get("port") == cds_port for port in rule.get("ports", []))
+                if any(port.get("port") == ta_port for port in rule.get("ports", []))
             ]
             for workload in self.workloads()
         }
 
-    def test_each_confidential_workload_reaches_only_the_configured_cds(self) -> None:
-        output = subprocess.run(
-            ["helm", "template", "example", str(CHART), *NEUTRAL_MODE,
-             "--set", "c8s.cds.cidrs={198.51.100.4/32}"],
-            cwd=ROOT, check=True, text=True, capture_output=True,
-        ).stdout
-        documents = [item for item in yaml.safe_load_all(output) if item]
-        for name, rules in self.cds_rules(documents).items():
-            self.assertTrue(rules, name)
-            for rule in rules:
-                self.assertEqual(rule.get("to"), [{"ipBlock": {"cidr": "198.51.100.4/32"}}], name)
+    def test_each_confidential_workload_reaches_only_the_configured_ta(self) -> None:
+        for values in ("c8s.cds.cidrs={198.51.100.4/32}",
+                       "c8s.ta.cidrs={198.51.100.4/32}",
+                       "c8s.cds.cidrs={192.0.2.10/32},c8s.ta.cidrs={198.51.100.4/32}"):
+            output = subprocess.run(
+                ["helm", "template", "example", str(CHART), *NEUTRAL_MODE,
+                 "--set", values],
+                cwd=ROOT, check=True, text=True, capture_output=True,
+            ).stdout
+            documents = [item for item in yaml.safe_load_all(output) if item]
+            for name, rules in self.ta_rules(documents).items():
+                self.assertTrue(rules, name)
+                for rule in rules:
+                    self.assertEqual(rule.get("to"), [{"ipBlock": {"cidr": "198.51.100.4/32"}}], name)
 
-    def test_the_maintenance_gateway_reaches_only_the_configured_cds(self) -> None:
-        cds_port = self.port("c8s-credential-release")["cvmPort"]
-        for values, peers in ((("--set", "cds.cidrs={198.51.100.4/32}"), [{"ipBlock": {"cidr": "198.51.100.4/32"}}]),
+    def test_the_maintenance_gateway_reaches_only_the_configured_ta(self) -> None:
+        ta_port = self.port("c8s-credential-release")["cvmPort"]
+        for values, peers in ((("--set", "ta.cidrs={198.51.100.4/32}"), [{"ipBlock": {"cidr": "198.51.100.4/32"}}]),
+                              (("--set", "cds.cidrs={192.0.2.10/32},ta.cidrs={198.51.100.4/32}"), [{"ipBlock": {"cidr": "198.51.100.4/32"}}]),
+                              (("--set", "cds.cidrs={198.51.100.4/32}"), [{"ipBlock": {"cidr": "198.51.100.4/32"}}]),
                               ((), [{"ipBlock": {"cidr": "192.0.2.1/32"}}])):
             output = subprocess.run(["helm", "template", "example", str(ROOT / "helm/maintenance-gateway"), *values],
                                     cwd=ROOT, check=True, text=True, capture_output=True).stdout
             rules = [rule for item in yaml.safe_load_all(output) if item and item["kind"] == "NetworkPolicy"
                      for rule in item["spec"].get("egress", [])
-                     if any(port.get("port") == cds_port for port in rule.get("ports", []))]
+                     if any(port.get("port") == ta_port for port in rule.get("ports", []))]
             self.assertEqual([rule.get("to") for rule in rules], [peers], values)
 
-    def test_without_a_cds_address_the_cds_rule_reaches_no_cds(self) -> None:
-        # The CDS address is a deployment value; release profiles leave it unset.
-        for name, rules in self.cds_rules(self.documents).items():
+    def test_a_ta_port_alone_keeps_the_default_ta_address(self) -> None:
+        for chart, values in ((CHART, (*NEUTRAL_MODE, "--set", "c8s.ta.port=9443")),
+                              (ROOT / "helm/maintenance-gateway", ("--set", "ta.port=9443"))):
+            output = subprocess.run(["helm", "template", "example", str(chart), *values],
+                                    cwd=ROOT, check=True, text=True, capture_output=True).stdout
+            rules = [rule for item in yaml.safe_load_all(output) if item and item["kind"] == "NetworkPolicy"
+                     for rule in item["spec"].get("egress", [])
+                     if any(port.get("port") == 9443 for port in rule.get("ports", []))]
+            self.assertTrue(rules, chart)
+            for rule in rules:
+                self.assertEqual(rule.get("to"), [{"ipBlock": {"cidr": "192.0.2.1/32"}}], chart)
+
+    def test_without_a_ta_address_the_ta_rule_reaches_no_ta(self) -> None:
+        # The Trust Authority address is a deployment value; release profiles leave it unset.
+        for name, rules in self.ta_rules(self.documents).items():
             self.assertTrue(rules, name)
             for rule in rules:
                 self.assertEqual(rule.get("to"), [{"ipBlock": {"cidr": "192.0.2.1/32"}}], name)
 
-    def test_an_empty_cds_address_list_is_refused(self) -> None:
-        for chart, values in ((CHART, (*NEUTRAL_MODE, "--set-json", "c8s.cds.cidrs=[]")),
+    def test_an_empty_ta_address_list_is_refused(self) -> None:
+        for chart, values in ((CHART, (*NEUTRAL_MODE, "--set-json", "c8s.ta.cidrs=[]")),
+                              (ROOT / "helm/maintenance-gateway", ("--set-json", "ta.cidrs=[]")),
+                              (CHART, (*NEUTRAL_MODE, "--set-json", "c8s.cds.cidrs=[]")),
                               (ROOT / "helm/maintenance-gateway", ("--set-json", "cds.cidrs=[]"))):
             with self.subTest(chart=chart.name):
                 result = subprocess.run(["helm", "template", "example", str(chart), *values],

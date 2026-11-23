@@ -5,7 +5,7 @@ trust files. Generated assets are published on GitHub Releases. Historical
 snapshots remain in Git history.
 
 The framework release is the software: the image digests, the Helm chart,
-the C8s release with its node and CDS guest images, and the tools that
+the C8s release with its node and Trust Authority guest images, and the tools that
 render an allowlist. It holds no environment value: no allowlist, no Helm
 values, no model, no hostname, no address, no mesh CA. Each environment keeps
 its own values and allowlist policy in the deployment repository. Each
@@ -21,9 +21,9 @@ image digests. The release commit is the image source commit.
 
 | File | Written by | Contents |
 | --- | --- | --- |
-| `spec.yaml` | A person, or `bump-c8s.py` for `c8s` and `images.c8sOperator` | The C8s release with its node image, CDS guest image and core images, and every image that the chart can run, by chart image key. A repository image has no digest. It names no version: the tag is the version |
+| `spec.yaml` | A person, or `bump-c8s.py` for `c8s` and `images.c8sOperator` | The C8s release with its node image, Trust Authority guest image and core images, and every image that the chart can run, by chart image key. A repository image has no digest. It names no version: the tag is the version |
 | `node-manifest.json` | `fetch-node-manifest.py` | The C8s `manifest.json` of the node image. It holds MRTD, RTMR1, and RTMR2 |
-| `cds-manifest.json` | `fetch-node-manifest.py` | The C8s `manifest.json` of the CDS guest image. The release manifest binds its SHA-256 as `cdsImage.manifestSha256`, and the release publishes it as an asset; a deployment's `cds-pin.json` takes its launch digest from it |
+| `cds-manifest.json` | `fetch-node-manifest.py` | The C8s `manifest.json` of the Trust Authority guest image. The release manifest binds its SHA-256 as `cdsImage.manifestSha256`, and the release publishes it as an asset; a deployment's `cds-pin.json` takes its launch digest from it |
 | `inputs/image-config.json` | `generate-release-allowlist.py --refresh-image-config` | The `ENV`, `ENTRYPOINT`, and `CMD` of every image in `spec.yaml` that this repository does not build, and of the C8s core images. Review the diff by hand |
 | `inputs/confidential-sglang/images-<12hex>.json` | `confidential_sglang_release.py pin` | The confidential-sglang release record that `spec.yaml` `confidentialSglang.record` names: the engine and router images by digest, their source commit, run ID and two build digests (`docs/confidential-sglang-images.md`) |
 | `inputs/cdi/nvidia-<driver>.json` | A person, from a reviewed record | The NVIDIA CDI environment variables and driver mounts of one driver version |
@@ -42,9 +42,9 @@ evidence:
 
 | Asset | Contents |
 | --- | --- |
-| `release-bundle.json` | The framework release manifest. The workflow signs it. It must match `api/release-manifest-v2.schema.json`. It names every image digest (`images`), the C8s release and core images (`c8s`), the node image and its measurements, the CDS guest image (`cdsImage`), the confidential-sglang record (`confidentialSglang`), the recipes (`recipes`), the chart, and the source lock |
+| `release-bundle.json` | The framework release manifest. The workflow signs it. It must match `api/release-manifest-v2.schema.json`. It names every image digest (`images`), the C8s release and core images (`c8s`), the node image and its measurements, the Trust Authority guest image (`cdsImage`), the confidential-sglang record (`confidentialSglang`), the recipes (`recipes`), the chart, and the source lock |
 | `confidential-inference-X.Y.Z.tgz` | The chart package at version X.Y.Z (the tag without `v`). The manifest binds its SHA-256 as `chart.archiveSha256` and the registry reference the publish job pushes it to as `chart.reference` (`ghcr.io/confidential-dot-ai/confidential-inference/charts/confidential-inference:X.Y.Z`). `chart.sha256` is the tree hash of `helm/confidential-inference` at the tag |
-| `cds-manifest.json` | The C8s `manifest.json` of the pinned CDS guest image (`release/cds-manifest.json`). The manifest binds its SHA-256 as `cdsImage.manifestSha256` |
+| `cds-manifest.json` | The C8s `manifest.json` of the pinned Trust Authority guest image (`release/cds-manifest.json`). The manifest binds its SHA-256 as `cdsImage.manifestSha256` |
 | `recipes.json` | Every recipe of `recipes/` with its files (`recipes/README.md`). The manifest binds its SHA-256 as `recipes.sha256` and the SHA-256 of each `recipe.yaml` |
 
 The build takes the image digests from two signed sources:
@@ -158,38 +158,42 @@ It needs `crane`, Go, read access to the C8s Go module, and first on `PATH`
 the Helm version that the worker image build pins (`HELM_VERSION` in its
 `mkosi.sync`; v3.14.4 at C8s v0.101.9). `--c8s` gives a C8s CLI built from the
 tag; without it the script builds one. It changes the C8s pins in `spec.yaml`,
-the source lock, the seed record, the node and CDS manifests, the image
+the source lock, the seed record, the node and Trust Authority manifests, the image
 config, and the allowlist test fixture, and then runs the release checks.
 The script stops when the attestation
-protocol files or the NVIDIA inputs of the node image change. Do those steps
-by hand. Review the full diff before you commit.
+protocol files move or change, or the NVIDIA inputs of the node image change.
+Do those steps by hand. Review the full diff before you commit.
 
 ## Move a deployment to C8s v0.99.29
 
 A release that pins C8s v0.99.29 or later runs only on workers of the
-pinned C8s release with a standalone CDS VM. This release pins C8s v0.101.9.
+pinned C8s release with a standalone Trust Authority VM. This release pins C8s v0.101.9.
 From v0.99.38 each GPU worker runs the NVIDIA device plugin and
-dcgm-exporter as static pods (C8s #1700). The old cluster's CDS state does
-not carry over: a new CDS keeps its secrets in process memory, starts empty,
+dcgm-exporter as static pods (C8s #1700). The old cluster's Trust Authority state does
+not carry over: a new Trust Authority keeps its secrets in process memory, starts empty,
 and mints a new mesh CA (C8s `docs/secrets.md`, `docs/cds-ha.md`). Keep the
-old cluster, its CDS and its release serving until the new deployment passes
+old cluster, its Trust Authority and its release serving until the new deployment passes
 every acceptance check.
 
+The file names `cds-config.yaml` and `cds-pin.json`, the manifest's
+`cdsImage` and the `cds-manifest.json` asset keep the Trust Authority's
+earlier name, CDS.
+
 The deployment has two kinds of input. Launch files never change while a VM
-lives: `cds-config.yaml` for the CDS and `worker.yaml` for each worker, which
-embeds the CDS pin and so the exact bytes of `cds-config.yaml`. The worker
-documents the CDS admits are not in either file: operator-signed decrees in
-the CDS log carry them, and a later `node-images` decree replaces the set
+lives: `cds-config.yaml` for the Trust Authority and `worker.yaml` for each worker, which
+embeds the Trust Authority pin and so the exact bytes of `cds-config.yaml`. The worker
+documents the Trust Authority admits are not in either file: operator-signed decrees in
+the Trust Authority log carry them, and a later `node-images` decree replaces the set
 (C8s `docs/cds-ha.md`, `docs/launch-configuration.md`). Bring a deployment
 of workers up in this order:
 
 1. Write `cds-config.yaml` with `c8s cds config new --replica CDS_HOST
    --voters 1` and no `--node-pins`, so the launch file names no nodes.
-   `CDS_HOST` is the CDS VM's DNS name or IPv4 address; name each replica
-   for more than one VM, with an odd `--voters`. A CDS without `--replica`
+   `CDS_HOST` is the Trust Authority VM's DNS name or IPv4 address; name each replica
+   for more than one VM, with an odd `--voters`. A Trust Authority without `--replica`
    needs `--node-pins`, which cannot bind a worker document that embeds the
    configuration itself.
-2. Boot the CDS VM from the release's `cdsImage` and that file.
+2. Boot the Trust Authority VM from the release's `cdsImage` and that file.
 3. Write `worker.yaml` with `c8s worker new` against the deployment's
    `cds-pin.json`.
 4. Sign the Genesis decree as C8s `docs/cds-ha-runbooks.md` runbook 1
@@ -202,18 +206,18 @@ of workers up in this order:
 
 Hand traffic over only when all of these hold:
 
-- The CDS VM runs the `cdsImage` that the release manifest pins, and its
+- The Trust Authority VM runs the `cdsImage` that the release manifest pins, and its
   `cds-pin.json` launch digest comes from the release's `cds-manifest.json`
   asset, whose SHA-256 equals `cdsImage.manifestSha256` of the verified
   release manifest.
 - Every client that verifies the deployment pins the worker's launch file
   besides the release's node image, as
   [verification.md](../docs/verification.md#3-pin-the-workers-launch-file) describes.
-  Worker admission alone does not show that clients enforce the CDS image and
+  Worker admission alone does not show that clients enforce the Trust Authority image and
   configuration.
 - The operator keys in its `cds-config.yaml` are the deployment's operator
   keys.
-- Every application secret is written to the new CDS.
+- Every application secret is written to the new Trust Authority.
 - Every encrypted volume key is written back from its escrow file with
   `c8s secrets put` (C8s `docs/volumes.md`). A volume without an escrow file
   cannot move; provision it again.
@@ -225,16 +229,16 @@ Hand traffic over only when all of these hold:
   `"egress": {"port": <port>}` for each inference workload: 443 for an HTTPS
   model server, 80 for a plain HTTP one (the chart README, "Model download"
   and "Plain HTTP model server").
-- Every client and gateway that pins a mesh CA pins the new CDS's mesh CA.
+- Every client and gateway that pins a mesh CA pins the new Trust Authority's mesh CA.
   Leaves issued under the old mesh CA are not trusted by the new deployment.
 
 Accept the new deployment only after these checks pass on it:
 
 1. A confidential workload starts, and its injected `c8s-cert` client gets a
-   certificate from the standalone CDS.
-2. The CDS admits each worker over TCP 1019, and the workers' pods start under
+   certificate from the standalone Trust Authority.
+2. The Trust Authority admits each worker over TCP 1019, and the workers' pods start under
    the release allowlist.
-3. A credential client whose `cds-pin.json` names another CDS launch digest
+3. A credential client whose `cds-pin.json` names another Trust Authority launch digest
    is refused.
 4. A worker launched with a `worker.yaml` that no entry of the decree in
    force binds is refused admission and gets no credentials. Read the set in
@@ -243,7 +247,7 @@ Accept the new deployment only after these checks pass on it:
 5. The public attestation route verifies against the new release manifest
    and the RTMR[3] seed of the deployment's `worker.yaml`.
 6. The same check with the seed of another `worker.yaml`, for example one
-   that names another CDS configuration, fails.
+   that names another Trust Authority configuration, fails.
 
 Releases on C8s v0.99.0 and later carry `cdsImage`, which the release
 manifest schema of earlier source commits refuses. Verify such a release with
@@ -253,7 +257,7 @@ Move every verifier, including deployment readiness checks, to that source
 before you publish the release.
 
 Roll back to the previous release and cluster when any check fails before
-handover. After handover, rolling back needs the old CDS still running with
+handover. After handover, rolling back needs the old Trust Authority still running with
 its secrets: once it stops, its secrets and mesh CA are gone, and a rollback is
 a new deployment of the old release.
 
@@ -264,7 +268,7 @@ generator combines five pinned sources: the image configuration, the chart
 pod specification, the `kubernetes` Service variables and `HOSTNAME`, the
 mounts that the C8s webhook adds, and the NVIDIA CDI record for GPU
 containers. `c8s allowlist derive` of the pinned C8s release writes each
-entry. The C8s core entries mirror the seed byte for byte: CDS serves the
+entry. The C8s core entries mirror the seed byte for byte: the Trust Authority serves the
 uploaded allowlist as it is, so it must carry the seed. C8s publishes no seed
 asset from v0.95.0. `bump-c8s.py` renders the seed with
 `c8s node-image render` of the pinned commit, with the kubelet and Helm

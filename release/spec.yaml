@@ -1,4 +1,4 @@
-# The framework release pins: the C8s release, its node and CDS guest images, and every
+# The framework release pins: the C8s release, its node and Trust Authority guest images, and every
 # image that the chart can run. A person edits this file. The release build
 # (scripts/build-release-manifest.py) gives each repository image without a
 # digest its published digest. Deployment values do not set images.

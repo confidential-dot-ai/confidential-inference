@@ -7,10 +7,12 @@ service:
   port: 443
 # Add only an outer proxy which overwrites X-Forwarded-For with one address.
 trustedProxyCidrs: [10.52.0.0/16]
-# The CDS the injected credential client dials, on 8443 unless the CDS VM was
-# started on another port. The CDS address is a deployment value: set it here
+# The Trust Authority the injected credential client dials, on 8443 unless the Trust Authority VM was
+# started on another port. The Trust Authority address is a deployment value: set it here
 # as a /32. The default is a documentation address (RFC 5737) that reaches no
-# CDS.
+# Trust Authority.
+ta: {}
+# cds holds the defaults of the Trust Authority endpoint. ta overrides individual fields.
 cds:
   port: 8443
   cidrs: [192.0.2.1/32]

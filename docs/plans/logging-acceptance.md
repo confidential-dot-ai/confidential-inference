@@ -141,7 +141,7 @@ and fetch-model), not for `gateway` during the load.
 
 ### 6. The live allowlist
 
-Run `c8s allowlist get node-log-agent` against the CDS of the deployment.
+Run `c8s allowlist get node-log-agent` against the Trust Authority of the deployment.
 Pass when the entry:
 
 - has one container of the pinned collector image digest, `command` and

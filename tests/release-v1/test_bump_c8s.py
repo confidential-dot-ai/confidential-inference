@@ -107,7 +107,7 @@ class BumpTests(unittest.TestCase):
                          + ["nginxinc/nginx-unprivileged@sha256:" + "8" * 64])
         self.assertEqual(digest.call_args_list[0], mock.call(BUMP.REGISTRY + "c8s-operator:v0.99.29"))
 
-    def test_new_pins_move_to_the_worker_and_cds_guest_images(self):
+    def test_new_pins_move_to_the_worker_and_ta_guest_images(self):
         old = {"release": "v0.80.10", "sourceCommit": "a" * 40, "coreImages": [],
                "nodeImage": {"reference": BUMP.REGISTRY + "node-guest-base", "tag": "rke2-tdx-cdi-v0.80.10",
                              "digest": "sha256:" + "1" * 64},
@@ -136,7 +136,7 @@ class BumpTests(unittest.TestCase):
     def test_new_c8s_keys_are_appended_to_the_mapping(self):
         path = self.write(SPEC_TEXT)
         value = self.new_c8s()
-        value["cdsImage"] = {"reference": BUMP.CDS_IMAGE, "tag": "v0.99.29-kubevirt", "digest": "sha256:" + "5" * 64}
+        value["cdsImage"] = {"reference": BUMP.TA_IMAGE, "tag": "v0.99.29-kubevirt", "digest": "sha256:" + "5" * 64}
         with mock.patch.object(BUMP, "ROOT", path.parent):
             BUMP.pin_c8s_mapping(path, value)
             self.assertEqual(BUMP.yaml.safe_load(path.read_text())["c8s"], value)
@@ -318,6 +318,22 @@ class BumpTests(unittest.TestCase):
             finally:
                 BUMP.PROTOCOLS = original
 
+    def test_a_moved_protocol_route_requires_a_capture_at_its_new_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = git_repo(root)
+            old = commit(repo, {"cds.go": "package cds\n"})
+            (repo / "cds.go").rename(repo / "ta.go")
+            new = commit(repo, {})
+            protocols = root / "protocols"
+            protocols.mkdir()
+            path = protocols / f"{old}.json"
+            capture = json.dumps({"commit": old, "capturedFrom": {"routes": "cds.go"}})
+            path.write_text(capture)
+            with mock.patch.object(BUMP, "PROTOCOLS", protocols), self.assertRaisesRegex(BUMP.BumpError, "cds.go"):
+                BUMP.share_protocol_manifest(repo, old, new, "v0.99.29", root / "review.diff")
+            self.assertEqual(path.read_text(), capture)
+
     def test_a_manifest_captured_for_the_new_commit_wins_over_sharing_the_old_one(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = git_repo(Path(directory))
@@ -425,6 +441,19 @@ class BumpTests(unittest.TestCase):
             "cmd/cds/main.go": BUMP.sha256_bytes(b"package main\n"),
             "pkg/cdsconfig/pin.go": BUMP.sha256_bytes(b"package cdsconfig\n"),
         })
+
+    def test_the_configuration_flags_remain_pinned_across_the_authority_rename(self):
+        old_name, new_name = "internal/cdsconfig/flags.go", "internal/taconfig/flags.go"
+        with tempfile.TemporaryDirectory() as directory:
+            repo = git_repo(Path(directory))
+            old = commit(repo, {old_name: "package cdsconfig\nvar oldFlag = true\n"})
+            (repo / old_name).unlink()
+            moved = commit(repo, {new_name: "package cdsconfig\nvar oldFlag = true\n"})
+            rewritten = commit(repo, {new_name: "package taconfig\nconst renamed = 7\n"})
+            for target in (moved, rewritten):
+                with self.subTest(target=target):
+                    self.assertEqual(BUMP.pinned_names(repo, old, target, [old_name]), {old_name: new_name})
+            self.assertEqual(BUMP.pinned_names(repo, moved, rewritten, [new_name]), {new_name: new_name})
 
     def test_the_fixture_is_generated_with_the_given_c8s_cli(self):
         binaries = []

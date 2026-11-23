@@ -11,7 +11,7 @@ Usage:
 
 1. reads the published digests of the tag from the registry with crane: the
    core images of the chart component inventory, the worker guest image and
-   the CDS guest image (C8s v0.99.0 and later);
+   the Trust Authority guest image (C8s v0.99.0 and later);
 2. writes the new `c8s` mapping and the c8s operator image
    (images.c8sOperator) into release/spec.yaml. It edits only those values,
    then parses the file again and requires that nothing else changed;
@@ -29,7 +29,7 @@ Usage:
    kubelet and Helm versions of the worker image build), records it in
    release/inputs/c8s-seeds/<source commit>.json, and deletes the record of
    the old pin. Helm must be the version the worker image pins;
-6. fetches the node and CDS manifests and refreshes the image config;
+6. fetches the node and Trust Authority manifests and refreshes the image config;
 7. regenerates the allowlist test fixture
    (tests/release-v1/fixtures/staging-allowlist.json) with the c8s CLI
    (--c8s, else the binary of the signed release statement, else a build
@@ -41,8 +41,8 @@ commit, so the bump does not write one. The test fixture names the c8s core
 image digests, so it moves with the pins.
 
 It checks the CLI and renders the seed before it writes a file. It stops when
-a step needs a person: protocol source files changed in more than comments
-(without --protocol-review), changed NVIDIA driver inputs, a pin it cannot
+a step needs a person: protocol source files that moved, or changed in more
+than comments (without --protocol-review), changed NVIDIA driver inputs, a pin it cannot
 edit in place, a deleted pinned source file, or a failed check. A step that
 stops before the checks restores every file the bump changed. Review the full
 diff before you commit. The image config diff is a release input.
@@ -94,28 +94,30 @@ PROTOCOL_TREES = ("pkg/types",)
 COMPONENTS = "charts/lib/files/components.yaml"
 CHART_VALUES = "charts/cloud/values.yaml"
 # The first C8s release with the worker guest image (guests/worker) in place of
-# node-guest-base. Not every later tag publishes guests/cds; the bump stops
+# node-guest-base. Not every later tag publishes a Trust Authority guest; the bump stops
 # when crane finds no digest.
 GUEST_IMAGES_SINCE = (0, 99, 0)
-CDS_IMAGE = REGISTRY + "guests/cds"
+TA_IMAGE = REGISTRY + "guests/cds"
 # The worker image build: its pinned kubelet and Helm versions render the seed.
 WORKER_SYNC = "images/node-guest/worker/mkosi.sync"
 SEED_PLATFORM = "tdx"
 # The file that carries the logic of a deleted pinned source file. A deleted
 # pinned file without an entry stops the bump.
 SOURCE_SUCCESSORS = {
-    # The measured CDS configuration bounds the node inventory dial (--node-cidr, C8s #1169).
+    # The Trust Authority rename rewrote more of this file than git follows as a rename (C8s #1873).
+    "internal/cdsconfig/flags.go": "internal/taconfig/flags.go",
+    # The measured Trust Authority configuration bounds the node inventory dial (--node-cidr, C8s #1169).
     "internal/cmds/cds/inventorynodes.go": "internal/cdsconfig/cdsconfig.go",
-    # CDS serves /measurements from the node pins of its measured configuration (C8s #1169).
+    # The Trust Authority serves /measurements from the node pins of its measured configuration (C8s #1169).
     "internal/cmds/cds/measurementsconfig.go": "internal/cmds/cds/measuredconfig.go",
-    # The plugin renders the CDS pins for its credential clients (C8s #1158).
+    # The plugin renders the Trust Authority pins for its credential clients (C8s #1158).
     "internal/cmds/nri-image-policy/setpins.go": "internal/cmds/nri-image-policy/cdspins.go",
     # The worker guest runs no RKE2; its preset enables the worker units (C8s #1240).
     "node-guest-image/c8s/mkosi.extra/usr/lib/systemd/system-preset/50-rke2.preset":
         "images/node-guest/worker/mkosi.extra/usr/lib/systemd/system-preset/50-worker.preset",
 }
-# Source files a lock entry pins once its commit has them: the measured CDS
-# configuration and pin, and the CDS address the node hands its credential clients.
+# Source files a lock entry pins once its commit has them: the measured Trust Authority
+# configuration and pin, and the Trust Authority address the node hands its credential clients.
 ADDED_SOURCES = (
     "internal/cdsconfig/build.go",
     "internal/cdsconfig/cdsconfig.go",
@@ -159,6 +161,11 @@ def git_show(repo: Path, commit: str, name: str) -> bytes:
     if result.returncode:
         raise BumpError(f"cannot read {name} at {commit} in {repo}")
     return result.stdout
+
+
+def files_at(repo: Path, commit: str, names: list[str]) -> set[str]:
+    """The names that are files at the commit."""
+    return set(git(repo, "ls-tree", "-r", "--name-only", commit, "--", *names).splitlines())
 
 
 def go_env() -> dict[str, str]:
@@ -234,15 +241,15 @@ def node_pins(tag: str) -> tuple[str, str, str]:
 
 
 def new_c8s(tag: str, commit: str, old: dict[str, Any], c8s_repo: Path) -> dict[str, Any]:
-    """Return the c8s mapping of the tag: the old one with every pin moved, plus the CDS guest image."""
+    """Return the c8s mapping of the tag: the old one with every pin moved, plus the Trust Authority guest image."""
     old_node = (old["nodeImage"]["reference"], old["nodeImage"]["tag"], old["nodeManifestArtifact"]["tag"])
     if old_node != node_pins(old["release"]):
         raise BumpError("the node image tags do not follow the c8s release tag; edit them by hand")
     if version(tag) < GUEST_IMAGES_SINCE:
-        raise BumpError("the bump supports C8s v0.99.0 and later, which publish the worker and CDS guest images")
+        raise BumpError("the bump supports C8s v0.99.0 and later, which publish the worker and Trust Authority guest images")
     reference, node_tag, artifact_tag = node_pins(tag)
     artifact_digest = digest(f"{reference}:{artifact_tag}")
-    cds_artifact = digest(f"{CDS_IMAGE}:{image_tag(tag)}")
+    ta_artifact = digest(f"{TA_IMAGE}:{image_tag(tag)}")
     value = copy.deepcopy(old)
     # baseRelease names the release a dev build previews; a release tag has none.
     if not TAG.fullmatch(tag).group(5):
@@ -258,12 +265,12 @@ def new_c8s(tag: str, commit: str, old: dict[str, Any], c8s_repo: Path) -> dict[
         "digest": artifact_digest,
         "manifestJson": NODE["manifest_json_digest"](reference, artifact_digest),
     })
-    cds_tag = f"{image_tag(tag)}-kubevirt"
-    value["cdsImage"] = {"reference": CDS_IMAGE, "tag": cds_tag, "digest": digest(f"{CDS_IMAGE}:{cds_tag}")}
+    ta_tag = f"{image_tag(tag)}-kubevirt"
+    value["cdsImage"] = {"reference": TA_IMAGE, "tag": ta_tag, "digest": digest(f"{TA_IMAGE}:{ta_tag}")}
     value["cdsManifestArtifact"] = {
         "tag": image_tag(tag),
-        "digest": cds_artifact,
-        "manifestJson": NODE["manifest_json_digest"](CDS_IMAGE, cds_artifact),
+        "digest": ta_artifact,
+        "manifestJson": NODE["manifest_json_digest"](TA_IMAGE, ta_artifact),
     }
     return value
 
@@ -432,7 +439,7 @@ def add_source_lock(c8s_repo: Path, old: dict[str, Any], new: dict[str, Any]) ->
         "c8sOperatorImage": operator_image(new),
     })
     names = list(pinned_names(c8s_repo, old["sourceCommit"], new["sourceCommit"], list(entry["files"])).values())
-    present = set(git(c8s_repo, "ls-tree", "-r", "--name-only", new["sourceCommit"], "--", *ADDED_SOURCES).splitlines())
+    present = files_at(c8s_repo, new["sourceCommit"], list(ADDED_SOURCES))
     names += [name for name in ADDED_SOURCES if name in present and name not in names]
     entry["files"] = {name: sha256_bytes(git_show(c8s_repo, new["sourceCommit"], name)) for name in names}
     lock["commits"].append(entry)
@@ -510,7 +517,11 @@ def share_protocol_manifest(c8s_repo: Path, old_commit: str, new_commit: str, ta
         shared = manifest.get("sharedWithCommits", [])
         if old_commit != manifest["commit"] and old_commit not in shared:
             continue
-        sources = list(manifest["capturedFrom"].values()) + list(PROTOCOL_TREES)
+        captured = list(manifest["capturedFrom"].values())
+        missing = sorted(set(captured) - files_at(c8s_repo, new_commit, captured))
+        if missing:
+            raise BumpError("capture a new protocol manifest from the new source paths; missing: " + ", ".join(missing))
+        sources = captured + list(PROTOCOL_TREES)
         changed = git(c8s_repo, "diff", "--name-only", old_commit, new_commit, "--", *sources)
         comments_only = bool(changed) and only_comments_changed(c8s_repo, old_commit, new_commit, sources)
         if changed and not comments_only and diff_out is None:

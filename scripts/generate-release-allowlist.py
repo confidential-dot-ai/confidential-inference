@@ -29,7 +29,7 @@ its replica count, so that a scale needs no new allowlist. Such an entry is `env
 
 `c8s allowlist derive` from the pinned c8s release builds each entry, so c8s
 itself decides which containers it injects and drops. The c8s core entries
-mirror the seed CDS serves byte for byte: one pinned entry per component
+mirror the seed the Trust Authority serves byte for byte: one pinned entry per component
 shape and the router pod. scripts/bump-c8s.py renders the seed with the CLI
 of the pinned c8s commit and records it in release/inputs/c8s-seeds/. The
 pinned Go tool in tools/c8s-allowlist-canonical writes the canonical bytes,
@@ -77,7 +77,7 @@ DEFAULT_CERT_DIR = "/etc/c8s/certs"
 DEFAULT_SECRET_DIR = "/run/c8s/secrets"
 DEFAULT_VOLUME_DIR = "/run/c8s/volumes"
 GPU_RESOURCE = "nvidia.com/gpu"
-# Mirrors c8s internal/secrets InjectedEntrypoints at the pinned commit. CDS
+# Mirrors c8s internal/secrets InjectedEntrypoints at the pinned commit. The Trust Authority
 # drops a running container from workload matching when its digest has an
 # unrestricted entry and its argv[0] is one of these (WorkloadContainers), so
 # a workload entry must not declare such a container.
@@ -764,7 +764,7 @@ def generate(
                     if not (c["digest"] in core_digests and argv0(c) in INJECTED_ENTRYPOINTS)
                 ]
         if exits := declared_egress(controller, item):
-            # C8s #1049: CDS refuses an entry with exits unless it is pinned
+            # C8s #1049: the Trust Authority refuses an entry with exits unless it is pinned
             # like a secrets grant: no host mount rule, no open argv.
             for container in entry.get("initContainers", []) + entry.get("containers", []):
                 if any(rule.get("kind") == "host" for rule in container.get("mounts", {}).get("rules", [])):

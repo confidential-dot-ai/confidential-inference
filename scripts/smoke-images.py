@@ -32,7 +32,7 @@ import yaml
 
 REPOSITORY_IMAGES = "ghcr.io/confidential-dot-ai/confidential-inference/"
 SERVICE_ACCOUNT = "/var/run/secrets/kubernetes.io/serviceaccount"
-# Images that need the cluster (CDS, the c8s volume) to start: the check
+# Images that need the cluster (Trust Authority, the c8s volume) to start: the check
 # runs the binary with these arguments instead.
 CHECKS = {"gateway": ["--help"]}
 WORKLOAD_KINDS = {"Deployment", "StatefulSet", "DaemonSet"}
