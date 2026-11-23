@@ -342,17 +342,6 @@
               }
             }
           }
-        },
-        "layouts": {
-          "description": "The SHA-256 of each DeepSeek-V4.1 launch plan that the engine image bakes at /opt/sglang/layouts/<name>.json, by layout name (release/inputs/confidential-sglang/layouts/<record>/). A pair recipe names one (recipes/README.md). Absent in a release that pins no layout.",
-          "type": "object",
-          "minProperties": 1,
-          "propertyNames": {
-            "pattern": "^[a-z0-9][a-z0-9.-]{0,62}$"
-          },
-          "additionalProperties": {
-            "$ref": "#/$defs/sha256Digest"
-          }
         }
       }
     },
