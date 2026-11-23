@@ -53,7 +53,7 @@ spec:
     {{- end }}
 ---
 # c8s injects certificate and secret clients into confidential workloads.
-# They must reach the CDS before the main containers start.
+# They must reach the Trust Authority before the main containers start.
 # They must also reach the c8s mesh: ratls-mesh DNATs every TCP connection from
 # one confidential workload to another, on this node or another, to
 # nodeIP:15001 in PREROUTING, and the CNI applies this egress policy after the
@@ -76,7 +76,7 @@ spec:
     - ports:
         - {protocol: TCP, port: 15001}
     # The injected credential clients (c8s-cert, c8s-secret, c8s-volume).
-    {{- include "confidential-inference.cdsEgress" . | nindent 4 }}
+    {{- include "confidential-inference.taEgress" . | nindent 4 }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -337,7 +337,7 @@ spec:
     {{- end }}
 ---
 # The node log agent reaches only the telemetry collector (and, through the
-# rules above, the mesh, DNS and its credential clients' CDS). It takes no
+# rules above, the mesh, DNS and its credential clients' Trust Authority). It takes no
 # connection.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

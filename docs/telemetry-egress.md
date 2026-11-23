@@ -230,7 +230,7 @@ names and these labels.
 - **Sender**: the gateway, directly. It is not telemetry, but it leaves the
   cluster, so it is listed here.
 - **Destination**: `GATEWAY_ADMIN_ENDPOINT` (`gateway.admin.url`), over TLS
-  with a bearer token from the CDS (Confidential Data Service) secret
+  with a bearer token from the Trust Authority secret
   `product-usage`.
 - **Data in**: the API key snapshot (key record IDs and peppered key hashes).
 - **Data out** (only with `gateway.usage.enabled`): one event for each
@@ -299,7 +299,7 @@ events keep millisecond time for billing.
 
 ## 8. Not yet covered
 
-- The CDS VM: it is not a pod, so no agent reads its output.
+- The Trust Authority VM: it is not a pod, so no agent reads its output.
 - C8s services that are host units on a worker (the NRI admission plugin,
   the attestation API, the kubelet and containerd): they log to the journal,
   and the stock collector image has no `journalctl`. A refusal of an

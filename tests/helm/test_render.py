@@ -415,14 +415,14 @@ def check_c8s_admission() -> None:
 
     deny = {"kind": "NetworkPolicy", "metadata": {"name": "deny"},
             "spec": {"podSelector": {}, "policyTypes": ["Egress"], "egress": [{"ports": [{"port": 443}]}]}}
-    cds = {"kind": "NetworkPolicy", "metadata": {"name": "cds"},
+    ta = {"kind": "NetworkPolicy", "metadata": {"name": "cds"},
            "spec": {"podSelector": {}, "policyTypes": ["Egress"], "egress": [
                {"to": [{"ipBlock": {"cidr": "198.51.100.4/32"}}], "ports": [{"protocol": "TCP", "port": 8443}]}]}}
     restricted = pod(user)
     found = admission["refusals"]([restricted, deny])
-    assert len(found) == 1 and "CDS on TCP 8443" in found[0], found
-    assert admission["refusals"]([restricted, deny, cds]) == []
-    assert len(admission["refusals"]([restricted, deny, cds], 9443)) == 1
+    assert len(found) == 1 and "Trust Authority on TCP 8443" in found[0], found
+    assert admission["refusals"]([restricted, deny, ta]) == []
+    assert len(admission["refusals"]([restricted, deny, ta], 9443)) == 1
 
 TELEMETRY = (
     "--set", "telemetry.enabled=true",
@@ -590,7 +590,7 @@ def check_telemetry_collector() -> None:
     # server, for service discovery) are the only pods with an exit; each
     # exit is a hostAliases address. The collector's and the gateway's have
     # their one ipBlock; the router's API server is a node, so its rule names
-    # only the port. The CDS rule on TCP 8443 is the only other ipBlock.
+    # only the port. The Trust Authority rule on TCP 8443 is the only other ipBlock.
     exits = {name for name, pod in pods.items() if pod.get("hostAliases")}
     assert "telemetry-collector" in exits and exits <= {"telemetry-collector", "gateway", "sglang-router"}, exits
     collector = pods["telemetry-collector"]

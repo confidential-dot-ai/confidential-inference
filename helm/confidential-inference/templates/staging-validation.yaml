@@ -115,7 +115,7 @@ spec:
             matchLabels:
               app.kubernetes.io/component: sglang-router
       ports: [{protocol: TCP, port: 30000}]
-    {{- include "confidential-inference.cdsEgress" . | nindent 4 }}
+    {{- include "confidential-inference.taEgress" . | nindent 4 }}
     # DNS uses allow-dns. C8s redirects workload TCP to its node mesh.
     # The Kubernetes API is a host endpoint after Service DNAT.
     - ports: [{protocol: TCP, port: 15001}, {protocol: TCP, port: 6443}]

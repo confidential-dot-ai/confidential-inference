@@ -55,10 +55,12 @@ c8s:
   # `c8s-router` from v0.66.0 (c8s #814 runs the router as a mesh member in
   # its own namespace).
   frontDoorNamespace: c8s-system
-  # The CDS the injected credential clients dial. It runs as its own VM
+  # The Trust Authority the injected credential clients dial. It runs as its own VM
   # outside the cluster, on 8443 unless it was started on another port. The
-  # CDS address is a deployment value: set it here as a /32. The default is a
-  # documentation address (RFC 5737) that reaches no CDS.
+  # Trust Authority address is a deployment value: set it here as a /32. The default is a
+  # documentation address (RFC 5737) that reaches no Trust Authority.
+  ta: {}
+  # cds holds the defaults of the Trust Authority endpoint. ta overrides individual fields.
   cds:
     port: 8443
     cidrs: [192.0.2.1/32]
@@ -513,7 +515,7 @@ telemetry:
     enabled: false
   # C8s's platform kube-state-metrics, host:port (empty = not scraped). Set
   # it with the c8s release that gives members an exit to it; the address is
-  # not settled yet (C8s: probably a node address and port, like CDS).
+  # not settled yet (C8s: probably a node address and port, like the Trust Authority).
   kubeStateMetrics:
     target: ""
     # The families the stock Kubernetes dashboard (grafana.com 13332) and the

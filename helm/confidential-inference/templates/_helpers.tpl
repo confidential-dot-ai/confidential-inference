@@ -115,17 +115,18 @@ Recreate override drops the chart's rollingUpdate. */ -}}
 {{ end -}}
 {{- end -}}
 
-{{/* Egress to the CDS, which runs as its own VM outside the cluster. The C8s
+{{/* Egress to the Trust Authority, which runs as its own VM outside the cluster. The C8s
 v0.99.29 pod ruleset admits this port only to C8s's own platform roles, such
 as the injected credential clients, but on any address outside the cluster
-ranges, and the clients attest the CDS they reach. c8s.cds.cidrs names the
-CDS address; the schema refuses an empty list, which would open the port to
+ranges, and the clients attest the Trust Authority they reach. c8s.ta.cidrs names the
+Trust Authority address; the schema refuses an empty list, which would open the port to
 every address. */}}
-{{- define "confidential-inference.cdsEgress" -}}
+{{- define "confidential-inference.taEgress" -}}
+{{- $ta := mergeOverwrite (deepCopy .Values.c8s.cds) (.Values.c8s.ta | default dict) -}}
 - ports:
-    - {protocol: TCP, port: {{ .Values.c8s.cds.port }}}
+    - {protocol: TCP, port: {{ $ta.port }}}
   to:
-    {{- range .Values.c8s.cds.cidrs }}
+    {{- range $ta.cidrs }}
     - ipBlock: {cidr: {{ . | quote }}}
     {{- end }}
 {{- end }}

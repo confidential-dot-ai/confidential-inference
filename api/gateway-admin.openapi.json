@@ -121,13 +121,13 @@
       "servers": [
         {
           "url": "https://admin.example.invalid",
-          "description": "The admin origin: the origin of `endpoint` in the gateway's CDS secret /confidential-inference/gateway/product-usage. Its host is the TLS name the gateway checks."
+          "description": "The admin origin: the origin of `endpoint` in the gateway's Trust Authority secret /confidential-inference/gateway/product-usage. Its host is the TLS name the gateway checks."
         }
       ],
       "get": {
         "operationId": "getGatewayKeySnapshot",
         "summary": "Pull the key registry snapshot (served by the admin)",
-        "description": "The admin serves this route; the gateway calls it. The admin answers with the snapshot of the key realm and environment bound to the bearer token. The gateway pulls at startup, every 5 seconds until the first snapshot is applied, then every 30 seconds. It follows no redirect, reads at most 4 MiB, and, when the CDS secret sets `tls_ca_pem`, trusts only that CA. It applies the body like a push (same checks and revision rule). A failed pull keeps the snapshot the gateway already holds. Until the first snapshot is applied, the gateway's `/ready` answers 503 and inference answers 503 `key_registry_not_ready`.",
+        "description": "The admin serves this route; the gateway calls it. The admin answers with the snapshot of the key realm and environment bound to the bearer token. The gateway pulls at startup, every 5 seconds until the first snapshot is applied, then every 30 seconds. It follows no redirect, reads at most 4 MiB, and, when the Trust Authority secret sets `tls_ca_pem`, trusts only that CA. It applies the body like a push (same checks and revision rule). A failed pull keeps the snapshot the gateway already holds. Until the first snapshot is applied, the gateway's `/ready` answers 503 and inference answers 503 `key_registry_not_ready`.",
         "security": [
           {
             "gatewayBearerToken": []
@@ -191,7 +191,7 @@
       "gatewayBearerToken": {
         "type": "http",
         "scheme": "bearer",
-        "description": "The `token` of the gateway's CDS secret /confidential-inference/gateway/product-usage, 32 to 256 URL-safe characters. The admin maps it to one environment and key realm. The same token authenticates usage ingest (product-usage.md)."
+        "description": "The `token` of the gateway's Trust Authority secret /confidential-inference/gateway/product-usage, 32 to 256 URL-safe characters. The admin maps it to one environment and key realm. The same token authenticates usage ingest (product-usage.md)."
       }
     },
     "schemas": {

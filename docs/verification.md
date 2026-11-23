@@ -99,14 +99,14 @@ names; start with [release/README.md](../release/README.md).
 This step applies to every release that pins C8s v0.99.29 or later, which
 includes C8s v0.101.9 of the Confidential Cloud catalog. The release's MRTD,
 RTMR1, and RTMR2 pin the worker image only. The worker's launch file,
-`worker.yaml`, selects the CDS image and configuration, the CDS address, and
+`worker.yaml`, selects the Trust Authority image and configuration, the Trust Authority address, and
 the Kubernetes API server. Pin that file too: without it, an endpoint that
-runs the pinned worker image under another CDS passes.
+runs the pinned worker image under another Trust Authority passes.
 
 1. Use the deployment's `worker.yaml` and `cds-config.yaml` from the
    deployment owner.
 2. Download the release's `cds-manifest.json` asset, the manifest.json of
-   the CDS guest image. Its SHA-256 must equal `cdsImage.manifestSha256` of
+   the Trust Authority guest image. Its SHA-256 must equal `cdsImage.manifestSha256` of
    the release manifest you verified:
 
    ```sh
@@ -118,7 +118,7 @@ runs the pinned worker image under another CDS passes.
    RTMR1, and RTMR2 of that `cds-manifest.json`, and embed the exact bytes of
    `cds-config.yaml` as `launch_file`. A worker refuses an entry that carries
    only `launch_file_digest`; that form binds the worker documents in a
-   `node-images` decree, not the CDS pin.
+   `node-images` decree, not the Trust Authority pin.
 4. Review the operator keys and node ranges in `cds-config.yaml`. The
    operator keys are the deployment's C8s update authority. They are not a
    client trust anchor in this procedure.
@@ -257,7 +257,7 @@ This procedure does not prove that every policy enforced since boot was
 approved. TEErminator caches a passing verdict for one minute, bounded by the
 serving certificate's expiry and exact certificate identity. A workload stamp
 states the policy used at certificate issuance. Fresh connection evidence does
-not turn that stamp into an instantaneous read of the current CDS policy.
+not turn that stamp into an instantaneous read of the current Trust Authority policy.
 Do not claim that an allowlist write immediately closes all existing streams.
 
 Review changes before replacing your local policy file. Do not automatically

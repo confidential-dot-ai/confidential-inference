@@ -1,9 +1,9 @@
 // Command c8s-allowlist-canonical prints the canonical bytes of a c8s
 // allowlist document, exactly as the pinned c8s release computes them.
 //
-// CDS compares allowlists by these bytes. The release allowlist must be in
+// The Trust Authority compares allowlists by these bytes. The release allowlist must be in
 // this form, so that its SHA-256 in the signed release manifest equals the
-// digest of the document CDS serves.
+// digest of the document the Trust Authority serves.
 package main
 
 import (
