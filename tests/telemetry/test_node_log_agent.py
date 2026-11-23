@@ -87,6 +87,11 @@ FILES = {
         j(event="worker_http_error", role="router", status=502, url=f"http://x/{MARK}", request_id=MARK),
         j(event=f"router_{MARK}", role="router"),
     ],
+    # A replica's PD router: the router's reviewed events, nothing else.
+    (f"{NAMESPACE}_pd-router-0-5d4c-k9j8h_{UID}7", "pd-router"): [
+        j(event="paired_decode_cancelled", role="decode", status=503, url=f"http://x/{MARK}"),
+        j(event=f"pair_{MARK}", role="prefill"),
+    ],
     (f"{NAMESPACE}_inference-worker-0_{UID}3", "sglang"): [
         j(event="worker_ready", model_revision=REVISION, gpus=1, load_seconds=42),
         j(event="request_failed", error_class="invalid_request", http_status=400, phase="http",
@@ -123,7 +128,8 @@ EXPECTED = {
                 {"event": "the gateway is ready", "level": "info"}],
     "sglang-router": [{"event": "router_started", "role": "router", "source_revision": "unknown",
                        "timestamp": "2026-11-16T10:00:00+00:00"},
-                      {"event": "worker_http_error", "role": "router", "status": 502}],
+                      {"event": "worker_http_error", "role": "router", "status": 502},
+                      {"event": "paired_decode_cancelled", "role": "decode", "status": 503}],
     "inference-worker": [{"event": "worker_ready", "model_revision": REVISION, "gpus": 1, "load_seconds": 42},
                          {"event": "request_failed", "error_class": "invalid_request", "http_status": 400,
                           "phase": "http", "input_tokens_bucket": "unknown", "duration_ms": None,
