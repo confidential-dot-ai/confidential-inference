@@ -25,8 +25,8 @@ The engine image bakes confidential-sglang's DeepSeek-V4.1 launch plans
 there). A pair recipe names one (recipes/README.md). `pin` also copies every
 layout of the pinned engine image to
 release/inputs/confidential-sglang/layouts/<record>/<name>.json: it reads the
-image's layers by digest from the top and stops at the layout layer, so it
-needs crane, not the whole image. The release build checks each layout (its
+image's small top layers by digest and merges their layouts as the image's
+filesystem does, so it needs crane, not the whole image. The release build checks each layout (its
 schema, its name, and its revision equal to the record's source commit) and
 binds its SHA-256 in the signed manifest (confidentialSglang.layouts).
 `check-image` compares the committed layouts with the image again.
@@ -262,10 +262,14 @@ def image_layouts(reference: str,
                   run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run) -> dict[str, bytes]:
     """Every /opt/sglang/layouts/*.json of the engine image `reference` (repository@sha256:...).
 
-    Reads the layers by digest with crane, from the top layer down, and stops at
-    the first layer that holds the layouts directory: an upper layer wins, as in
-    the image's filesystem. A whiteout of the directory or of a layout, or a
-    large layer before the layouts, is an error. zstd and gzip layers.
+    Reads the layers by digest with crane, from the top layer down, and merges
+    the layouts of every layer as the image's filesystem does: an upper layer's
+    file wins, and a lower layer's other files stay. It stops at the first layer
+    larger than MAX_LAYER_BYTES (the engine's library layers), so it never reads
+    the whole image; a layout below such a layer is not seen. The engine
+    contract workflow lists /opt/sglang/layouts in the pulled image and catches
+    that. A whiteout of the directory or of a layout is an error, and so is no
+    layout above the first large layer. zstd and gzip layers.
     """
     require(re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", reference) is not None,
             f"the engine image {reference} is not pinned by digest")
@@ -280,9 +284,10 @@ def image_layouts(reference: str,
     manifest = json.loads(crane("manifest", reference))
     require(isinstance(manifest.get("layers"), list), f"{reference} is not an image manifest")
     prefix = LAYOUT_DIRECTORY + "/"
+    found: dict[str, bytes] = {}
     for layer in reversed(manifest["layers"]):
-        require(int(layer.get("size", 0)) <= MAX_LAYER_BYTES,
-                f"{reference}: no layer above {layer.get('digest')} ({layer.get('size')} bytes) holds {prefix}")
+        if int(layer.get("size", 0)) > MAX_LAYER_BYTES:
+            break
         blob = crane("blob", f"{repository}@{layer['digest']}")
         media = layer.get("mediaType", "")
         if media.endswith("+zstd") or media.endswith(".zstd"):
@@ -293,9 +298,7 @@ def image_layouts(reference: str,
             handle.write(blob)
             handle.seek(0)
             with tarfile.open(fileobj=handle, mode="r:*") as archive:
-                members = archive.getmembers()
-                found: dict[str, bytes] = {}
-                for member in members:
+                for member in archive.getmembers():
                     path = member.name.removeprefix("./")
                     parent, _, base = path.rpartition("/")
                     if base.startswith(".wh."):
@@ -305,11 +308,12 @@ def image_layouts(reference: str,
                             raise RecordError(f"{reference}: layer {layer['digest']} removes {removed}")
                     if path.startswith(prefix) and "/" not in path[len(prefix):] and path.endswith(".json"):
                         require(member.isfile(), f"{reference}: {path} is not a regular file")
-                        extracted = archive.extractfile(member)
-                        found[path[len(prefix):-len(".json")]] = extracted.read() if extracted else b""
-                if found:
-                    return found
-    raise RecordError(f"{reference} has no {prefix}")
+                        name = path[len(prefix):-len(".json")]
+                        if name not in found:
+                            extracted = archive.extractfile(member)
+                            found[name] = extracted.read() if extracted else b""
+    require(bool(found), f"{reference} has no {prefix} above its first layer of more than {MAX_LAYER_BYTES} bytes")
+    return found
 
 
 def write_layouts(name: str, layouts: dict[str, bytes], source_commit: str, inputs: Path = INPUTS) -> None:

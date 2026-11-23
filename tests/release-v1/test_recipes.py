@@ -433,13 +433,27 @@ class LayoutImageTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, stdout=layers[digests.index(digest)], stderr=b"")
         return reference, run, calls
 
-    def test_the_upper_layout_layer_wins_and_lower_layers_are_not_read(self):
-        old = self.layer({"opt/sglang/layouts/a.json": b"old"})
+    def test_the_layers_merge_and_the_upper_file_wins(self):
+        old = self.layer({"opt/sglang/layouts/a.json": b"old", "opt/sglang/layouts/c.json": b"c"})
         new = self.layer({"opt/sglang/layouts/a.json": b"new", "opt/sglang/layouts/b.json": b"b"})
         top = self.layer({"opt/sglang/SOURCE_RECORD.json": b"{}"})
         reference, run, calls = self.crane([old, new, top])
-        self.assertEqual(CSR.image_layouts(reference, run), {"a": b"new", "b": b"b"})
-        self.assertEqual(calls, ["manifest", "blob", "blob"])
+        # c.json of the lower layer stays: an upper layer that replaces a.json hides nothing else.
+        self.assertEqual(CSR.image_layouts(reference, run), {"a": b"new", "b": b"b", "c": b"c"})
+        self.assertEqual(calls, ["manifest", "blob", "blob", "blob"])
+
+    def test_the_reader_stops_at_the_first_large_layer(self):
+        below = self.layer({"opt/sglang/layouts/hidden.json": b"x"})
+        large = self.layer({"usr/lib/big": bytes(range(256)) * 64 + __import__("os").urandom(8192)})
+        layouts = self.layer({"opt/sglang/layouts/a.json": b"a"})
+        reference, run, calls = self.crane([below, large, layouts])
+        with mock.patch.object(CSR, "MAX_LAYER_BYTES", len(layouts) + 1):
+            self.assertGreater(len(large), CSR.MAX_LAYER_BYTES)
+            self.assertEqual(CSR.image_layouts(reference, run), {"a": b"a"})
+            self.assertEqual(calls, ["manifest", "blob"])
+            reference, run, _ = self.crane([layouts, large])
+            with self.assertRaisesRegex(CSR.RecordError, "has no opt/sglang/layouts/"):
+                CSR.image_layouts(reference, run)
 
     def test_a_removed_layout_or_no_layout_is_refused(self):
         base = self.layer({"opt/sglang/layouts/a.json": b"a"})
