@@ -51,8 +51,7 @@ class PublishedRecordTests(unittest.TestCase):
                 (directory / (NAME + ".json")).write_bytes(data)
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            CSR.pin(NAME, spec, root / "inputs", fetch=lambda name, directory: CSR.download(name, directory, run),
-                    extract=lambda _reference: {})
+            CSR.pin(NAME, spec, root / "inputs", fetch=lambda name, directory: CSR.download(name, directory, run))
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0][calls[0].index("--pattern") + 1], NAME + ".json")
             self.assertEqual(calls[0][calls[0].index("--repo") + 1], CSR.REPOSITORY)

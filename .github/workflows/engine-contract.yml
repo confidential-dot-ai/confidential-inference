@@ -92,23 +92,3 @@ jobs:
         run: |
           mkdir -p /mnt/tmp 2>/dev/null || sudo install -d -o "$(id -u)" /mnt/tmp
           python3 -m unittest discover -v -s tests/images/engine-contract -p 'test_*.py'
-
-      # The launch plans that release/inputs/confidential-sglang/layouts/<record>/
-      # commits (and the release binds) are exactly the image's
-      # /opt/sglang/layouts. Only for the pinned image: a dispatched image has
-      # no committed layouts.
-      - name: check the committed layouts
-        if: steps.image.outputs.image != '' && github.event_name != 'workflow_dispatch'
-        env:
-          ENGINE_IMAGE: ${{ steps.image.outputs.image }}
-        run: |
-          record=$(python3 -c 'import yaml; print(yaml.safe_load(open("release/spec.yaml"))["confidentialSglang"]["record"])')
-          directory="release/inputs/confidential-sglang/layouts/$record"
-          test -d "$directory" || { echo "::error::$directory is missing: pin the record with scripts/confidential_sglang_release.py pin $record"; exit 1; }
-          baked=$(docker run --rm --network none --entrypoint /bin/ls "$ENGINE_IMAGE" /opt/sglang/layouts | sort)
-          committed=$(cd "$directory" && ls | sort)
-          test "$baked" = "$committed" || { echo "::error::the image's layouts ($baked) differ from $directory ($committed)"; exit 1; }
-          for file in $committed; do
-            docker run --rm --network none --entrypoint /bin/cat "$ENGINE_IMAGE" "/opt/sglang/layouts/$file" \
-              | cmp - "$directory/$file" || { echo "::error::$file differs from the image"; exit 1; }
-          done
