@@ -129,6 +129,7 @@ fn app(keys: Arc<KeyStore>, upstream: SocketAddr, metrics: Arc<GatewayMetrics>) 
             maximum_body_bytes: 4096,
             upstream_timeout: Duration::from_secs(5),
             protection: ProtectionConfig::default(),
+            unsupported_parameters: Vec::new(),
         },
         keys,
         Arc::new(Audit),

@@ -127,6 +127,9 @@ pub struct GatewayConfig {
     pub maximum_body_bytes: usize,
     pub upstream_timeout: Duration,
     pub protection: ProtectionConfig,
+    /// The request parameters the served model does not support
+    /// (`GATEWAY_RUNTIME_CONFIG` `unsupportedParameters`).
+    pub unsupported_parameters: Vec<settings::UnsupportedParameter>,
 }
 
 #[derive(Clone)]
@@ -427,6 +430,17 @@ async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Re
             return error.response();
         }
     };
+    // The worker would refuse these only after it tokenizes the whole
+    // prompt, or (`n` > 1 on a pair) never answer. The upstream body is
+    // checked, so a field the API translation drops is not refused.
+    if let Some(name) =
+        inference_api::unsupported_parameter(api, &payload, &config.unsupported_parameters)
+    {
+        state
+            .metrics
+            .record_key_rejection("unsupported_parameter", &key_id);
+        return inference_api::unsupported_parameter_response(name);
+    }
     let routing_key = state.routing_keys.as_ref().and_then(|keys| {
         keys.derive(
             &key_id,
@@ -889,6 +903,7 @@ mod tests {
                 maximum_body_bytes: 1_024,
                 upstream_timeout: Duration::from_secs(1),
                 protection: ProtectionConfig::default(),
+                unsupported_parameters: Vec::new(),
             },
             keys,
             Arc::new(Audit),

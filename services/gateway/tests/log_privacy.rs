@@ -184,6 +184,7 @@ fn gateway(address: SocketAddr) -> Router {
                 trusted_proxy_cidrs: vec!["10.0.0.0/8".parse().unwrap_or_else(|_| unreachable!())],
                 ..confidential_gateway::protection::ProtectionConfig::default()
             },
+            unsupported_parameters: Vec::new(),
         },
         Arc::new(Keys),
         Arc::new(TracingAuditSink::new(

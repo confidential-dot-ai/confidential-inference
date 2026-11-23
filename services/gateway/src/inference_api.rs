@@ -2,6 +2,7 @@
 use crate::{
     messages,
     model_response::{OpenAiOutput, Output, Wire},
+    settings::UnsupportedParameter,
 };
 use axum::{
     Json,
@@ -157,6 +158,64 @@ fn stateful_responses_request(field: &'static str) -> Response<Body> {
         )
             .into_response(),
         "stateful_responses_not_supported",
+    )
+}
+
+/// The Responses API asks for output logprobs with this `include` item.
+const RESPONSES_LOGPROBS: &str = "message.output_text.logprobs";
+
+/// The first configured parameter that the upstream body sets to a refused
+/// value: anything but absent, `null`, or one of its `allowed` values. A body
+/// that is not a JSON object passes; the upstream rejects it.
+///
+/// The Responses API has no `logprobs` field: an `include` of
+/// `message.output_text.logprobs` asks for them, so it counts as
+/// `logprobs: true`.
+pub(crate) fn unsupported_parameter<'a>(
+    api: Api,
+    payload: &Value,
+    parameters: &'a [UnsupportedParameter],
+) -> Option<&'a str> {
+    let object = payload.as_object()?;
+    let responses_logprobs = Value::Bool(true);
+    parameters.iter().find_map(|parameter| {
+        let value = match object.get(&parameter.name) {
+            None if api == Api::Responses
+                && parameter.name == "logprobs"
+                && object
+                    .get("include")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| items.iter().any(|item| item == RESPONSES_LOGPROBS)) =>
+            {
+                &responses_logprobs
+            }
+            None | Some(Value::Null) => return None,
+            Some(value) => value,
+        };
+        let allowed = parameter
+            .allowed
+            .iter()
+            .any(|candidate| match (candidate, value) {
+                (Value::Number(a), Value::Number(b)) => a.as_f64() == b.as_f64(),
+                _ => candidate == value,
+            });
+        (!allowed).then_some(parameter.name.as_str())
+    })
+}
+
+/// 400 `unsupported_parameter`. It names the parameter from the gateway
+/// settings and never quotes the request's value.
+pub(crate) fn unsupported_parameter_response(name: &str) -> Response<Body> {
+    tag_error(
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":{
+                "code":"unsupported_parameter",
+                "message":format!("The model does not support the request parameter `{name}` with this value. Remove it."),
+            }})),
+        )
+            .into_response(),
+        "unsupported_parameter",
     )
 }
 

@@ -421,6 +421,16 @@
             "address": {"type": "string", "format": "ipv4"}
           }
         },
+        "unsupportedParameters": {
+          "type": "array", "maxItems": 64, "uniqueItems": true,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["name"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^[a-z0-9_]{1,64}$"},
+              "allowed": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": ["boolean", "number", "string"]}}
+            }
+          }
+        },
         "usage": {
           "type": "object",
           "additionalProperties": false,

@@ -171,6 +171,7 @@ async fn gateway() -> Gateway {
             maximum_body_bytes: 4096,
             upstream_timeout: Duration::from_secs(5),
             protection: ProtectionConfig::default(),
+            unsupported_parameters: Vec::new(),
         },
         Arc::new(Keys),
         audit.clone(),

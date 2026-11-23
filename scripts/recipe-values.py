@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -58,6 +59,8 @@ REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*"
 COMMIT = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 PARSER = re.compile(r"[a-z0-9_-]{0,64}")
+# A request body field, such as n or top_logprobs.
+PARAMETER = re.compile(r"[a-z0-9_]{1,64}")
 SPECULATIVE = re.compile(r"[A-Z0-9_]{0,32}")
 FLAG = re.compile(r"--[a-z0-9][a-z0-9-]*(=.*)?")
 # The files of a recipe directory.
@@ -213,15 +216,35 @@ def check(recipe: Any, directory_name: str) -> None:
         require(routing.get("image") == "confidentialSglangRouter",
                 "a pair replica needs routing.image confidentialSglangRouter: its PD router runs that image")
 
-    behavior = fields(recipe["behavior"], "behavior", {"apis"})
+    behavior = fields(recipe["behavior"], "behavior", {"apis"}, {"unsupportedParameters"})
     apis = behavior["apis"]
     require(isinstance(apis, dict) and apis and set(apis) <= set(APIS), f"behavior.apis keys must be from {list(APIS)}")
     for name, api in apis.items():
         fields(api if api is not None else {}, f"behavior.apis.{name}", set(), {"minOutputTokens"})
         if api and "minOutputTokens" in api:
             integer(api["minOutputTokens"], f"behavior.apis.{name}.minOutputTokens", 1, context)
+    if "unsupportedParameters" in behavior:
+        unsupported_parameters(behavior["unsupportedParameters"])
     # No warm-up field: the chart runs confidential-sglang's warmup on every worker
     # (--warmups=confidential_cold_path), before the server listens.
+
+
+def unsupported_parameters(items: Any) -> None:
+    """behavior.unsupportedParameters: what services/gateway/src/settings.rs accepts."""
+    where = "behavior.unsupportedParameters"
+    require(isinstance(items, list) and 0 < len(items) <= 64, f"{where} must be a list of 1 to 64 entries")
+    names = []
+    for index, item in enumerate(items):
+        entry = fields(item, f"{where}[{index}]", {"name"}, {"allowed"})
+        text(entry["name"], f"{where}[{index}].name", PARAMETER)
+        names.append(entry["name"])
+        if "allowed" in entry:
+            allowed = entry["allowed"]
+            require(isinstance(allowed, list) and 0 < len(allowed) <= 16
+                    and all(isinstance(value, (bool, int, str)) or isinstance(value, float) and math.isfinite(value)
+                            for value in allowed),
+                    f"{where}[{index}].allowed must be a list of 1 to 16 booleans, numbers or strings")
+    require(len(set(names)) == len(names), f"{where} names a parameter twice")
 
 
 def check_model_manifest(model: dict[str, Any], data: bytes) -> None:
@@ -447,6 +470,12 @@ def values(recipe: dict[str, Any], images: dict[str, Any], layout: dict[str, Any
         "download": {"manifest": recipe["_modelManifest"]},
     }
     rendered: dict[str, Any] = {"inference": inference}
+    parameters = recipe["behavior"].get("unsupportedParameters")
+    if parameters:
+        # The gateway refuses them (GATEWAY_RUNTIME_CONFIG unsupportedParameters).
+        rendered["gateway"] = {"unsupportedParameters": [
+            {"name": item["name"], **({"allowed": list(item["allowed"])} if "allowed" in item else {})}
+            for item in parameters]}
     if "image" in routing:
         rendered["router"] = {"image": routing["image"]}
     return rendered
@@ -469,8 +498,22 @@ def release_image_keys(release: dict[str, Any] | None) -> dict[str, Any]:
     return {**spec["images"], **{key: None for key in confidential_sglang_release.CHART_KEYS.values()}}
 
 
+# Helm reads YAML 1.1, where these bare words are booleans (a parameter n).
+YAML11_BOOLEANS = re.compile(r"y|Y|yes|Yes|YES|n|N|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF")
+
+
+class Dumper(yaml.SafeDumper):
+    def represent_str(self, data: str) -> yaml.Node:
+        if YAML11_BOOLEANS.fullmatch(data):
+            return self.represent_scalar("tag:yaml.org,2002:str", data, style='"')
+        return super().represent_str(data)
+
+
+Dumper.add_representer(str, Dumper.represent_str)
+
+
 def dump(rendered: dict[str, Any]) -> str:
-    return yaml.safe_dump(rendered, sort_keys=False, width=1 << 20)
+    return yaml.dump(rendered, Dumper=Dumper, sort_keys=False, width=1 << 20)
 
 
 def main() -> int:

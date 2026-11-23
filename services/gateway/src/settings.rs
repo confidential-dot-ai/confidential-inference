@@ -2,6 +2,20 @@
 //! environment, so the exact allowlist pins them and a change rolls the pods.
 
 use serde::Deserialize;
+use serde_json::Value;
+
+/// A request parameter the served model does not support (the recipe's
+/// `behavior.unsupportedParameters`). The gateway refuses a request that sets
+/// it to any value but `null` or one of `allowed`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnsupportedParameter {
+    pub name: String,
+    /// The values that stay accepted, such as `1` for `n`. Numbers compare by
+    /// value, so `1` also accepts `1.0`.
+    #[serde(default)]
+    pub allowed: Vec<Value>,
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -32,6 +46,9 @@ pub struct GatewaySettings {
     pub per_key_concurrency: usize,
     pub attestation_concurrency: usize,
     pub requests_per_address_per_second: u32,
+    // Optional: a chart without the field has none.
+    #[serde(default)]
+    pub unsupported_parameters: Vec<UnsupportedParameter>,
 }
 
 impl GatewaySettings {
@@ -73,6 +90,28 @@ impl GatewaySettings {
             })
         {
             return Err("invalid gateway settings".into());
+        }
+        let parameters = &self.unsupported_parameters;
+        if parameters.len() > 64
+            || parameters
+                .iter()
+                .map(|parameter| &parameter.name)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != parameters.len()
+            || !parameters.iter().all(|parameter| {
+                !parameter.name.is_empty()
+                    && parameter.name.len() <= 64
+                    && parameter.name.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
+                    })
+                    && parameter.allowed.len() <= 16
+                    && parameter.allowed.iter().all(|value| {
+                        matches!(value, Value::Bool(_) | Value::Number(_) | Value::String(_))
+                    })
+            })
+        {
+            return Err("invalid gateway settings: unsupportedParameters".into());
         }
         Ok(())
     }

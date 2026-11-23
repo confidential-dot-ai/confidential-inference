@@ -213,6 +213,7 @@ async fn keys_come_from_the_admin_and_usage_goes_back_as_events()
             maximum_body_bytes: 4096,
             upstream_timeout: Duration::from_secs(5),
             protection: ProtectionConfig::default(),
+            unsupported_parameters: Vec::new(),
         },
         keys.clone(),
         Arc::new(Audit),

@@ -53,3 +53,18 @@ behavior:
     # A reasoning model can spend short outputs on reasoning.
     responses: {minOutputTokens: 16}
     messages: {}
+  # The pair refuses these, or (n > 1) holds a decode slot until the request
+  # times out. The gateway refuses them first with 400 unsupported_parameter,
+  # before a worker tokenizes the prompt. An absent or null value, or an
+  # allowed one, passes.
+  unsupportedParameters:
+    # Quoted: in YAML 1.1 a bare n is false.
+    - {name: "n", allowed: [1]}
+    # Completions only.
+    - {name: best_of, allowed: [1]}
+    # DSPARK speculative decoding has no min_p.
+    - {name: min_p, allowed: [0]}
+    # Chat: a boolean. Completions: a count, where 0 still returns logprobs.
+    # Responses: an include of message.output_text.logprobs counts as true.
+    - {name: logprobs, allowed: [false]}
+    - {name: top_logprobs, allowed: [0]}

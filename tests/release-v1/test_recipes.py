@@ -199,6 +199,8 @@ class RecipeTests(unittest.TestCase):
         self.assertNotIn("hosts", inference["model"]["download"])
         self.assertNotIn("enabled", inference["model"]["download"])
         self.assertNotIn("scheduling", values)
+        # The qwen recipe lists no unsupported parameter: the gateway settings stay as they were.
+        self.assertNotIn("gateway", values)
 
     def test_the_values_render_the_worker_and_router_of_the_recipe(self):
         if shutil.which("helm") is None:
@@ -262,6 +264,19 @@ class RecipeTests(unittest.TestCase):
             (set_path("extra", value=1), "unknown fields"),
             (set_path("behavior", "apis", "embeddings", value={}), "behavior.apis keys"),
             (set_path("behavior", "warmup", value=[]), "unknown fields"),
+            (set_path("behavior", "unsupportedParameters", value=[]), "list of 1 to 64"),
+            (set_path("behavior", "unsupportedParameters", value={"n": [1]}), "list of 1 to 64"),
+            (set_path("behavior", "unsupportedParameters", value=[{"name": "N"}]), r"\[0\]\.name is invalid"),
+            (set_path("behavior", "unsupportedParameters", value=[{"name": True}]), r"\[0\]\.name is invalid"),
+            (set_path("behavior", "unsupportedParameters", value=[{"name": "n", "when": 1}]), "unknown fields"),
+            (set_path("behavior", "unsupportedParameters", value=[{"name": "n", "allowed": [None]}]),
+             "booleans, numbers or strings"),
+            (set_path("behavior", "unsupportedParameters", value=[{"name": "n", "allowed": [[1]]}]),
+             "booleans, numbers or strings"),
+            (set_path("behavior", "unsupportedParameters", value=[{"name": "n", "allowed": []}]),
+             "booleans, numbers or strings"),
+            (set_path("behavior", "unsupportedParameters", value=[{"name": "n"}, {"name": "n"}]),
+             "names a parameter twice"),
             (set_path("worker", "extraArgs", value=["--warmups=other"]), "which the chart sets"),
             (set_path("worker", "extraArgs", value=["--warmup=other"]), "sets --warmups, which the chart sets"),
         ]
@@ -317,6 +332,19 @@ class PairRecipeTests(unittest.TestCase):
         self.assertEqual(recipe["model"]["revision"], "1bae0e1088993b9b82de08f59de5be5a34e42170")
         self.assertEqual(recipe["model"]["contextLength"], 262144)
         self.assertEqual(sorted(recipe["behavior"]["apis"]), ["chat", "completions", "messages", "responses"])
+
+    def test_the_gateway_refuses_the_parameters_the_pair_does_not_support(self):
+        # n > 1 holds a decode slot until it times out; the others the pair refuses
+        # only after it tokenizes the prompt.
+        self.assertEqual(self.values()["gateway"], {"unsupportedParameters": [
+            {"name": "n", "allowed": [1]},
+            {"name": "best_of", "allowed": [1]},
+            {"name": "min_p", "allowed": [0]},
+            {"name": "logprobs", "allowed": [False]},
+            {"name": "top_logprobs", "allowed": [0]},
+        ]})
+        # Helm reads YAML 1.1: the values file must keep n a string.
+        self.assertIn('- name: "n"', RV.dump(self.values()))
 
     def test_the_pair_values_come_from_the_layout(self):
         inference = self.values()["inference"]

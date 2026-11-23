@@ -78,6 +78,7 @@ fn app(upstream: String, protection: ProtectionConfig, maximum_body_bytes: usize
                 requests_per_address_per_second: 10_000,
                 ..protection
             },
+            unsupported_parameters: Vec::new(),
         },
         Arc::new(Keys),
         Arc::new(Audit),
