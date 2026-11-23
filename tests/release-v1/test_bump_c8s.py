@@ -508,14 +508,14 @@ class BetaCompatibilityTests(unittest.TestCase):
     def test_channel_identity_is_exact_and_beta_orders_below_stable(self):
         release = BUMP.c8s_release
         self.assertLess(release.version('v0.37.0-beta.1'), release.version('v0.37.0'))
-        self.assertEqual(release.signer('v0.37.0-beta.1', True), 'https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/beta')
+        self.assertEqual(release.signer('v0.37.0-beta.1', True), 'https://github.com/confidential-dot-ai/confidential-kubernetes/.github/workflows/semver-tag.yml@refs/heads/beta')
         with self.assertRaises(ValueError):
             release.signer('v0.37.0-beta.1')
 
     def test_signed_beta_requires_branch_prerelease_and_exact_statement(self):
         tag, commit = 'v0.37.0-beta.1', 'a' * 40
         release = BUMP.c8s_release
-        statement = {'repository': 'confidential-dot-ai/C8s', 'tag': tag, 'commit': commit}
+        statement = {'repository': 'confidential-dot-ai/confidential-kubernetes', 'tag': tag, 'commit': commit}
         calls = []
 
         def run(argv, **kwargs):

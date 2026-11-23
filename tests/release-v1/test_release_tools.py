@@ -558,7 +558,7 @@ class ProcessTests(unittest.TestCase):
             binary = Path(directory) / "c8s-linux-amd64"
             binary.write_bytes(b"signed c8s cli")
             digest = release_module.file_sha256(binary)
-            statement = {"repository": "confidential-dot-ai/C8s", "tag": release, "commit": commit,
+            statement = {"repository": "confidential-dot-ai/confidential-kubernetes", "tag": release, "commit": commit,
                          "cli": {"linux-amd64": {"asset": "c8s-linux-amd64", "sha256": digest}}}
             calls = []
 
@@ -571,7 +571,7 @@ class ProcessTests(unittest.TestCase):
                         (target / "release-statement.sigstore.json").write_text("{}")
                         return subprocess.CompletedProcess(argv, 0, "", "")
                     if argv[1] == "verify-blob":
-                        self.assertIn("https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml"
+                        self.assertIn("https://github.com/confidential-dot-ai/confidential-kubernetes/.github/workflows/semver-tag.yml"
                                       "@refs/heads/main", argv)
                         return subprocess.CompletedProcess(argv, 0 if cosign_ok else 1, "", "bad signature")
                     raise AssertionError(argv)
