@@ -119,7 +119,8 @@ console must compute the same pseudonym for the keys of a customer.
 - **Authentication**: HTTP basic authentication, user `telemetry.logs.username`.
 - **Log sources in the cluster**: every container writes to its stdout. The
   node log agent on each node reads them and keeps the records of these
-  sources: `gateway`, `sglang-router`, `inference-worker`, `c8s` (the
+  sources: `gateway`, `sglang-router` (also each `pd-router-<i>`), `inference-worker`,
+  `inference-pair`, `c8s` (the
   containers C8s injects into a pod, and the pods in `c8s-router` and
   `c8s-system`), `telemetry-collector` and `node-log-agent`. It drops the
   records of every other container (for example kube-system pods) and counts
@@ -183,6 +184,36 @@ Worker bodies (`images/sglang-confidential/README.md`):
 `exception` is a Python type name and `location` is a frame of SGLang code
 (`sglang/<path>.py:<line>`). Both are checked against a pattern; neither can
 hold a message.
+
+Pair bodies (`inference.layout: pair`, the `sglang-pair` container of
+`inference-pair-<i>`; confidential-sglang `confidential/helpers/pair_supervisor.py`).
+The supervisor discards the workers' and the model gate's own output and
+writes only records that pass its schema. The policy keeps its fixed event
+names and these fields:
+
+| Fields | Reason |
+|---|---|
+| `timestamp_ns`, `run_id`, `source_revision` | When, which supervisor run (random per start), which source build. |
+| `role`, `rank` | Which worker failed: `pair`, `prefill` or `decode`, and its rank. |
+| `code` | A fixed numeric code: a child's exit status, the kind of a rank failure. |
+| `duration_ms`, `age_ms`, `gpu_pending_ms`, `step_age_ms`, `last_step_ms`, `timeout_ms` | How long a rank was stale, a GPU step pending, a stage running; an NCCL timeout. |
+| `thread`, `frame`, `location`, `line` | A stack frame of a hung rank: indices, a file of the image's code (`sglang/`, `torch/`, `uvicorn/`, `zmq/` or `python/` and a path, checked against a pattern) and its line. Never the frame's text. |
+| `stage_code`, `batch_size`, `queue_depth` | Where the scheduler was (a fixed stage code) and how many requests its batch held. |
+| `op`, `state`, `sequence`, `group_id`, `created_ns`, `started_ns`, `completed_ns` | Which NCCL collective a rank waits on: its kind, state, sequence number and process group, and when. |
+| `rejected`, `exported`, `dropped`, `pending`, `failures` | Delivery counters of the snapshots and diagnostics. |
+| `gpus`, `load_seconds` (`worker_ready`) | A worker answers after its warmup: its GPUs and the seconds since the supervisor started. |
+| `kernel` (`jit_compile`, with `duration_ms`) | A Triton kernel compiled after its worker was ready: the kernel's function name in code (an identifier) and the compile time. |
+| `file`, `host`, `attempt`, `error_class`, `http_status` (`model_fetch_*`, `model_check_failed`) | The model gate: which file of the pinned manifest failed (never a name read from disk; a segment is never `.` or `..`), from which model server host (an allowlist exit), on which attempt, a fixed error class and the HTTP status. |
+| `expected_size`, `got_size`, `expected_sha256`, `got_sha256` | A model file's size and SHA-256 that the manifest pins, and what the gate found. Model bytes, not request data. |
+| `files`, `size_bytes`, `downloaded`, `kept` (`model_fetch_*`, `model_verified`) | How many model files and bytes the gate fetched, kept and checked. |
+
+The events of the model gate, `worker_ready` and `jit_compile` come from
+confidential-sglang's `sglang-pair` (#31): it forwards the gate's
+(`fetch-model`, `wait-for-model`) fixed events, re-checked, as role `pair`.
+
+Left out on purpose: `count` and `bytes` (an NCCL collective's tensor size, a
+KV transfer's size) and `input_tokens` / `output_tokens` (a batch's token
+totals). With one request in a batch, each gives that request's length.
 
 C8s, collector and agent bodies: `level` and `msg`. These components do not
 read request content. The agent replaces tokens, header values and addresses

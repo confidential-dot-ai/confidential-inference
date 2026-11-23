@@ -406,10 +406,15 @@ spec:
         values: [inference-worker, inference-pair]
   policyTypes: [Egress]
   egress:
+    {{- $root := . }}
+    {{- range $port := include "confidential-inference.modelDownloadPorts" . | fromJsonArray }}
     - to:
-        {{- range .Values.inference.model.download.hosts }}
+        {{- range $root.Values.inference.model.download.hosts }}
+        {{- if eq (include "confidential-inference.modelDownloadHostPort" (dict "root" $root "host" .) | int) (int $port) }}
         - ipBlock: {cidr: {{ printf "%s/32" .address | quote }}}
         {{- end }}
+        {{- end }}
       ports:
-        - {protocol: TCP, port: {{ include "confidential-inference.modelDownloadPort" . }}}
+        - {protocol: TCP, port: {{ int $port }}}
+    {{- end }}
 {{- end }}

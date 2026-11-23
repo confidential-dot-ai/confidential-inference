@@ -136,6 +136,7 @@ spec:
       # The model source addresses are also the pod's allowlist exits.
       {{- include "confidential-inference.modelDownloadHostAliases" $ | nindent 6 }}
       {{- end }}
+      {{- include "confidential-inference.nodeLossTolerations" $ | nindent 6 }}
       enableServiceLinks: false
       serviceAccountName: confidential-inference
       terminationGracePeriodSeconds: {{ $.Values.inference.terminationGracePeriodSeconds }}

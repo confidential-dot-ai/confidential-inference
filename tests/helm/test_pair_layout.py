@@ -233,6 +233,39 @@ class PairLayoutTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
 
+    def test_node_loss_tolerations_default_to_kubernetes_and_follow_the_environment(self):
+        """The routers and pairs tolerate an unreachable or not-ready node for
+        scheduling.nodeLossTolerationSeconds: 300 by default, as Kubernetes would."""
+        def tolerations(found: list[dict]) -> dict[str, list]:
+            names = ["inference-pair", "sglang-router", "pd-router-0", "pd-router-1"]
+            return {item["metadata"]["name"]: item["spec"]["template"]["spec"].get("tolerations")
+                    for item in found if item["kind"] in ("StatefulSet", "Deployment")
+                    and item["metadata"]["name"] in names}
+
+        def expected(seconds: int) -> list[dict]:
+            return [{"key": key, "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": seconds}
+                    for key in ("node.kubernetes.io/unreachable", "node.kubernetes.io/not-ready")]
+        found = tolerations(self.two)
+        self.assertEqual(sorted(found), ["inference-pair", "pd-router-0", "pd-router-1", "sglang-router"])
+        self.assertEqual(found, {name: expected(300) for name in found})
+        longer = tolerations(documents(render("--set", "inference.replicas=2",
+                                              "--set", "scheduling.nodeLossTolerationSeconds=1800")))
+        self.assertEqual(longer, {name: expected(1800) for name in found})
+        # The aggregated workers (inference.layout worker) too.
+        for seconds in (300, 1800):
+            result = subprocess.run(["helm", "template", "example", str(CHART), "--namespace", NAMESPACE,
+                                     "--values", str(ROOT / "tests/fixtures/deployments/production-values.yaml"),
+                                     "--values", str(RELEASE_VALUES),
+                                     "--set", f"scheduling.nodeLossTolerationSeconds={seconds}"],
+                                    text=True, capture_output=True, check=True)
+            workers = named(documents(result), "StatefulSet", "inference-worker")
+            self.assertEqual(workers["spec"]["template"]["spec"]["tolerations"], expected(seconds))
+        for bad in ("-1", "86401"):
+            with self.subTest(value=bad):
+                result = render("--set", f"scheduling.nodeLossTolerationSeconds={bad}", check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("nodeLossTolerationSeconds", result.stderr)
+
     def test_the_router_memory_gauges_leave_from_both_router_jobs(self):
         """confidential-sglang#29: the router launcher adds ci_router_memory_{current,peak}_bytes, unlabeled,
         to the cache-aware router's and each PD router's metrics. No name filter and no label filter of
