@@ -369,6 +369,12 @@ inference:
     # and cold-path warmup must finish within this time.
     startupTimeoutSeconds: 10800
     shutdownTimeoutSeconds: 30
+    # Start prefill and decode together once the model gate is ready, instead
+    # of decode after prefill is warm (sglang-pair parallelStart,
+    # confidential-sglang #30). Sequential start is measured: dsv41-262k on a
+    # 4x B200 was ready in 18.2 min with a warm kernel cache. Turn it on in
+    # the environment once the parallel boot is measured.
+    parallelStart: false
     # The C8s allowlist entry of every pair pod (confidential.ai/cw).
     attestedWorkload: inference-pair
     # The pair pod's request. Conservative, not measured: the Engram holder
