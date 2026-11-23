@@ -9,6 +9,7 @@ then the release's, the order a deployment applies them.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import re
@@ -42,6 +43,7 @@ def load(name: str, path: Path):
 
 
 RV = load("recipe_values_pair", ROOT / "scripts/recipe-values.py")
+KCM = runpy.run_path(str(ROOT / "scripts/kernel-cache-manifest.py"))
 
 
 def recipe_values() -> dict:
@@ -322,6 +324,214 @@ class PairLayoutTests(unittest.TestCase):
         contract = yaml.safe_load((ROOT / "docs/observability-metrics.yaml").read_text())
         sources = {rule["source"] for rule in contract["recordingRules"]}
         self.assertTrue({"ci_router_memory_peak_bytes", "ci_router_memory_current_bytes"} <= sources)
+
+    def seed_values(self, *, image: str = ENGINE, plan: str = "dsv41-262k", repository: str = "confidential-ai/kernel-cache",
+                    files: list | None = None) -> dict:
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary)
+            (cache / "triton/abc").mkdir(parents=True)
+            (cache / "triton/abc/kernel.cubin").write_bytes(b"cubin")
+            (cache / "inductor/locks").mkdir(parents=True)
+            (cache / "inductor/locks/a.lock").write_bytes(b"")
+            manifest = KCM["manifest"](cache, repository, image, plan).decode()
+        if files is not None:
+            changed = json.loads(manifest)
+            changed["files"] = files
+            manifest = json.dumps(changed)
+        values = recipe_values()
+        values["inference"]["pair"]["kernelCache"]["seed"] = {"enabled": True, "manifest": manifest}
+        return values
+
+    def seed_gate(self, *extra: str) -> list[str]:
+        return pair_config(documents(render(*extra, values=self.seed_values())))["modelGate"]
+
+    def test_the_kernel_cache_seed_is_off_by_default(self):
+        found = self.documents
+        self.assertFalse([item for item in found if item["metadata"]["name"] == "kernel-cache-manifest"])
+        template = named(found, "StatefulSet", "inference-pair")["spec"]["template"]["spec"]
+        self.assertNotIn("kernel-cache-manifest", [volume["name"] for volume in template["volumes"]])
+        self.assertNotIn("kernel-cache-manifest", json.dumps(pair_config(found)["modelGate"]))
+        self.assertNotIn("volumeClaimTemplates", named(found, "StatefulSet", "inference-pair")["spec"])
+
+    def test_the_kernel_cache_seed_fills_the_plan_cache_before_the_model_gate(self):
+        values = self.seed_values()
+        manifest = values["inference"]["pair"]["kernelCache"]["seed"]["manifest"]
+        found = documents(render(values=values))
+        self.assertEqual(named(found, "ConfigMap", "kernel-cache-manifest")["data"]["manifest.json"], manifest)
+        self.assertEqual(json.loads(manifest)["immutable_revision"], "sha256-" + "e" * 64 + "-dsv41-262k")
+        self.assertEqual([item["path"] for item in json.loads(manifest)["files"]], ["triton/abc/kernel.cubin"])
+        gate = pair_config(found)["modelGate"]
+        self.assertEqual(gate[:2], ["/bin/sh", "-c"])
+        self.assertEqual(gate[3], "sh")
+        self.assertIn("for e in http://models.example.invalid:8080; do /usr/local/bin/fetch-model --endpoint=$e fetch "
+                      "--path=/tmp/dsv41/kernel-cache --manifest=/mnt/c8s-data/kernel-cache-manifest/manifest.json "
+                      f"--manifest-sha256={hashlib.sha256(manifest.encode()).hexdigest()} "
+                      "--revision-metadata=.kernel-cache-manifest.json", gate[2])
+        self.assertTrue(gate[2].endswith('exec "$@"'))
+        # Then the model gate, unchanged.
+        self.assertEqual(gate[4:], pair_config(self.documents)["modelGate"])
+        pod = named(found, "StatefulSet", "inference-pair")["spec"]["template"]["spec"]
+        self.assertIn({"name": "kernel-cache-manifest", "configMap": {"name": "kernel-cache-manifest"}}, pod["volumes"])
+        self.assertIn({"name": "kernel-cache-manifest", "mountPath": "/mnt/c8s-data/kernel-cache-manifest", "readOnly": True},
+                      pod["containers"][0]["volumeMounts"])
+        # The workers keep the plan's cache paths: the seed lands where they look.
+        for worker in pair_config(found)["workers"]:
+            self.assertEqual(worker["env"]["TRITON_CACHE_DIR"], "/tmp/dsv41/kernel-cache/triton")
+        admission = runpy.run_path(str(ROOT / "scripts/check-c8s-admission.py"))
+        self.assertEqual(admission["refusals"](found), [])
+
+    def test_the_recipe_renders_the_plan_kernel_cache_directory(self):
+        self.assertEqual(recipe_values()["inference"]["pair"]["kernelCache"], {"planDirectory": "/tmp/dsv41/kernel-cache"})
+        layout = RV.release_layout("dsv41-262k", None)
+        for directory in ("kernel-cache", "/var/cache/kernels", "/tmp/../etc"):
+            with self.subTest(directory=directory):
+                changed = json.loads(json.dumps(layout))
+                changed["paths"]["kernel_cache_dir"] = directory
+                with self.assertRaisesRegex(RV.RecipeError, "kernel_cache_dir"):
+                    RV.values(RV.load(RECIPE), RV.release_image_keys(None), changed)
+
+    def test_the_kernel_cache_seed_is_the_plan_whole_cache_tree(self):
+        """planDirectory must be the workers' SGLANG_CACHE_DIR, and every compiler cache must be below it."""
+        cases = {}
+        for directory in ("/tmp/dsv41/kernel-cache/triton", "/tmp/dsv41/other"):
+            values = self.seed_values()
+            values["inference"]["pair"]["kernelCache"]["planDirectory"] = directory
+            cases[directory] = (values, "is not the prefill worker's SGLANG_CACHE_DIR")
+        values = self.seed_values()
+        values["inference"]["pair"]["decode"]["env"]["TRITON_CACHE_DIR"] = "/tmp/triton"
+        cases["decode triton"] = (values, "inference.pair.decode.env TRITON_CACHE_DIR /tmp/triton is not below")
+        values = self.seed_values()
+        values["inference"]["pair"]["prefill"]["env"]["CUDA_CACHE_PATH"] = "/tmp/dsv41/kernel-cache-nv"
+        cases["sibling prefix"] = (values, "inference.pair.prefill.env CUDA_CACHE_PATH")
+        values = self.seed_values()
+        del values["inference"]["pair"]["prefill"]["env"]["SGLANG_CACHE_DIR"]
+        cases["unset"] = (values, "SGLANG_CACHE_DIR (unset)")
+        for name, (values, message) in cases.items():
+            with self.subTest(case=name):
+                result = render(values=values, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+        # A trailing slash is the same directory.
+        values = self.seed_values()
+        values["inference"]["pair"]["kernelCache"]["planDirectory"] = "/tmp/dsv41/kernel-cache/"
+        self.assertIn("--path=/tmp/dsv41/kernel-cache ", pair_config(documents(render(values=values)))["modelGate"][2])
+
+    def test_the_kernel_cache_seed_tries_each_download_host_in_order(self):
+        hosts = [{"serverName": "cache.example.invalid", "address": "10.95.0.80"},
+                 {"serverName": "models.example.invalid", "address": "192.0.2.20"}]
+        script = self.seed_gate("--set-json", f"inference.model.download.hosts={json.dumps(hosts)}")[2]
+        self.assertIn("for e in http://cache.example.invalid:8080 http://models.example.invalid:8080; do "
+                      "/usr/local/bin/fetch-model --endpoint=$e fetch ", script)
+        self.assertIn('if wait $f; then f=; break; fi; echo "kernel cache seed: $e failed" >&2; done; '
+                      '[ -z "$f" ] || echo ', script)
+        self.assertTrue(script.endswith('trap - TERM INT; exec "$@"'))
+        self.assertNotRegex(script, r"exit 1(?![0-9])")
+
+    def test_the_rendered_kernel_cache_seed_runs_failover_and_goes_on_cold(self):
+        """Run the rendered seed shell with a fetch-model stub: the hosts go in order, the first success
+        stops the loop, and when every host fails the model gate still runs (a cold cache, not a failed
+        pair). TERM stops the running fetch at once, without the next host or the model gate."""
+        import os
+        import signal
+        import time
+        hosts = [{"serverName": "cache.example.invalid", "address": "10.95.0.80"},
+                 {"serverName": "models.example.invalid", "address": "192.0.2.20"}]
+        two = self.seed_gate("--set-json", f"inference.model.download.hosts={json.dumps(hosts)}")
+        one = self.seed_gate()
+        cache, server = "http://cache.example.invalid:8080", "http://models.example.invalid:8080"
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "log"
+            stub = Path(temporary) / "fetch-model"
+            stub.write_text('#!/bin/sh\nendpoint=${1#--endpoint=}\necho "fetch $endpoint $3" >> "$LOG"\n'
+                            'case " $FAIL " in *" $endpoint "*) exit 7;; esac\n'
+                            '[ -n "$SLEEP" ] && exec sleep "$SLEEP"\nexit 0\n')
+            stub.chmod(0o755)
+            gate = ["sh", "-c", f'echo "gate $*" >> "{log}"', "sh", "--model-gate-arg"]
+
+            def command(rendered: list[str], model_gate: list[str] = gate) -> list[str]:
+                self.assertEqual(rendered[:2], ["/bin/sh", "-c"])
+                return ["/bin/sh", "-c", rendered[2].replace("/usr/local/bin/fetch-model", str(stub)), rendered[3],
+                        *model_gate]
+
+            def run(rendered: list[str], fail: str = "") -> tuple[int, list[str], str]:
+                log.write_text("")
+                done = subprocess.run(command(rendered), env={**os.environ, "LOG": str(log), "FAIL": fail, "SLEEP": ""},
+                                      capture_output=True, text=True, timeout=30)
+                return done.returncode, log.read_text().split("\n")[:-1], done.stderr
+
+            path = "--path=/tmp/dsv41/kernel-cache"
+            self.assertEqual(run(two)[:2], (0, [f"fetch {cache} {path}", "gate --model-gate-arg"]))
+            code, lines, stderr = run(two, fail=cache)
+            self.assertEqual((code, lines), (0, [f"fetch {cache} {path}", f"fetch {server} {path}", "gate --model-gate-arg"]))
+            self.assertIn(f"kernel cache seed: {cache} failed", stderr)
+            self.assertNotIn("no source gave it", stderr)
+            code, lines, stderr = run(two, fail=f"{cache} {server}")
+            self.assertEqual((code, lines), (0, [f"fetch {cache} {path}", f"fetch {server} {path}", "gate --model-gate-arg"]))
+            self.assertIn("kernel cache seed: no source gave it; the workers compile their kernels", stderr)
+            # One host: the loop runs once and the pair goes on cold (the model download would exit 1).
+            code, lines, stderr = run(one, fail=server)
+            self.assertEqual((code, lines), (0, [f"fetch {server} {path}", "gate --model-gate-arg"]))
+            self.assertIn("no source gave it", stderr)
+            # The model gate's own exit code is the gate's.
+            log.write_text("")
+            failing = command(two, ["sh", "-c", "exit 3", "sh"])
+            self.assertEqual(subprocess.run(failing, env={**os.environ, "LOG": str(log), "FAIL": "", "SLEEP": ""},
+                                            capture_output=True, timeout=30).returncode, 3)
+            # TERM during a fetch: 143 at once, no next host, no model gate.
+            log.write_text("")
+            process = subprocess.Popen(command(two), env={**os.environ, "LOG": str(log), "FAIL": "", "SLEEP": "30"},
+                                       stderr=subprocess.DEVNULL)
+            for _ in range(200):
+                if log.read_text():
+                    break
+                time.sleep(0.05)
+            time.sleep(0.2)
+            process.send_signal(signal.SIGTERM)
+            self.assertEqual(process.wait(timeout=10), 143)
+            self.assertEqual(log.read_text().split("\n")[:-1], [f"fetch {cache} {path}"])
+
+    def test_the_chart_refuses_a_kernel_cache_seed_of_another_image_or_plan(self):
+        other = "ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:" + "d" * 64
+        cases = {
+            "not of this engine image and plan": self.seed_values(image=other),
+            "not of this engine image and plan ": self.seed_values(plan="dsv41"),
+            "names no repository or no file": self.seed_values(files=[]),
+        }
+        not_json = self.seed_values()
+        not_json["inference"]["pair"]["kernelCache"]["seed"]["manifest"] = "not a manifest"
+        cases["is not a fetch-model byte manifest"] = not_json
+        empty = self.seed_values()
+        empty["inference"]["pair"]["kernelCache"]["seed"]["manifest"] = ""
+        cases["seed.manifest is required"] = empty
+        for message, values in cases.items():
+            with self.subTest(message=message):
+                result = render(values=values, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message.strip(), result.stderr)
+        # The environment's model download comes last; turn it off there.
+        result = render("--set", "inference.model.download.enabled=false", "--set-string",
+                        "inference.model.c8sVolumeSource=/example/volumes/dsv41", values=self.seed_values(), check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("needs inference.model.download", result.stderr)
+
+    def test_the_kernel_cache_manifest_tool(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary)
+            (cache / "nv").mkdir()
+            (cache / "nv/index").write_bytes(b"index")
+            (cache / "x.partial").write_bytes(b"")
+            (cache / ".kernel-cache-manifest.json").write_bytes(b"{}")
+            manifest = json.loads(KCM["manifest"](cache, "confidential-ai/kernel-cache", ENGINE, "dsv41-262k"))
+            self.assertEqual(manifest["files"], [{"path": "nv/index", "size": 5,
+                                                  "content_sha256": hashlib.sha256(b"index").hexdigest()}])
+            self.assertEqual(manifest["schema"], "confidential-benchmark/local-model-byte-manifest/v1")
+            self.assertEqual(manifest["repository"], "confidential-ai/kernel-cache")
+            (cache / "link").symlink_to(cache / "nv/index")
+            with self.assertRaisesRegex(KCM["ManifestError"], "symbolic link"):
+                KCM["manifest"](cache, "confidential-ai/kernel-cache", ENGINE, "dsv41-262k")
+            (cache / "link").unlink()
+            with self.assertRaisesRegex(KCM["ManifestError"], "digest-pinned"):
+                KCM["manifest"](cache, "confidential-ai/kernel-cache", "engine:latest", "dsv41-262k")
 
     def test_the_worker_layout_renders_as_before(self):
         """Without inference.layout, no pair object renders and the router finds the workers."""
