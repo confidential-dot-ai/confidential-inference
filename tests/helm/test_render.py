@@ -237,7 +237,9 @@ def check_model_download_sources() -> None:
             (single, {}, None),
             (single + [{"serverName": "models.example.invalid", "address": "192.0.2.21"}], {}, None),
             ([{"serverName": "model-cache.example.invalid", "address": "10.95.0.80", "scheme": "http"}] + single, {},
-             "http://model-cache.example.invalid:443 https://models.example.invalid"),
+             "http://model-cache.example.invalid https://models.example.invalid"),
+            ([{"serverName": "mirror.example.invalid", "address": "10.48.176.17", "scheme": "http", "port": 8080}]
+             + single, {}, "http://mirror.example.invalid:8080 https://models.example.invalid"),
             ([{"serverName": "model-cache.example.invalid", "address": "10.95.0.80"}] + single, {"scheme": "http"},
              "http://model-cache.example.invalid http://models.example.invalid")):
         documents = render_values(download_values(hosts=hosts, **download), "--set", "inference.mode=model",
@@ -256,6 +258,15 @@ def check_model_download_sources() -> None:
             assert f"for e in {expected}; do " in script, script
     hosts = [{"serverName": "c.example.invalid", "address": "10.95.0.80", "scheme": "ftp"}]
     assert "scheme" in render_values(download_values(hosts=hosts), success=False)
+    # Each host's port: one NetworkPolicy rule per port, with the addresses of that port.
+    hosts = [{"serverName": "mirror.example.invalid", "address": "10.48.176.17", "scheme": "http"}] + single
+    documents = render_values(download_values(hosts=hosts), "--set", "inference.mode=model",
+                              "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
+    policy = next(item for item in documents if item["kind"] == "NetworkPolicy"
+                  and item["metadata"]["name"] == "inference-worker-model-download")["spec"]
+    assert policy["egress"] == [
+        {"to": [{"ipBlock": {"cidr": "10.48.176.17/32"}}], "ports": [{"protocol": "TCP", "port": 80}]},
+        {"to": [{"ipBlock": {"cidr": "192.0.2.20/32"}}], "ports": [{"protocol": "TCP", "port": 443}]}], policy
     check_model_download_fallback_runs()
 
 
@@ -281,7 +292,7 @@ def check_model_download_fallback_runs() -> None:
                         '[ -n "$SLEEP" ] && exec sleep "$SLEEP"\nexit 0\n')
         stub.chmod(0o755)
         runnable = script.replace("/usr/local/bin/fetch-model", str(stub))
-        cache, server = "http://cache.example.invalid:443", "https://models.example.invalid"
+        cache, server = "http://cache.example.invalid", "https://models.example.invalid"
 
         def run(fail: str = "", sleep: str = "") -> tuple[int, list[str]]:
             log.write_text("")

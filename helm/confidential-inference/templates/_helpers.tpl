@@ -206,20 +206,19 @@ or the scheme's default (443 for https, 80 for http). */}}
 {{- end }}
 
 {{/* The fetch-model endpoints: one per distinct source of
-inference.model.download.hosts, in order. A host may set its own `scheme`
-(for example a plain HTTP cache in the cluster in front of an https model
-server); every host has the one port of the allowlist exits (download.port, or
-the default port of download.scheme). Plain http is allowed: fetch-model checks
-every byte against the pinned byte manifest, and the weights are public. */}}
+inference.model.download.hosts, in order. A host may set its own `scheme` and
+`port` (for example a plain HTTP mirror on port 80 in the site, in front of an
+https model server on 443); a host without them takes download.scheme and
+download.port (or the scheme's default port). Each address is one allowlist
+exit on its host's port (the policy item's egress `ports`). Plain http is
+allowed: fetch-model checks every byte against the pinned byte manifest, and
+the weights are public. */}}
 {{- define "confidential-inference.modelDownloadEndpoints" -}}
-{{- $download := .Values.inference.model.download -}}
-{{- $port := include "confidential-inference.modelDownloadPort" . -}}
+{{- $root := . -}}
 {{- $endpoints := list -}}
-{{- range $download.hosts -}}
-{{- $scheme := .scheme | default ($download.scheme | default "https") -}}
-{{- if not (has $scheme (list "https" "http")) -}}
-{{- fail "inference.model.download.hosts[].scheme must be https or http" -}}
-{{- end -}}
+{{- range .Values.inference.model.download.hosts -}}
+{{- $scheme := include "confidential-inference.modelDownloadHostScheme" (dict "root" $root "host" .) -}}
+{{- $port := include "confidential-inference.modelDownloadHostPort" (dict "root" $root "host" .) -}}
 {{- $endpoint := printf "%s://%s" $scheme .serverName -}}
 {{- if ne $port (eq $scheme "http" | ternary "80" "443") -}}
 {{- $endpoint = printf "%s:%s" $endpoint $port -}}
@@ -229,6 +228,39 @@ every byte against the pinned byte manifest, and the weights are public. */}}
 {{- end -}}
 {{- end -}}
 {{- toJson $endpoints -}}
+{{- end }}
+
+{{/* The scheme of one download host (dict root, host): its own, or download.scheme. */}}
+{{- define "confidential-inference.modelDownloadHostScheme" -}}
+{{- $scheme := .host.scheme | default (.root.Values.inference.model.download.scheme | default "https") -}}
+{{- if not (has $scheme (list "https" "http")) -}}
+{{- fail "inference.model.download.hosts[].scheme must be https or http" -}}
+{{- end -}}
+{{- $scheme -}}
+{{- end }}
+
+{{/* The port of one download host (dict root, host): its own, download.port, or the default of its scheme. */}}
+{{- define "confidential-inference.modelDownloadHostPort" -}}
+{{- if gt (int (.host.port | default 0)) 0 -}}
+{{- int .host.port -}}
+{{- else if .host.scheme -}}
+{{- eq .host.scheme "http" | ternary 80 443 -}}
+{{- else -}}
+{{- include "confidential-inference.modelDownloadPort" .root -}}
+{{- end -}}
+{{- end }}
+
+{{/* The distinct ports of the download hosts, in order, as a JSON list. */}}
+{{- define "confidential-inference.modelDownloadPorts" -}}
+{{- $root := . -}}
+{{- $ports := list -}}
+{{- range .Values.inference.model.download.hosts -}}
+{{- $port := include "confidential-inference.modelDownloadHostPort" (dict "root" $root "host" .) | int -}}
+{{- if not (has $port $ports) -}}
+{{- $ports = append $ports $port -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $ports -}}
 {{- end }}
 
 {{/* The first fetch-model endpoint. */}}
