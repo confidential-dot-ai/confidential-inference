@@ -14,9 +14,15 @@ description: DeepSeek-V4.1-Flash-1017 at 262K context; each replica is one prefi
 engine:
   # The confidential-sglang engine image (release/spec.yaml confidentialSglang).
   image: confidentialSglangEngine
-  # Not set for the pair: the plan's workers run DeepSeek kernels that the
-  # engine image contract does not yet show are all in its FlashInfer cache.
-  flashinferDisableJit: false
+  # FLASHINFER_DISABLE_JIT=1 on both workers: a kernel missing from the
+  # image fails at once instead of compiling inside the scheduler. The GPU dev
+  # run on a 4x B200 with images-727ec2031889 had zero MissingJITCacheError
+  # in every run with it set: cold start, warm start, the functional suite,
+  # needles up to 253K tokens, and realmix. With JIT on (the published-image
+  # run), FlashInfer only generated trtllm export headers and compiled no .so.
+  # The one startup compile, the flashinfer_globaltimer torch extension of
+  # SGLang's sharded_verify, happens either way; the flag does not affect it.
+  flashinferDisableJit: true
 replica:
   layout: pair
   plan: dsv41-262k

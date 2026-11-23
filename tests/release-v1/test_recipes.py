@@ -332,6 +332,9 @@ class PairRecipeTests(unittest.TestCase):
         self.assertEqual(recipe["model"]["revision"], "1bae0e1088993b9b82de08f59de5be5a34e42170")
         self.assertEqual(recipe["model"]["contextLength"], 262144)
         self.assertEqual(sorted(recipe["behavior"]["apis"]), ["chat", "completions", "messages", "responses"])
+        # The engine image carries every FlashInfer kernel the plan loads (GPU dev run, images-727ec2031889).
+        self.assertIs(recipe["engine"]["flashinferDisableJit"], True)
+        self.assertIs(self.values()["inference"]["flashinferDisableJit"], True)
 
     def test_the_gateway_refuses_the_parameters_the_pair_does_not_support(self):
         # n > 1 holds a decode slot until it times out; the others the pair refuses
