@@ -61,7 +61,10 @@ structured:
       status: {int: true}
       code: {int: true}
   inference-worker:
-    events: [worker_ready, request_failed, gpu_oom, cuda_error, nccl_error, worker_error, worker_exit, jit_compile]
+    # model_verified: the engine image's model gate (wait-for-model) once
+    # every model file matches the manifest: a file count, the bytes, the time.
+    events: [worker_ready, request_failed, gpu_oom, cuda_error, nccl_error, worker_error, worker_exit, jit_compile,
+             model_verified]
     fields:
       model_revision: {string: '^[0-9a-f]{40}$'}
       gpus: {int: true}
@@ -85,6 +88,8 @@ structured:
       # The Triton kernels that compiled: their function names in code (file
       # stems of the Triton cache), at most 8, comma-joined; empty otherwise.
       kernels: {string: '^([A-Za-z_][A-Za-z0-9_]{0,63}(,[A-Za-z_][A-Za-z0-9_]{0,63}){0,7})?$'}
+      # model_verified: the model's total bytes (the recipe's manifest).
+      size_bytes: {int: true}
   # sglang-pair (inference.layout pair): the supervisor's error records,
   # confidential-sglang confidential/helpers/pair_supervisor.py EVENTS. The
   # supervisor discards the workers' and the model gate's own output and
