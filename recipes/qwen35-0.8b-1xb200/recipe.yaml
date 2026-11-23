@@ -2,9 +2,9 @@
 # The worker argv matches confidential-sglang recipes/qwen35-0.8b
 # (container/serve.sh on branch recipe-qwen35-0.8b): every flag there is one
 # the chart sets, so extraArgs is empty.
-schema: confidential.ai/recipe/v1
+schema: confidential.ai/recipe/v2
 name: qwen35-0.8b-1xb200
-description: Qwen3.5-0.8B on the confidential-sglang engine, one worker on one B200, cache-aware routing.
+description: Qwen3.5-0.8B on the confidential-sglang engine; each replica is one worker on one B200; cache-aware routing between replicas.
 engine:
   # The confidential-sglang engine image (release/spec.yaml confidentialSglang).
   image: confidentialSglangEngine
@@ -12,9 +12,11 @@ engine:
   # (the engine image contract test checks it), so a missing kernel fails the request
   # instead of a 67 s compile inside the scheduler.
   flashinferDisableJit: true
+# One replica: one aggregated worker on one GPU. The deployment sets the
+# replica count (inference.replicas).
 replica:
-  workers: 1
-  gpusPerWorker: 1
+  layout: worker
+  gpus: 1
   gpuArchitectures: [BLACKWELL]
   attestedGpuCount: 1
 model:
