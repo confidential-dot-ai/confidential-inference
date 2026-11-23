@@ -102,7 +102,11 @@ structured:
              stack_dump_unavailable, communicator_abort_started, communicator_abort_finished,
              communicator_abort_failed, fatal_exit_deadline, nccl_collective, nccl_snapshot,
              nccl_snapshot_unavailable, scheduler_snapshot, scheduler_snapshot_unavailable,
-             gpu_event_query_failed, diagnostic_delivery_failed]
+             gpu_event_query_failed, diagnostic_delivery_failed,
+             # Readiness and late compiles, and the model gate's own events
+             # (confidential-sglang #31: fetch-model, wait-for-model).
+             worker_ready, jit_compile, model_fetch_started, model_fetch_retry, model_fetch_complete,
+             model_fetch_failed, model_verified, model_check_failed]
     fields:
       # The supervisor's own: when, which supervisor run (random per start),
       # which source build.
@@ -149,6 +153,32 @@ structured:
       dropped: {int: true}
       pending: {int: true}
       failures: {int: true}
+      # worker_ready: the worker's GPUs and seconds since the supervisor started.
+      gpus: {int: true}
+      load_seconds: {int: true}
+      # jit_compile after worker_ready: the Triton kernel's function name in
+      # code and its compile time (duration_ms above).
+      kernel: {string: '^[A-Za-z_][A-Za-z0-9_]{0,63}$'}
+      # The model gate: a file of the pinned model manifest (never a name read
+      # from disk), the model server's host name (an allowlist exit), the
+      # attempt, a fixed error class and HTTP status, sizes and SHA-256 digests
+      # of model bytes, and file and byte counts.
+      # A segment may start with a dot (.gitattributes) but is never . or ..;
+      # the source caps each segment at 128 characters (RE2 refuses a nested
+      # repeat count here).
+      file: {string: '^([A-Za-z0-9_-][A-Za-z0-9_.-]*|[.][A-Za-z0-9_-][A-Za-z0-9_.-]*)(/([A-Za-z0-9_-][A-Za-z0-9_.-]*|[.][A-Za-z0-9_-][A-Za-z0-9_.-]*)){0,8}$'}
+      host: {string: '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'}
+      attempt: {int: true}
+      error_class: {string: '^(http_error|connection|timeout|size_mismatch|digest_mismatch|io|manifest_digest|manifest_invalid|unsafe_path|unavailable|writable|missing|extra|unexpected_file|index_invalid|root)$'}
+      http_status: {int: true}
+      expected_size: {int: true}
+      got_size: {int: true}
+      expected_sha256: {string: '^[0-9a-f]{64}$'}
+      got_sha256: {string: '^[0-9a-f]{64}$'}
+      files: {int: true}
+      size_bytes: {int: true}
+      downloaded: {int: true}
+      kept: {int: true}
 textSources: [c8s, telemetry-collector, node-log-agent]
 # The containers C8s injects into a member pod (C8s v0.101.5
 # pkg/workloadclaims). The front door's namespace (c8s.frontDoorNamespace) and

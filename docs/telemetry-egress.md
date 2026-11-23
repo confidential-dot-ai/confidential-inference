@@ -201,6 +201,15 @@ names and these fields:
 | `stage_code`, `batch_size`, `queue_depth` | Where the scheduler was (a fixed stage code) and how many requests its batch held. |
 | `op`, `state`, `sequence`, `group_id`, `created_ns`, `started_ns`, `completed_ns` | Which NCCL collective a rank waits on: its kind, state, sequence number and process group, and when. |
 | `rejected`, `exported`, `dropped`, `pending`, `failures` | Delivery counters of the snapshots and diagnostics. |
+| `gpus`, `load_seconds` (`worker_ready`) | A worker answers after its warmup: its GPUs and the seconds since the supervisor started. |
+| `kernel` (`jit_compile`, with `duration_ms`) | A Triton kernel compiled after its worker was ready: the kernel's function name in code (an identifier) and the compile time. |
+| `file`, `host`, `attempt`, `error_class`, `http_status` (`model_fetch_*`, `model_check_failed`) | The model gate: which file of the pinned manifest failed (never a name read from disk; a segment is never `.` or `..`), from which model server host (an allowlist exit), on which attempt, a fixed error class and the HTTP status. |
+| `expected_size`, `got_size`, `expected_sha256`, `got_sha256` | A model file's size and SHA-256 that the manifest pins, and what the gate found. Model bytes, not request data. |
+| `files`, `size_bytes`, `downloaded`, `kept` (`model_fetch_*`, `model_verified`) | How many model files and bytes the gate fetched, kept and checked. |
+
+The events of the model gate, `worker_ready` and `jit_compile` come from
+confidential-sglang's `sglang-pair` (#31): it forwards the gate's
+(`fetch-model`, `wait-for-model`) fixed events, re-checked, as role `pair`.
 
 Left out on purpose: `count` and `bytes` (an NCCL collective's tensor size, a
 KV transfer's size) and `input_tokens` / `output_tokens` (a batch's token
