@@ -1,0 +1,55 @@
+# DeepSeek-V4.1-Flash-1017 at 262,144 tokens: each replica is one
+# prefill/decode pair on one 4x B200 VM. recipes/README.md describes the fields.
+#
+# The pair runs confidential-sglang's launch plan dsv41-262k, which the engine
+# image bakes at /opt/sglang/layouts/dsv41-262k.json (confidential-sglang
+# recipes/deepseek-v41/container/dsv41-262k.env, qualified 2026-11-09): a TP2
+# prefill and a TP2 decode in one sglang-pair container, KV over NVLink, the
+# Engram holder, DSpark speculative decoding, and the plan's PD router. The
+# release pins the plan's bytes (release/inputs/confidential-sglang/layouts/);
+# the recipe copies none of its flags.
+schema: confidential.ai/recipe/v2
+name: deepseek-v41-flash-262k-4xb200
+description: DeepSeek-V4.1-Flash-1017 at 262K context; each replica is one prefill/decode pair (TP2 + TP2, NVLink KV) on one 4x B200; cache-aware routing between replicas.
+engine:
+  # The confidential-sglang engine image (release/spec.yaml confidentialSglang).
+  image: confidentialSglangEngine
+  # Not set for the pair: the plan's workers run DeepSeek kernels that the
+  # engine image contract does not yet show are all in its FlashInfer cache.
+  flashinferDisableJit: false
+replica:
+  layout: pair
+  plan: dsv41-262k
+  gpus: 4
+  gpuArchitectures: [BLACKWELL]
+  # The pod's GPU evidence shows its four devices.
+  attestedGpuCount: 4
+model:
+  repository: deepseek-ai/DeepSeek-V4.1-Flash-1017
+  revision: 1bae0e1088993b9b82de08f59de5be5a34e42170
+  # The byte manifest that production pinned for this revision
+  # (confidential-inference-internal deploy/targets/b200-vanilla-release/
+  # expected-model-manifest.json, the same bytes). Its SHA-256 is the pin.
+  manifest: model-manifest.json
+  manifestSha256: eb73a3749d5c99994b018a6063068c2ca28871900415fc364fbbfe1b07300629
+  # The Engram holder reads the index first.
+  checkFiles: [config.json, tokenizer_config.json, model.safetensors.index.json]
+  contextLength: 262144
+worker:
+  # What the plan must set; recipe-values.py checks both workers.
+  toolCallParser: deepseekv41
+  reasoningParser: deepseek-v41
+  speculativeAlgorithm: DSPARK
+routing:
+  kind: sglang-router
+  policy: cache_aware
+  # The confidential-sglang router image: the cache-aware router between
+  # replicas and each replica's PD router.
+  image: confidentialSglangRouter
+behavior:
+  apis:
+    chat: {}
+    completions: {}
+    # A reasoning model can spend short outputs on reasoning.
+    responses: {minOutputTokens: 16}
+    messages: {}
