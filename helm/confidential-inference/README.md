@@ -249,14 +249,40 @@ recipe in values only, for example:
 `inference.workerImage`, `inference.model.source` and
 `inference.model.imagePath` were removed; the render fails if they are set.
 
-## Prefill/decode layout (removed)
+## Prefill/decode pairs (`inference.layout: pair`)
 
-The chart runs aggregated workers only (`inference-worker`, one complete
-SGLang server each, behind the router). The prefill/decode layout
-(`inference-pd`) and its pairs (`sglang-pair`) were removed: neither the
-production recipe nor the staging recipe uses them. `inference.pd.enabled`
-stays in the schema so that existing environment values still render; only
-`false` is accepted.
+A pair recipe (`recipes/README.md`) sets `inference.layout: pair` and
+`inference.pair`. Each replica is then two pods:
+
+- `inference-pair-<i>`, a pod of the StatefulSet `inference-pair` (headless
+  Service `inference-pairs`). Its one container runs `sglang-pair` from the
+  engine image: the model gate (fetch-model when `inference.model.download`
+  is on, wait-for-model, then the Engram holder, which locks about 198 GiB of
+  host memory), then the prefill and the decode worker of the recipe's launch
+  plan, one after the other, each with the cold-path warmup. Prefill writes KV
+  into decode's GPU memory over NVLink. CUDA IPC needs one process namespace
+  that sees both workers' GPUs; C8s gives that only inside one container. The
+  startup, readiness and liveness probes read sglang-pair's status port.
+  Every pair pod claims one allowlist entry (`inference.pair.attestedWorkload`).
+- `pd-router-<i>`, a Deployment of one router pod (router image). It sends
+  each request to `inference-pair-<i>`'s prefill and decode by their
+  headless-Service names, with the plan's router arguments. Decode reaches
+  prefill's KV bootstrap server on loopback inside the pair, whatever address
+  the router names. The PD routers differ in the pair they reach, so each has
+  its own allowlist entry, `<inference.pair.pdRouter.attestedWorkloadPrefix>-<i>`:
+  the deployment's allowlist policy lists one per replica. A PD router has no
+  exit and no Kubernetes API access.
+
+The cache-aware router (`sglang-router`) discovers the Ready PD router pods
+(label `app.kubernetes.io/component=pd-router`) and routes between them; a PD
+router is Ready while its pair's prefill and decode are. Only that router
+talks to the Kubernetes API, at the deploy-time address of
+`router.discovery.apiServer`.
+
+The environment sets `inference.replicas`, `inference.pair.resources` (the
+defaults are conservative, not measured), the model server, and the router's
+API server. `inference.pd.enabled` stays in the schema so that existing
+environment values still render; only `false` is accepted.
 
 ## Gateway admission
 

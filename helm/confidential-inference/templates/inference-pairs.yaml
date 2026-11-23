@@ -1,0 +1,364 @@
+{{- /*
+inference.layout: pair. Every replica is one prefill/decode pair:
+
+- inference-pair-<i>, a pod of the StatefulSet inference-pair. Its one
+  container runs sglang-pair (confidential-sglang confidential/helpers): the
+  model gate (fetch-model, wait-for-model, then the Engram holder), then the
+  prefill and the decode worker of the recipe's launch plan. Prefill writes KV
+  into decode's GPU memory over NVLink: CUDA IPC needs one process namespace
+  that sees both workers' GPUs, which C8s gives only inside one container.
+- pd-router-<i>, a Deployment of one router pod. It sends each request to
+  inference-pair-<i>'s prefill and decode (the plan's PD router arguments).
+
+The cache-aware router (templates/sglang-router.yaml) finds the Ready PD
+routers by label and routes between them. All pairs are identical and claim
+one C8s allowlist entry (inference.pair.attestedWorkload); the PD routers
+differ in the pair they reach, so each claims its own entry
+(<pdRouter.attestedWorkloadPrefix>-<i>).
+*/}}
+{{- define "confidential-inference.pairHost" -}}
+{{- printf "inference-pair-%d.inference-pairs.%s.svc.cluster.local" (int .index) .root.Release.Namespace -}}
+{{- end }}
+
+{{- define "confidential-inference.source.inference-pairs" -}}
+{{- if and .Values.inference.enabled (eq (.Values.inference.layout | default "worker") "pair") }}
+{{- $pair := .Values.inference.pair }}
+{{- $prefill := $pair.prefill }}
+{{- $decode := $pair.decode }}
+{{- $router := $pair.router }}
+{{- if ne .Values.inference.mode "model" }}
+{{- fail "inference.layout pair needs inference.mode model" }}
+{{- end }}
+{{- if ne (.Values.inference.engineImage | default "") "confidentialSglangEngine" }}
+{{- fail "inference.layout pair needs inference.engineImage confidentialSglangEngine, the image that bakes the launch plan" }}
+{{- end }}
+{{- if not (and $pair.plan $prefill $decode $router) }}
+{{- fail "inference.layout pair needs inference.pair.plan, prefill, decode and router: render them from a pair recipe (scripts/recipe-values.py)" }}
+{{- end }}
+{{- if ne (int .Values.inference.gpusPerReplica) (add (int $prefill.gpus) (int $decode.gpus)) }}
+{{- fail (printf "inference.gpusPerReplica %d is not the pair's %d GPUs (prefill + decode)" (int .Values.inference.gpusPerReplica) (add (int $prefill.gpus) (int $decode.gpus))) }}
+{{- end }}
+{{- if eq (len .Values.inference.gpuArchitectures) 0 }}
+{{- fail "inference.gpuArchitectures is required with inference.layout pair" }}
+{{- end }}
+{{- if .Values.inference.model.cache.enabled }}
+{{- fail "inference.model.cache is unsupported: use inference.model.download or the c8s model volume" }}
+{{- end }}
+{{- $ports := list (int $prefill.port) (int $decode.port) (int $prefill.bootstrapPort) (int $pair.statusPort) (int .Values.inference.metricsPort) }}
+{{- if ne (len (uniq $ports)) (len $ports) }}
+{{- fail (printf "the pair's ports must differ: prefill, decode, bootstrap, inference.pair.statusPort, inference.metricsPort are %v" $ports) }}
+{{- end }}
+{{- $byRole := dict "prefill" $prefill "decode" $decode }}
+{{- range $role := list "prefill" "decode" }}
+{{- $worker := index $byRole $role }}
+{{- range $worker.args }}
+{{- $flag := index (splitList "=" .) 0 }}
+{{- range $taken := list "--model-path" "--served-model-name" "--host" "--warmups" }}
+{{- if and (hasPrefix "--" $flag) (gt (len $flag) 2) (hasPrefix $flag $taken) }}
+{{- fail (printf "inference.pair.%s.args sets %s, which the chart sets" $role $taken) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $name := list "CUDA_VISIBLE_DEVICES" "SGLANG_HOST_IP" }}
+{{- if hasKey $worker.env $name }}
+{{- fail (printf "inference.pair.%s.env sets %s, which sglang-pair sets" $role $name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- /* The cold-path warmup's prefill step sends prompts of up to 32,768 tokens. */}}
+{{- if lt (int (.Values.inference.contextLength | default 0)) 32770 }}
+{{- fail "inference.contextLength must be at least 32,770 with inference.layout pair (the cold-path warmup)" }}
+{{- end }}
+{{- $download := .Values.inference.model.download.enabled }}
+{{- if not .Values.inference.model.volumeNames }}
+{{- fail "inference.model.volumeNames needs one name: the model directory of every pair" }}
+{{- end }}
+{{- $volumeName := first .Values.inference.model.volumeNames }}
+{{- $modelPath := printf "%s/%s" .Values.inference.model.volumeDirectory $volumeName }}
+{{- $image := include "confidential-inference.workerImage" . }}
+{{- /* The model gate: download (inference.model.download), check every byte,
+       then lock the Engram shards. sglang-pair starts the workers once the
+       holder has written its ready file; the gate must keep running. */}}
+{{- $check := list "/usr/local/bin/wait-for-model" (printf "--path=%s" $modelPath) }}
+{{- if $download }}{{ $check = append $check "--plain-cache" }}{{ end }}
+{{- $check = concat $check (list
+      (printf "--timeout-seconds=%v" .Values.inference.model.mountVerification.timeoutSeconds)
+      (printf "--poll-seconds=%v" .Values.inference.model.mountVerification.pollSeconds)
+      (printf "--expected-repository=%s" .Values.inference.model.name)
+      (printf "--expected-revision=%s" .Values.inference.model.revision)
+      (printf "--revision-metadata=%s" .Values.inference.model.mountVerification.revisionMetadata)) }}
+{{- range $file := include "confidential-inference.expectedFiles" . | fromJsonArray }}
+{{- $check = append $check (printf "--expected-file=%s" $file) }}
+{{- end }}
+{{- if .Values.inference.gpuMetricsEnabled }}
+{{- $check = append $check (printf "--gpu-metrics-port=%v" .Values.inference.metricsPort) }}
+{{- end }}
+{{- $check = concat $check (list "--" $pair.python $pair.engramHolder "--model" $modelPath "--ready-file" "/run/dsv41/engram.ready") }}
+{{- $gate := $check }}
+{{- if $download }}
+{{- $gate = concat (include "confidential-inference.modelDownloadCommand" . | fromJsonArray) $check }}
+{{- end }}
+{{- $workers := list }}
+{{- range $role := list "prefill" "decode" }}
+{{- $worker := index $byRole $role }}
+{{- $env := deepCopy $worker.env }}
+{{- $_ := set $env "HF_HUB_OFFLINE" "1" }}
+{{- $_ := set $env "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION" "false" }}
+{{- if $.Values.inference.flashinferDisableJit }}{{ $_ := set $env "FLASHINFER_DISABLE_JIT" "1" }}{{ end }}
+{{- $command := concat (list $pair.python "-m" "sglang.launch_server"
+      (printf "--model-path=%s" $modelPath)
+      (printf "--served-model-name=%s" $.Values.inference.model.name)
+      "--host=0.0.0.0"
+      "--warmups=confidential_cold_path") $worker.args }}
+{{- $workers = append $workers (dict "role" $role "gpus" (int $worker.gpus) "ranks" (int $worker.gpus) "port" (int $worker.port) "command" $command "env" $env) }}
+{{- end }}
+{{- $config := dict "workers" $workers "modelGate" $gate "statusPort" (int $pair.statusPort) "progressTimeoutSeconds" (int $pair.progressTimeoutSeconds) "startupTimeoutSeconds" (int $pair.startupTimeoutSeconds) "shutdownTimeoutSeconds" (int $pair.shutdownTimeoutSeconds) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-pairs
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: inference-pair
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "confidential-inference.selector" (dict "root" . "component" "inference-pair") | nindent 4 }}
+  ports:
+    - {name: prefill, port: {{ $prefill.port }}, targetPort: prefill}
+    - {name: decode, port: {{ $decode.port }}, targetPort: decode}
+---
+# The pairs: pods inference-pair-0 to inference-pair-<replicas - 1>, one per
+# replica, all the same. Plan {{ $pair.plan }} ({{ $pair.layoutSha256 }}).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: inference-pair
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: inference-pair
+spec:
+  serviceName: inference-pairs
+  replicas: {{ int .Values.inference.replicas }}
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: OnDelete
+    rollingUpdate: null
+  selector:
+    matchLabels:
+      {{- include "confidential-inference.selector" (dict "root" . "component" "inference-pair") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "confidential-inference.selector" (dict "root" . "component" "inference-pair") | nindent 8 }}
+        confidential.ai/environment: {{ .Values.environment | quote }}
+      annotations:
+        confidential.ai/cw: {{ $pair.attestedWorkload | quote }}
+        {{- if not $download }}
+        confidential.ai/c8s-volumes: {{ printf "%s=%s" $volumeName .Values.inference.model.c8sVolumeSource | quote }}
+        confidential.ai/c8s-volume-dir: {{ .Values.inference.model.volumeDirectory | quote }}
+        {{- end }}
+        confidential.ai/gpu-architectures: {{ join "," .Values.inference.gpuArchitectures | quote }}
+        confidential.ai/attested-gpu-count: {{ gt (int .Values.inference.attestedGpuCount) 0 | ternary (int .Values.inference.attestedGpuCount) (int .Values.inference.gpusPerReplica) | quote }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $decode.port | quote }}
+    spec:
+      {{- if $download }}
+      {{- with .Values.scheduling.inferenceNodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # The model source addresses are also the pod's allowlist exits.
+      {{- include "confidential-inference.modelDownloadHostAliases" . | nindent 6 }}
+      {{- else if .Values.scheduling.inferenceNodeNames }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: {{ include "confidential-inference.inferenceNodeNames" . }}
+      {{- else }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.scheduling.inferenceNodeName | quote }}
+      {{- end }}
+      enableServiceLinks: false
+      serviceAccountName: confidential-inference
+      terminationGracePeriodSeconds: {{ max (int .Values.inference.terminationGracePeriodSeconds) (add (int $pair.shutdownTimeoutSeconds) 15) }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sglang-pair
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+          command: [{{ $pair.python | quote }}, "/usr/local/bin/sglang-pair"]
+          args:
+            - --run-dir=/tmp/dsv41/pair
+            - --config-json
+            - {{ toJson $config | quote }}
+          env:
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - {name: prefill, containerPort: {{ $prefill.port }}}
+            - {name: decode, containerPort: {{ $decode.port }}}
+            - {name: pair-status, containerPort: {{ $pair.statusPort }}}
+            - {name: gpu-metrics, containerPort: {{ .Values.inference.metricsPort }}}
+          resources:
+            requests:
+              cpu: {{ $pair.resources.cpu | quote }}
+              memory: {{ $pair.resources.memory }}
+              nvidia.com/gpu: {{ int .Values.inference.gpusPerReplica }}
+            limits:
+              nvidia.com/gpu: {{ int .Values.inference.gpusPerReplica }}
+          # sglang-pair answers from cached state only. /startupz and /readyz
+          # are 200 once both workers ran their warmup and answer, and their
+          # scheduler ranks show progress; /livez fails a pair whose ranks
+          # stopped (progressTimeoutSeconds).
+          startupProbe:
+            httpGet: {path: /startupz, port: pair-status}
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: {{ div (add (int $pair.startupTimeoutSeconds) 14) 15 }}
+          readinessProbe:
+            httpGet: {path: /readyz, port: pair-status}
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 1
+          livenessProbe:
+            httpGet: {path: /livez, port: pair-status}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+            # HOME, the kernel caches of the plan (/tmp/dsv41/kernel-cache) and
+            # sglang-pair's run directory.
+            - name: scratch
+              mountPath: /tmp
+            {{- if $download }}
+            {{- include "confidential-inference.modelDownloadMounts" (dict "root" . "path" $modelPath) | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ $pair.shmSizeLimit }}
+        - name: scratch
+          emptyDir:
+            sizeLimit: {{ $pair.scratchSizeLimit }}
+        {{- if $download }}
+        {{- include "confidential-inference.modelDownloadVolumes" . | nindent 8 }}
+        {{- end }}
+{{- range $index := until (int .Values.inference.replicas) }}
+{{- $name := printf "%s-%d" $pair.pdRouter.attestedWorkloadPrefix $index }}
+{{- $host := include "confidential-inference.pairHost" (dict "root" $ "index" $index) }}
+---
+# The PD router of replica {{ $index }}: every request to inference-pair-{{ $index }}'s
+# prefill and decode. Decode reaches prefill's KV bootstrap server on loopback
+# inside the pair (harden_dist.py), whatever address this router gives.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "confidential-inference.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: pd-router
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "confidential-inference.selector" (dict "root" $ "component" "pd-router") | nindent 6 }}
+      confidential.ai/replica: {{ $index | quote }}
+  template:
+    metadata:
+      labels:
+        {{- include "confidential-inference.selector" (dict "root" $ "component" "pd-router") | nindent 8 }}
+        confidential.ai/replica: {{ $index | quote }}
+        confidential.ai/environment: {{ $.Values.environment | quote }}
+        # The cache-aware router discovers only pods with this label "true".
+        confidential.ai/traffic-eligible: "true"
+      annotations:
+        confidential.ai/cw: {{ $name | quote }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $router.metricsPort | quote }}
+    spec:
+      {{- with $.Values.scheduling.inferenceNodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      enableServiceLinks: false
+      # A fixed hostname keeps HOSTNAME exact in the c8s allowlist.
+      hostname: {{ $name }}
+      serviceAccountName: confidential-inference
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pd-router
+          image: {{ include "confidential-inference.routerImage" $ }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            capabilities:
+              drop: ["ALL"]
+          command: ["python3", "/usr/local/bin/ci-sglang-router"]
+          args:
+            - --pd-disaggregation
+            - --prefill
+            - {{ printf "http://%s:%v" $host $prefill.port | quote }}
+            - {{ $prefill.bootstrapPort | quote }}
+            - --decode
+            - {{ printf "http://%s:%v" $host $decode.port | quote }}
+            {{- range $router.args }}
+            - {{ . | quote }}
+            {{- end }}
+            # The total time of one request, its stream included. The
+            # gateway's upstreamTimeoutSeconds ends a request first.
+            - --request-timeout-secs={{ $.Values.router.requestTimeoutSeconds }}
+            # The pair can take hours to download, check, load and warm.
+            - --worker-startup-timeout-secs={{ $pair.startupTimeoutSeconds }}
+            - --host=0.0.0.0
+            - --port={{ $router.port }}
+            - --prometheus-host=0.0.0.0
+            - --prometheus-port={{ $router.metricsPort }}
+          ports:
+            - {name: openai, containerPort: {{ $router.port }}}
+            - {name: metrics, containerPort: {{ $router.metricsPort }}}
+          resources:
+            requests:
+              cpu: {{ $pair.pdRouter.resources.cpu | quote }}
+              memory: {{ $pair.pdRouter.resources.memory }}
+          # /readiness is 200 while the router has a healthy prefill and decode:
+          # the cache-aware router then adds this pod.
+          readinessProbe:
+            httpGet: {path: /readiness, port: openai}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet: {path: /liveness, port: openai}
+            periodSeconds: 30
+            timeoutSeconds: 5
+{{- end }}
+{{- end }}
+{{- end -}}
+{{- include "confidential-inference.applyWorkloadOverrides" (dict "root" . "body" (include "confidential-inference.source.inference-pairs" .)) }}

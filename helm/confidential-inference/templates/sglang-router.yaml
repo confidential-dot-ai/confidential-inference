@@ -203,7 +203,8 @@ spec:
           # (images/sglang-router/README.md).
           command: ["python3", "/usr/local/bin/ci-sglang-router"]
           args:
-            # The router watches the worker pods of this namespace (upstream
+            # The router watches the worker pods (or, with inference.layout
+            # pair, the PD router pods) of this namespace (upstream
             # service discovery). It adds each pod that is Running and Ready
             # at <pod IP>:<port>, and removes a pod when it is deleted. Its
             # health checks (below) stop traffic to a worker that is still
@@ -211,11 +212,22 @@ spec:
             # withdrawn (draining) worker out, and the second selector keeps
             # a pod relabeled confidential.ai/traffic-eligible=false out of a
             # new router.
+            {{- if eq (.Values.inference.layout | default "worker") "pair" }}
+            # inference.layout pair: each replica is one PD router pod
+            # (templates/inference-pairs.yaml), which this router treats as
+            # one worker. It is Ready while its pair's prefill and decode are.
+            - --service-discovery
+            - --service-discovery-namespace={{ .Release.Namespace }}
+            - --service-discovery-port={{ .Values.inference.pair.router.port }}
+            - --selector=app.kubernetes.io/component=pd-router
+            - --selector=confidential.ai/traffic-eligible=true
+            {{- else }}
             - --service-discovery
             - --service-discovery-namespace={{ .Release.Namespace }}
             - --service-discovery-port={{ .Values.inference.port }}
             - --selector=app.kubernetes.io/component=inference-worker
             - --selector=confidential.ai/traffic-eligible=true
+            {{- end }}
             - --policy=cache_aware
             - --cache-threshold=0.3
             - --balance-abs-threshold=64

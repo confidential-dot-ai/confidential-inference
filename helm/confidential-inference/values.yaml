@@ -192,7 +192,15 @@ inference:
   # file that omits the field would silently take the default and run the
   # wrong backend. values.schema.json lists mode as required, so an omitted
   # field now fails the render with "inference: mode is required".
+  # The replicas: the deployment's environment sets the count; a recipe does
+  # not (recipes/README.md). Each replica is one unit of inference.layout.
   replicas: 2
+  # What one replica is (a recipe sets it, scripts/recipe-values.py):
+  #   worker  one aggregated SGLang worker pod (templates/inference-workers.yaml)
+  #   pair    one prefill/decode pair pod and its own PD router pod
+  #           (templates/inference-pairs.yaml, inference.pair below)
+  layout: worker
+  # The GPUs of one replica: of its worker pod, or of its pair pod.
   gpusPerReplica: 0
   # Required when GPUs are enabled. This policy is copied into the release
   # bundle and checked by the c8s NVIDIA verifier.
@@ -323,6 +331,54 @@ inference:
   # set `pd: {enabled: false}`, still render; true fails the render.
   pd:
     enabled: false
+  # inference.layout: pair. One replica is one pair pod, inference-pair-<i> of
+  # the StatefulSet inference-pair: one sglang-pair container with the prefill
+  # and the decode worker (KV over NVLink, CUDA IPC needs one process
+  # namespace with both workers' GPUs), the model download and check, and the
+  # Engram holder; and one PD router pod, pd-router-<i>, which sends each
+  # request to that pair's prefill and decode. The cache-aware router
+  # (templates/sglang-router.yaml) routes between the replicas' PD routers.
+  pair:
+    # From the recipe: scripts/recipe-values.py fills these from the launch
+    # plan that the engine image bakes (/opt/sglang/layouts/<plan>.json), less
+    # the flags the chart sets (--model-path, --served-model-name, --host,
+    # --warmups). Not environment values.
+    plan: ""
+    layoutSha256: ""
+    python: /opt/dsv41/bin/python
+    engramHolder: /opt/sglang/recipes/deepseek-v41/launcher/hold_engram_cache.py
+    # prefill: {gpus, port, bootstrapPort, args, env}; decode: {gpus, port,
+    # maxRunningRequests, args, env}; router: {port, metricsPort, args}.
+    prefill: {}
+    decode: {}
+    router: {}
+    # The pair's status endpoint (sglang-pair /startupz, /readyz, /livez).
+    statusPort: 8050
+    # sglang-pair: a ready worker whose ranks show no progress for this long
+    # fails the pair (the pod restarts).
+    progressTimeoutSeconds: 90
+    # The model download and check, the Engram lock, and both workers' load
+    # and cold-path warmup must finish within this time.
+    startupTimeoutSeconds: 10800
+    shutdownTimeoutSeconds: 30
+    # The C8s allowlist entry of every pair pod (confidential.ai/cw).
+    attestedWorkload: inference-pair
+    # The pair pod's request. Conservative, not measured: the Engram holder
+    # pins about 198 GiB of host memory and the workers need more. Set it in
+    # the environment from a measured run.
+    resources:
+      cpu: "8"
+      memory: 64Gi
+    shmSizeLimit: 64Gi
+    # /tmp of the pair: HOME, the plan's kernel caches, sglang-pair's run files.
+    scratchSizeLimit: 128Gi
+    # Each replica's PD router (the router image). Its C8s allowlist entry is
+    # <attestedWorkloadPrefix>-<i>: the routers differ in the pair they reach.
+    pdRouter:
+      attestedWorkloadPrefix: pd-router
+      resources:
+        cpu: "1"
+        memory: 1Gi
 
 router:
   # This is the exact c8s policy entry for this workload.

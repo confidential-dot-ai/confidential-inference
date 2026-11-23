@@ -59,7 +59,35 @@ receivers:
             - {target_label: component, replacement: sglang-router}
           metric_relabel_configs:
             - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.router)) | quote }}}
-        {{- if .Values.inference.enabled }}
+        {{- if and .Values.inference.enabled (eq (.Values.inference.layout | default "worker") "pair") }}
+        {{- $p := .Values.inference.pair }}
+        {{- range $index := until (int .Values.inference.replicas) }}
+        {{- $host := printf "inference-pair-%d.inference-pairs.%s.svc.cluster.local" $index $ns }}
+        {{- range $role := list "prefill" "decode" }}
+        - job_name: {{ printf "inference-pair-%d-%s" $index $role }}
+          static_configs:
+            - targets: [{{ printf "%s:%v" $host (index $p $role).port | quote }}]
+              labels: {component: {{ printf "inference-%s" $role | quote }}, replica: {{ printf "inference-pair-%d" $index | quote }}}
+          metric_relabel_configs:
+            - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.worker)) | quote }}}
+        {{- end }}
+        - job_name: {{ printf "inference-gpu-%d" $index }}
+          static_configs:
+            - targets: [{{ printf "%s:%v" $host $.Values.inference.metricsPort | quote }}]
+              labels: {component: inference-gpu, replica: {{ printf "inference-pair-%d" $index | quote }}}
+          metric_relabel_configs:
+            - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.gpu)) | quote }}}
+        {{- end }}
+        - job_name: pd-router
+          dns_sd_configs:
+            - names: [{{ printf "telemetry-pd-routers.%s.svc.cluster.local" $ns | quote }}]
+              type: A
+              port: {{ $p.router.metricsPort }}
+          relabel_configs:
+            - {target_label: component, replacement: pd-router}
+          metric_relabel_configs:
+            - {action: labelkeep, regex: {{ printf "(%s)" (join "|" (concat $t.commonLabels $t.labels.router)) | quote }}}
+        {{- else if .Values.inference.enabled }}
         {{- range $index := until (int .Values.inference.replicas) }}
         {{- $host := printf "inference-worker-%d.inference-workers.%s.svc.cluster.local" $index $ns }}
         - job_name: {{ printf "inference-worker-%d" $index }}
@@ -380,6 +408,22 @@ spec:
     {{- include "confidential-inference.selector" (dict "root" . "component" "sglang-router") | nindent 4 }}
   ports:
     - {name: metrics, port: {{ .Values.router.metricsPort }}}
+{{- if and .Values.inference.enabled (eq (.Values.inference.layout | default "worker") "pair") }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-pd-routers
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pd-router
+spec:
+  clusterIP: None
+  selector:
+    {{- include "confidential-inference.selector" (dict "root" . "component" "pd-router") | nindent 4 }}
+  ports:
+    - {name: metrics, port: {{ .Values.inference.pair.router.metricsPort }}}
+{{- end }}
 {{- end }}
 {{- end -}}
 {{- include "confidential-inference.applyWorkloadOverrides" (dict "root" . "body" (include "confidential-inference.source.telemetry" .)) }}
