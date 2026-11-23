@@ -241,6 +241,13 @@ exporters:
       # `cluster`, not `deployment`: kube-state-metrics series carry their own
       # `deployment` label, and the Azure and mixin dashboards select `cluster`.
       cluster: {{ $t.deployment | quote }}
+      # The deployment name (<environment>-<commit>, the `deployment` value the
+      # render sets), so a validation reads the series of one deployment when two
+      # run at once. `deployment_name`, because kube-state-metrics series carry
+      # their own `deployment` label.
+      {{- if .Values.deployment }}
+      deployment_name: {{ .Values.deployment | quote }}
+      {{- end }}
     target_info: {enabled: false}
     resource_to_telemetry_conversion: {enabled: false}
   otlphttp/loki:

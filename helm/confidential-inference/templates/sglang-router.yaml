@@ -171,6 +171,7 @@ spec:
     spec:
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.scheduling.routerNodeName | default .Values.scheduling.inferenceNodeName | quote }}
+      {{- include "confidential-inference.nodeLossTolerations" . | nindent 6 }}
       # The API server address is the router's allowlist exit (C8s #1047):
       # scripts/generate-release-allowlist.py makes each hostAliases address
       # one exit on the port that the allowlist policy declares, or, when
