@@ -67,9 +67,13 @@ class SignalTests(ModelMountGateTests):
         return process
 
     def child_that_exits_on_sigterm(self, exit_code: int) -> list[str]:
+        # The gate keeps the child's output private, so the child marks a file
+        # once its SIGTERM handler is in place (wait_for_gate_ready).
+        self.child_ready = self.model.parent / f"child-ready-{exit_code}"
         script = (
-            "import signal, sys, time\n"
+            "import pathlib, signal, sys, time\n"
             f"signal.signal(signal.SIGTERM, lambda *a: sys.exit({exit_code}))\n"
+            f"pathlib.Path({str(self.child_ready)!r}).touch()\n"
             "time.sleep(30)\n"
         )
         return [sys.executable, "-c", script]
@@ -78,9 +82,13 @@ class SignalTests(ModelMountGateTests):
         # The wrapper prints "verified" to stderr right before it spawns the
         # child, then installs its signal handlers immediately after.
         self.assertTrue(reader.wait_for("model-mount: verified", 5), reader.text())
-        # Give the freshly spawned child a moment to install its own SIGTERM
-        # handler before the test sends a signal to the wrapper.
-        time.sleep(0.2)
+        # A fixed 0.2 s raced a slow child start on loaded CI runners: the
+        # signal came before the child's handler and killed it (gate exit 241,
+        # its -SIGTERM). Wait until the child says its handler is in place.
+        deadline = time.monotonic() + 10
+        while not self.child_ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(self.child_ready.exists(), reader.text())
 
     def test_sigterm_is_forwarded_at_once(self) -> None:
         digests = self.create_model()
