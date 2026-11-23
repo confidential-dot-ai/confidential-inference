@@ -187,13 +187,12 @@ def check_model_download() -> None:
         container = pod["containers"][0]
         shell, flag, script, name = container["command"]
         assert (shell, flag, name) == ("/bin/sh", "-c", "sh")
-        # Two sources: fetch-model tries each in order until one gives every byte.
-        assert script.startswith("trap 'kill $f 2>/dev/null; wait $f; exit 143' TERM INT; "
-                                 "for e in https://models.example.invalid https://cdn.example.invalid; do "), script
-        assert ("/usr/local/bin/fetch-model --endpoint=$e fetch "
-                f"--path=/mnt/c8s-data/model-download --manifest=/mnt/c8s-data/model-manifest/manifest.json "
-                f"--manifest-sha256={pin} --revision-metadata=.model-lock-local-manifest.json &") in script
-        assert '[ -z "$f" ] || exit 1; trap - TERM INT; exec "$@"' in script
+        # Two sources: one fetch-model run with the ordered --endpoint list.
+        assert script == ("trap 'kill $f 2>/dev/null; wait $f; exit 143' TERM INT; /usr/local/bin/fetch-model "
+                          "--endpoint=https://models.example.invalid --endpoint=https://cdn.example.invalid fetch "
+                          "--path=/mnt/c8s-data/model-download --manifest=/mnt/c8s-data/model-manifest/manifest.json "
+                          f"--manifest-sha256={pin} --revision-metadata=.model-lock-local-manifest.json & f=$!; "
+                          'wait $f || exit $?; trap - TERM INT; exec "$@"'), script
         assert script.endswith('exec "$@"')
         assert container["args"][:3] == ["/usr/local/bin/wait-for-model", "--path=/mnt/c8s-data/models/model",
                                          "--plain-cache"], container["args"][:3]
@@ -255,7 +254,8 @@ def check_model_download_sources() -> None:
                               f"--manifest-sha256={pin} --revision-metadata=.model-lock-local-manifest.json & f=$!; "
                               'wait $f || exit $?; trap - TERM INT; exec "$@"'), script
         else:
-            assert f"for e in {expected}; do " in script, script
+            endpoints = " ".join(f"--endpoint={endpoint}" for endpoint in expected.split())
+            assert f"/usr/local/bin/fetch-model {endpoints} fetch " in script, script
     hosts = [{"serverName": "c.example.invalid", "address": "10.95.0.80", "scheme": "ftp"}]
     assert "scheme" in render_values(download_values(hosts=hosts), success=False)
     # Each host's port: one NetworkPolicy rule per port, with the addresses of that port.
@@ -271,9 +271,9 @@ def check_model_download_sources() -> None:
 
 
 def check_model_download_fallback_runs() -> None:
-    """Run the rendered two-source command with a fetch-model stub: the sources go in order, the first
-    success stops the loop and starts the check, all failures exit 1 without the check, and TERM stops
-    the running fetch at once without trying the next source."""
+    """Run the rendered two-source command with a fetch-model stub: one fetch-model run gets every
+    source as an ordered --endpoint list, its success starts the check, its failure exits without
+    the check, and TERM stops the running fetch at once."""
     import os
     import signal
     import time
@@ -287,8 +287,9 @@ def check_model_download_fallback_runs() -> None:
     with tempfile.TemporaryDirectory() as directory:
         log = Path(directory) / "log"
         stub = Path(directory) / "fetch-model"
-        stub.write_text('#!/bin/sh\nendpoint=${1#--endpoint=}\necho "fetch $endpoint" >> "$LOG"\n'
-                        'case " $FAIL " in *" $endpoint "*) exit 7;; esac\n'
+        stub.write_text('#!/bin/sh\nendpoints=""\nfor a in "$@"; do case "$a" in --endpoint=*) '
+                        'endpoints="$endpoints ${a#--endpoint=}";; esac; done\n'
+                        'echo "fetch$endpoints" >> "$LOG"\n[ -n "$FAIL" ] && exit 7\n'
                         '[ -n "$SLEEP" ] && exec sleep "$SLEEP"\nexit 0\n')
         stub.chmod(0o755)
         runnable = script.replace("/usr/local/bin/fetch-model", str(stub))
@@ -301,9 +302,8 @@ def check_model_download_fallback_runs() -> None:
                                   env=env, capture_output=True, text=True, timeout=30)
             return done.returncode, log.read_text().split("\n")[:-1]
 
-        assert run() == (0, [f"fetch {cache}", "check"])
-        assert run(fail=cache) == (0, [f"fetch {cache}", f"fetch {server}", "check"])
-        assert run(fail=f"{cache} {server}") == (1, [f"fetch {cache}", f"fetch {server}"])
+        assert run() == (0, [f"fetch {cache} {server}", "check"])
+        assert run(fail="1") == (7, [f"fetch {cache} {server}"])
         log.write_text("")
         process = subprocess.Popen(["/bin/sh", "-c", runnable, "sh", "sh", "-c", f'echo check >> "{log}"'],
                                    env={**os.environ, "LOG": str(log), "FAIL": "", "SLEEP": "30"})
@@ -314,7 +314,8 @@ def check_model_download_fallback_runs() -> None:
         time.sleep(0.2)
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=10) == 143
-        assert log.read_text().split("\n")[:-1] == [f"fetch {cache}"], log.read_text()
+        # One run, stopped at once; no check started.
+        assert log.read_text().split("\n")[:-1] == [f"fetch {cache} {server}"], log.read_text()
 
 
 def check_model_download_scheme() -> None:
