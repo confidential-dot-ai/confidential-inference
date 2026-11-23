@@ -89,8 +89,9 @@ done
 All worker pods are one C8s workload: the `confidential.ai/cw` annotation
 names the allowlist entry `inference.attestedWorkload` (default
 `inference-worker`), and every pod claims it. The pods differ only in their
-name, so the entry requires `HOSTNAME` and admits any value
-(`scripts/generate-release-allowlist.py`). This is so for every value of
+name, and the chart sets `HOSTNAME` to `inference-worker` in each, so the
+entry names an exact value for every variable. C8s requires that of an
+entry that declares egress. This is so for every value of
 `inference.replicas`, 1 included: a scale of the StatefulSet at runtime (for
 example from 1 to 2 pods) needs no new allowlist. The deployment's allowlist policy
 has one item for them: `{"name": "inference-worker", "controller":

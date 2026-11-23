@@ -24,8 +24,9 @@ The script never learns a value from a running container. A value that no
 pinned source can give (for example a node IP) is an error. Two exceptions:
 a DaemonSet container may read its node name (`spec.nodeName`), and the pods
 of a StatefulSet differ in HOSTNAME (and a `metadata.name` variable), whatever
-its replica count, so that a scale needs no new allowlist. Such an entry is `env: match`, with that variable
-`present` and every other variable `exact`.
+its replica count, so that a scale needs no new allowlist. An entry with such
+a variable is `env: match`, with that variable `present` and every other
+variable `exact`. A container that sets its own HOSTNAME has that value.
 
 `c8s allowlist derive` from the pinned c8s release builds each entry, so c8s
 itself decides which containers it injects and drops. The c8s core entries
@@ -232,7 +233,8 @@ def pod_name(controller: dict[str, Any]) -> Any:
     A StatefulSet names its pods <name>-0, <name>-1 and so on, and the
     StatefulSet controller sets each pod's hostname to that name. All of them
     claim one allowlist entry, so the entry requires HOSTNAME (and a
-    `metadata.name` variable) and admits any value. This is so for every
+    `metadata.name` variable) and admits any value, unless the container sets
+    its own HOSTNAME. This is so for every
     replica count: the StatefulSet can scale at runtime (for example from 1
     to 2 pods), and a scale must not need a new allowlist.
     """

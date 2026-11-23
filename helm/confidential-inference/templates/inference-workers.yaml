@@ -270,6 +270,9 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            # A fixed HOSTNAME keeps the env exact in the c8s allowlist.
+            - name: HOSTNAME
+              value: inference-worker
             # /health answers without a generation; /health_generate still
             # generates one token. The probes below explain the split.
             - name: SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION
