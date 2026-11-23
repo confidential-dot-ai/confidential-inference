@@ -169,7 +169,7 @@ structured:
       file: {string: '^([A-Za-z0-9_-][A-Za-z0-9_.-]*|[.][A-Za-z0-9_-][A-Za-z0-9_.-]*)(/([A-Za-z0-9_-][A-Za-z0-9_.-]*|[.][A-Za-z0-9_-][A-Za-z0-9_.-]*)){0,8}$'}
       host: {string: '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'}
       attempt: {int: true}
-      error_class: {string: '^(http_error|connection|timeout|size_mismatch|digest_mismatch|io|manifest_digest|manifest_invalid|unsafe_path|unavailable|writable|missing|extra|unexpected_file|index_invalid|root)$'}
+      error_class: {string: '^(http_error|connection|timeout|size_mismatch|digest_mismatch|io|manifest_digest|manifest_invalid|unsafe_path|unavailable|writable|missing|extra|unexpected_file|index_invalid|root|range_unsupported)$'}
       http_status: {int: true}
       expected_size: {int: true}
       got_size: {int: true}
