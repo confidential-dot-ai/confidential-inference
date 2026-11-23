@@ -54,6 +54,15 @@ class ModelIdentityTests(unittest.TestCase):
         self.assertIn(f"--model-manifest-sha256={PIN}", containers["inference-worker"]["args"])
         self.assertEqual({"example/model": ["example/model"]}, json.loads(router["CI_ROUTER_MODEL_ROUTES"])["routes"])
 
+    def test_custom_router_identity_matches_the_gateway_requirement(self):
+        documents = self.render({"router": {"attestedWorkload": "custom-router"},
+                                 "inference": {"attestedWorkload": "sglang-router"}})
+        router = documents["sglang-router"]["spec"]["template"]
+        gateway = documents["gateway"]["spec"]["template"]["spec"]["containers"][0]
+        peers = next(e["value"] for e in gateway["env"] if e["name"] == "C8S_MESH_PEER_WORKLOADS")
+        self.assertEqual("custom-router", router["metadata"]["annotations"]["confidential.ai/cw"])
+        self.assertEqual(peers, router["metadata"]["annotations"]["confidential.ai/cw"])
+
     def test_alias_cannot_select_another_model(self):
         error = self.render({"runtimeConfig": {"modelRoutes": {"alias": ["other/model"]}}}, success=False)
         self.assertIn("select only inference.model.name", error)

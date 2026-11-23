@@ -163,7 +163,7 @@ spec:
         {{- include "confidential-inference.selector" (dict "root" . "component" "sglang-router") | nindent 8 }}
         confidential.ai/environment: {{ .Values.environment | quote }}
       annotations:
-        confidential.ai/cw: sglang-router
+        confidential.ai/cw: {{ .Values.router.attestedWorkload | quote }}
         # A changed client configuration rolls the router.
         checksum/kubeconfig: {{ printf "%s:%d:%s" $api.address (int $api.port) $api.serverName | sha256sum }}
         prometheus.io/scrape: "true"
