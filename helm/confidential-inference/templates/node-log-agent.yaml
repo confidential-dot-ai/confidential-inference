@@ -99,6 +99,7 @@ processors:
       # A replica's PD router (inference.layout pair) runs the same router launcher: its reviewed events.
       - {{ printf "set(%s, \"sglang-router\") where %s and %s == \"pd-router\" and IsMatch(%s, \"^pd-router-[0-9]+-\")" $src $inNs $container $pod | toJson }}
       - {{ printf "set(%s, \"inference-worker\") where %s and %s == \"sglang\" and IsMatch(%s, \"^inference-worker-[0-9]+$\")" $src $inNs $container $pod | toJson }}
+      - {{ printf "set(%s, \"inference-pair\") where %s and %s == \"sglang-pair\" and IsMatch(%s, \"^inference-pair-[0-9]+$\")" $src $inNs $container $pod | toJson }}
       - {{ printf "set(%s, \"telemetry-collector\") where %s and %s == \"otelcol\" and IsMatch(%s, \"^telemetry-collector-\")" $src $inNs $container $pod | toJson }}
       - {{ printf "set(%s, \"node-log-agent\") where %s and %s == \"otelcol\" and IsMatch(%s, \"^node-log-agent-\")" $src $inNs $container $pod | toJson }}
       - {{ printf "set(%s, \"c8s\") where %s or (%s and (%s))" $src (join " or " $c8sNs) $inNs (join " or " $c8sCtr) | toJson }}

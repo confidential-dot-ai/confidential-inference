@@ -462,8 +462,8 @@ def check_log_privacy(config: dict) -> None:
     # A body leaves only when a source's keep rule marks it; every other body is replaced.
     keeps = [item for item in statements if item.startswith('set(log.cache["keep"], true) where ')]
     sources = [re.match(r'.*?resource\.attributes\["service\.name"\] == "([a-z0-9-]+)"', item).group(1) for item in keeps]
-    assert sources == ["gateway", "inference-worker", "sglang-router", "c8s", "telemetry-collector",
-                       "node-log-agent"], sources
+    assert sources == ["gateway", "inference-pair", "inference-worker", "sglang-router", "c8s",
+                       "telemetry-collector", "node-log-agent"], sources
     keep_body = 'set(log.body, String(log.cache["b"])) where log.cache["keep"] == true'
     drop_body = 'set(log.body, "[body dropped: not a reviewed record]") where log.cache["keep"] != true'
     assert statements.index(keep_body) < statements.index(drop_body)
