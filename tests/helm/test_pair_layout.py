@@ -233,6 +233,35 @@ class PairLayoutTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
 
+    def test_the_router_memory_gauges_leave_from_both_router_jobs(self):
+        """confidential-sglang#29: the router launcher adds ci_router_memory_{current,peak}_bytes, unlabeled,
+        to the cache-aware router's and each PD router's metrics. No name filter and no label filter of
+        the collector may drop them."""
+        telemetry = ("--set", "telemetry.enabled=true", "--set", "telemetry.deployment=test-deployment",
+                     "--set", "telemetry.relay.serverName=relay.example.com",
+                     "--set", "telemetry.relay.address=203.0.113.7",
+                     "--set", "telemetry.metrics.tenantId=00000000-0000-0000-0000-000000000001",
+                     "--set", "telemetry.metrics.clientId=00000000-0000-0000-0000-000000000002",
+                     "--set", "telemetry.metrics.dataCollectionRule=dcr-" + "0" * 32)
+        collector = named(documents(render(*telemetry)), "Deployment", "telemetry-collector")
+        (argument,) = collector["spec"]["template"]["spec"]["containers"][0]["args"]
+        config = json.loads(argument.removeprefix("--config=yaml:"))
+        jobs = {job["job_name"]: job for job in
+                config["receivers"]["prometheus"]["config"]["scrape_configs"]}
+        for name in ("sglang-router", "pd-router"):
+            job = jobs[name]
+            for rule in job.get("metric_relabel_configs", []):
+                # Only label filters: no rule keeps or drops series by name.
+                self.assertEqual(rule["action"], "labelkeep", (name, rule))
+                for label in ("__name__", "job", "instance", "component"):
+                    self.assertRegex(label, f"^(?:{rule['regex']})$", (name, rule))
+        # The second gate keeps labels only; it never removes a series.
+        statements = config["processors"]["transform/metrics"]["metric_statements"]
+        self.assertTrue(all(item.startswith("keep_keys(datapoint.attributes, ") for item in statements), statements)
+        contract = yaml.safe_load((ROOT / "docs/observability-metrics.yaml").read_text())
+        sources = {rule["source"] for rule in contract["recordingRules"]}
+        self.assertTrue({"ci_router_memory_peak_bytes", "ci_router_memory_current_bytes"} <= sources)
+
     def test_the_worker_layout_renders_as_before(self):
         """Without inference.layout, no pair object renders and the router finds the workers."""
         result = subprocess.run(["helm", "template", "example", str(CHART), "--namespace", NAMESPACE,

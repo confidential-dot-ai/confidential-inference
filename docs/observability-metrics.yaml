@@ -16,6 +16,7 @@ collection:
   scrapeJobs:
     - gateway
     - sglang-router
+    - pd-router
     - inference-workers
     - inference-gpu-workers
     - kube-state-metrics
@@ -140,6 +141,15 @@ recordingRules:
   - record: confidential:desired_replicas
     source: kube_statefulset_replicas
     promql: sum by (environment) (kube_statefulset_replicas{statefulset="inference-worker"})
+  # The router containers' cgroup memory (confidential-sglang router launcher,
+  # private_router.py): the cache-aware router (component sglang-router) and
+  # each replica's PD router (component pd-router). Validation reads the peak.
+  - record: confidential:router_memory_peak_bytes:max
+    source: ci_router_memory_peak_bytes
+    promql: max by (environment, component) (ci_router_memory_peak_bytes)
+  - record: confidential:router_memory_current_bytes:max
+    source: ci_router_memory_current_bytes
+    promql: max by (environment, component) (ci_router_memory_current_bytes)
   - record: confidential:requests_per_second:by_api_key
     source: gateway_requests
     gatewayOnly: true
