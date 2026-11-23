@@ -284,6 +284,136 @@ defaults are conservative, not measured), the model server, and the router's
 API server. `inference.pd.enabled` stays in the schema so that existing
 environment values still render; only `false` is accepted.
 
+### Kernel cache seed
+
+A pair compiles its kernels into the plan's cache tree,
+`paths.kernel_cache_dir` of the launch plan (`/tmp/dsv41/kernel-cache` for
+dsv41-262k). The plan's worker env puts every compiler cache under it:
+`SGLANG_CACHE_DIR` is the root, and `CUDA_CACHE_PATH` (`nv`),
+`FLASHINFER_WORKSPACE_BASE` (`flashinfer`), `TORCHINDUCTOR_CACHE_DIR`
+(`inductor`) and `TRITON_CACHE_DIR` (`triton`) are below it. The tree lives in
+the pod's `/tmp` emptyDir, so every new pod starts cold: dsv41-262k on a 4x
+B200 takes about 26 minutes to `/readyz` cold and about 9 minutes warm. The
+warm tree is about 145 MB.
+
+With `inference.pair.kernelCache.seed.enabled`, the pair fetches a warm tree
+from the model mirror before the model gate. fetch-model reads each file at
+`<repository>/resolve/<revision>/<path>` from the `inference.model.download`
+hosts in order. It checks every file's SHA-256 and size against the seed
+manifest, whose own SHA-256 is in the pair's argv and so in its allowlist
+entry. A file that does not match is not written. When the whole seed is in
+place, fetch-model also removes every file under the directory that the
+manifest does not list (after a container restart, what the last run compiled
+beyond the seed). If no host gives the whole seed, the gate goes on with the
+files it verified and the workers compile the rest, as without a seed.
+
+The seed is the whole tree. `inference.pair.kernelCache.planDirectory` is
+rendered by `scripts/recipe-values.py` from the plan's `paths.kernel_cache_dir`.
+With the seed on, the chart refuses to render if `planDirectory` is not the
+workers' `SGLANG_CACHE_DIR`, or if one of the cache variables above points
+outside it. Make the seed from the whole tree: a seed with only some of the
+subdirectories (for example only `triton`) still fetches and verifies, but
+the other caches start cold and the warmup takes nearly as long as without a
+seed. The tree includes FlashInfer's run-time `cubins` download
+(`flashinfer/.cache/flashinfer/cubins`); the seed carries it under the same
+pin.
+
+#### What the seed is trusted for
+
+Seeded kernels are compiled outside the TEE, on a bring-up host. They are
+code: Triton cubins, Inductor modules and shared objects, CUDA binaries.
+Nothing measures how they were built. They are trusted only because their
+exact bytes are pinned. The manifest lists every file's SHA-256 and size, and
+the manifest's own SHA-256 is in the pair's argv, so in its C8s allowlist entry
+(the attested workload). That is the same trust as the model weights: the
+release pins the bytes, not where they came from. A verifier who accepts the
+allowlist entry accepts those bytes, and so trusts whoever made the seed. The
+release signature and the TEE measurements do not cover the seed; the
+manifest pin does.
+
+A host or mirror that changes a seed byte cannot make the pair run it:
+fetch-model refuses the file, and the worker compiles that kernel itself. A
+host that withholds the seed only makes the start cold. A wrong seed that
+matches its manifest (for example one made from another image) is refused at
+render time by the revision check below, not at run time.
+
+Without the seed, the workers compile at start inside the TEE with the
+compilers of the measured image; those kernels are not pinned either, but they
+come from the measured code. The seed trades that for pinned bytes made
+outside.
+
+`jit_compile` keeps its meaning. In a pair it comes from the workers' Triton
+compile listener (confidential-sglang `python/sglang/srt/utils/triton_load_watch.py`
+and `pair_progress.compile_event`): one event per Triton compile that is not
+a cache hit, forwarded by sglang-pair once that worker is ready. It is not a
+scan of the cache directory against a baseline (the CompileWatcher of
+`images/sglang-confidential/wait_for_model.py` is the worker layout's; the
+pair does not forward the gate's `jit_compile`). So:
+
+- a seeded kernel is a cache hit: it is part of the pinned startup state and
+  is never reported as a run-time compile, before or after `worker_ready`;
+- a kernel that the seed lacks, or one recompiled over a seeded file after
+  `worker_ready`, is a compile and is reported as before.
+
+The seed's own fetch shows in the pair's events: the first
+`model_fetch_started` (role `pair`) is the seed's, with its file count and
+size, then its `model_fetch_complete` (files downloaded and kept) or
+`model_fetch_failed`, before the model's fetch. A `model_fetch_failed` before the model's fetch is a cold start, not a
+failed pair.
+
+#### Platform, owner and lifetime
+
+A seed is tied to one engine image, one plan, one GPU model and one driver.
+CUDA, Triton and FlashInfer binaries are built for the bring-up host's GPU
+architecture and driver, and the cache keys include them. The manifest's
+revision is `sha256-<engine image digest>-<plan>`, and the chart refuses to
+render a seed of another engine image or plan. The plan fixes the GPU model
+(its layout's `target.gpu_models`, B200 for dsv41-262k), so make the seed on
+that GPU. The revision does not name the driver: a seed made on another
+driver still renders, and its Triton and Inductor binaries load as they were
+built (only the CUDA driver's own PTX cache is keyed by driver and misses).
+So make the seed on the driver of the release's C8s node image, and make a
+new one when that driver changes.
+
+A new engine image starts cold: its seed is refused at render time, so turn
+the seed off or make a new one in the same release change. The engineer who
+pins the engine image (the release PR) makes the seed, when one of these
+changes:
+
+- the engine image digest (a confidential-sglang release record);
+- the launch plan, or its target GPU;
+- the node image's NVIDIA driver (a C8s pin change).
+
+Retire a seed when its image or plan leaves the release; remove its files from
+the mirror once no deployed release names its revision. After a deploy,
+check the seed: the pair's first `model_fetch_started` has the seed's file
+count, the `model_fetch_complete` after it counts them downloaded or kept, and
+the pair reaches `/readyz` in about the warm time. The seed
+does not change `jit_compile` after `worker_ready`, so compare that count with
+a cold start of the same image: it should not grow.
+
+To make a seed:
+
+1. Run a pair of the release's engine image and plan to `/readyz`, outside the
+   TEE (a bring-up host with the target GPU and driver), and send it the
+   warmup. Copy its whole `paths.kernel_cache_dir` (`/tmp/dsv41/kernel-cache`).
+2. `scripts/kernel-cache-manifest.py <copy> --repository <owner>/<name>
+   --engine-image <engine image@sha256:...> --plan <plan> > manifest.json`.
+   It leaves out lock files and partial writes. fetch-model writes every file
+   read-only, so a seeded lock file could not be opened for writing.
+3. Serve each listed file on the mirror at
+   `<repository>/resolve/sha256-<digest>-<plan>/<path>`.
+4. In the environment values, set `inference.pair.kernelCache.seed.enabled:
+   true` and `inference.pair.kernelCache.seed.manifest` to the manifest text.
+
+The chart does not keep the cache on the node. The pinned C8s (v0.101.9)
+refuses every tenant `hostPath` (its `deny-host-namespaces` policy) and has no
+StorageClass on its node image (C8s #1129 removed local-path). The node's
+writable disk is dm-crypt with a per-boot key and no integrity, so the host
+could also corrupt or roll back a cache kept there. A C8s mutable volume
+persists but has no integrity either, and a host rollback of it goes
+undetected (C8s `docs/volumes.md`). The seed's bytes are pinned instead.
+
 ## Gateway admission
 
 The gateway admits at most `gateway.protection.inferenceConcurrency`

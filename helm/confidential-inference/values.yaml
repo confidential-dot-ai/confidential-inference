@@ -392,6 +392,30 @@ inference:
     shmSizeLimit: 64Gi
     # /tmp of the pair: HOME, the plan's kernel caches, sglang-pair's run files.
     scratchSizeLimit: 128Gi
+    # Seed the plan's kernel caches (Triton, Inductor, CUDA, FlashInfer and
+    # SGLang under planDirectory, about 145 MB for dsv41-262k) from the model
+    # mirror before the workers start. A warm cache brings a 4x B200 pair up
+    # in about 9 minutes instead of 26. The README of this chart ("Kernel
+    # cache seed") explains why the chart seeds from the mirror and does not
+    # keep the cache on the node.
+    kernelCache:
+      # The plan's cache root (paths.kernel_cache_dir of the plan), in the
+      # /tmp emptyDir. The seed is fetched here. scripts/recipe-values.py
+      # renders it from the plan; with the seed on, the chart refuses a
+      # directory that is not the workers' SGLANG_CACHE_DIR, or a worker
+      # cache (CUDA, FlashInfer, Inductor, Triton) outside it.
+      planDirectory: /tmp/dsv41/kernel-cache
+      seed:
+        enabled: false
+        # The fetch-model byte manifest of the cache tree on the model mirror
+        # (scripts/kernel-cache-manifest.py). fetch-model downloads
+        # <repository>/resolve/<immutable_revision>/<path> of each file from
+        # the inference.model.download hosts and checks its SHA-256 and size;
+        # the manifest's own SHA-256 is in the pair's attested argv. Its
+        # immutable_revision must be sha256-<engine image digest>-<plan>: the
+        # chart refuses a seed of another engine image or plan. A seed that no
+        # host gives is skipped, and the pair compiles its kernels as before.
+        manifest: ""
     # Each replica's PD router (the router image). Its C8s allowlist entry is
     # <attestedWorkloadPrefix>-<i>: the routers differ in the pair they reach.
     pdRouter:

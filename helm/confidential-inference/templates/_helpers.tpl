@@ -145,6 +145,7 @@ model, not in an init container. The volume outlives a container restart, so
 fetch-model keeps the files that already match. */}}
 {{- define "confidential-inference.modelDownloadDirectory" -}}/mnt/c8s-data/model-download{{- end }}
 {{- define "confidential-inference.modelManifestDirectory" -}}/mnt/c8s-data/model-manifest{{- end }}
+{{- define "confidential-inference.kernelCacheManifestDirectory" -}}/mnt/c8s-data/kernel-cache-manifest{{- end }}
 
 {{/* Check the download values; return the SHA-256 of the manifest. */}}
 {{- define "confidential-inference.modelDownloadManifestSha256" -}}

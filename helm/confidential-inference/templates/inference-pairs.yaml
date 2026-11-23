@@ -98,6 +98,60 @@ differ in the pair they reach, so each claims its own entry
 {{- if $download }}
 {{- $gate = concat (include "confidential-inference.modelDownloadCommand" . | fromJsonArray) $check }}
 {{- end }}
+{{- /* inference.pair.kernelCache.seed: before the model gate, fetch-model
+       fills the plan's kernel cache directory from the model mirror and
+       checks every file against the seed manifest, whose SHA-256 this argv
+       pins. The manifest's revision names the engine image digest and the
+       plan, so a seed of another image or plan does not render. A seed that
+       no host gives leaves a cold cache: the workers compile as before. */}}
+{{- $seed := ($pair.kernelCache | default dict).seed | default dict }}
+{{- if $seed.enabled }}
+{{- if not $download }}
+{{- fail "inference.pair.kernelCache.seed needs inference.model.download: the seed comes from its hosts" }}
+{{- end }}
+{{- $digest := regexFind "@sha256:[0-9a-f]{64}$" $image | trimPrefix "@sha256:" }}
+{{- if not $digest }}
+{{- fail (printf "inference.pair.kernelCache.seed needs a digest-pinned engine image (repository@sha256:<64 hex>), not %s" $image) }}
+{{- end }}
+{{- if not $seed.manifest }}
+{{- fail "inference.pair.kernelCache.seed.manifest is required (scripts/kernel-cache-manifest.py)" }}
+{{- end }}
+{{- if gt (len $seed.manifest) 921600 }}
+{{- fail "inference.pair.kernelCache.seed.manifest is over 900 KiB, too large for its ConfigMap" }}
+{{- end }}
+{{- $manifest := $seed.manifest | fromJson }}
+{{- if or (hasKey $manifest "Error") (ne ($manifest.schema | default "") "confidential-benchmark/local-model-byte-manifest/v1") }}
+{{- fail "inference.pair.kernelCache.seed.manifest is not a fetch-model byte manifest (schema confidential-benchmark/local-model-byte-manifest/v1)" }}
+{{- end }}
+{{- $revision := printf "sha256-%s-%s" $digest $pair.plan }}
+{{- if ne ($manifest.immutable_revision | default "") $revision }}
+{{- fail (printf "inference.pair.kernelCache.seed.manifest is the seed of %v, not of this engine image and plan (%s): make a seed for this image, or turn the seed off" ($manifest.immutable_revision | default "no revision") $revision) }}
+{{- end }}
+{{- if not (and $manifest.repository $manifest.files) }}
+{{- fail "inference.pair.kernelCache.seed.manifest names no repository or no file" }}
+{{- end }}
+{{- /* The seed is the plan's whole cache tree: planDirectory must be the
+       workers' SGLANG_CACHE_DIR (paths.kernel_cache_dir of the plan, which
+       scripts/recipe-values.py renders), and every other compiler cache of
+       the plan must be below it. A seed of a subdirectory, or of another
+       directory, would leave the other caches cold. */}}
+{{- $cacheDir := trimSuffix "/" ($pair.kernelCache.planDirectory | default "") }}
+{{- range $role := list "prefill" "decode" }}
+{{- $env := (index $byRole $role).env | default dict }}
+{{- if ne (index $env "SGLANG_CACHE_DIR" | default "") $cacheDir }}
+{{- fail (printf "inference.pair.kernelCache.planDirectory %s is not the %s worker's SGLANG_CACHE_DIR (%v): the seed must be the plan's whole cache tree, paths.kernel_cache_dir (scripts/recipe-values.py renders it)" $cacheDir $role (index $env "SGLANG_CACHE_DIR" | default "unset")) }}
+{{- end }}
+{{- range $name := list "CUDA_CACHE_PATH" "FLASHINFER_WORKSPACE_BASE" "TORCHINDUCTOR_CACHE_DIR" "TRITON_CACHE_DIR" }}
+{{- if and (hasKey $env $name) (not (hasPrefix (printf "%s/" $cacheDir) (index $env $name))) }}
+{{- fail (printf "inference.pair.%s.env %s %s is not below inference.pair.kernelCache.planDirectory %s: the seed would leave that cache cold" $role $name (index $env $name) $cacheDir) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $endpoints := include "confidential-inference.modelDownloadEndpoints" . | fromJsonArray }}
+{{- $fetch := printf "/usr/local/bin/fetch-model --endpoint=$e fetch --path=%s --manifest=%s/manifest.json --manifest-sha256=%s --revision-metadata=.kernel-cache-manifest.json" $cacheDir (include "confidential-inference.kernelCacheManifestDirectory" .) (sha256sum $seed.manifest) }}
+{{- $script := printf "trap 'kill $f 2>/dev/null; wait $f; exit 143' TERM INT; f=; for e in %s; do %s & f=$!; if wait $f; then f=; break; fi; echo \"kernel cache seed: $e failed\" >&2; done; [ -z \"$f\" ] || echo 'kernel cache seed: no source gave it; the workers compile their kernels' >&2; trap - TERM INT; exec \"$@\"" (join " " $endpoints) $fetch }}
+{{- $gate = concat (list "/bin/sh" "-c" $script "sh") $gate }}
+{{- end }}
 {{- $workers := list }}
 {{- range $role := list "prefill" "decode" }}
 {{- $worker := index $byRole $role }}
@@ -115,6 +169,19 @@ differ in the pair they reach, so each claims its own entry
 {{- $config := dict "workers" $workers "modelGate" $gate "statusPort" (int $pair.statusPort) "progressTimeoutSeconds" (int $pair.progressTimeoutSeconds) "startupTimeoutSeconds" (int $pair.startupTimeoutSeconds) "shutdownTimeoutSeconds" (int $pair.shutdownTimeoutSeconds) }}
 {{- /* Only when set: an sglang-pair before confidential-sglang #30 refuses the key. */}}
 {{- if $pair.parallelStart }}{{ $_ := set $config "parallelStart" true }}{{ end }}
+{{- if $seed.enabled }}
+# The byte manifest of inference.pair.kernelCache.seed. fetch-model checks it
+# against the SHA-256 that the pair's argv pins.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kernel-cache-manifest
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+data:
+  manifest.json: {{ $seed.manifest | quote }}
+---
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -253,6 +320,11 @@ spec:
             {{- if $download }}
             {{- include "confidential-inference.modelDownloadMounts" (dict "root" . "path" $modelPath) | nindent 12 }}
             {{- end }}
+            {{- if $seed.enabled }}
+            - name: kernel-cache-manifest
+              mountPath: {{ include "confidential-inference.kernelCacheManifestDirectory" . }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: shm
           emptyDir:
@@ -263,6 +335,11 @@ spec:
             sizeLimit: {{ $pair.scratchSizeLimit }}
         {{- if $download }}
         {{- include "confidential-inference.modelDownloadVolumes" . | nindent 8 }}
+        {{- end }}
+        {{- if $seed.enabled }}
+        - name: kernel-cache-manifest
+          configMap:
+            name: kernel-cache-manifest
         {{- end }}
 {{- range $index := until (int .Values.inference.replicas) }}
 {{- $name := printf "%s-%d" $pair.pdRouter.attestedWorkloadPrefix $index }}

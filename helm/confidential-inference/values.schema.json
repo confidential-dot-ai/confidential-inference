@@ -297,6 +297,22 @@
             },
             "shmSizeLimit": {"type": "string"},
             "scratchSizeLimit": {"type": "string"},
+            "kernelCache": {
+              "description": "Seed the plan's kernel caches from the model mirror (templates/inference-pairs.yaml).",
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "planDirectory": {"type": "string", "pattern": "^/tmp/[A-Za-z0-9._/-]+$"},
+                "seed": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {"type": "boolean"},
+                    "manifest": {"type": "string"}
+                  }
+                }
+              }
+            },
             "pdRouter": {
               "type": "object",
               "additionalProperties": false,

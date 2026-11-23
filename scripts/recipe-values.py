@@ -385,8 +385,14 @@ def pair_values(recipe: dict[str, Any], layout: dict[str, Any]) -> dict[str, Any
             f"layout {name} uses {layout.get('target', {}).get('gpu_count')} GPUs; replica.gpus is {replica['gpus']}")
     paths = layout.get("paths")
     require(isinstance(paths, dict) and all(isinstance(paths.get(key), str) and paths[key].startswith("/")
-                                            for key in ("python", "model", "engram_holder")),
-            f"layout {name}: paths.python, paths.model and paths.engram_holder must be absolute paths")
+                                            for key in ("python", "model", "engram_holder", "kernel_cache_dir")),
+            f"layout {name}: paths.python, paths.model, paths.engram_holder and paths.kernel_cache_dir must be "
+            "absolute paths")
+    # The chart seeds this directory (inference.pair.kernelCache.seed). It is
+    # in the pair's /tmp emptyDir, the only writable place of the pod.
+    require(re.fullmatch(r"/tmp/[A-Za-z0-9._/-]+", paths["kernel_cache_dir"]) is not None
+            and "/../" not in paths["kernel_cache_dir"] + "/",
+            f"layout {name}: paths.kernel_cache_dir {paths['kernel_cache_dir']} is not below /tmp")
     prefill = pair_worker(plan["workers"][0], "prefill", layout, recipe)
     decode = pair_worker(plan["workers"][1], "decode", layout, recipe)
     require(prefill["gpus"] + decode["gpus"] == replica["gpus"],
@@ -406,6 +412,7 @@ def pair_values(recipe: dict[str, Any], layout: dict[str, Any]) -> dict[str, Any
         "layoutSha256": layout["_sha256"],
         "python": paths["python"],
         "engramHolder": paths["engram_holder"],
+        "kernelCache": {"planDirectory": paths["kernel_cache_dir"].rstrip("/")},
         "prefill": prefill,
         "decode": decode,
         "router": router,
