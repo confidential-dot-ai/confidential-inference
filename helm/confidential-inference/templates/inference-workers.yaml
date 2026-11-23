@@ -1,5 +1,6 @@
 {{- define "confidential-inference.source.inference-workers" -}}
-{{- if .Values.inference.enabled }}
+{{- /* inference.layout pair runs templates/inference-pairs.yaml instead. */}}
+{{- if and .Values.inference.enabled (ne (.Values.inference.layout | default "worker") "pair") }}
 {{- if dig "pd" "enabled" false .Values.inference }}
 {{- fail "inference.pd was removed: the chart runs aggregated workers only (inference-worker)" }}
 {{- end }}

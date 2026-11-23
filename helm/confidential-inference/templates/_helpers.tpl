@@ -320,11 +320,13 @@ images.sglangConfidential. */}}
 {{- end -}}
 {{- end }}
 
-{{/* The --max-running-requests of one worker: the simulator value, the
-chart value, or the flag in workerExtraArgs. 0 when the worker uses its own
-default. */}}
+{{/* The --max-running-requests of one worker (of a pair's decode worker with
+inference.layout pair): the simulator value, the chart value, or the flag in
+workerExtraArgs. 0 when the worker uses its own default. */}}
 {{- define "confidential-inference.workerMaxRunningRequests" -}}
-{{- if eq .Values.inference.mode "simulator" -}}
+{{- if eq (.Values.inference.layout | default "worker") "pair" -}}
+{{- int (dig "decode" "maxRunningRequests" 0 .Values.inference.pair) -}}
+{{- else if eq .Values.inference.mode "simulator" -}}
 {{- int .Values.inference.simulator.maxRunningRequests -}}
 {{- else if .Values.inference.maxRunningRequests -}}
 {{- int .Values.inference.maxRunningRequests -}}

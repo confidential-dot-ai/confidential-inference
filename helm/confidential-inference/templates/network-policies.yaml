@@ -1,3 +1,4 @@
+{{- $pair := and .Values.inference.enabled (eq (.Values.inference.layout | default "worker") "pair") }}
 # Start from denial. The following policies document the minimum v0 paths.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -67,7 +68,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: In
-        values: [gateway, sglang-router, inference-worker, telemetry-collector, kube-state-metrics, node-log-agent]
+        values: [gateway, sglang-router, inference-worker, inference-pair, pd-router, telemetry-collector, kube-state-metrics, node-log-agent]
   policyTypes: [Egress]
   egress:
     # The mesh listens on the node address, which Cilium classifies as a host
@@ -145,6 +146,15 @@ spec:
         - {protocol: TCP, port: {{ .Values.router.metricsPort }}}
     {{- end }}
   egress:
+    {{- if $pair }}
+    # inference.layout pair: the replicas' PD routers.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: pd-router
+      ports:
+        - {protocol: TCP, port: {{ .Values.inference.pair.router.port }}}
+    {{- else }}
     - to:
         - podSelector:
             matchExpressions:
@@ -155,6 +165,7 @@ spec:
         {{- if .Values.inference.enabled }}
         - {protocol: TCP, port: {{ .Values.inference.port }}}
         {{- end }}
+    {{- end }}
     # Service discovery: the API server's own address (router.discovery).
     # C8s, not this policy, limits it to that one address, the router's
     # allowlist exit. The API server runs on a node, which Cilium classifies
@@ -193,6 +204,72 @@ spec:
         - {protocol: TCP, port: {{ .Values.inference.metricsPort }}}
     {{- end }}
 ---
+{{- if $pair }}
+# Each PD router takes requests from the cache-aware router and sends them to
+# the prefill and decode workers of its pair. Decode reaches prefill's KV
+# bootstrap server on loopback inside the pair pod, so no policy opens it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pd-router-paths
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: pd-router
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: sglang-router
+      ports:
+        - {protocol: TCP, port: {{ .Values.inference.pair.router.port }}}
+    {{- if .Values.telemetry.enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: telemetry-collector
+      ports:
+        - {protocol: TCP, port: {{ .Values.inference.pair.router.metricsPort }}}
+    {{- end }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: inference-pair
+      ports:
+        - {protocol: TCP, port: {{ .Values.inference.pair.prefill.port }}}
+        - {protocol: TCP, port: {{ .Values.inference.pair.decode.port }}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pair-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: inference-pair
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: pd-router
+      ports:
+        - {protocol: TCP, port: {{ .Values.inference.pair.prefill.port }}}
+        - {protocol: TCP, port: {{ .Values.inference.pair.decode.port }}}
+    {{- if .Values.telemetry.enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: telemetry-collector
+      ports:
+        - {protocol: TCP, port: {{ .Values.inference.pair.prefill.port }}}
+        - {protocol: TCP, port: {{ .Values.inference.pair.decode.port }}}
+        - {protocol: TCP, port: {{ .Values.inference.metricsPort }}}
+    {{- end }}
+---
+{{- end }}
 {{- if .Values.telemetry.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -233,6 +310,19 @@ spec:
         - {protocol: TCP, port: {{ .Values.inference.port }}}
         - {protocol: TCP, port: {{ .Values.inference.metricsPort }}}
         {{- end }}
+    {{- if $pair }}
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [inference-pair, pd-router]
+      ports:
+        - {protocol: TCP, port: {{ .Values.inference.pair.prefill.port }}}
+        - {protocol: TCP, port: {{ .Values.inference.pair.decode.port }}}
+        - {protocol: TCP, port: {{ .Values.inference.metricsPort }}}
+        - {protocol: TCP, port: {{ .Values.inference.pair.router.metricsPort }}}
+    {{- end }}
     # The relay: the one exit, also declared in the collector's allowlist entry.
     - to:
         - ipBlock: {cidr: {{ printf "%s/32" .Values.telemetry.relay.address | quote }} }
@@ -310,8 +400,10 @@ metadata:
   name: inference-worker-model-download
 spec:
   podSelector:
-    matchLabels:
-      app.kubernetes.io/component: inference-worker
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [inference-worker, inference-pair]
   policyTypes: [Egress]
   egress:
     {{- $root := . }}
