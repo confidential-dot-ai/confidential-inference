@@ -29,7 +29,8 @@
         "inferenceNodeName": {"$ref": "#/definitions/kubernetesName"},
         "inferenceNodeNames": {"type": "array", "items": {"$ref": "#/definitions/kubernetesName"}},
         "inferenceNodeSelector": {"type": "object", "additionalProperties": {"type": "string", "maxLength": 63}},
-        "routerNodeName": {"anyOf": [{"const": ""}, {"$ref": "#/definitions/kubernetesName"}]}
+        "routerNodeName": {"anyOf": [{"const": ""}, {"$ref": "#/definitions/kubernetesName"}]},
+        "nodeLossTolerationSeconds": {"type": "integer", "minimum": 0, "maximum": 86400}
       }
     },
     "images": {

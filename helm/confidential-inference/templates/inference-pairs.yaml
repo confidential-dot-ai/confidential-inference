@@ -184,6 +184,7 @@ spec:
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.scheduling.inferenceNodeName | quote }}
       {{- end }}
+      {{- include "confidential-inference.nodeLossTolerations" . | nindent 6 }}
       enableServiceLinks: false
       serviceAccountName: confidential-inference
       terminationGracePeriodSeconds: {{ max (int .Values.inference.terminationGracePeriodSeconds) (add (int $pair.shutdownTimeoutSeconds) 15) }}
@@ -303,6 +304,7 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- include "confidential-inference.nodeLossTolerations" $ | nindent 6 }}
       enableServiceLinks: false
       # A fixed hostname keeps HOSTNAME exact in the c8s allowlist.
       hostname: {{ $name }}
