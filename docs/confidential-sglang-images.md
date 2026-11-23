@@ -85,8 +85,10 @@ The script downloads `images-<12hex>.json` with `gh`, checks it, writes the inpu
 file, and changes the record line only. It also copies every launch plan that
 the record's engine image bakes (`/opt/sglang/layouts/<name>.json`) to
 `release/inputs/confidential-sglang/layouts/<record>/`. It reads the image's
-layers by digest with `crane` from the top down and stops at the layouts
-layer, so it does not pull the image. Each layout must have confidential-sglang's
+layers by digest with `crane` from the top down, merges their layouts as the
+image's filesystem does (an upper file wins, lower files stay), and stops at
+the first large layer, so it does not pull the image; the engine contract
+workflow lists the directory in the pulled image. Each layout must have confidential-sglang's
 layout schema, its own name, and the record's source commit as its revision.
 Review the files and commit them. `python3
 scripts/confidential_sglang_release.py check-image` compares them with the
