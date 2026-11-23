@@ -20,11 +20,23 @@ record instead, as it carries the C8s release for the C8s images:
   checks it, adds the two images to the release images by chart image key,
   and binds the record and its SHA-256 in the signed manifest.
 
+The engine image bakes confidential-sglang's DeepSeek-V4.1 launch plans
+(layouts) at /opt/sglang/layouts/<name>.json (confidential/layouts/README.md
+there). A pair recipe names one (recipes/README.md). `pin` also copies every
+layout of the pinned engine image to
+release/inputs/confidential-sglang/layouts/<record>/<name>.json: it reads the
+image's small top layers by digest and merges their layouts as the image's
+filesystem does, so it needs crane, not the whole image. The release build checks each layout (its
+schema, its name, and its revision equal to the record's source commit) and
+binds its SHA-256 in the signed manifest (confidentialSglang.layouts).
+`check-image` compares the committed layouts with the image again.
+
 The spec ships with a placeholder record, `images-000000000000`. The release
 build refuses to build a release while the placeholder is the pin.
 
     python3 scripts/confidential_sglang_release.py pin images-0123456789ab
     python3 scripts/confidential_sglang_release.py check
+    python3 scripts/confidential_sglang_release.py check-image
 """
 
 from __future__ import annotations
@@ -35,6 +47,7 @@ import json
 import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 from typing import Any, Callable
@@ -55,6 +68,14 @@ CHART_KEYS = {"engine": "confidentialSglangEngine", "router": "confidentialSglan
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 MAX_RECORD_BYTES = 65536
+# The baked launch plans of the engine image (confidential-sglang confidential/layouts).
+LAYOUT_SCHEMA = "confidential-sglang/dsv41-layout/v1"
+LAYOUT_DIRECTORY = "opt/sglang/layouts"
+LAYOUT_NAME = re.compile(r"[a-z0-9][a-z0-9.-]{0,62}")
+MAX_LAYOUT_BYTES = 1 << 20
+# The pin reads the engine image's layers from the top; the layouts layer is
+# among the last few small ones. A larger layer is not read.
+MAX_LAYER_BYTES = 64 << 20
 
 
 class RecordError(ValueError):
@@ -153,11 +174,59 @@ def read_record(name: str, inputs: Path = INPUTS) -> tuple[bytes, dict[str, Any]
     return data, validate_record(record, name)
 
 
+def layouts_directory(name: str, inputs: Path = INPUTS) -> Path:
+    """release/inputs/confidential-sglang/layouts/<record>: the layouts of the record's engine image."""
+    return inputs / "layouts" / validate_name(name)
+
+
+def validate_layout(data: bytes, layout: str, source_commit: str) -> dict[str, Any]:
+    """Check one layout file of the engine image: its schema, its name and its source revision."""
+    require(len(data) <= MAX_LAYOUT_BYTES, f"layout {layout} is too large")
+    require(LAYOUT_NAME.fullmatch(layout) is not None, f"layout name {layout!r} is invalid")
+    try:
+        value = json.loads(data)
+    except json.JSONDecodeError as error:
+        raise RecordError(f"layout {layout} is not JSON: {error}") from error
+    require(isinstance(value, dict) and value.get("schema") == LAYOUT_SCHEMA,
+            f"layout {layout} schema is not {LAYOUT_SCHEMA}")
+    require(value.get("layout") == layout, f"layout {layout} names layout {value.get('layout')!r}")
+    require(value.get("revision") == source_commit and isinstance(value.get("plan"), dict)
+            and value["plan"].get("revision") == source_commit,
+            f"layout {layout} was built from {value.get('revision')!r}, not the record's source commit {source_commit}")
+    return value
+
+
+def read_layouts(name: str, source_commit: str, inputs: Path = INPUTS) -> dict[str, bytes]:
+    """The committed layouts of record `name`, by layout name, each checked. None committed: {}."""
+    directory = layouts_directory(name, inputs)
+    if not directory.is_dir():
+        return {}
+    layouts: dict[str, bytes] = {}
+    for path in sorted(directory.iterdir()):
+        require(path.is_file() and path.suffix == ".json", f"{path} is not a layout file")
+        data = path.read_bytes()
+        validate_layout(data, path.stem, source_commit)
+        layouts[path.stem] = data
+    return layouts
+
+
+def read_layout(name: str, layout: str, inputs: Path | None = None) -> dict[str, Any]:
+    """The checked layout `layout` of record `name` (from release/inputs), with its SHA-256 as `_sha256`."""
+    inputs = INPUTS if inputs is None else inputs
+    _, record = read_record(name, inputs)
+    layouts = read_layouts(name, record["sourceCommit"], inputs)
+    require(layout in layouts, f"the engine image of {name} has no layout {layout} "
+            f"(release/inputs/confidential-sglang/layouts/{name} holds {sorted(layouts)}); "
+            f"pin the record again with scripts/confidential_sglang_release.py pin {name}")
+    return {**json.loads(layouts[layout]), "_sha256": sha256(layouts[layout])}
+
+
 def release_pin(spec_section: Any, inputs: Path = INPUTS) -> dict[str, Any]:
-    """The manifest block of the pin: the record, its SHA-256, and each image by digest."""
+    """The manifest block of the pin: the record, its SHA-256, each image by digest, and each layout."""
     require(isinstance(spec_section, dict) and set(spec_section) == {"record"},
             "confidentialSglang holds exactly record")
     data, record = read_record(spec_section["record"], inputs)
+    layouts = read_layouts(spec_section["record"], record["sourceCommit"], inputs)
     return {
         "repository": REPOSITORY,
         "record": spec_section["record"],
@@ -168,6 +237,7 @@ def release_pin(spec_section: Any, inputs: Path = INPUTS) -> dict[str, Any]:
         "images": {component: {"reference": f"{entry['image']}@{entry['digest']}",
                                "buildDigests": list(entry["buildDigests"])}
                    for component, entry in sorted(record["images"].items())},
+        **({"layouts": {layout: sha256(content) for layout, content in sorted(layouts.items())}} if layouts else {}),
     }
 
 
@@ -188,25 +258,112 @@ def download(name: str, directory: Path,
     return data
 
 
+def image_layouts(reference: str,
+                  run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run) -> dict[str, bytes]:
+    """Every /opt/sglang/layouts/*.json of the engine image `reference` (repository@sha256:...).
+
+    Reads the layers by digest with crane, from the top layer down, and merges
+    the layouts of every layer as the image's filesystem does: an upper layer's
+    file wins, and a lower layer's other files stay. It stops at the first layer
+    larger than MAX_LAYER_BYTES (the engine's library layers), so it never reads
+    the whole image; a layout below such a layer is not seen. The engine
+    contract workflow lists /opt/sglang/layouts in the pulled image and catches
+    that. A whiteout of the directory or of a layout is an error, and so is no
+    layout above the first large layer. zstd and gzip layers.
+    """
+    require(re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", reference) is not None,
+            f"the engine image {reference} is not pinned by digest")
+    repository = reference.split("@", 1)[0]
+
+    def crane(*arguments: str) -> bytes:
+        result = run(["crane", *arguments], capture_output=True, check=False)
+        require(result.returncode == 0, f"crane {arguments[0]} {arguments[1]} failed: "
+                f"{result.stderr.decode(errors='replace').strip()}")
+        return result.stdout
+
+    manifest = json.loads(crane("manifest", reference))
+    require(isinstance(manifest.get("layers"), list), f"{reference} is not an image manifest")
+    prefix = LAYOUT_DIRECTORY + "/"
+    found: dict[str, bytes] = {}
+    for layer in reversed(manifest["layers"]):
+        if int(layer.get("size", 0)) > MAX_LAYER_BYTES:
+            break
+        blob = crane("blob", f"{repository}@{layer['digest']}")
+        media = layer.get("mediaType", "")
+        if media.endswith("+zstd") or media.endswith(".zstd"):
+            result = run(["zstd", "-dcq"], input=blob, capture_output=True, check=False)
+            require(result.returncode == 0, f"cannot decompress layer {layer['digest']}")
+            blob = result.stdout
+        with tempfile.TemporaryFile() as handle:
+            handle.write(blob)
+            handle.seek(0)
+            with tarfile.open(fileobj=handle, mode="r:*") as archive:
+                for member in archive.getmembers():
+                    path = member.name.removeprefix("./")
+                    parent, _, base = path.rpartition("/")
+                    if base.startswith(".wh."):
+                        # A whiteout removes parent/<name>; an opaque one, everything below parent.
+                        removed = parent if base == ".wh..wh..opq" else f"{parent}/{base[4:]}".lstrip("/")
+                        if (removed + "/").startswith(prefix) or prefix.startswith(removed + "/"):
+                            raise RecordError(f"{reference}: layer {layer['digest']} removes {removed}")
+                    if path.startswith(prefix) and "/" not in path[len(prefix):] and path.endswith(".json"):
+                        require(member.isfile(), f"{reference}: {path} is not a regular file")
+                        name = path[len(prefix):-len(".json")]
+                        if name not in found:
+                            extracted = archive.extractfile(member)
+                            found[name] = extracted.read() if extracted else b""
+    require(bool(found), f"{reference} has no {prefix} above its first layer of more than {MAX_LAYER_BYTES} bytes")
+    return found
+
+
+def write_layouts(name: str, layouts: dict[str, bytes], source_commit: str, inputs: Path = INPUTS) -> None:
+    """Replace the committed layouts of record `name` with `layouts`, each checked first."""
+    for layout, data in layouts.items():
+        validate_layout(data, layout, source_commit)
+    directory = layouts_directory(name, inputs)
+    if directory.is_dir():
+        for path in directory.iterdir():
+            path.unlink()
+    directory.mkdir(parents=True, exist_ok=True)
+    for layout, data in sorted(layouts.items()):
+        (directory / f"{layout}.json").write_bytes(data)
+
+
+def check_image(name: str, inputs: Path = INPUTS,
+                extract: Callable[[str], dict[str, bytes]] = image_layouts) -> None:
+    """Require the committed layouts of record `name` to be exactly the layouts of its engine image."""
+    _, record = read_record(name, inputs)
+    engine = record["images"]["engine"]
+    committed = read_layouts(name, record["sourceCommit"], inputs)
+    baked = extract(f"{engine['image']}@{engine['digest']}")
+    require(committed == baked, f"the committed layouts of {name} ({sorted(committed)}) differ from the layouts "
+            f"of its engine image ({sorted(baked)}); pin the record again")
+
+
 SPEC_LINE = re.compile(r"^(  record: )(images-[0-9a-f]{12})([ \t]*(?:#.*)?)$", re.MULTILINE)
 
 
 def pin(name: str, spec: Path = SPEC, inputs: Path = INPUTS,
-        fetch: Callable[[str, Path], bytes] = download) -> None:
-    """Download and check record `name`, write it to inputs/, and set the one spec line."""
+        fetch: Callable[[str, Path], bytes] = download,
+        extract: Callable[[str], dict[str, bytes]] = image_layouts) -> None:
+    """Download and check record `name`, write it and its engine image's layouts to inputs/, and set
+    the one spec line."""
     validate_name(name)
     require(name != PLACEHOLDER, "the placeholder is not a published record")
     with tempfile.TemporaryDirectory(prefix="confidential-sglang-record-") as directory:
         data = fetch(name, Path(directory))
     try:
-        validate_record(json.loads(data), name)
+        record = validate_record(json.loads(data), name)
     except json.JSONDecodeError as error:
         raise RecordError(f"the record is not JSON: {error}") from error
     text = spec.read_text(encoding="utf-8")
     matches = SPEC_LINE.findall(text)
     require(len(matches) == 1, f"{spec} must set confidentialSglang.record on one line")
+    engine = record["images"]["engine"]
+    layouts = extract(f"{engine['image']}@{engine['digest']}")
     inputs.mkdir(parents=True, exist_ok=True)
     (inputs / f"{name}.json").write_bytes(data)
+    write_layouts(name, layouts, record["sourceCommit"], inputs)
     spec.write_text(SPEC_LINE.sub(lambda m: f"{m.group(1)}{name}", text), encoding="utf-8")
 
 
@@ -216,6 +373,7 @@ def main() -> int:
     pin_command = commands.add_parser("pin", help="download a record and pin it in release/spec.yaml")
     pin_command.add_argument("record", help="the record release name, images-<12hex>")
     commands.add_parser("check", help="check the pinned record")
+    commands.add_parser("check-image", help="check the committed layouts against the pinned engine image")
     args = parser.parse_args()
     try:
         import yaml
@@ -223,6 +381,8 @@ def main() -> int:
         if args.command == "pin":
             pin(args.record)
         section = yaml.safe_load(SPEC.read_text(encoding="utf-8")).get("confidentialSglang")
+        if args.command == "check-image":
+            check_image(validate_name(section["record"]))
         print(json.dumps(release_pin(section), indent=2, sort_keys=True))
     except (RecordError, OSError) as error:
         print(f"confidential_sglang_release: {error}", file=sys.stderr)
