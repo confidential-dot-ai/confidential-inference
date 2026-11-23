@@ -133,6 +133,7 @@ def build_framework(evidence: dict, base: dict | None = None, tag: str = "v0.17.
         stack.enter_context(mock.patch.object(MAN.release_signature, "verify_release_signature"))
         stack.enter_context(mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"))
         stack.enter_context(mock.patch.object(MAN, "confidential_sglang", fixture_sglang_pin))
+        stack.enter_context(mock.patch.object(MAN.confidential_sglang_release, "INPUTS", SGLANG_INPUTS))
         return MAN.build(tag, MAN.CHART, LOCK, "d" * 40, evidence_path, download_dir)
 
 

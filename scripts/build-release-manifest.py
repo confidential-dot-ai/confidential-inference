@@ -58,7 +58,9 @@ The build writes four files to --output-dir:
   The manifest binds its SHA-256 (cdsImage.manifestSha256). A client needs
   its measurements to check the CDS pin of a deployment;
 - recipes.json: every recipe of recipes/ with its files (recipes/README.md).
-  The manifest binds its SHA-256 (recipes.sha256) and each recipe.yaml.
+  The manifest binds its SHA-256 (recipes.sha256) and each recipe.yaml. A pair
+  recipe must match the layout it names, which the manifest binds
+  (confidentialSglang.layouts).
 
 The release workflow builds them at the tag, signs the manifest, and attaches
 both to the GitHub release. Anyone can build them again from the tagged tree
@@ -214,13 +216,17 @@ def confidential_sglang(spec: dict[str, Any]) -> dict[str, Any]:
         raise ManifestError(str(error)) from error
 
 
-def recipes_file(images: dict[str, str], root: Path = RECIPES["RECIPES"]) -> tuple[bytes, dict[str, Any]]:
-    """The recipes file and its manifest binding. Every recipe must be valid for these images."""
+def recipes_file(images: dict[str, str], sglang: dict[str, Any],
+                 root: Path = RECIPES["RECIPES"]) -> tuple[bytes, dict[str, Any]]:
+    """The recipes file and its manifest binding. Every recipe must be valid for these images and,
+    for a pair recipe, for the layout of the pinned engine image (`sglang`, the confidentialSglang
+    block of the manifest)."""
     recipes: dict[str, dict[str, str]] = {}
     bound: dict[str, str] = {}
     for directory in sorted(path for path in root.iterdir() if path.is_dir()):
         try:
-            RECIPES["values"](RECIPES["load"](directory / "recipe.yaml"), images)
+            RECIPES["recipe_values"](RECIPES["load"](directory / "recipe.yaml"), images,
+                                     {"confidentialSglang": sglang})
         except RECIPES["RecipeError"] as error:
             raise ManifestError(f"recipe {directory.name}: {error}") from error
         files = {path.relative_to(directory).as_posix(): path.read_text(encoding="utf-8")
@@ -584,7 +590,7 @@ def build(
     images = release_images(spec["images"], publication, base)
     sglang = confidential_sglang(spec)
     images = dict(sorted({**images, **confidential_sglang_release.chart_images(sglang)}.items()))
-    recipes_data, recipes = recipes_file(images)
+    recipes_data, recipes = recipes_file(images, sglang)
     node = node_measurements(node_manifest, spec)
     cds = cds_image(cds_manifest, spec)
     lock = source_lock_entry(read_json(lock_path), spec["c8s"]["sourceCommit"])
