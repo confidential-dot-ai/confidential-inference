@@ -1,10 +1,10 @@
 {
-  "sourceCommit": "283a322ea5589414d9dcdc9c9df02fd5be20f785",
+  "sourceCommit": "45e4ac99ed73b5d0dda395ed8e12ba1cd71d72de",
   "coreImages": [
-    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-    "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:f5f7daa1a90f1df9495de78b64eaa9d0561ee35f941351c35bec4143d5703a44",
-    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:bf1c3a67ccd5d33316dc24e3a4380e7925374db39d00ff445a2374d726a8ace4",
-    "ghcr.io/confidential-dot-ai/volumed@sha256:6bb6cfe73184bc5ff119fabae35e25aaf4a45429718532fea072abb6ce2abf68",
+    "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+    "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:5c69816b1de7034de42d50f269a4da30576bf6d09a7c95e3ad0c6b08ea0b47fb",
+    "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:50b67b76e0b619f9b2859eddddf93803bf89ac38f75b40861321e6ace7532394",
+    "ghcr.io/confidential-dot-ai/volumed@sha256:f3f4cbca5f977147ef441aeac05d399647981bf37c45e4361e2d856a01fa7caf",
     "nginx/nginx-unprivileged@sha256:8432c57ac86f178741af2b89948bd9087cb9df1c415bc1ab4d23735c4f0e3e61"
   ],
   "hardwarePlatform": "tdx",
@@ -13,13 +13,13 @@
   "allowlist": {
     "schema": "c8s.allowlist/v1",
     "workloads": {
-      "armtls-mesh-f5f7daa1a90f-33a87ef8": {
-        "label": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:f5f7daa1a90f1df9495de78b64eaa9d0561ee35f941351c35bec4143d5703a44",
+      "armtls-mesh-5c69816b1de7-b855b88d": {
+        "label": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:5c69816b1de7034de42d50f269a4da30576bf6d09a7c95e3ad0c6b08ea0b47fb",
         "initContainers": [],
         "containers": [
           {
-            "digest": "sha256:f5f7daa1a90f1df9495de78b64eaa9d0561ee35f941351c35bec4143d5703a44",
-            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:f5f7daa1a90f1df9495de78b64eaa9d0561ee35f941351c35bec4143d5703a44",
+            "digest": "sha256:5c69816b1de7034de42d50f269a4da30576bf6d09a7c95e3ad0c6b08ea0b47fb",
+            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:5c69816b1de7034de42d50f269a4da30576bf6d09a7c95e3ad0c6b08ea0b47fb",
             "command": {
               "policy": "exact",
               "argv": [
@@ -84,8 +84,8 @@
             }
           },
           {
-            "digest": "sha256:f5f7daa1a90f1df9495de78b64eaa9d0561ee35f941351c35bec4143d5703a44",
-            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:f5f7daa1a90f1df9495de78b64eaa9d0561ee35f941351c35bec4143d5703a44",
+            "digest": "sha256:5c69816b1de7034de42d50f269a4da30576bf6d09a7c95e3ad0c6b08ea0b47fb",
+            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:5c69816b1de7034de42d50f269a4da30576bf6d09a7c95e3ad0c6b08ea0b47fb",
             "command": {
               "policy": "exact",
               "argv": [
@@ -147,8 +147,8 @@
             }
           },
           {
-            "digest": "sha256:f5f7daa1a90f1df9495de78b64eaa9d0561ee35f941351c35bec4143d5703a44",
-            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:f5f7daa1a90f1df9495de78b64eaa9d0561ee35f941351c35bec4143d5703a44",
+            "digest": "sha256:5c69816b1de7034de42d50f269a4da30576bf6d09a7c95e3ad0c6b08ea0b47fb",
+            "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:5c69816b1de7034de42d50f269a4da30576bf6d09a7c95e3ad0c6b08ea0b47fb",
             "command": {
               "policy": "exact",
               "argv": [
@@ -211,13 +211,13 @@
           }
         ]
       },
-      "c8s-operator-66b336b3a781-3eb55ccf": {
-        "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+      "c8s-operator-74be77bbf4fc-4856b2ea": {
+        "label": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
         "initContainers": [],
         "containers": [
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -293,8 +293,8 @@
             }
           },
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -366,8 +366,8 @@
             }
           },
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -447,8 +447,8 @@
             }
           },
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -524,8 +524,8 @@
             }
           },
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -601,8 +601,8 @@
             }
           },
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -674,8 +674,8 @@
             }
           },
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -744,8 +744,8 @@
             }
           },
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -810,8 +810,8 @@
             }
           },
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -894,8 +894,8 @@
             }
           },
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -962,8 +962,8 @@
             }
           },
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1058,8 +1058,8 @@
             }
           },
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1084,7 +1084,7 @@
                 "--discovery-public-tls-hostnames-file=/run/c8s-node/router/hostnames",
                 "--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
                 "--ca-watch-interval=1m",
-                "--expected-workload=c8s-router-67bc2a30b8fa"
+                "--expected-workload=c8s-router-464eac809d17"
               ]
             },
             "mounts": {
@@ -1152,8 +1152,8 @@
             }
           },
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1219,11 +1219,11 @@
           }
         ]
       },
-      "c8s-router-67bc2a30b8fa": {
+      "c8s-router-464eac809d17": {
         "initContainers": [
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1308,8 +1308,8 @@
         ],
         "containers": [
           {
-            "digest": "sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
-            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f",
+            "digest": "sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
+            "image": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714",
             "command": {
               "policy": "exact",
               "argv": [
@@ -1517,6 +1517,102 @@
             "protocol": "TCP",
             "hostPort": 443,
             "containerPort": 8443
+          }
+        ]
+      },
+      "c8s-volumed-f4371a79fa73": {
+        "initContainers": null,
+        "containers": [
+          {
+            "digest": "sha256:f3f4cbca5f977147ef441aeac05d399647981bf37c45e4361e2d856a01fa7caf",
+            "image": "ghcr.io/confidential-dot-ai/volumed@sha256:f3f4cbca5f977147ef441aeac05d399647981bf37c45e4361e2d856a01fa7caf",
+            "command": {
+              "policy": "exact",
+              "argv": [
+                "/app/c8s",
+                "volumed"
+              ]
+            },
+            "args": {
+              "policy": "exact",
+              "argv": [
+                "--socket-dir=/run/nri-image-policy",
+                "--state-dir=/var/lib/c8s/volumed",
+                "--kubelet-root=/var/lib/kubelet"
+              ]
+            },
+            "mounts": {
+              "policy": "exact",
+              "rules": [
+                {
+                  "destination": "/dev",
+                  "kind": "host",
+                  "source": "/dev"
+                },
+                {
+                  "destination": "/run/nri-image-policy",
+                  "kind": "host",
+                  "source": "/run/nri-image-policy"
+                },
+                {
+                  "destination": "/sys",
+                  "kind": "host",
+                  "source": "/sys",
+                  "readOnly": true
+                },
+                {
+                  "destination": "/sys/fs/cgroup",
+                  "kind": "host",
+                  "source": "/sys/fs/cgroup",
+                  "readOnly": true
+                },
+                {
+                  "destination": "/var/lib/c8s/volumed",
+                  "kind": "host",
+                  "source": "/var/lib/c8s/volumed"
+                },
+                {
+                  "destination": "/var/lib/kubelet",
+                  "kind": "host",
+                  "source": "/var/lib/kubelet"
+                }
+              ]
+            },
+            "env": {
+              "policy": "match",
+              "variables": {
+                "HOSTNAME": {
+                  "present": true
+                },
+                "KUBERNETES_PORT": {
+                  "present": true
+                },
+                "KUBERNETES_PORT_443_TCP": {
+                  "present": true
+                },
+                "KUBERNETES_PORT_443_TCP_ADDR": {
+                  "present": true
+                },
+                "KUBERNETES_PORT_443_TCP_PORT": {
+                  "exact": "443"
+                },
+                "KUBERNETES_PORT_443_TCP_PROTO": {
+                  "exact": "tcp"
+                },
+                "KUBERNETES_SERVICE_HOST": {
+                  "present": true
+                },
+                "KUBERNETES_SERVICE_PORT": {
+                  "exact": "443"
+                },
+                "KUBERNETES_SERVICE_PORT_HTTPS": {
+                  "exact": "443"
+                },
+                "PATH": {
+                  "exact": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                }
+              }
+            }
           }
         ]
       },

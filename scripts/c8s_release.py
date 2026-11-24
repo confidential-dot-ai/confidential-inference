@@ -117,6 +117,9 @@ def verify_c8s_tag(tag: str, run: Callable[..., subprocess.CompletedProcess[str]
     return {**result, "releaseSignature": "verified"}
 
 
+STATEMENT_FIELDS = {"repository", "tag", "commit", "allowlistSeeds", "componentSets", "chart", "cli"}
+
+
 def signed_statement(tag: str, directory: Path, run: Callable[..., subprocess.CompletedProcess[str]],
                      cosign: str | None, allow_beta: bool) -> dict[str, Any]:
     """Download the release statement and its bundle of the c8s tag into
@@ -143,7 +146,7 @@ def signed_statement(tag: str, directory: Path, run: Callable[..., subprocess.Co
         raise ReleaseError(f"the c8s {tag} release statement is not JSON: {error}") from error
     # Statements from C8s #1070 list the allowlist seed assets; later ones name the chart instead,
     # and from C8s #1685 the CLI binaries.
-    if (not isinstance(signed, dict) or set(signed) - {"repository", "tag", "commit", "allowlistSeeds", "chart", "cli"}
+    if (not isinstance(signed, dict) or set(signed) - STATEMENT_FIELDS
             or signed.get("repository") != C8S_REPOSITORY or signed.get("tag") != tag
             or not isinstance(signed.get("commit"), str)):
         raise ReleaseError(f"the signed c8s {tag} statement {signed} does not name {C8S_REPOSITORY} {tag}")
@@ -151,6 +154,15 @@ def signed_statement(tag: str, directory: Path, run: Callable[..., subprocess.Co
         raise ReleaseError(f"the signed c8s {tag} statement names no digest-pinned C8s chart: {signed['chart']}")
     return signed
 
+
+def signed_component_set_sha256(signed: dict[str, Any], platform: str) -> str:
+    """The SHA-256, in hex, that a signed statement gives the component set file of the CPU TEE."""
+    sets = signed.get("componentSets")
+    entry = sets.get(platform) if isinstance(sets, dict) else None
+    if (not isinstance(entry, dict) or entry.get("asset") != f"component-set-{platform}.json"
+            or SHA256.fullmatch(str(entry.get("sha256"))) is None):
+        raise ReleaseError(f"the signed c8s {signed['tag']} statement names no component set for {platform}")
+    return entry["sha256"]
 
 
 def host_platform() -> str:

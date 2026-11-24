@@ -30,6 +30,7 @@ image digests. The release commit is the image source commit.
 | `inputs/c8s-source-lock.json` | `bump-c8s.py` | The pinned C8s commits and source hashes. The signed manifest records its path and digest |
 | `inputs/c8s-attestation-protocols/<commit>.json` | `bump-c8s.py` | The attestation protocol of each C8s commit. `check-c8s-protocol-lockstep.py` compares them with the source lock |
 | `inputs/c8s-seeds/<commit>.json` | `bump-c8s.py` | The allowlist seed of a pinned C8s commit and the inputs it was rendered with |
+| `inputs/c8s-component-sets/<commit>.json` | `bump-c8s.py` | The component set file of a pinned C8s commit: the bytes of the `component-set-tdx.json` asset of its release. The release manifest binds its SHA-256 as `c8s.componentSet.sha256` |
 | `trust/` | A person | The release-signing policy and the Sigstore trusted root |
 
 ## The release build
@@ -129,7 +130,8 @@ environment name. The gateway
 pins `frameworkRelease` as exact environment values, so the live allowlist
 names the framework release and its bundle digest.
 It renders the chart, refuses an image that the framework release does not
-name, generates the allowlist, and runs `c8s allowlist lint --strict`. It
+name, generates the allowlist with the component set of the pinned C8s
+release, and runs `c8s allowlist lint --strict`. It
 writes `allowlist.json`, `release-values.yaml` (the image digests, the
 framework release, and the environment name; apply it after the environment
 values files), and `render.json` (the environment name and the SHA-256 of
@@ -156,10 +158,11 @@ exact beta workflow and source commit.
 
 It needs `crane`, Go, read access to the C8s Go module, and first on `PATH`
 the Helm version that the worker image build pins (`HELM_VERSION` in its
-`mkosi.sync`; v3.14.4 at C8s v0.104.0). `--c8s` gives a C8s CLI built from the
+`mkosi.sync`; v3.14.4 at C8s v0.107.0). `--c8s` gives a C8s CLI built from the
 tag; without it the script builds one. It changes the C8s pins in `spec.yaml`,
-the source lock, the seed record, the node and Trust Authority manifests, the image
-config, and the allowlist test fixture, and then runs the release checks.
+the source lock, the seed record, the component set file, the node and Trust
+Authority manifests, the image config, and the allowlist test fixture, and
+then runs the release checks.
 The script stops when the attestation
 protocol files move or change, or the NVIDIA inputs of the node image change.
 Do those steps by hand. Review the full diff before you commit.
@@ -167,7 +170,7 @@ Do those steps by hand. Review the full diff before you commit.
 ## Move a deployment to C8s v0.99.29
 
 A release that pins C8s v0.99.29 or later runs only on workers of the
-pinned C8s release with a standalone Trust Authority VM. This release pins C8s v0.104.0.
+pinned C8s release with a standalone Trust Authority VM. This release pins C8s v0.107.0.
 From v0.99.38 each GPU worker runs the NVIDIA device plugin and
 dcgm-exporter as static pods (C8s #1700). The old cluster's Trust Authority state does
 not carry over: a new Trust Authority keeps its secrets in process memory, starts empty,
@@ -201,7 +204,12 @@ of workers up in this order:
    `--worker-document worker.yaml --worker-image worker-image.json`, where
    `worker-image.json` holds the measurements of the release's node image
    (`c8s ta ha decree genesis`).
-5. Admit every later or changed `worker.yaml` with a `node-images` decree on
+5. Write the deployment's allowlist to the Trust Authority with `c8s allowlist
+   upload` before a worker starts a pod. The allowlist carries the C8s
+   component set, and a worker refuses every injected sidecar, the router and
+   volumed until that set is in force. A pod refused before then stays
+   refused: delete it, and its replacement starts.
+6. Admit every later or changed `worker.yaml` with a `node-images` decree on
    the set in force.
 
 Hand traffic over only when all of these hold:
@@ -232,6 +240,10 @@ Hand traffic over only when all of these hold:
   `"egress": {"port": <port>}` for each inference workload: 443 for an HTTPS
   model server, 80 for a plain HTTP one (the chart README, "Model download"
   and "Plain HTTP model server").
+- Every worker VM has a disk with serial `confai-containerd` that holds the
+  deployment's images (C8s `images/node-guest/README.md`). A worker
+  without that disk keeps its images in a 32G RAM filesystem, which is too
+  small for the engine image.
 - Every client and gateway that pins a mesh CA pins the new Trust Authority's mesh CA.
   Leaves issued under the old mesh CA are not trusted by the new deployment.
 
@@ -285,6 +297,19 @@ built against the pinned C8s module, writes the canonical bytes. `c8s allowlist 
 except for the findings that the deployment accepts. The generator fails on
 any other finding, and on an accepted finding that no longer appears. A
 deployment without accepted findings accepts no finding.
+
+The allowlist also carries one component set, the set of the pinned C8s
+release. Its entries admit the injected sidecars, the router and volumed, and
+grant them their platform roles; the volumed entry holds host privilege.
+`bump-c8s.py` renders the set file with the same `c8s node-image render`,
+requires the SHA-256 that the signed C8s release statement names for
+`component-set-tdx.json`, and records those bytes in
+`inputs/c8s-component-sets/<source commit>.json`. The framework manifest
+names that SHA-256 (`c8s.componentSet`). `render-allowlist.py` renders the
+file again and fails unless the bytes are equal, and fails unless the
+allowlist holds the schema, the workloads and that set, and no other
+section. A workload that has the name of a set entry must equal that
+entry, as the seed's router and volumed entries do.
 
 The allowlist pins the `kubernetes` Service address `10.53.0.1`. With C8s
 v0.99.29 the control plane runs outside the TEE and the worker's launch file

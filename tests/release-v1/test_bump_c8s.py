@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -152,46 +153,66 @@ class BumpTests(unittest.TestCase):
         mesh = BUMP.REGISTRY + "armtls-mesh@sha256:" + "2" * 64
         new = {"sourceCommit": "b" * 40, "coreImages": [operator, mesh]}
         seed = {"schema": "c8s.allowlist/v1", "workloads": {"c8s-router-" + "0" * 12: {}}}
+        component_set = {"schema": "c8s.allowlist/v1", "workloads": {}, "components": {"0.99.30": {"entries": {}}}}
+        component_set_file = json.dumps(component_set).encode() + b"\n"
         rendered = []
 
-        def render_seed(binary, inputs):
+        def render_node_image(binary, inputs):
             rendered.append((binary, inputs))
-            return seed
+            return seed, component_set_file
 
-        generator = {"render_seed": render_seed, "GenerationError": ValueError,
+        generator = {"render_node_image": render_node_image, "GenerationError": ValueError,
                      "canonicalize": lambda document, _tool: json.dumps(document).encode()}
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(BUMP, "ROOT", Path(directory)), mock.patch.object(BUMP, "run"), \
                 mock.patch.object(BUMP, "git_show", return_value=sync.encode()), \
                 mock.patch.object(BUMP.runpy, "run_path", return_value=generator):
             (Path(directory) / "release/inputs/c8s-seeds").mkdir(parents=True)
-            inputs, value = BUMP.render_core_seed(Path("c8s"), Path("repo"), new)
-            BUMP.record_core_seed(inputs, value, {"sourceCommit": "a" * 40})
+            inputs, value, set_file = BUMP.render_node_image(Path("c8s"), Path("repo"), new)
+            BUMP.record_node_image_render(inputs, value, set_file, {"sourceCommit": "a" * 40})
             record = json.loads((Path(directory) / "release/inputs/c8s-seeds" / (new["sourceCommit"] + ".json")).read_text())
+            recorded_set = (Path(directory) / "release/inputs/c8s-component-sets" / (new["sourceCommit"] + ".json")).read_bytes()
         expected = {"sourceCommit": "b" * 40, "coreImages": [operator, mesh], "hardwarePlatform": "tdx",
                     "kubeVersion": "v1.36.4", "helmVersion": "v3.14.4"}
         self.assertEqual(record, {**expected, "allowlist": seed})
+        self.assertEqual(recorded_set, component_set_file)
         self.assertEqual(rendered, [(Path("c8s"), expected)])
+
+    def test_the_bump_takes_only_the_component_set_file_that_the_signed_statement_names(self):
+        published = b'{"components": {}}\n'
+        signed = {"tag": "v0.99.30", "componentSets": {"tdx": {"asset": "component-set-tdx.json",
+                                                              "sha256": hashlib.sha256(published).hexdigest()}}}
+        with mock.patch.object(BUMP.c8s_release, "signed_statement", return_value=signed):
+            BUMP.require_signed_component_set("v0.99.30", published)
+            with self.assertRaisesRegex(BUMP.BumpError, "not the file the signed c8s v0.99.30 statement names"):
+                BUMP.require_signed_component_set("v0.99.30", b'{"components": {"0.99.30": {}}}\n')
+        for unnamed in ({}, {"sev-snp": signed["componentSets"]["tdx"]},
+                        {"tdx": {"asset": "component-set-sev-snp.json", "sha256": "a" * 64}}):
+            with self.subTest(unnamed), mock.patch.object(
+                    BUMP.c8s_release, "signed_statement", return_value={"tag": "v0.99.30", "componentSets": unnamed}), \
+                    self.assertRaisesRegex(BUMP.BumpError, "names no component set for tdx"):
+                BUMP.require_signed_component_set("v0.99.30", published)
 
     def test_a_failed_prerequisite_writes_nothing_and_a_failed_step_restores_the_tree(self):
         args = BUMP.argparse.Namespace(c8s=None, tag="v0.99.30", protocol_review=False, confos_repo=None)
         steps = ("pin_spec", "bump_module", "add_source_lock", "share_protocol_manifest", "extend_cdi_record",
-                 "record_core_seed", "regenerate", "regenerate_fixture", "restore_tree")
+                 "record_node_image_render", "regenerate", "regenerate_fixture", "restore_tree")
         with contextlib.ExitStack() as stack:
             called = {name: stack.enter_context(mock.patch.object(BUMP, name)) for name in steps}
             stack.enter_context(mock.patch.object(BUMP, "c8s_cli", return_value=Path("c8s")))
+            stack.enter_context(mock.patch.object(BUMP, "require_signed_component_set"))
             render = stack.enter_context(mock.patch.object(
-                BUMP, "render_core_seed", side_effect=BUMP.BumpError("the C8s seed renders with Helm v3.14.4")))
+                BUMP, "render_node_image", side_effect=BUMP.BumpError("the C8s seed renders with Helm v3.14.4")))
             with self.assertRaisesRegex(BUMP.BumpError, "Helm v3.14.4"):
                 BUMP.write_bump(args, Path("c8s"), "b" * 40, {}, {})
             self.assertEqual([name for name, step in called.items() if step.called], [])
             render.side_effect = None
-            render.return_value = ({}, {})
+            render.return_value = ({}, {}, b"")
             called["share_protocol_manifest"].side_effect = BUMP.BumpError("protocol source files changed")
             with self.assertRaisesRegex(BUMP.BumpError, "protocol"):
                 BUMP.write_bump(args, Path("c8s"), "b" * 40, {"release": "v0.99.29", "sourceCommit": "a" * 40}, {})
             called["restore_tree"].assert_called_once_with()
-            self.assertFalse(called["record_core_seed"].called)
+            self.assertFalse(called["record_node_image_render"].called)
 
     def test_core_inventory_growth_preserves_comments_and_other_pins(self):
         path = self.write(SPEC_TEXT)
@@ -581,6 +602,10 @@ class BetaCompatibilityTests(unittest.TestCase):
         self.assertEqual(release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)['releaseSignature'],
                          'verified')
         del statement['allowlistSeeds']
+        statement['componentSets'] = {'tdx': {'asset': 'component-set-tdx.json', 'sha256': 'e' * 64}}
+        self.assertEqual(release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)['releaseSignature'],
+                         'verified')
+        del statement['componentSets']
         statement['chart'] = 'ghcr.io/confidential-dot-ai/charts/c8s-cloud@sha256:' + 'c' * 64
         self.assertEqual(release.verify_c8s_tag(tag, run=run, cosign='cosign', allow_beta=True)['releaseSignature'],
                          'verified')

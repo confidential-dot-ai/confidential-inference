@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import ipaddress
 import json
 import re
@@ -614,24 +615,59 @@ def derive(
     return entry[name] if name in entry else entry
 
 
-def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
-    """The seed entries the release allowlist must mirror: the record of the
-    pinned commit in release/inputs/c8s-seeds/, which scripts/bump-c8s.py
-    renders with the CLI of that commit."""
+def entry_containers(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """The init containers and containers of an allowlist entry; C8s writes an empty list as null."""
+    return (entry.get("initContainers") or []) + (entry.get("containers") or [])
+
+
+def seed_record(c8s: dict[str, Any]) -> dict[str, Any]:
+    """The record of the pinned commit in release/inputs/c8s-seeds/, which
+    scripts/bump-c8s.py renders with the CLI of that commit."""
     path = ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json")
     if not path.exists():
         raise GenerationError(f"no C8s seed record for {c8s['sourceCommit']}; run scripts/bump-c8s.py")
     record = read_json(path)
     if record.get("sourceCommit") != c8s["sourceCommit"] or record.get("coreImages") != c8s["coreImages"]:
         raise GenerationError("the C8s node seed inputs differ from the release pins")
-    seed = record.get("allowlist", {})
+    return record
+
+
+def core_seed(c8s: dict[str, Any]) -> dict[str, Any]:
+    """The seed entries the release allowlist must mirror."""
+    seed = seed_record(c8s).get("allowlist", {})
     if seed.get("schema") != "c8s.allowlist/v1" or not isinstance(seed.get("workloads"), dict):
         raise GenerationError("the C8s node seed has no valid allowlist")
     return seed["workloads"]
 
 
-def render_seed(executable: Path, inputs: dict[str, Any]) -> dict[str, Any]:
-    """Render the C8s seed with the inputs of a seed record (`c8s node-image render`).
+def component_set_file(c8s: dict[str, Any]) -> bytes:
+    """The component set file of the pinned commit in release/inputs/c8s-component-sets/:
+    the bytes of the C8s release asset, which scripts/bump-c8s.py records."""
+    path = ROOT / "release/inputs/c8s-component-sets" / (c8s["sourceCommit"] + ".json")
+    if not path.exists():
+        raise GenerationError(f"no C8s component set file for {c8s['sourceCommit']}; run scripts/bump-c8s.py")
+    return path.read_bytes()
+
+
+def components_section(c8s: dict[str, Any]) -> dict[str, Any]:
+    """The components section every deployment allowlist carries: the set of the pinned release under its version, alone."""
+    document = json.loads(component_set_file(c8s))
+    version = c8s["release"].removeprefix("v")
+    if (document.get("schema") != "c8s.allowlist/v1" or document.get("workloads")
+            or list(document.get("components", {})) != [version]):
+        raise GenerationError(f"the C8s component set file does not hold the set {version} alone")
+    return document["components"]
+
+
+def component_set_pin(c8s: dict[str, Any]) -> dict[str, str]:
+    """The pinned release's component set: its version, and the name and SHA-256 of the C8s release asset."""
+    (version,) = components_section(c8s)  # one set, by components_section
+    return {"version": version, "asset": f"component-set-{seed_record(c8s)['hardwarePlatform']}.json",
+            "sha256": "sha256:" + hashlib.sha256(component_set_file(c8s)).hexdigest()}
+
+
+def render_node_image(executable: Path, inputs: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
+    """Render the C8s seed and the component set file with the inputs of a seed record (`c8s node-image render`).
 
     The CLI runs Helm, which must be the version the record names.
     """
@@ -639,27 +675,31 @@ def render_seed(executable: Path, inputs: dict[str, Any]) -> dict[str, Any]:
     if found != inputs["helmVersion"]:
         raise GenerationError(f"the C8s seed renders with Helm {inputs['helmVersion']}; put it first on PATH, not {found}")
     images = {split_image(image)[0].rsplit("/", 1)[-1]: split_image(image) for image in inputs["coreImages"]}
-    if "c8s-operator" not in images or "armtls-mesh" not in images:
-        raise GenerationError("the C8s seed inputs name no c8s-operator or armtls-mesh image")
-    with tempfile.TemporaryDirectory(prefix="c8s-seed-") as directory:
+    if not {"c8s-operator", "armtls-mesh", "volumed"} <= set(images):
+        raise GenerationError("the C8s node image render needs the c8s-operator, armtls-mesh and volumed images")
+    with tempfile.TemporaryDirectory(prefix="c8s-node-image-") as directory:
         run([str(executable), "node-image", "render", "--hardware-platform", inputs["hardwarePlatform"],
              "--kube-version", inputs["kubeVersion"],
              "--image-repository", images["c8s-operator"][0], "--image-digest", images["c8s-operator"][1],
              "--armtls-mesh-image-repository", images["armtls-mesh"][0],
              "--armtls-mesh-image-digest", images["armtls-mesh"][1],
+             "--volumed-image-repository", images["volumed"][0], "--volumed-image-digest", images["volumed"][1],
              "--output-dir", directory])
-        return read_json(Path(directory) / "allowlist-seed.json")
+        return read_json(Path(directory) / "allowlist-seed.json"), (Path(directory) / "component-set.json").read_bytes()
 
 
-def verify_core_seed(executable: Path, tool: Path | None, c8s: dict[str, Any]) -> None:
-    """Require the seed record of the pinned commit to be the render of the pinned CLI."""
+def verify_node_image_render(executable: Path, tool: Path | None, c8s: dict[str, Any]) -> None:
+    """Require the seed record and the component set file of the pinned commit to be the render of the pinned CLI."""
     record = read_json(ROOT / "release/inputs/c8s-seeds" / (c8s["sourceCommit"] + ".json"))
     missing = [key for key in ("hardwarePlatform", "kubeVersion", "helmVersion", "coreImages", "allowlist")
                if key not in record]
     if missing:
         raise GenerationError(f"the C8s seed record names no {', '.join(missing)}, so it cannot be rendered again")
-    if json.loads(canonicalize(render_seed(executable, record), tool)) != record["allowlist"]:
+    seed, rendered_component_set = render_node_image(executable, record)
+    if json.loads(canonicalize(seed, tool)) != record["allowlist"]:
         raise GenerationError("the C8s seed record differs from the render of the pinned c8s CLI")
+    if rendered_component_set != component_set_file(c8s):
+        raise GenerationError("the C8s component set file differs from the render of the pinned c8s CLI")
 
 
 def core_entries(images: list[str], seed: dict[str, Any]) -> dict[str, Any]:
@@ -673,10 +713,10 @@ def core_entries(images: list[str], seed: dict[str, Any]) -> dict[str, Any]:
     entrypoint, at a command that extends it (`/c8s get-cert`), or at a
     command of its own (c8s v0.66.0+ runs the router's nginx image as
     `/bin/sh /usr/lib/c8s/router-nginx/reload.sh`). A core image the seed does not bind runs on the node, never as
-    a pod (nri-image-policy, volumed), and gets no entry.
+    a pod (nri-image-policy), and gets no entry.
     """
     for name, entry in seed.items():
-        for container in entry.get("initContainers", []) + entry.get("containers", []):
+        for container in entry_containers(entry):
             image = container.get("image", "")
             if image not in images:
                 continue
@@ -768,7 +808,7 @@ def generate(
         if exits := declared_egress(controller, item):
             # C8s #1049: the Trust Authority refuses an entry with exits unless it is pinned
             # like a secrets grant: no host mount rule, no open argv.
-            for container in entry.get("initContainers", []) + entry.get("containers", []):
+            for container in entry_containers(entry):
                 if any(rule.get("kind") == "host" for rule in container.get("mounts", {}).get("rules", [])):
                     errors.append(f"{item['name']}: an entry with egress has a host mount")
                 if container.get("mounts", {}).get("policy") not in {"exact", "deny"} or any(
@@ -782,7 +822,8 @@ def generate(
         if name in workloads:
             raise GenerationError(f"the core entry {name} collides with a workload")
         workloads[name] = entry
-    canonical = canonicalize({"schema": "c8s.allowlist/v1", "workloads": workloads}, tool)
+    canonical = canonicalize({"schema": "c8s.allowlist/v1", "workloads": workloads,
+                              "components": components_section(c8s)}, tool)
     kept = json.loads(canonical)["workloads"]
     for name, entry in workloads.items():
         if kept[name].get("egress") != entry.get("egress"):
