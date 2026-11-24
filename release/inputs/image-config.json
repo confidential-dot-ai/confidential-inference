@@ -11,7 +11,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:626edbad28fee7ae20996fba357611867c4b77a0ec3271773909e8ee5d8e0417": {
+  "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:f5f7daa1a90f1df9495de78b64eaa9d0561ee35f941351c35bec4143d5703a44": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",
@@ -21,7 +21,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:cf052edd113edffbd60067bb9623c9ce643a2036157d56d4dc9b5827bc504a1a": {
+  "ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f": {
     "cmd": [],
     "entrypoint": [
       "/c8s"
@@ -31,7 +31,7 @@
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ]
   },
-  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:a7545a55489c3fc7e8650f7084650d35edf010c510848dce4457beb280d90185": {
+  "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:bf1c3a67ccd5d33316dc24e3a4380e7925374db39d00ff445a2374d726a8ace4": {
     "cmd": [
       "--config",
       "/etc/nri/conf.d/image-policy.yaml"
@@ -44,7 +44,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "ghcr.io/confidential-dot-ai/volumed@sha256:d22ea0065b9fb24a5091be29813b2a31d2beaa8d7802b4bde0f59f6c6015db21": {
+  "ghcr.io/confidential-dot-ai/volumed@sha256:6bb6cfe73184bc5ff119fabae35e25aaf4a45429718532fea072abb6ce2abf68": {
     "cmd": [],
     "entrypoint": [
       "/app/c8s",
@@ -54,7 +54,7 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ]
   },
-  "nginxinc/nginx-unprivileged@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6": {
+  "nginx/nginx-unprivileged@sha256:8432c57ac86f178741af2b89948bd9087cb9df1c415bc1ab4d23735c4f0e3e61": {
     "cmd": [
       "nginx",
       "-g",
@@ -65,7 +65,7 @@
     ],
     "env": [
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "NGINX_VERSION=1.30.6",
+      "NGINX_VERSION=1.30.7",
       "PKG_RELEASE=1",
       "DYNPKG_RELEASE=1"
     ]

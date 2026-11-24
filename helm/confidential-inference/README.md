@@ -410,7 +410,7 @@ To make a seed:
 4. In the environment values, set `inference.pair.kernelCache.seed.enabled:
    true` and `inference.pair.kernelCache.seed.manifest` to the manifest text.
 
-The chart does not keep the cache on the node. The pinned C8s (v0.101.9)
+The chart does not keep the cache on the node. The pinned C8s (v0.104.0)
 refuses every tenant `hostPath` (its `deny-host-namespaces` policy) and has no
 StorageClass on its node image (C8s #1129 removed local-path). The node's
 writable disk is dm-crypt with a per-boot key and no integrity, so the host
