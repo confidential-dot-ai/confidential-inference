@@ -48,20 +48,20 @@ const HTTP_TARGETS: &[&str] = &[
 
 /// Keyed pseudonyms for key record IDs in log records.
 ///
-/// The key comes from the API key pepper, the per-environment secret that the
-/// gateway and the admin already hold. Only a holder of the pepper can map a
-/// pseudonym back to a key record, by computing the pseudonym of each record.
-/// A log reader without the pepper cannot.
+/// The key is derived from the gateway's CDS secret, which only attested
+/// gateway pods hold. Only a holder of the secret can map a pseudonym back to
+/// a key record, by computing the pseudonym of each record. A log reader
+/// without the secret cannot.
 #[derive(Clone)]
 pub struct KeyPseudonyms {
     key: [u8; 32],
 }
 
 impl KeyPseudonyms {
-    /// Derive the pseudonym key from the API key pepper.
+    /// Derive the pseudonym key from the gateway's CDS secret.
     #[must_use]
-    pub fn from_pepper(pepper: &[u8]) -> Self {
-        let mut mac = HmacSha256::new_from_slice(pepper)
+    pub fn from_secret(secret: &[u8]) -> Self {
+        let mut mac = HmacSha256::new_from_slice(secret)
             .unwrap_or_else(|_| unreachable!("HMAC accepts a key of any length"));
         mac.update(PSEUDONYM_CONTEXT);
         Self {
@@ -145,10 +145,10 @@ mod tests {
 
     #[test]
     fn pseudonyms_are_stable_keyed_and_opaque() {
-        let pepper = [7_u8; 32];
-        let first = KeyPseudonyms::from_pepper(&pepper);
-        let again = KeyPseudonyms::from_pepper(&pepper);
-        let other = KeyPseudonyms::from_pepper(&[8_u8; 32]);
+        let secret = [7_u8; 32];
+        let first = KeyPseudonyms::from_secret(&secret);
+        let again = KeyPseudonyms::from_secret(&secret);
+        let other = KeyPseudonyms::from_secret(&[8_u8; 32]);
         let value = first.pseudonym("key_fa83e9fdbfaf435abe769ba83d2ffe5e");
         assert_eq!(
             value,

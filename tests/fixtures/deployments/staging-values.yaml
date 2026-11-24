@@ -3,11 +3,14 @@ stagingValidation:
 runtimeConfig:
   modelRoutes: null
 gateway:
-  admin:
-    url: https://admin.example.invalid/api/usage/ingest
+  cloud:
+    origin: https://api.example.invalid
     address: 192.0.2.10
   usage:
     enabled: true
+    origin: https://usage.example.invalid
+    address: 192.0.2.11
+    location: us-west-1
     models:
       hf-internal-testing/tiny-random-LlamaForCausalLM:
         served_model: hf-internal-testing/tiny-random-LlamaForCausalLM

@@ -88,13 +88,15 @@ spec:
       app.kubernetes.io/component: gateway
   policyTypes: [Egress]
   egress:
-    # The admin: key snapshot pull and usage events. Also the gateway's
-    # allowlist exit.
+    # Confidential Cloud: whoami for each key, and usage. The gateway's
+    # allowlist exits.
+    {{- range $address, $_ := include "confidential-inference.gatewayExits" . | fromYaml }}
     - to:
         - ipBlock:
-            cidr: {{ printf "%s/32" .Values.gateway.admin.address | quote }}
+            cidr: {{ printf "%s/32" $address | quote }}
       ports:
         - {protocol: TCP, port: 443}
+    {{- end }}
     - to:
         - podSelector:
             matchLabels:

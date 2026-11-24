@@ -5,11 +5,14 @@ runtimeConfig:
     deepseek-ai/DeepSeek-V4.1-Flash-1017:
     - deepseek-ai/DeepSeek-V4.1-Flash-1017
 gateway:
-  admin:
-    url: https://admin.example.invalid/api/usage/ingest
+  cloud:
+    origin: https://api.example.invalid
     address: 192.0.2.10
   usage:
     enabled: true
+    origin: https://usage.example.invalid
+    address: 192.0.2.11
+    location: us-west-1
     models:
       deepseek-ai/DeepSeek-V4.1-Flash-1017:
         served_model: deepseek-ai/DeepSeek-V4.1-Flash-1017

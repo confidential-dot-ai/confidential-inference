@@ -26,22 +26,19 @@ Every other record, and every other field, is dropped and counted
 {{- define "confidential-inference.logPolicy" -}}
 gatewayMessages:
   - "gateway configuration validated"
-  - "no admin API key file; admin requests need the v1 signature"
   - "the metrics listener stopped"
   - "the gateway is ready"
   - "the gateway started endpoint drain"
   - "the gateway started graceful shutdown"
   - "the gateway panicked; the panic message is not logged"
   - "no routing key secret: the router routes requests at random"
-  - "refused the pulled key snapshot"
-  - "the key snapshot pull failed"
-  - "applied a key registry snapshot"
-  - "refused a key registry snapshot: the pepper does not match"
+  - "the gateway serves its usage reporter key"
   - "usage model identity did not match its approved binding"
-  - "the usage queue is full; dropped the oldest event"
-  - "the admin refused a usage event; dropped it"
+  - "a usage event was refused by Confidential Cloud"
+  - "a usage report was refused by Confidential Cloud; dropped it"
+  - "the reporter key is not bound in Confidential Cloud; bind the key the gateway serves"
   - "usage delivery delayed"
-  - "usage events were not delivered before shutdown"
+  - "usage events were not reported before shutdown"
 auditRecord: '^[{]"event":"gateway_request_completed","key_ref":("kp_[0-9a-f]{24}"|null),"request_id":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}","route":"/v1/(models|chat/completions|completions|responses)","status":[1-5][0-9][0-9][}]$'
 auditFields:
   request_id: {string: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'}

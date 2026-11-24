@@ -22,12 +22,24 @@ The signed release manifest binds it by digest (`chart.archiveSha256`). It
 has no values files: each environment keeps its own
 ([release/README.md](../../release/README.md)).
 
-The gateway uses one internal HTTP service behind the C8s router. Public inference
-requests and signed admin requests use that same entry path. The gateway reads
-its API-key pepper and its admin client configuration from C8s
-application-secret memory. It keeps no state on disk: it pulls the API keys
-from the admin (`gateway.admin` is its egress), is Ready only once it holds
-them, and sends usage events back to the admin (`gateway.usage.enabled`).
+The gateway uses one internal HTTP service behind the C8s router. It keeps
+no state on disk and holds no API key. It asks Confidential Cloud whose each
+inference key is (`GET /inference/whoami` at `gateway.cloud.origin`, the key
+as the bearer) and keeps each answer for a minute. With
+`gateway.usage.enabled`, it reports the tokens of each request to
+Confidential Cloud's `gateway.usage.origin` under a TLS client certificate.
+`gateway.cloud.address` and `gateway.usage.address` are its pinned exits on
+TCP 443, so each origin must have a fixed address, and its TLS certificate
+must chain to a CA in the image.
+
+The gateway's one C8s application secret is a value CDS generates on its
+first ask (the allowlist policy grants the path for write). The gateway
+derives its usage reporter key and its log pseudonyms from it, and serves the
+reporter public key at `/usage-reporter-key`. An operator reads that key
+through the attested channel and binds it in Confidential Cloud; until then
+Confidential Cloud refuses the reports, and the gateway stops serving once
+it holds as much unreported usage as it may. A CDS restart generates a new
+value, so the key of a pod started after it must be bound too.
 
 The gateway no longer serves `/attestation` (clients verify the front door with
 TEErminator; see [client verification](../../docs/verification.md)). The chart
@@ -45,8 +57,8 @@ The chart has no operator-key values. Clients pin the reviewed policy and
 route digest instead.
 
 The gateway's settings are one environment variable, `GATEWAY_RUNTIME_CONFIG`,
-so the exact allowlist pins them. The gateway mounts only the admin signer
-certificate and the admin API key hashes, which differ per deployment.
+so the exact allowlist pins them. The gateway mounts no Secret and no
+ConfigMap.
 
 The chart does not own public addresses, DNS, secret-manager paths, machine
 names, or resource sizes. Keep those values in the operator repository.

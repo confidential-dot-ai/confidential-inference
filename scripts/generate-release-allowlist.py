@@ -747,7 +747,10 @@ def generate(
                 errors.append(str(error))
         if errors:
             continue
-        reads = sorted(set(item.get("secretReads", [])) | set(volume_reads(controller)))
+        # A write grant lets CDS generate the path's value on the entry's
+        # first ask (C8s docs/secrets.md); reading it back needs read too.
+        writes = sorted(set(item.get("secretWrites", [])))
+        reads = sorted(set(item.get("secretReads", [])) | set(writes) | set(volume_reads(controller)))
         explicit = json.loads(json.dumps(controller))
         explicit_pod = explicit["spec"]["template"]["spec"]
         for field in ("initContainers", "containers"):
@@ -755,6 +758,9 @@ def generate(
                 effective_process(c, image_env.get(c["image"], {})) for c in explicit_pod.get(field, [])
             ] if field in explicit_pod else []
         entry = derive(executable, item["name"], explicit, env_policies, mount_policies, reads)
+        if writes:
+            # c8s allowlist derive grants only reads.
+            entry["secrets"]["write"] = writes
         # New c8s derive already omits injected names. Authored cds-attest
         # and allowlist-proxy must remain in the exact workload definition.
         if not c8s_at_least(feature_release(c8s), (0, 41, 0)):

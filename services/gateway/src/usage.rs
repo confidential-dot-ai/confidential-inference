@@ -1,34 +1,41 @@
-//! Per-request usage events, kept in memory and sent to the admin.
+//! Per-request usage, kept in a bounded spool and reported to Confidential
+//! Cloud.
 //!
-//! After each request the gateway records one immutable event: a fresh
-//! `request_id`, the key ID, the requested model, the outcome and the token
-//! counts. Request bodies, headers, addresses and credentials are never part
-//! of an event. Events wait in a bounded in-memory queue and are sent in
-//! batches (`crate::admin_client`). An event leaves the queue only after the
-//! admin acknowledged its batch; the admin stores each `request_id` once, so
-//! a batch may be sent again after any failure.
+//! After each request the gateway records one immutable event: a fresh id,
+//! the key's record ID, the requested model, the location, when it started
+//! and finished, and its uncached input, cached input and output tokens.
+//! Request bodies, headers, addresses and credentials are never part of an
+//! event. Events wait in a bounded in-memory spool and are reported in
+//! batches (`crate::usage_client`). An event leaves the spool only after
+//! Confidential Cloud answered its report; it records each id once, so a
+//! report may be sent again after any failure.
 //!
-//! When the queue is full the oldest event is dropped, the request is still
-//! served, and `gateway_usage_events_dropped_total` grows. On shutdown the
-//! gateway sends what is left, within a deadline.
+//! The spool never drops a request it served. Its capacity counts the
+//! requests in flight as well as those waiting, and a request that finds it
+//! full is answered `503 usage_backlog_full` before it reaches a model. So
+//! while Confidential Cloud refuses or cannot be reached, the gateway keeps
+//! what it served and stops serving once it holds as much as it may.
+//! `gateway_usage_events_pending` and `gateway_usage_send_failed_total` are
+//! what an alert watches. On shutdown the gateway sends what is left, within
+//! a deadline; a process that dies loses what it held.
 
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime},
 };
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ApiKeyVerifier,
-    admin_client::{AdminClient, SendError},
     metrics::GatewayMetrics,
+    usage_client::{SendError, UsageClient},
 };
 
-/// About 250 bytes per event, so a full queue holds about 25 MiB.
+/// About 300 bytes per event, so a full spool holds about 30 MiB.
 pub const MAX_PENDING_EVENTS: usize = 100_000;
-/// The largest batch: about 125 KiB of JSON.
+/// The largest report: about 150 KiB of JSON, within Confidential Cloud's
+/// 1,000 requests and 1 MiB.
 pub const MAX_BATCH_EVENTS: usize = 500;
 const SEND_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(60);
@@ -57,105 +64,138 @@ pub struct Observation {
     pub final_usage: bool,
 }
 
-/// One completed request.
+/// One served request, as Confidential Cloud takes it.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Event {
     /// A fresh random UUID per event, never the caller's `x-request-id`, so a
     /// caller cannot make two of its requests collide.
-    pub request_id: String,
-    pub key_id: String,
-    pub requested_model: String,
+    pub id: String,
+    /// The key's record ID, as Confidential Cloud's whoami gave it.
+    pub key: String,
+    pub model: String,
+    pub location: String,
+    pub started_at: String,
+    pub finished_at: String,
+    /// Input tokens not read from the cache. The three counts never overlap.
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
+    #[serde(skip)]
     pub outcome: Outcome,
+    /// Whether the counts came from the response's final usage.
+    #[serde(skip)]
     pub final_usage: bool,
-    pub input_tokens: Option<u64>,
-    pub output_tokens: Option<u64>,
-    pub cached_input_tokens: Option<u64>,
-    pub reasoning_tokens: Option<u64>,
-    pub ended_at_ms: u64,
-    /// The gateway pod that served the request.
-    pub producer_instance: String,
 }
 
-struct Queue {
+/// Why a request cannot be served with its usage recorded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Unrecorded {
+    /// The usage configuration does not name the requested model.
+    UnknownModel,
+    /// The spool holds as many requests as it may.
+    Full,
+}
+
+struct Spool {
     events: VecDeque<(u64, Event)>,
     next_sequence: u64,
+    in_flight: usize,
 }
 
 pub struct Recorder {
-    producer_instance: String,
+    location: String,
     models: BTreeMap<String, Model>,
     capacity: usize,
     metrics: Arc<GatewayMetrics>,
-    queue: Mutex<Queue>,
+    spool: Mutex<Spool>,
 }
 
-#[must_use]
-pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |value| {
-            u64::try_from(value.as_millis()).unwrap_or(u64::MAX)
-        })
+fn rfc3339(at: SystemTime) -> String {
+    time::OffsetDateTime::from(at)
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| unreachable!("a system time formats as RFC 3339"))
 }
 
 impl Recorder {
-    /// `models` maps each requested model to the backend model whose
+    /// `location` is where the gateway serves, as Confidential Cloud names
+    /// it. `models` maps each requested model to the backend model whose
     /// response may supply its usage.
     #[must_use]
     pub fn new(
-        producer_instance: &str,
+        location: &str,
         models: BTreeMap<String, Model>,
         capacity: usize,
         metrics: Arc<GatewayMetrics>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            producer_instance: producer_instance.to_owned(),
+            location: location.to_owned(),
             models,
             capacity,
             metrics,
-            queue: Mutex::new(Queue {
+            spool: Mutex::new(Spool {
                 events: VecDeque::new(),
                 next_sequence: 0,
+                in_flight: 0,
             }),
         })
     }
 
-    /// Start the usage record of one request. The event is recorded when the
-    /// returned guard drops. `None` for a model the usage configuration does
-    /// not name.
-    #[must_use]
-    pub fn reserve(self: &Arc<Self>, key_id: &str, requested_model: &str) -> Option<RequestUsage> {
-        let model = self.models.get(requested_model)?.clone();
-        Some(RequestUsage {
+    /// Start the usage record of one request, which takes a place in the
+    /// spool until its event is reported. The event is recorded when the
+    /// returned guard drops.
+    ///
+    /// # Errors
+    ///
+    /// [`Unrecorded`] when the request must not be served.
+    pub fn reserve(
+        self: &Arc<Self>,
+        key_id: &str,
+        requested_model: &str,
+    ) -> Result<RequestUsage, Unrecorded> {
+        let model = self
+            .models
+            .get(requested_model)
+            .ok_or(Unrecorded::UnknownModel)?
+            .clone();
+        {
+            let mut spool = self.lock();
+            if spool.events.len() + spool.in_flight >= self.capacity {
+                self.metrics.record_usage_backlog_full();
+                return Err(Unrecorded::Full);
+            }
+            spool.in_flight += 1;
+        }
+        Ok(RequestUsage {
             recorder: self.clone(),
             key_id: key_id.to_owned(),
             requested_model: requested_model.to_owned(),
             model,
             observation: Observation::default(),
             outcome: Outcome::Cancelled,
+            started_at: SystemTime::now(),
             ended_at: None,
-            charge: None,
         })
     }
 
-    fn push(&self, event: Event) {
-        let mut queue = self.lock();
-        if queue.events.len() >= self.capacity {
-            queue.events.pop_front();
-            self.metrics.record_usage_event_dropped();
-            tracing::error!("the usage queue is full; dropped the oldest event");
+    /// Spool `event`, in the place its request held. An event of no tokens
+    /// is not reported: it costs nothing, and Confidential Cloud refuses it.
+    fn finish(&self, event: Event) {
+        let mut spool = self.lock();
+        spool.in_flight = spool.in_flight.saturating_sub(1);
+        if event.input_tokens + event.cached_input_tokens + event.output_tokens > 0 {
+            let sequence = spool.next_sequence;
+            spool.next_sequence += 1;
+            spool.events.push_back((sequence, event));
         }
-        let sequence = queue.next_sequence;
-        queue.next_sequence += 1;
-        queue.events.push_back((sequence, event));
-        self.metrics.set_usage_events_pending(queue.events.len());
+        self.metrics.set_usage_events_pending(spool.events.len());
     }
 
     /// The oldest events, at most `limit`, and the sequence of the last one.
     #[must_use]
     pub fn batch(&self, limit: usize) -> Option<(u64, Vec<Event>)> {
-        let queue = self.lock();
-        let events: Vec<_> = queue.events.iter().take(limit).collect();
+        let spool = self.lock();
+        let events: Vec<_> = spool.events.iter().take(limit).collect();
         let last = events.last()?.0;
         Some((
             last,
@@ -163,18 +203,17 @@ impl Recorder {
         ))
     }
 
-    /// Remove every event up to `last_sequence`. Events dropped from a full
-    /// queue meanwhile are simply gone.
+    /// Remove every event up to `last_sequence`.
     pub fn acknowledge(&self, last_sequence: u64) {
-        let mut queue = self.lock();
-        while queue
+        let mut spool = self.lock();
+        while spool
             .events
             .front()
             .is_some_and(|(sequence, _)| *sequence <= last_sequence)
         {
-            queue.events.pop_front();
+            spool.events.pop_front();
         }
-        self.metrics.set_usage_events_pending(queue.events.len());
+        self.metrics.set_usage_events_pending(spool.events.len());
     }
 
     #[must_use]
@@ -182,29 +221,45 @@ impl Recorder {
         self.lock().events.len()
     }
 
-    /// Send queued events in batches until the queue is empty or a send
+    /// Report spooled events in batches until the spool is empty or a report
     /// fails in a way that can pass later.
     ///
-    /// A batch the admin refuses (400, 413, 422) never blocks the queue: it
-    /// is split in halves until the refused events stand alone, and each
-    /// refused single event is dropped, counted and logged.
+    /// A request Confidential Cloud refuses in its answer is gone for good: it
+    /// is counted by reason and logged. A report it refuses whole (400, 413)
+    /// never blocks the spool: it is split in halves until the refused events
+    /// stand alone, and each refused single event is dropped, counted and
+    /// logged.
     ///
     /// # Errors
     ///
-    /// Returns the reason code of a send that can pass later.
-    pub async fn send_pending(&self, client: &AdminClient) -> Result<(), &'static str> {
+    /// Returns the reason code of a report that can pass later.
+    pub async fn send_pending(&self, client: &UsageClient) -> Result<(), &'static str> {
         let mut limit = MAX_BATCH_EVENTS;
         while let Some((last, events)) = self.batch(limit) {
-            match client.send_events(&events).await {
-                Ok(()) => {
+            match client.report(&events).await {
+                Ok(refused) => {
                     self.acknowledge(last);
+                    for refusal in refused {
+                        self.metrics.record_usage_event_refused(&refusal.reason);
+                        tracing::error!(
+                            id = %refusal.id,
+                            reason = %refusal.reason,
+                            "a usage event was refused by Confidential Cloud"
+                        );
+                    }
                     limit = MAX_BATCH_EVENTS;
                 }
                 Err(SendError::Rejected(_)) if events.len() > 1 => limit = events.len() / 2,
                 Err(SendError::Rejected(status)) => {
                     self.acknowledge(last);
-                    self.metrics.record_usage_event_rejected(status);
-                    tracing::error!(status, "the admin refused a usage event; dropped it");
+                    self.metrics.record_usage_event_refused(match status {
+                        413 => "too_large",
+                        _ => "invalid",
+                    });
+                    tracing::error!(
+                        status,
+                        "a usage report was refused by Confidential Cloud; dropped it"
+                    );
                     limit = MAX_BATCH_EVENTS;
                 }
                 Err(SendError::Retry(reason)) => {
@@ -216,16 +271,23 @@ impl Recorder {
         Ok(())
     }
 
-    /// Send queued events every 5 s, backing off to 60 s while the admin
-    /// fails.
-    pub async fn deliver(self: Arc<Self>, client: Arc<AdminClient>) {
+    /// Report spooled events every 5 s, backing off to 60 s while
+    /// Confidential Cloud fails.
+    pub async fn deliver(self: Arc<Self>, client: Arc<UsageClient>) {
         let mut delay = SEND_INTERVAL;
         loop {
             tokio::time::sleep(delay).await;
             delay = match self.send_pending(&client).await {
                 Ok(()) => SEND_INTERVAL,
                 Err(reason) => {
-                    tracing::warn!(reason, pending = self.pending(), "usage delivery delayed");
+                    if reason == "unauthorized" {
+                        tracing::error!(
+                            pending = self.pending(),
+                            "the reporter key is not bound in Confidential Cloud; bind the key the gateway serves"
+                        );
+                    } else {
+                        tracing::warn!(reason, pending = self.pending(), "usage delivery delayed");
+                    }
                     (delay * 2).min(MAX_RETRY_INTERVAL)
                 }
             };
@@ -233,7 +295,7 @@ impl Recorder {
     }
 
     /// Send what is left before the process exits, retrying until `timeout`.
-    pub async fn flush(&self, client: &AdminClient, timeout: Duration) {
+    pub async fn flush(&self, client: &UsageClient, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         while self.pending() > 0 {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -247,19 +309,19 @@ impl Recorder {
         }
         let pending = self.pending();
         if pending > 0 {
-            tracing::error!(pending, "usage events were not delivered before shutdown");
+            tracing::error!(pending, "usage events were not reported before shutdown");
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Queue> {
-        self.queue
+    fn lock(&self) -> std::sync::MutexGuard<'_, Spool> {
+        self.spool
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
 /// The usage record of one request. Dropping it records the event, so a
-/// client that goes away still produces a `cancelled` event.
+/// client that goes away still produces one for what it used.
 pub struct RequestUsage {
     recorder: Arc<Recorder>,
     key_id: String,
@@ -267,9 +329,8 @@ pub struct RequestUsage {
     model: Model,
     pub observation: Observation,
     outcome: Outcome,
-    ended_at: Option<u64>,
-    /// Counts the request's tokens against the key's token budget.
-    charge: Option<Arc<dyn ApiKeyVerifier>>,
+    started_at: SystemTime,
+    ended_at: Option<SystemTime>,
 }
 
 impl RequestUsage {
@@ -278,43 +339,31 @@ impl RequestUsage {
         &self.model.served_model
     }
 
-    /// Count this request's input and output tokens against the key's
-    /// token budget when the record drops.
-    #[must_use]
-    pub fn charge_to(mut self, keys: Arc<dyn ApiKeyVerifier>) -> Self {
-        self.charge = Some(keys);
-        self
-    }
-
     pub fn finish(&mut self, outcome: Outcome) {
         self.outcome = outcome;
-        self.ended_at = Some(now_ms());
+        self.ended_at = Some(SystemTime::now());
     }
 }
 
 impl Drop for RequestUsage {
     fn drop(&mut self) {
         let observation = self.observation;
-        if let Some(keys) = self.charge.take() {
-            let tokens = observation
-                .input
-                .unwrap_or(0)
-                .saturating_add(observation.output.unwrap_or(0));
-            keys.record_tokens(&self.key_id, tokens);
-        }
-        self.recorder.push(Event {
-            request_id: uuid::Uuid::new_v4().to_string(),
-            key_id: std::mem::take(&mut self.key_id),
-            requested_model: std::mem::take(&mut self.requested_model),
+        let cached = observation.cached.unwrap_or(0);
+        let event = Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            key: std::mem::take(&mut self.key_id),
+            model: std::mem::take(&mut self.requested_model),
+            location: self.recorder.location.clone(),
+            started_at: rfc3339(self.started_at),
+            finished_at: rfc3339(self.ended_at.unwrap_or_else(SystemTime::now)),
+            // OpenAI-compatible input counts include the cached tokens.
+            input_tokens: observation.input.unwrap_or(0).saturating_sub(cached),
+            cached_input_tokens: cached,
+            output_tokens: observation.output.unwrap_or(0),
             outcome: self.outcome,
             final_usage: observation.final_usage,
-            input_tokens: observation.input,
-            output_tokens: observation.output,
-            cached_input_tokens: observation.cached,
-            reasoning_tokens: observation.reasoning,
-            ended_at_ms: self.ended_at.unwrap_or_else(now_ms),
-            producer_instance: self.recorder.producer_instance.clone(),
-        });
+        };
+        self.recorder.finish(event);
     }
 }
 
@@ -334,7 +383,7 @@ mod tests {
             },
         )]);
         (
-            Recorder::new("gateway-0", models, capacity, metrics.clone()),
+            Recorder::new("us-west-1", models, capacity, metrics.clone()),
             metrics,
         )
     }
@@ -352,60 +401,95 @@ mod tests {
     }
 
     #[test]
-    fn each_request_is_one_event_with_a_fresh_request_id() {
+    fn each_request_is_one_event_with_a_fresh_id() {
         let (recorder, _) = recorder(16);
-        complete(&recorder, "key_a", 10);
-        complete(&recorder, "key_a", 20);
-        drop(recorder.reserve("key_b", "model-a").unwrap());
+        complete(&recorder, "ik-a", 10);
+        complete(&recorder, "ik-a", 20);
+        let mut cached = recorder.reserve("ik-b", "model-a").unwrap();
+        cached.observation = Observation {
+            input: Some(100),
+            output: Some(5),
+            cached: Some(60),
+            reasoning: Some(2),
+            final_usage: true,
+        };
+        drop(cached);
         let (_, events) = recorder.batch(10).unwrap();
         assert_eq!(events.len(), 3);
-        assert_ne!(events[0].request_id, events[1].request_id);
-        assert_eq!(events[0].input_tokens, Some(10));
+        assert_ne!(events[0].id, events[1].id);
+        assert_eq!(events[0].input_tokens, 10);
         assert_eq!(events[0].outcome, Outcome::Completed);
+        assert_eq!(events[0].location, "us-west-1");
+        assert!(events[0].started_at <= events[0].finished_at);
+        assert_eq!(
+            (
+                events[2].input_tokens,
+                events[2].cached_input_tokens,
+                events[2].output_tokens
+            ),
+            (40, 60, 5)
+        );
         assert_eq!(events[2].outcome, Outcome::Cancelled);
-        assert_eq!(events[2].producer_instance, "gateway-0");
-        assert!(recorder.reserve("key_a", "model-unknown").is_none());
+        assert_eq!(
+            recorder.reserve("ik-a", "model-unknown").err(),
+            Some(Unrecorded::UnknownModel)
+        );
+    }
+
+    #[test]
+    fn a_request_of_no_tokens_is_not_reported() {
+        let (recorder, metrics) = recorder(16);
+        drop(recorder.reserve("ik-a", "model-a").unwrap());
+        assert!(recorder.batch(10).is_none());
+        assert!(
+            metrics
+                .render_prometheus()
+                .contains("gateway_usage_events_pending{env=\"staging\"} 0")
+        );
     }
 
     #[test]
     fn acknowledge_removes_only_the_sent_events() {
         let (recorder, _) = recorder(16);
-        complete(&recorder, "key_a", 1);
-        complete(&recorder, "key_a", 2);
+        complete(&recorder, "ik-a", 1);
+        complete(&recorder, "ik-a", 2);
         let (last, events) = recorder.batch(1).unwrap();
         assert_eq!(events.len(), 1);
-        complete(&recorder, "key_a", 3);
+        complete(&recorder, "ik-a", 3);
         recorder.acknowledge(last);
         let (_, left) = recorder.batch(10).unwrap();
         assert_eq!(
             left.iter()
                 .map(|event| event.input_tokens)
                 .collect::<Vec<_>>(),
-            [Some(2), Some(3)]
+            [2, 3]
         );
     }
 
     #[test]
-    fn a_full_queue_drops_the_oldest_event_and_counts_it() {
+    fn a_full_spool_refuses_new_requests_and_keeps_every_event() {
         let (recorder, metrics) = recorder(2);
-        for input in 1..=3 {
-            complete(&recorder, "key_a", input);
-        }
-        let (_, events) = recorder.batch(10).unwrap();
+        complete(&recorder, "ik-a", 1);
+        // A request in flight holds a place too.
+        let in_flight = recorder.reserve("ik-a", "model-a").unwrap();
         assert_eq!(
-            events
-                .iter()
-                .map(|event| event.input_tokens)
-                .collect::<Vec<_>>(),
-            [Some(2), Some(3)]
+            recorder.reserve("ik-a", "model-a").err(),
+            Some(Unrecorded::Full)
         );
+        drop(in_flight);
+        // It used no tokens, so it gave its place back.
+        complete(&recorder, "ik-a", 2);
+        assert_eq!(
+            recorder.reserve("ik-a", "model-a").err(),
+            Some(Unrecorded::Full)
+        );
+        let (last, events) = recorder.batch(10).unwrap();
+        assert_eq!(events.len(), 2);
+        recorder.acknowledge(last);
+        assert!(recorder.reserve("ik-a", "model-a").is_ok());
         let rendered = metrics.render_prometheus();
         assert!(
-            rendered.contains("gateway_usage_events_dropped_total{env=\"staging\"} 1"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("gateway_usage_events_pending{env=\"staging\"} 2"),
+            rendered.contains("gateway_usage_backlog_full_total{env=\"staging\"} 2"),
             "{rendered}"
         );
     }
@@ -413,7 +497,7 @@ mod tests {
     #[test]
     fn an_event_holds_no_content_or_credential_fields() {
         let (recorder, _) = recorder(16);
-        complete(&recorder, "key_a", 1);
+        complete(&recorder, "ik-a", 1);
         let (_, events) = recorder.batch(1).unwrap();
         let value = serde_json::to_value(&events[0]).unwrap();
         let mut fields: Vec<_> = value.as_object().unwrap().keys().cloned().collect();
@@ -421,17 +505,15 @@ mod tests {
         assert_eq!(
             fields,
             [
-                "cached_input_tokens",
-                "ended_at_ms",
-                "final_usage",
-                "input_tokens",
-                "key_id",
-                "outcome",
-                "output_tokens",
-                "producer_instance",
-                "reasoning_tokens",
-                "request_id",
-                "requested_model",
+                "cachedInputTokens",
+                "finishedAt",
+                "id",
+                "inputTokens",
+                "key",
+                "location",
+                "model",
+                "outputTokens",
+                "startedAt",
             ]
         );
     }

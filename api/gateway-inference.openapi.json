@@ -72,11 +72,11 @@
       "get": {
         "operationId": "getReady",
         "tags": ["health"],
-        "summary": "Report whether the gateway holds a key snapshot",
-        "description": "The gateway reports 503 until it has applied its first key snapshot from the admin, then 200. It does not call the inference upstream. Inference availability does not control gateway readiness (services/gateway/src/lib.rs, `ready`).",
+        "summary": "Report that the gateway serves",
+        "description": "The gateway answers 200 once it listens. It does not call the inference upstream or Confidential Cloud: neither controls gateway readiness (services/gateway/src/lib.rs, `ready`).",
         "responses": {
           "200": {
-            "description": "The gateway holds a key snapshot.",
+            "description": "The gateway serves.",
             "content": {
               "application/json": {
                 "schema": {
@@ -88,18 +88,22 @@
                 "example": {"status": "ready"}
               }
             }
-          },
-          "503": {
-            "description": "The gateway holds no key snapshot yet (`status: key_registry_not_ready`).",
+          }
+        }
+      }
+    },
+    "/usage-reporter-key": {
+      "get": {
+        "operationId": "getUsageReporterKey",
+        "tags": ["health"],
+        "summary": "Serve the gateway's usage reporter public key",
+        "description": "The Ed25519 public key in the gateway's TLS client certificate for usage reports to Confidential Cloud, derived from the gateway's CDS secret (services/gateway/src/reporter.rs). An operator reads it through the attested channel and binds it in Confidential Cloud. Every replica of one gateway entry serves the same key.",
+        "responses": {
+          "200": {
+            "description": "The public key.",
             "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["status"],
-                  "properties": {"status": {"const": "key_registry_not_ready"}}
-                },
-                "example": {"status": "key_registry_not_ready"}
+              "application/x-pem-file": {
+                "schema": {"type": "string", "pattern": "^-----BEGIN PUBLIC KEY-----"}
               }
             }
           }
@@ -1015,10 +1019,10 @@
         }
       },
       "InferenceCapacity": {
-        "description": "The gateway rejected the request because a concurrency, queue, or per-key limit was full (`inference_capacity`), or because the usage configuration does not name the requested model (`usage_capacity`), or because a limit the admin set on the API key refused it: the request rate limit (`rate_limit_exceeded`) or the token budget of the current UTC day or month (`insufficient_quota`). The gateway refuses a key limit before it forwards the request. The body never names the key, a limit value, or the spend. The status for `insufficient_quota` is 429, as in the OpenAI API, so OpenAI clients handle it.",
+        "description": "The gateway rejected the request because a concurrency, queue, or per-key limit was full (`inference_capacity`), or because the usage configuration does not name the requested model (`usage_capacity`), or because the key's org is out of prepaid inference credits (`insufficient_quota`, until an owner of the org buys more; the gateway keeps Confidential Cloud's answer for up to a minute). The gateway refuses before it forwards the request. The status for `insufficient_quota` is 429 with that code, as OpenAI-compatible clients expect an exhausted quota.",
         "headers": {
           "Retry-After": {
-            "description": "The number of seconds to wait before a retry: `1` for capacity, the time until the next request is allowed for `rate_limit_exceeded`, and the time until the budget window ends for `insufficient_quota`.",
+            "description": "The number of seconds to wait before a retry: `1` for capacity. Not sent with `insufficient_quota`.",
             "schema": {"type": "string", "pattern": "^[1-9][0-9]*$"}
           }
         },
@@ -1028,14 +1032,13 @@
             "examples": {
               "inferenceCapacity": {"value": {"error": {"code": "inference_capacity", "message": "Too Many Requests"}}},
               "usageCapacity": {"value": {"error": {"code": "usage_capacity", "message": "Too Many Requests"}}},
-              "rateLimitExceeded": {"value": {"error": {"code": "rate_limit_exceeded", "message": "The API key sent too many requests. Wait, then try again."}}},
-              "insufficientQuota": {"value": {"error": {"code": "insufficient_quota", "message": "The API key used its token budget for this period."}}}
+              "insufficientQuota": {"value": {"error": {"code": "insufficient_quota", "message": "Your org is out of inference credits. An owner of the org buys more in Billing."}}}
             }
           }
         }
       },
       "InferenceUnavailable": {
-        "description": "The gateway could not reach the inference router, or the router reported that inference was unavailable (`inference_unavailable`, `Retry-After: 30`). A gateway that has not yet applied its first key snapshot from the admin answers `key_registry_not_ready` without `Retry-After`.",
+        "description": "The gateway could not reach the inference router, or the router reported that inference was unavailable (`inference_unavailable`, `Retry-After: 30`). Without `Retry-After`: Confidential Cloud did not answer the key check and the gateway holds no recent answer for the key (`key_check_unavailable`), or the gateway holds as much unreported usage as it may (`usage_backlog_full`).",
         "headers": {
           "Retry-After": {
             "description": "The number of seconds to wait before a retry. Sent with `inference_unavailable`.",
@@ -1047,7 +1050,8 @@
             "schema": {"$ref": "#/components/schemas/GatewayError"},
             "examples": {
               "inferenceUnavailable": {"value": {"error": {"code": "inference_unavailable", "message": "Inference is temporarily unavailable."}}},
-              "keyRegistryNotReady": {"value": {"error": {"code": "key_registry_not_ready", "message": "Service Unavailable"}}}
+              "keyCheckUnavailable": {"value": {"error": {"code": "key_check_unavailable", "message": "Service Unavailable"}}},
+              "usageBacklogFull": {"value": {"error": {"code": "usage_backlog_full", "message": "Service Unavailable"}}}
             }
           }
         }

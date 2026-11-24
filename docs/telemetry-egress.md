@@ -82,8 +82,8 @@ stdout or disk, and writes only fixed events (`wait-for-model` in
 
 ## 3. Destinations
 
-The collector has two exporters and no others. The gateway has one more
-exit, to the admin service. The maintenance gateway has no exit.
+The collector has two exporters and no others. The gateway has its own
+exits, to Confidential Cloud. The maintenance gateway has no exit.
 
 ### 3.1 Metrics to the relay (Prometheus remote write)
 
@@ -151,7 +151,7 @@ keeps no structured metadata, so the identity is in the body too.
 Gateway bodies. The log policy lets only these leave:
 
 - One of the fixed messages of the log policy, as `{"event": "<message>",
-  "level": "info"}`, for example `the key snapshot pull failed`.
+  "level": "info"}`, for example `usage delivery delayed`.
 - The audit record, one for each request:
 
   ```json
@@ -165,7 +165,7 @@ Gateway bodies. The log policy lets only these leave:
 | `route` | One of four fixed routes. Error rates for each route. |
 | `status` | The HTTP status code that the caller got. |
 | `request_id` | A UUID (Universally Unique Identifier) that the gateway makes for each request. The caller gets it in `x-ci-request-id`. A customer can give it to support, and support can find the record. It is never the caller's own `x-request-id`. |
-| `key_ref` | The pseudonym of the API key record: `kp_` and the first 96 bits of HMAC-SHA256. The key is derived from the API key pepper, a secret of each environment that only the gateway and the admin hold. It lets support find the requests of one key. A log reader without the pepper cannot find the key. `null` for routes without a key. |
+| `key_ref` | The pseudonym of the API key record: `kp_` and the first 96 bits of HMAC-SHA256. The key is derived from the gateway's CDS secret, which only attested gateway pods hold. It lets support find the requests of one key, through a gateway that computes the pseudonym. A log reader without the secret cannot find the key. `null` for routes without a key. |
 
 Router bodies: the fixed events of `images/sglang-router/README.md` with the
 fields `event`, `role`, `status`, `code`, `timestamp` and `source_revision`.
@@ -225,26 +225,29 @@ The agents send `node_log_agent.records{source, kept, node}` and their own
 `otelcol_process_*` and export counters. The collector keeps only these
 names and these labels.
 
-### 3.3 Usage events and key snapshots to the admin service
+### 3.3 Key checks and usage reports to Confidential Cloud
 
 - **Sender**: the gateway, directly. It is not telemetry, but it leaves the
   cluster, so it is listed here.
-- **Destination**: `GATEWAY_ADMIN_ENDPOINT` (`gateway.admin.url`), over TLS
-  with a bearer token from the CDS (Confidential Data Service) secret
-  `product-usage`.
-- **Data in**: the API key snapshot (key record IDs and peppered key hashes).
-- **Data out** (only with `gateway.usage.enabled`): one event for each
-  inference request.
+- **Destinations**: `GATEWAY_CLOUD_ORIGIN` (`gateway.cloud.origin`) and
+  `GATEWAY_USAGE_ORIGIN` (`gateway.usage.origin`), each over TLS to a pinned
+  address that is also an allowlist exit.
+- **Key checks**: `GET /inference/whoami` with the key a request presents as
+  its bearer token, and nothing else. Only a string of an inference key's
+  form is sent. Confidential Cloud answers the key's record ID, whether its
+  org may be served, and when the key expires.
+- **Usage reports** (only with `gateway.usage.enabled`):
+  `POST /inference/usage`, with a TLS client certificate that carries the
+  gateway's reporter key. One entry for each request that used tokens:
 
 | Field | Reason |
 |---|---|
-| `request_id` | A new random UUID for each event. The admin stores each event once. |
-| `key_id` | Billing for each API key. |
-| `requested_model` | Billing for each model. |
-| `outcome` | `completed`, `failed`, `cancelled`, or `interrupted`. Billing and support. |
-| `input_tokens`, `output_tokens`, `cached_input_tokens`, `reasoning_tokens`, `final_usage` | Billing. |
-| `ended_at_ms` | Billing period. Millisecond time is needed to order and bill the events. |
-| `producer_instance` | A random name for each gateway process. Deduplication. |
+| `id` | A new random UUID for each request. Confidential Cloud records each id once, so a report can be sent again. |
+| `key` | The key's record ID, as whoami answered it. Billing for each key and org. |
+| `model` | The requested model. Its price. |
+| `location` | `gateway.usage.location`, the region the gateway serves. Its price. |
+| `startedAt`, `finishedAt` | The billing hour. RFC 3339 times. |
+| `inputTokens`, `cachedInputTokens`, `outputTokens` | Billing. Uncached input, cached input and output; the three never overlap. |
 
 ## 4. What does not leave
 
@@ -268,7 +271,6 @@ private repository `confidential-inference-internal` on 2026-11-13:
 | Loki on the admin VM | 7 days (`retention_period: 168h`) | `admin/infra/azure-vm/loki/loki.yaml` |
 | Prometheus on the admin VM | 90 days | `admin/observability/scripts/start-prometheus-receiver.sh` |
 | Azure Monitor managed Prometheus | Not set in the repositories. The Azure default is 18 months. | Azure documentation |
-| Admin usage events | Not known | Admin database |
 
 The relay configuration that maps `/otlp/v1/logs` and `/prometheus/...` to
 these stores is not in either repository. Thus we cannot confirm from the

@@ -34,10 +34,6 @@ impl ApiKeyVerifier for Keys {
     fn verify_bearer(&self, value: &str) -> Option<String> {
         (value == "accepted").then(|| "key_record_1".to_owned())
     }
-
-    fn verify_revoked_bearer(&self, value: &str) -> Option<String> {
-        (value == "revoked").then(|| "key_record_revoked".to_owned())
-    }
 }
 
 #[derive(Default)]
@@ -223,14 +219,14 @@ fn usage_events(recorder: &Recorder) -> Vec<Event> {
 }
 
 fn assert_accounted(event: &Event) {
-    assert_eq!(event.key_id, "key_record_1");
-    assert_eq!(event.requested_model, PUBLIC_MODEL);
+    assert_eq!(event.key, "key_record_1");
+    assert_eq!(event.model, PUBLIC_MODEL);
     assert_eq!(event.outcome, Outcome::Completed);
     assert!(event.final_usage);
-    assert_eq!(event.input_tokens, Some(10));
-    assert_eq!(event.output_tokens, Some(5));
-    assert_eq!(event.cached_input_tokens, Some(4));
-    assert_eq!(event.reasoning_tokens, Some(2));
+    // Uncached input; reasoning tokens are part of the output tokens.
+    assert_eq!(event.input_tokens, 6);
+    assert_eq!(event.output_tokens, 5);
+    assert_eq!(event.cached_input_tokens, 4);
 }
 
 #[tokio::test]

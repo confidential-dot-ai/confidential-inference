@@ -9,12 +9,13 @@ use axum::{
     routing::post,
 };
 use confidential_gateway::{
-    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig,
+    ApiKeyVerifier, AuditEvent, AuditSink, GatewayConfig, KeyCheck,
     metrics::{GatewayMetrics, MetricsSource},
     protection::ProtectionConfig,
     router_with_usage,
     usage::{MAX_PENDING_EVENTS, Model, Outcome, Recorder},
 };
+use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -24,29 +25,16 @@ use std::{
 };
 use tower::ServiceExt;
 
+/// `accepted` is a live key of record `key-1`, and `broke` is a key whose
+/// org is out of credits. Every other bearer is refused.
 struct Keys;
 impl ApiKeyVerifier for Keys {
-    fn verify_bearer(&self, key: &str) -> Option<String> {
-        match key {
-            "accepted" => Some("key-1".into()),
-            "limited" => Some("key-limited".into()),
-            _ => None,
-        }
-    }
-    fn admit(&self, key_id: &str) -> Result<(), confidential_gateway::key_limits::LimitRejection> {
-        if key_id == "key-limited" {
-            Err(
-                confidential_gateway::key_limits::LimitRejection::RateLimited {
-                    retry_after_seconds: 17,
-                },
-            )
-        } else {
-            Ok(())
-        }
-    }
-
-    fn verify_revoked_bearer(&self, key: &str) -> Option<String> {
-        (key == "revoked").then(|| "key-revoked".into())
+    fn check<'a>(&'a self, bearer: &'a str) -> BoxFuture<'a, KeyCheck> {
+        Box::pin(std::future::ready(match bearer {
+            "accepted" => KeyCheck::Live("key-1".into()),
+            "broke" => KeyCheck::OutOfCredits,
+            _ => KeyCheck::Refused,
+        }))
     }
 }
 #[derive(Default)]
@@ -212,12 +200,12 @@ async fn send(
 fn assert_usage(g: &Gateway) {
     let (_, events) = g.recorder.batch(MAX_PENDING_EVENTS).unwrap();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].key_id, "key-1");
+    assert_eq!(events[0].key, "key-1");
     assert_eq!(events[0].outcome, Outcome::Completed);
     assert!(events[0].final_usage);
-    assert_eq!(events[0].input_tokens, Some(10));
-    assert_eq!(events[0].output_tokens, Some(5));
-    assert_eq!(events[0].cached_input_tokens, Some(4));
+    assert_eq!(events[0].input_tokens, 6);
+    assert_eq!(events[0].output_tokens, 5);
+    assert_eq!(events[0].cached_input_tokens, 4);
     assert!(!serde_json::to_string(&events).unwrap().contains("private-"));
     let metrics = g.metrics.render_prometheus();
     assert!(metrics.contains("gen_ai_client_token_usage"));
@@ -399,14 +387,13 @@ async fn a_stream_without_done_reports_an_error_and_interrupted_usage() {
 }
 
 #[tokio::test]
-async fn sdk_keys_have_the_same_rate_limits_and_retry_header() {
+async fn sdk_keys_out_of_credits_answer_insufficient_quota() {
     let g = gateway().await;
-    let (status, headers, bytes) = send(&g, &payload(), &[("x-api-key", "limited")]).await;
+    let (status, _, bytes) = send(&g, &payload(), &[("x-api-key", "broke")]).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(headers[header::RETRY_AFTER], "17");
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["error"]["type"], "rate_limit_error");
-    assert_eq!(body["error"]["message"], "rate_limit_exceeded");
+    assert_eq!(body["error"]["message"], "insufficient_quota");
     assert!(g.received.lock().unwrap().is_empty());
 }
 

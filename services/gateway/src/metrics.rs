@@ -8,8 +8,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use axum::{Router, response::IntoResponse, routing::get};
 use prometheus::{
-    Gauge, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge,
-    IntGaugeVec, Opts, Registry, TextEncoder, core::Collector,
+    Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts,
+    Registry, TextEncoder, core::Collector,
 };
 
 const HISTOGRAM_BUCKETS: &[f64] = &[
@@ -54,16 +54,11 @@ pub struct GatewayMetrics {
     output_tokens_per_request: HistogramVec,
     cache_read_tokens: IntCounterVec,
     finish_reasons: IntCounterVec,
-    key_registry_stale_seconds: Gauge,
-    key_registry_push_rejections: IntCounterVec,
-    key_registry_revision: IntGauge,
-    key_registry_pepper_mismatch_rows: IntGauge,
-    key_registry_pepper_mismatch: IntGauge,
-    key_registry_fetch_failures: IntCounterVec,
-    usage_events_dropped: IntCounter,
+    cloud_key_checks: IntCounterVec,
+    usage_backlog_full: IntCounter,
     usage_events_pending: IntGauge,
     usage_send_failures: IntCounterVec,
-    usage_events_rejected: IntCounterVec,
+    usage_events_refused: IntCounterVec,
 }
 
 /// Metric names, labels and buckets are compile-time constants, so the
@@ -241,63 +236,35 @@ impl GatewayMetrics {
                 "OpenAI-compatible completion finish reasons",
                 &["model", "reason"],
             ),
-            key_registry_stale_seconds: register(
+            cloud_key_checks: counter(
                 r,
-                Gauge::new(
-                    "gateway_key_registry_stale_seconds",
-                    "Seconds since the last applied or acknowledged key registry snapshot",
-                ),
+                "gateway_cloud_key_checks_total",
+                "Count of key checks by result: kept (an answer kept), live, refused, out_of_credits, stale (a kept live answer while Confidential Cloud gave none) or unavailable",
+                &["result"],
             ),
-            key_registry_push_rejections: counter(
-                r,
-                "gateway_key_registry_push_rejected_total",
-                "Count of refused key registry snapshot pushes by reason",
-                &["reason"],
-            ),
-            key_registry_revision: gauge(
-                r,
-                "gateway_key_registry_revision",
-                "The key registry snapshot revision this gateway holds",
-            ),
-            key_registry_pepper_mismatch_rows: gauge(
-                r,
-                "gateway_key_registry_pepper_mismatch_rows",
-                "Rows the latest key registry snapshot skipped for a pepper fingerprint mismatch",
-            ),
-            key_registry_pepper_mismatch: gauge(
-                r,
-                "gateway_key_registry_pepper_mismatch",
-                "One while the last pushed key registry snapshot named a different pepper than the gateway holds",
-            ),
-            key_registry_fetch_failures: counter(
-                r,
-                "gateway_key_registry_fetch_failed_total",
-                "Count of failed key snapshot pulls from the admin by reason",
-                &["reason"],
-            ),
-            usage_events_dropped: register(
+            usage_backlog_full: register(
                 r,
                 IntCounter::new(
-                    "gateway_usage_events_dropped_total",
-                    "Usage events dropped because the in-memory queue was full",
+                    "gateway_usage_backlog_full_total",
+                    "Requests refused because the usage spool was full",
                 ),
             ),
             usage_events_pending: gauge(
                 r,
                 "gateway_usage_events_pending",
-                "Usage events waiting for the admin to acknowledge them",
+                "Usage events waiting for Confidential Cloud to record them",
             ),
             usage_send_failures: counter(
                 r,
                 "gateway_usage_send_failed_total",
-                "Count of failed usage event batch sends by reason",
+                "Count of usage reports that failed and will be sent again, by reason: unauthorized (the reporter key is not bound), unreachable, http_status, invalid_answer or body_too_large",
                 &["reason"],
             ),
-            usage_events_rejected: counter(
+            usage_events_refused: counter(
                 r,
-                "gateway_usage_events_rejected_total",
-                "Usage events dropped because the admin refused them, by HTTP status",
-                &["status"],
+                "gateway_usage_events_refused_total",
+                "Usage events Confidential Cloud refused for good, by its reason",
+                &["reason"],
             ),
             registry,
         }
@@ -428,53 +395,14 @@ impl GatewayMetrics {
             .inc_by(amount);
     }
 
-    /// Record how many seconds have passed since the last applied or
-    /// acknowledged key registry snapshot. The key pull loop sets it.
-    pub fn set_key_registry_stale_seconds(&self, seconds: f64) {
-        self.key_registry_stale_seconds.set(seconds);
+    /// Count one key check (`crate::cloud_keys`) by a fixed result name.
+    pub fn record_cloud_key_check(&self, result: &'static str) {
+        self.cloud_key_checks.with_label_values(&[result]).inc();
     }
 
-    /// Count one refused key registry snapshot push under a fixed reason
-    /// code. The admin VM reads the same reason from the response body.
-    pub fn record_key_registry_push_rejection(&self, reason: &'static str) {
-        self.key_registry_push_rejections
-            .with_label_values(&[reason])
-            .inc();
-    }
-
-    /// Record the cached key registry snapshot revision.
-    pub fn set_key_registry_revision(&self, revision: i64) {
-        self.key_registry_revision.set(revision.max(0));
-    }
-
-    /// Record the number of rows the latest snapshot skipped for a pepper
-    /// fingerprint mismatch.
-    pub fn set_key_registry_pepper_mismatch_rows(&self, rows: u64) {
-        self.key_registry_pepper_mismatch_rows
-            .set(i64::try_from(rows).unwrap_or(i64::MAX));
-    }
-
-    /// Record whether the last pushed snapshot named a different pepper
-    /// than this gateway holds.
-    ///
-    /// The gauge reads 1 while the two peppers differ and 0 once a
-    /// matching snapshot arrives. An alert on this gauge tells an operator
-    /// that the admin backend and the gateway hold different peppers, so
-    /// no new key can work until one side is corrected.
-    pub fn set_key_registry_pepper_mismatch(&self, mismatch: bool) {
-        self.key_registry_pepper_mismatch.set(i64::from(mismatch));
-    }
-
-    /// Count one failed key snapshot pull under a fixed reason code.
-    pub fn record_key_registry_fetch_failure(&self, reason: &'static str) {
-        self.key_registry_fetch_failures
-            .with_label_values(&[reason])
-            .inc();
-    }
-
-    /// Count one usage event dropped from a full queue.
-    pub fn record_usage_event_dropped(&self) {
-        self.usage_events_dropped.inc();
+    /// Count one request refused because the usage spool was full.
+    pub fn record_usage_backlog_full(&self) {
+        self.usage_backlog_full.inc();
     }
 
     pub fn set_usage_events_pending(&self, pending: usize) {
@@ -482,11 +410,27 @@ impl GatewayMetrics {
             .set(i64::try_from(pending).unwrap_or(i64::MAX));
     }
 
-    /// Count one usage event the admin refused and the gateway dropped.
-    pub fn record_usage_event_rejected(&self, status: u16) {
-        self.usage_events_rejected
-            .with_label_values(&[status.to_string()])
-            .inc();
+    /// Count one usage event Confidential Cloud refused for good. A reason
+    /// outside its documented set counts as `other`, so the label stays
+    /// bounded.
+    pub fn record_usage_event_refused(&self, reason: &str) {
+        const REASONS: &[&str] = &[
+            "no_tokens",
+            "too_many_tokens",
+            "invalid_times",
+            "unknown_key",
+            "unknown_location",
+            "unpriced_model",
+            "closed_hour",
+            "invalid",
+            "too_large",
+        ];
+        let reason = REASONS
+            .iter()
+            .find(|known| **known == reason)
+            .copied()
+            .unwrap_or("other");
+        self.usage_events_refused.with_label_values(&[reason]).inc();
     }
 
     /// Count one failed usage batch send under a fixed reason code.
@@ -653,44 +597,5 @@ mod tests {
     fn renders_process_metrics() {
         let rendered = GatewayMetrics::new("staging").render_prometheus();
         assert!(rendered.contains("process_resident_memory_bytes{env=\"staging\"}"));
-    }
-
-    #[test]
-    fn renders_key_registry_and_source_metrics() {
-        let metrics = GatewayMetrics::new("staging");
-        metrics.set_key_registry_stale_seconds(12.5);
-        metrics.record_key_registry_push_rejection("stale_revision");
-        metrics.set_key_registry_revision(42);
-        metrics.set_key_registry_pepper_mismatch_rows(2);
-        metrics.set_key_registry_pepper_mismatch(true);
-        metrics.record_key_registry_fetch_failure("unreachable");
-        let rendered = metrics.render_prometheus();
-
-        for name in [
-            "gateway_key_registry_stale_seconds",
-            "gateway_key_registry_push_rejected_total",
-            "gateway_key_registry_revision",
-            "gateway_key_registry_pepper_mismatch_rows",
-            "gateway_key_registry_pepper_mismatch",
-            "gateway_key_registry_fetch_failed_total",
-        ] {
-            assert!(rendered.contains(name), "missing {name}");
-        }
-        assert!(rendered.contains("gateway_key_registry_stale_seconds{env=\"staging\"} 12.5"));
-        assert!(rendered.contains(
-            "gateway_key_registry_push_rejected_total{reason=\"stale_revision\",env=\"staging\"} 1"
-        ));
-        assert!(rendered.contains("gateway_key_registry_revision{env=\"staging\"} 42"));
-        assert!(rendered.contains("gateway_key_registry_pepper_mismatch_rows{env=\"staging\"} 2"));
-        assert!(rendered.contains("gateway_key_registry_pepper_mismatch{env=\"staging\"} 1"));
-        metrics.set_key_registry_pepper_mismatch(false);
-        assert!(
-            metrics
-                .render_prometheus()
-                .contains("gateway_key_registry_pepper_mismatch{env=\"staging\"} 0")
-        );
-        assert!(rendered.contains(
-            "gateway_key_registry_fetch_failed_total{reason=\"unreachable\",env=\"staging\"} 1"
-        ));
     }
 }

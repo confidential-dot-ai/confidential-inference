@@ -19,9 +19,8 @@
       "egress": {
         "port": 443
       },
-      "secretReads": [
-        "/confidential-inference/gateway/api-key-pepper",
-        "/confidential-inference/gateway/product-usage"
+      "secretWrites": [
+        "/confidential-inference/gateway/secret"
       ]
     },
     {

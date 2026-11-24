@@ -163,20 +163,21 @@ the `exec` verb.
 
 The operator role can read pod logs, Kubernetes Secrets, and ConfigMaps.
 Protect request data and confidential keys from those readable resources.
-The gateway's admin credentials are Kubernetes Secrets: the admin signer
-certificate (`gateway-admin-mtls`) and the SHA-256 of each admin API key
-(`gateway-admin-api-key`). Reading the hashes does not give a usable key, but
-whoever can write either Secret and restart the gateway holds the gateway
-admin channel. The gateway refuses an API-key snapshot with
-a lower revision than the one it holds, so that channel cannot roll the key
-set back through the snapshot route; it can still remove keys, which is a
-denial of service, not a loss of confidentiality.
-The gateway keeps its keys in memory only. It pulls them from the admin over
-HTTPS: the admin URL, its CA and the gateway's admin token are a CDS
-application secret, so only the attested gateway reads them. A restarted
-gateway holds no revision, so it accepts the admin's current snapshot at any
-revision; the admin that owns the registry is trusted for the key set either
-way.
+The gateway mounts no Kubernetes Secret and holds no copy of any API key.
+It asks Confidential Cloud whose each key is, over TLS to a pinned address
+that is also its allowlist exit, and keeps each answer for at most a minute.
+Confidential Cloud is trusted for which keys are live and which orgs are
+served, as the owner of the keys and the bill.
+The gateway reports the tokens of each request it served to Confidential
+Cloud under a TLS client certificate. Its key is derived from a value CDS
+generates for the gateway's entry on the first ask, so only an attested
+gateway pod holds it, and Confidential Cloud records usage only from a key an
+operator has bound. A host can delay or drop reports but not forge them. The
+gateway keeps what it could not report and stops serving once it holds as
+much as it may, so withheld reports cost availability, not billing; a gateway
+pod that is killed loses the usage it held. A CDS restart generates a new
+value: a pod started after it reports under a new key, which Confidential
+Cloud refuses until an operator binds it.
 CDS application secrets are distinct from Kubernetes Secrets. Launch checks
 do not establish that approved application code never writes sensitive data
 to a log or exposes it through an API.

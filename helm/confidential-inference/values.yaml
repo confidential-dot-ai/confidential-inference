@@ -118,20 +118,19 @@ gateway:
     public: 9443
     metrics: 9090
   c8sSecrets:
-    apiKeyPepper:
-      name: GATEWAY_API_KEY_PEPPER
-      sourcePath: /confidential-inference/gateway/api-key-pepper
-    # The admin client configuration (JSON: endpoint, token, optional
-    # tls_ca_pem, connect_address, models). The gateway pulls its API keys
-    # from the admin and sends usage events there. services/gateway/src/admin_client.rs.
-    adminConfig:
-      name: product-usage
-      sourcePath: /confidential-inference/gateway/product-usage
-  # The admin: the gateway pulls its keys from the url's origin and sends
-  # usage events to the url. The address is the gateway's one exit (C8s
-  # #1047, public in the served allowlist), TCP 443. Both are allowlist input.
-  admin:
-    url: https://admin.example.invalid/api/usage/ingest
+    # One value CDS generates on the gateway's first ask (the policy grants
+    # the path for write) and releases only to the gateway's attested entry.
+    # The usage reporter key and the log pseudonyms are derived from it.
+    # services/gateway/src/reporter.rs.
+    gateway:
+      name: gateway
+      sourcePath: /confidential-inference/gateway/secret
+  # Confidential Cloud's API, which keeps the inference keys: the gateway
+  # checks each key a request presents at the origin's /inference/whoami.
+  # The address is pinned and is one of the gateway's allowlist exits (C8s
+  # #1047), TCP 443. Both are allowlist input.
+  cloud:
+    origin: https://api.example.invalid
     address: 192.0.2.10
   # The request parameters the served model does not support: a recipe sets
   # them (behavior.unsupportedParameters, scripts/recipe-values.py). Each is
@@ -139,10 +138,21 @@ gateway:
   # any value but null or an allowed one with 400 unsupported_parameter.
   unsupportedParameters: []
   usage:
-    # Send one usage event per request to the admin.
+    # Report each request's tokens to Confidential Cloud, which prices and
+    # bills them. A gateway with usage on stops serving while it cannot
+    # report (services/gateway/src/usage.rs).
     enabled: false
+    # Confidential Cloud's usage origin and its pinned address, an exit like
+    # cloud.address. The gateway's TLS client certificate carries its
+    # reporter key, served at /usage-reporter-key, which an operator binds
+    # in Confidential Cloud.
+    origin: https://usage.example.invalid
+    address: 192.0.2.11
+    # Where this gateway serves, as Confidential Cloud names the region.
+    location: ""
     # The requested models usage is recorded for, each with its backend
     # model: {"<requested>": {"served_model": ..., "model_revision": ...}}.
+    # Confidential Cloud refuses usage of a model it does not price.
     models: {}
   protection:
     maximumHeaders: 64
@@ -184,14 +194,6 @@ gateway:
     # Add only an outer proxy which overwrites X-Forwarded-For with one address.
     trustedProxyCidrs:
       - 10.52.0.0/16
-  secrets:
-    adminSigner:
-      secretName: gateway-admin-mtls
-      certificateKey: client.crt
-    # The SHA-256 hex of each accepted admin API key, one per line, at most
-    # two, under the Secret key `sha256`.
-    adminApiKey:
-      secretName: gateway-admin-api-key
 
 inference:
   enabled: true

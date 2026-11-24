@@ -14,7 +14,7 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
-use futures_util::StreamExt;
+use futures_util::{StreamExt, future::BoxFuture};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tower_http::{
@@ -23,57 +23,54 @@ use tower_http::{
 };
 use uuid::Uuid;
 
-pub mod admin_auth;
-pub mod admin_client;
-pub mod api_keys;
+pub mod cloud_keys;
 mod inference_api;
-pub mod key_limits;
-pub mod key_registry;
 pub mod log_privacy;
 mod messages;
 pub mod metrics;
 mod model_response;
 pub mod protection;
+pub mod reporter;
 pub mod request_body;
 mod response_metrics;
 pub mod routing_key;
 pub mod settings;
 pub mod usage;
+pub mod usage_client;
 
 use inference_api::Api;
 use metrics::GatewayMetrics;
 use protection::{ProtectionConfig, ProtectionState};
 use response_metrics::ResponseMetrics;
 
-pub trait ApiKeyVerifier: Send + Sync + 'static {
-    fn verify_bearer(&self, bearer: &str) -> Option<String>;
+/// What a key check found.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum KeyCheck {
+    /// A live key, with its stable record ID.
+    Live(String),
+    /// Not a live key: unknown, revoked or expired.
+    Refused,
+    /// A live key of a prepaid org that is out of credits.
+    OutOfCredits,
+    /// The check got no answer, so the request can be neither served nor
+    /// refused as unauthorized.
+    Unavailable,
+}
 
-    /// Return the stable record ID only when the supplied key is revoked.
-    fn verify_revoked_bearer(&self, _bearer: &str) -> Option<String> {
+pub trait ApiKeyVerifier: Send + Sync + 'static {
+    /// Check the key a request presents. The default answers from
+    /// [`Self::verify_bearer`], for a verifier that needs no I/O.
+    fn check<'a>(&'a self, bearer: &'a str) -> BoxFuture<'a, KeyCheck> {
+        let check = self
+            .verify_bearer(bearer)
+            .map_or(KeyCheck::Refused, KeyCheck::Live);
+        Box::pin(std::future::ready(check))
+    }
+
+    /// Return the stable record ID of a live key.
+    fn verify_bearer(&self, _bearer: &str) -> Option<String> {
         None
     }
-
-    /// Return whether this verifier can authenticate a request right now.
-    ///
-    /// The key store is not ready before its first snapshot: it holds no
-    /// key material yet, so the gateway refuses every request rather than
-    /// reject every key as invalid, and `/ready` fails.
-    fn is_ready(&self) -> bool {
-        true
-    }
-
-    /// Admit or refuse one request of an authenticated key before it goes
-    /// upstream (`crate::key_limits`). The default has no limits.
-    ///
-    /// # Errors
-    ///
-    /// Returns the limit that refused the request.
-    fn admit(&self, _key_id: &str) -> Result<(), key_limits::LimitRejection> {
-        Ok(())
-    }
-
-    /// Count the tokens of one finished request against the key's budget.
-    fn record_tokens(&self, _key_id: &str, _tokens: u64) {}
 }
 
 pub trait AuditSink: Send + Sync + 'static {
@@ -267,15 +264,10 @@ async fn health() -> impl IntoResponse {
     Json(json!({"status":"ok"}))
 }
 
-async fn ready(State(state): State<Arc<AppState>>) -> Response<Body> {
-    if !state.keys.is_ready() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"status":"key_registry_not_ready"})),
-        )
-            .into_response();
-    }
-    (StatusCode::OK, Json(json!({"status":"ready"}))).into_response()
+/// Ready needs nothing outside the gateway: a key check that gets no answer
+/// fails only the request that needed it.
+async fn ready() -> impl IntoResponse {
+    Json(json!({"status":"ready"}))
 }
 
 async fn models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response<Body> {
@@ -345,18 +337,15 @@ async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Re
         .get::<String>()
         .cloned()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    if !state.keys.is_ready() {
-        state.metrics.record_rejection("key_registry_not_ready");
-        return client_error(StatusCode::SERVICE_UNAVAILABLE, "key_registry_not_ready");
-    }
-    let key_id = match authenticate(&state, request.headers()) {
-        Authentication::Active(key_id) => key_id,
-        Authentication::Revoked(key_id) => return revoked_key(&state, &key_id),
-        Authentication::Invalid => return unauthorized(&state),
+    let key_id = match authenticate(&state, request.headers()).await {
+        KeyCheck::Live(key_id) => key_id,
+        KeyCheck::Refused => return unauthorized(&state),
+        KeyCheck::OutOfCredits => return out_of_credits(&state),
+        KeyCheck::Unavailable => {
+            state.metrics.record_rejection("key_check_unavailable");
+            return client_error(StatusCode::SERVICE_UNAVAILABLE, "key_check_unavailable");
+        }
     };
-    if let Err(rejection) = state.keys.admit(&key_id) {
-        return limit_rejected(&state, &key_id, rejection);
-    }
     let client_routing_key = request.headers().get(&routing_key::HEADER).cloned();
     let started = Instant::now();
     let router_request = state.metrics.router_request(&state.router_label);
@@ -451,8 +440,13 @@ async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Re
     });
     let mut usage_request = match &state.usage {
         Some(recorder) => match recorder.reserve(&key_id, model) {
-            Some(guard) => Some(guard.charge_to(state.keys.clone())),
-            None => return protection::overload("usage_capacity"),
+            Ok(guard) => Some(guard),
+            Err(usage::Unrecorded::UnknownModel) => return protection::overload("usage_capacity"),
+            // Serve nothing whose usage could not be kept.
+            Err(usage::Unrecorded::Full) => {
+                state.metrics.record_rejection("usage_backlog_full");
+                return client_error(StatusCode::SERVICE_UNAVAILABLE, "usage_backlog_full");
+            }
         },
         None => None,
     };
@@ -694,32 +688,18 @@ fn body_memory_refused(state: &AppState, error: &request_body::ReserveError) -> 
     }
 }
 
-enum Authentication {
-    Active(String),
-    Revoked(String),
-    Invalid,
-}
-
-fn authenticate(state: &AppState, headers: &HeaderMap) -> Authentication {
-    let Some(value) = headers
+async fn authenticate(state: &AppState, headers: &HeaderMap) -> KeyCheck {
+    let Some(bearer) = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
     else {
-        return Authentication::Invalid;
-    };
-    let Some(bearer) = value.strip_prefix("Bearer ") else {
-        return Authentication::Invalid;
+        return KeyCheck::Refused;
     };
     if bearer.is_empty() || bearer.len() > 256 {
-        return Authentication::Invalid;
+        return KeyCheck::Refused;
     }
-    if let Some(key_id) = state.keys.verify_bearer(bearer) {
-        Authentication::Active(key_id)
-    } else if let Some(key_id) = state.keys.verify_revoked_bearer(bearer) {
-        Authentication::Revoked(key_id)
-    } else {
-        Authentication::Invalid
-    }
+    state.keys.check(bearer).await
 }
 
 fn unauthorized(state: &AppState) -> Response<Body> {
@@ -727,52 +707,34 @@ fn unauthorized(state: &AppState) -> Response<Body> {
     client_error(StatusCode::UNAUTHORIZED, "invalid_api_key")
 }
 
-fn revoked_key(state: &AppState, key_id: &str) -> Response<Body> {
-    state
-        .metrics
-        .record_key_rejection("revoked_api_key", key_id);
-    client_error(StatusCode::UNAUTHORIZED, "invalid_api_key")
-}
-
-/// A per-key limit refused the request. The body names only the limit
-/// kind: no key ID, no limit value and no spend.
-fn limit_rejected(
-    state: &AppState,
-    key_id: &str,
-    rejection: key_limits::LimitRejection,
-) -> Response<Body> {
-    let (code, message, retry_after_seconds) = match rejection {
-        key_limits::LimitRejection::RateLimited {
-            retry_after_seconds,
-        } => (
-            "rate_limit_exceeded",
-            "The API key sent too many requests. Wait, then try again.",
-            retry_after_seconds,
-        ),
-        key_limits::LimitRejection::TokenBudgetExhausted {
-            retry_after_seconds,
-        } => (
-            "insufficient_quota",
-            "The API key used its token budget for this period.",
-            retry_after_seconds,
-        ),
-    };
-    state.metrics.record_key_rejection(code, key_id);
+/// `429 insufficient_quota`, exactly as OpenAI-compatible clients expect an
+/// exhausted quota, so their handling of it works unchanged. A client may
+/// retry it; the answer is kept, so a retry never reaches Confidential Cloud.
+fn out_of_credits(state: &AppState) -> Response<Body> {
+    state.metrics.record_rejection("out_of_credits");
+    let code = inference_api::ErrorCode("insufficient_quota");
     let mut response = (
         StatusCode::TOO_MANY_REQUESTS,
-        Json(json!({"error":{"code":code,"message":message}})),
+        Json(json!({"error":{
+            "code":code.0,
+            "message":"Your org is out of inference credits. An owner of the org buys more in Billing.",
+        }})),
     )
         .into_response();
+    response.extensions_mut().insert(code);
     response
-        .extensions_mut()
-        .insert(inference_api::ErrorCode(code));
-    response
-        .headers_mut()
-        .insert(header::RETRY_AFTER, HeaderValue::from(retry_after_seconds));
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+}
+
+/// The reporter public key, which an operator reads through the attested
+/// channel and binds in Confidential Cloud.
+pub fn reporter_key_router(public_key_pem: String) -> Router {
+    Router::new().route(
+        "/usage-reporter-key",
+        get(move || {
+            let pem = public_key_pem.clone();
+            async move { ([(header::CONTENT_TYPE, "application/x-pem-file")], pem) }
+        }),
+    )
 }
 
 fn client_error(status: StatusCode, code: &'static str) -> Response<Body> {
@@ -866,10 +828,6 @@ mod tests {
         fn verify_bearer(&self, value: &str) -> Option<String> {
             (value == "accepted").then(|| "key_record_1".to_owned())
         }
-
-        fn verify_revoked_bearer(&self, value: &str) -> Option<String> {
-            (value == "revoked").then(|| "key_record_revoked".to_owned())
-        }
     }
 
     struct Audit;
@@ -877,16 +835,11 @@ mod tests {
         fn record(&self, _: AuditEvent) {}
     }
 
-    /// A key store before its first snapshot: it holds no key material, so
-    /// the gateway must refuse every request.
-    struct NotReadyKeys;
-    impl ApiKeyVerifier for NotReadyKeys {
-        fn verify_bearer(&self, _value: &str) -> Option<String> {
-            None
-        }
-
-        fn is_ready(&self) -> bool {
-            false
+    /// A verifier whose checks get no answer.
+    struct UnavailableKeys;
+    impl ApiKeyVerifier for UnavailableKeys {
+        fn check<'a>(&'a self, _bearer: &'a str) -> BoxFuture<'a, KeyCheck> {
+            Box::pin(std::future::ready(KeyCheck::Unavailable))
         }
     }
 
@@ -971,8 +924,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_store_without_keys_keeps_the_catalog_and_rejects_inference() {
-        let app = app_with_keys(Arc::new(NotReadyKeys));
+    async fn unanswered_key_checks_keep_the_catalog_and_refuse_inference() {
+        let app = app_with_keys(Arc::new(UnavailableKeys));
         let response = app
             .clone()
             .oneshot(
@@ -1003,20 +956,6 @@ mod tests {
                     .header(authorization().0, authorization().1)
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"model":"deepseek"}"#))
-                    .unwrap_or_else(|_| unreachable!()),
-            )
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    }
-
-    #[tokio::test]
-    async fn readiness_waits_for_the_keys() {
-        let response = app_with_keys(Arc::new(NotReadyKeys))
-            .oneshot(
-                Request::builder()
-                    .uri("/ready")
-                    .body(Body::empty())
                     .unwrap_or_else(|_| unreachable!()),
             )
             .await
@@ -1071,8 +1010,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_cold_start_registry_verifier_answers_service_unavailable() {
-        let app = app_with_keys(Arc::new(NotReadyKeys));
+    async fn an_unanswered_key_check_answers_service_unavailable() {
+        let app = app_with_keys(Arc::new(UnavailableKeys));
         let response = app
             .oneshot(
                 Request::builder()
@@ -1091,7 +1030,7 @@ mod tests {
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(
             serde_json::from_slice::<Value>(&body).unwrap_or_default()["error"]["code"],
-            "key_registry_not_ready"
+            "key_check_unavailable"
         );
     }
 
