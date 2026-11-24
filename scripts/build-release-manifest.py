@@ -10,7 +10,10 @@ is, and a client verifies it. It lists:
 - the c8s release, its source commit, its core image digests, the images of
   its node seed, and the source lock entry for that commit;
 - the node image digest and its TDX measurements;
-- the CDS guest image digest and the SHA-256 of its manifest.json.
+- the CDS guest image digest and the SHA-256 of its manifest.json;
+- the confidential-sglang release record of the engine and router images,
+  and those two images by digest (scripts/confidential_sglang_release.py);
+- the recipes (recipes/), by SHA-256, and the recipes file that holds them.
 
 It holds no deployment value: no allowlist, no Helm values, no model, no
 hostname, no address. Each deployment renders its own allowlist from a
@@ -37,7 +40,12 @@ When the base is a commit, there is no base release. --download-dir keeps
 the downloaded files; the build uses the files already there, after the same
 checks.
 
-The build writes three files to --output-dir:
+The build takes the confidential-sglang images from the record that
+release/spec.yaml pins. Their evidence is that record (two equal clean build
+digests), not the image publication of this repository. The build refuses
+the placeholder record.
+
+The build writes four files to --output-dir:
 
 - release-bundle.json: the manifest. It must match
   api/release-manifest-v2.schema.json;
@@ -48,7 +56,11 @@ The build writes three files to --output-dir:
   the same bytes;
 - cds-manifest.json: the CDS guest image manifest.json (release/cds-manifest.json).
   The manifest binds its SHA-256 (cdsImage.manifestSha256). A client needs
-  its measurements to check the CDS pin of a deployment.
+  its measurements to check the CDS pin of a deployment;
+- recipes.json: every recipe of recipes/ with its files (recipes/README.md).
+  The manifest binds its SHA-256 (recipes.sha256) and each recipe.yaml. A pair
+  recipe must match the layout it names, which the manifest binds
+  (confidentialSglang.layouts).
 
 The release workflow builds them at the tag, signs the manifest, and attaches
 both to the GitHub release. Anyone can build them again from the tagged tree
@@ -79,6 +91,7 @@ import jsonschema
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import confidential_sglang_release
 import release_signature
 import release_spec
 
@@ -96,6 +109,9 @@ REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 IMAGE_SELECTOR = runpy.run_path(str(ROOT / "scripts/affected-release-images.py"))
 PUBLICATION = runpy.run_path(str(ROOT / "scripts/image-publication-manifest.py"))
 ALLOWLIST_GENERATOR = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
+RECIPES = runpy.run_path(str(ROOT / "scripts/recipe-values.py"))
+RECIPES_FILE = "recipes.json"
+RECIPES_SCHEMA = "confidential.ai/recipes/v1"
 C8S_VERSION = re.compile(rf"^{release_spec.VERSION}(?:-beta\.[1-9][0-9]*)?$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -142,8 +158,15 @@ def read_spec(path: Path = release_spec.SPEC) -> dict[str, Any]:
 
 
 def validate_spec(spec: Any) -> dict[str, Any]:
-    require(isinstance(spec, dict) and set(spec) == {"c8s", "images"},
-            "the release specification holds exactly c8s and images; the tag is the version")
+    require(isinstance(spec, dict) and set(spec) == {"c8s", "images", "confidentialSglang"},
+            "the release specification holds exactly c8s, images and confidentialSglang; the tag is the version")
+    section = spec["confidentialSglang"]
+    require(isinstance(section, dict) and set(section) == {"record"},
+            "confidentialSglang holds exactly record")
+    try:
+        confidential_sglang_release.validate_name(section["record"])
+    except confidential_sglang_release.RecordError as error:
+        raise ManifestError(str(error)) from error
     c8s = spec["c8s"]
     require(isinstance(c8s, dict), "c8s must be a mapping")
     require(isinstance(c8s.get("release"), str) and C8S_VERSION.fullmatch(c8s["release"]) is not None,
@@ -180,7 +203,39 @@ def validate_spec(spec: Any) -> dict[str, Any]:
         else:
             require(OCI.fullmatch(image) is not None, f"images.{key} is not digest-pinned")
     require(images.get("c8sOperator") in core_images, "images.c8sOperator is not one of the c8s core images")
+    require(not set(images) & set(confidential_sglang_release.CHART_KEYS.values()),
+            "the confidential-sglang images come from confidentialSglang.record, not from images")
     return spec
+
+
+def confidential_sglang(spec: dict[str, Any]) -> dict[str, Any]:
+    """The confidential-sglang pin of the manifest. The placeholder record stops the build."""
+    try:
+        return confidential_sglang_release.release_pin(spec["confidentialSglang"])
+    except confidential_sglang_release.RecordError as error:
+        raise ManifestError(str(error)) from error
+
+
+def recipes_file(images: dict[str, str], sglang: dict[str, Any],
+                 root: Path = RECIPES["RECIPES"]) -> tuple[bytes, dict[str, Any]]:
+    """The recipes file and its manifest binding. Every recipe must be valid for these images and,
+    for a pair recipe, for the layout of the pinned engine image (`sglang`, the confidentialSglang
+    block of the manifest)."""
+    recipes: dict[str, dict[str, str]] = {}
+    bound: dict[str, str] = {}
+    for directory in sorted(path for path in root.iterdir() if path.is_dir()):
+        try:
+            RECIPES["recipe_values"](RECIPES["load"](directory / "recipe.yaml"), images,
+                                     {"confidentialSglang": sglang})
+        except RECIPES["RecipeError"] as error:
+            raise ManifestError(f"recipe {directory.name}: {error}") from error
+        files = {path.relative_to(directory).as_posix(): path.read_text(encoding="utf-8")
+                 for path in sorted(directory.rglob("*")) if path.is_file()}
+        recipes[directory.name] = files
+        bound[directory.name] = sha256(files["recipe.yaml"].encode())
+    require(bool(recipes), "recipes/ holds no recipe")
+    data = encode({"schema": RECIPES_SCHEMA, "recipes": recipes})
+    return data, {"file": RECIPES_FILE, "sha256": sha256(data), "recipes": bound}
 
 
 def chart_identity(chart: Path) -> dict[str, str]:
@@ -533,6 +588,9 @@ def build(
     with tempfile.TemporaryDirectory(prefix="base-release-") as directory:
         base = base_release_images(publication, download_dir or Path(directory), required_images=required_images)
     images = release_images(spec["images"], publication, base)
+    sglang = confidential_sglang(spec)
+    images = dict(sorted({**images, **confidential_sglang_release.chart_images(sglang)}.items()))
+    recipes_data, recipes = recipes_file(images, sglang)
     node = node_measurements(node_manifest, spec)
     cds = cds_image(cds_manifest, spec)
     lock = source_lock_entry(read_json(lock_path), spec["c8s"]["sourceCommit"])
@@ -578,6 +636,8 @@ def build(
         # The SHA-256 of release/cds-manifest.json, the manifest.json of the
         # pinned CDS guest image, which the release publishes beside the manifest.
         "cdsImage": cds,
+        "confidentialSglang": sglang,
+        "recipes": recipes,
         "sourceLock": {
             "path": lock_path.relative_to(ROOT).as_posix() if ROOT in lock_path.resolve().parents else str(lock_path),
             "sha256": sha256(lock_path.read_bytes()),
@@ -585,7 +645,7 @@ def build(
     }
     validate_schema(manifest)
     return {"release-bundle.json": encode(manifest), archive_name: archive,
-            "cds-manifest.json": cds_manifest.read_bytes()}
+            "cds-manifest.json": cds_manifest.read_bytes(), RECIPES_FILE: recipes_data}
 
 
 def encode(manifest: dict[str, Any]) -> bytes:

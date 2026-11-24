@@ -49,6 +49,87 @@ spec:
       port: {{ .Values.router.metricsPort }}
       targetPort: {{ .Values.router.metricsPort }}
 ---
+{{- $api := .Values.router.discovery.apiServer }}
+{{- /* A documentation address (192.0.2.0/24, the default) is not known
+       yet: the release render of the allowlist runs before the control
+       plane exists. A known address must be in router.discovery.apiServer.cidrs
+       when that list is set, or C8s drops the router's connection. */}}
+{{- if and $api.cidrs (not (eq (include "confidential-inference.ipv4InRange" (dict "address" $api.address "cidr" "192.0.2.0/24")) "true")) }}
+{{- $inRange := false }}
+{{- range $api.cidrs }}
+{{- if eq (include "confidential-inference.ipv4InRange" (dict "address" $api.address "cidr" .)) "true" }}{{ $inRange = true }}{{ end }}
+{{- end }}
+{{- if not $inRange }}
+{{- fail (printf "router.discovery.apiServer.address %s is in no range of router.discovery.apiServer.cidrs %v: the router's allowlist exits would not reach it" $api.address $api.cidrs) }}
+{{- end }}
+{{- end }}
+# The router's Kubernetes client configuration. A C8s mesh member cannot
+# reach the API server through the `kubernetes` Service: the Service address
+# is in a cluster range, so the mesh captures the connection. The router
+# dials the API server's own address, which is its one allowlist exit (the
+# hostAliases address below). The token and the CA come from the projected
+# volume, below /mnt/c8s-data so that the C8s allowlist pins the mount.
+#
+# The API server is outside the trust boundary, like DNS: it only selects
+# the worker addresses. The mesh authenticates every worker connection.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sglang-router-kubeconfig
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sglang-router
+data:
+  kubeconfig: |
+    apiVersion: v1
+    kind: Config
+    clusters:
+      - name: cluster
+        cluster:
+          server: {{ printf "https://%s:%d" $api.address (int $api.port) }}
+          certificate-authority: {{ include "confidential-inference.routerKubernetesDirectory" . }}/ca.crt
+          tls-server-name: {{ $api.serverName }}
+    users:
+      - name: sglang-router
+        user:
+          tokenFile: {{ include "confidential-inference.routerKubernetesDirectory" . }}/token
+    contexts:
+      - name: discovery
+        context:
+          cluster: cluster
+          user: sglang-router
+          namespace: {{ .Release.Namespace }}
+    current-context: discovery
+---
+# Service discovery reads the worker pods of this namespace, nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sglang-router-pods
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sglang-router
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sglang-router-pods
+  labels:
+    {{- include "confidential-inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sglang-router
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sglang-router-pods
+subjects:
+  - kind: ServiceAccount
+    name: sglang-router
+    namespace: {{ .Release.Namespace }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -56,6 +137,15 @@ metadata:
   labels:
     {{- include "confidential-inference.labels" . | nindent 4 }}
     app.kubernetes.io/component: sglang-router
+  {{- with $api.cidrs }}
+  # The ranges the API server address can have. When it is set,
+  # scripts/generate-release-allowlist.py makes each range one allowlist
+  # exit, in place of the hostAliases address: the deployment sets the
+  # address after the release render of the allowlist. On the Deployment,
+  # not the pod, so the pods do not change.
+  annotations:
+    inference.confidential.ai/egress-cidrs: {{ join "," . | quote }}
+  {{- end }}
 spec:
   replicas: {{ .Values.router.replicas }}
   # Keep the ready router in service until its replacement can reach a worker.
@@ -74,12 +164,21 @@ spec:
         confidential.ai/environment: {{ .Values.environment | quote }}
       annotations:
         confidential.ai/cw: sglang-router
+        # A changed client configuration rolls the router.
+        checksum/kubeconfig: {{ printf "%s:%d:%s" $api.address (int $api.port) $api.serverName | sha256sum }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.router.metricsPort | quote }}
     spec:
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.scheduling.routerNodeName | default .Values.scheduling.inferenceNodeName | quote }}
-      # The router watches Ready worker Pods in this namespace.
+      {{- include "confidential-inference.nodeLossTolerations" . | nindent 6 }}
+      # The API server address is the router's allowlist exit (C8s #1047):
+      # scripts/generate-release-allowlist.py makes each hostAliases address
+      # one exit on the port that the allowlist policy declares, or, when
+      # router.discovery.apiServer.cidrs is set, each of those ranges.
+      hostAliases:
+        - ip: {{ $api.address | quote }}
+          hostnames: [kubernetes-api]
       enableServiceLinks: false
       # A fixed hostname keeps HOSTNAME exact in the c8s allowlist.
       hostname: sglang-router
@@ -89,7 +188,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: sglang-router
-          image: {{ default .Values.images.sglangConfidential .Values.images.sglangRouter }}
+          image: {{ include "confidential-inference.routerImage" . }}
           imagePullPolicy: IfNotPresent
           # The same non-root user as the workers, which run this image under
           # the restricted Pod Security level the c8s node enforces.
@@ -105,11 +204,30 @@ spec:
           # (images/sglang-router/README.md).
           command: ["python3", "/usr/local/bin/ci-sglang-router"]
           args:
-            # c8s >= v0.64: a mesh member pod cannot reach the Kubernetes API,
-            # so the router gets its workers by name instead of by discovery.
-            - --worker-urls
-            {{- range $index := until (int .Values.inference.replicas) }}
-            - http://inference-worker-{{ $index }}-0.inference-workers:{{ $.Values.inference.port }}
+            # The router watches the worker pods (or, with inference.layout
+            # pair, the PD router pods) of this namespace (upstream
+            # service discovery). It adds each pod that is Running and Ready
+            # at <pod IP>:<port>, and removes a pod when it is deleted. Its
+            # health checks (below) stop traffic to a worker that is still
+            # listed but does not answer. The worker-withdrawal patch keeps a
+            # withdrawn (draining) worker out, and the second selector keeps
+            # a pod relabeled confidential.ai/traffic-eligible=false out of a
+            # new router.
+            {{- if eq (.Values.inference.layout | default "worker") "pair" }}
+            # inference.layout pair: each replica is one PD router pod
+            # (templates/inference-pairs.yaml), which this router treats as
+            # one worker. It is Ready while its pair's prefill and decode are.
+            - --service-discovery
+            - --service-discovery-namespace={{ .Release.Namespace }}
+            - --service-discovery-port={{ .Values.inference.pair.router.port }}
+            - --selector=app.kubernetes.io/component=pd-router
+            - --selector=confidential.ai/traffic-eligible=true
+            {{- else }}
+            - --service-discovery
+            - --service-discovery-namespace={{ .Release.Namespace }}
+            - --service-discovery-port={{ .Values.inference.port }}
+            - --selector=app.kubernetes.io/component=inference-worker
+            - --selector=confidential.ai/traffic-eligible=true
             {{- end }}
             - --policy=cache_aware
             - --cache-threshold=0.3
@@ -117,18 +235,21 @@ spec:
             - --balance-rel-threshold=1.5
             - --eviction-interval-secs=60
             - --max-tree-size=67108864
-            - --health-check-endpoint=/health
-            # SGLang's /health generates one token and polls once a second, so
-            # under load one check can take seconds. One slow check must not
-            # eject a worker (with one worker, every request gets 503), so
-            # this uses the upstream failure threshold and timeout: 3
-            # consecutive failures, 5 s each.
-            # A worker that gets SIGTERM answers /health with 503 at once and
-            # drains (upstream SGLang). The router stops picking it after 3
-            # checks, within 6 s. A request that fails on it in that window
-            # opens its circuit after 2 failures, and the router's retries (5
-            # by default) go to another worker. A dead pod IP fails in 2 s,
-            # not the default 10 s connect timeout.
+            # The router checks each worker with /health_generate, a 1-token
+            # generation: a worker gets traffic only while its scheduler
+            # answers. The worker's own /health does not generate (the worker
+            # liveness probe uses it), so it would not see a stalled scheduler.
+            - --health-check-endpoint=/health_generate
+            # /health_generate polls once a second, so under load one check
+            # can take seconds. One slow check must not eject a worker (with
+            # one worker, every request gets 503), so this uses the upstream
+            # failure threshold and timeout: 3 consecutive failures, 5 s each.
+            # A worker that gets SIGTERM answers /health_generate with 503 at
+            # once and drains (upstream SGLang). The router stops picking it
+            # after 3 checks, within 6 s. A request that fails on it in that
+            # window opens its circuit after 2 failures, and the router's
+            # retries (5 by default) go to another worker. A dead pod IP fails
+            # in 2 s, not the default 10 s connect timeout.
             - --health-check-interval-secs=2
             - --health-check-timeout-secs=5
             - --health-failure-threshold=3
@@ -155,6 +276,14 @@ spec:
             # Environment, so the exact allowlist pins the routes.
             - name: CI_ROUTER_MODEL_ROUTES
               value: {{ include "confidential-inference.routerRoutes" . | quote }}
+            # The Kubernetes client reads this file before the in-cluster
+            # default (kube-rs Config::infer).
+            - name: KUBECONFIG
+              value: {{ include "confidential-inference.routerKubernetesDirectory" . }}/kubeconfig
+          volumeMounts:
+            - name: kubernetes
+              mountPath: {{ include "confidential-inference.routerKubernetesDirectory" . }}
+              readOnly: true
           ports:
             - name: openai
               containerPort: {{ .Values.router.port }}
@@ -177,6 +306,23 @@ spec:
               port: openai
             periodSeconds: 30
             timeoutSeconds: 5
+      volumes:
+        # The service account token (the service account does not mount one
+        # itself), the cluster CA and the client configuration, in memory.
+        - name: kubernetes
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - {key: ca.crt, path: ca.crt}
+              - configMap:
+                  name: sglang-router-kubeconfig
+                  items:
+                    - {key: kubeconfig, path: kubeconfig}
 {{- end }}
 
 {{- end -}}

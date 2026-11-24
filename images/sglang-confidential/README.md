@@ -79,6 +79,7 @@ object per line, at most 4096 bytes, with no free text:
 | `nccl_error` | `code`, `location` |
 | `worker_error` | `error_class`, `exception`, `location` |
 | `worker_exit` | `exit_code`, `signal` |
+| `jit_compile` | `cache`, `files` (a kernel compiled after `worker_ready`) |
 
 Every event also has the `event` key. `exception` is the exception type name
 only; the message is always discarded. `location` is the last SGLang
@@ -90,6 +91,22 @@ as `worker_error`. The supervisor also writes `worker_exit` with exit code 1
 when it stops before the server starts (model check failure or timeout).
 The model-mount progress and rejection messages stay on stderr; they contain
 no request data.
+
+`jit_compile` reports a kernel that a compiler built at run time. Such a
+compile blocks the SGLang scheduler. On 2026-11-19 a 67-second FlashInfer
+sampling compile on the first top-k/top-p request let the liveness probe
+kill both staging workers. A compiled kernel is also not part of the
+measured image. After `worker_ready`, every 5 seconds, the supervisor lists
+the cache directories of each compiler in the image: FlashInfer, Triton,
+torch inductor, DeepGEMM, the SGLang JIT kernels, the CUDA driver PTX cache,
+TileLang, CuTe DSL, TVM-FFI, and any other file below `~/.cache`. It compares
+file names and sizes, and reads no content. Files that exist at
+`worker_ready` (startup compiles) are not reported. `cache` is one of
+`flashinfer`, `triton`, `inductor`, `deep_gemm`, `sglang_jit`, `cuda`,
+`tilelang`, `cute_dsl`, `tvm_ffi` and `other`; `files` is the number of new
+or changed files in one scan. The event holds no path or file name. The
+directories, and the source that sets each one, are listed in
+`wait_for_model.py`.
 
 `--private-server-output` is still accepted, but it does nothing: the output
 is always private. Native CUDA and application error text is not available
@@ -111,3 +128,26 @@ Build and publication use the existing Image Preparation workflow, including
 its independent rebuild audit. Deploy only published images with verified
 pipeline evidence and a signed release. A local build is not a candidate
 release image.
+
+## Image contract test
+
+`tests/images/engine-contract` checks one engine image by digest. It runs
+the image with Docker, with no GPU and no network, as uid 1001 on a
+read-only root. It checks the user and `HOME=/tmp`, that uid 1001 can write
+nothing below `/opt`, the helpers in `/usr/local/bin`, the hardened route
+list, the refused logging settings, the prebuilt FlashInfer sampling kernel
+of each `flashinfer_jit_cache` provider (sm100a and sm103a), and that
+`wait-for-model` writes only events of the worker log policy. The test
+docstring lists each check.
+
+```sh
+ENGINE_IMAGE=<repository>@sha256:<digest> \
+  python3 -m unittest discover -s tests/images/engine-contract -p 'test_*.py'
+```
+
+Without `ENGINE_IMAGE` the image tests are skipped. The `Engine image
+contract` workflow runs the test on demand for a given image, and on a pull
+request that changes the test, `release/spec.yaml` or the
+confidential-sglang record inputs, for the engine of the record that the
+spec pins (docs/confidential-sglang-images.md). The placeholder record
+`images-000000000000` skips the image tests.

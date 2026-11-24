@@ -72,6 +72,15 @@ REPOSITORY_CONFIGS[RELEASE_IMAGES["rolloutClient"]] = {
 
 REPOSITORY = "https://github.com/confidential-dot-ai/confidential-inference"
 LOCK = ROOT / "release/inputs/c8s-source-lock.json"
+# A confidential-sglang release record for the build tests. release/spec.yaml
+# pins the placeholder until confidential-sglang publishes, and the build
+# refuses the placeholder.
+SGLANG_RECORD = "images-0123456789ab"
+SGLANG_INPUTS = FIXTURES / "confidential-sglang"
+
+
+def fixture_sglang_pin(_spec=None) -> dict:
+    return MAN.confidential_sglang_release.release_pin({"record": SGLANG_RECORD}, SGLANG_INPUTS)
 
 
 @functools.cache
@@ -123,6 +132,8 @@ def build_framework(evidence: dict, base: dict | None = None, tag: str = "v0.17.
         stack.enter_context(mock.patch.object(MAN, "changed_paths", return_value=[]))
         stack.enter_context(mock.patch.object(MAN.release_signature, "verify_release_signature"))
         stack.enter_context(mock.patch.object(MAN.shutil, "which", return_value="/usr/bin/cosign"))
+        stack.enter_context(mock.patch.object(MAN, "confidential_sglang", fixture_sglang_pin))
+        stack.enter_context(mock.patch.object(MAN.confidential_sglang_release, "INPUTS", SGLANG_INPUTS))
         return MAN.build(tag, MAN.CHART, LOCK, "d" * 40, evidence_path, download_dir)
 
 
@@ -161,7 +172,7 @@ def staging_allowlist(c8s: Path) -> bytes:
 
 def rendered_workers(deployment) -> list[dict]:
     return [item for item in rendered(deployment) if item.get("kind") == "StatefulSet"
-            and item.get("metadata", {}).get("name", "").startswith("inference-worker-")]
+            and item.get("metadata", {}).get("name", "") == "inference-worker"]
 
 DIGEST = "sha256:" + "a" * 64
 IMAGE = f"ghcr.io/example/app@{DIGEST}"
@@ -188,9 +199,9 @@ class EnvironmentTests(unittest.TestCase):
         return GEN.container_env(obj, container, configs, POLICY, cdi)
 
     def test_image_env_last_value_wins_and_platform_values_are_added(self):
-        values = self.env(controller())
+        values = self.env(controller(kind="Deployment", hostname="agent"))
         self.assertEqual(values["PATH"], "/bin")
-        self.assertEqual(values["HOSTNAME"], "worker-0")
+        self.assertEqual(values["HOSTNAME"], "agent")
         self.assertEqual(values["KUBERNETES_SERVICE_HOST"], "10.53.0.1")
         self.assertEqual(values["KUBERNETES_PORT_443_TCP"], "tcp://10.53.0.1:443")
 
@@ -200,9 +211,9 @@ class EnvironmentTests(unittest.TestCase):
             {"name": "C", "value": "$(B)-y-$$(B)"},
             {"name": "POD", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
         ]}
-        values = self.env(controller(container=container))
+        values = self.env(controller(kind="Deployment", hostname="agent", container=container))
         self.assertEqual(values["C"], "x-y-$(B)")
-        self.assertEqual(values["POD"], "worker-0")
+        self.assertEqual(values["POD"], "agent")
 
     def test_node_specific_values_are_refused(self):
         container = {"name": "app", "image": IMAGE, "env": [
@@ -223,6 +234,36 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual({name for name, rule in policy["variables"].items() if "exact" not in rule}, {"NODE_NAME"})
         self.assertEqual(policy["variables"]["HOSTNAME"], {"exact": "agent"})
         self.assertEqual(GEN.env_policy({"A": "1"}), {"policy": "exact", "values": {"A": "1"}})
+
+    def test_the_pods_of_a_statefulset_differ_only_in_hostname_for_every_replica_count(self):
+        """One StatefulSet runs every worker under one entry: inference-worker-0, -1, ...
+
+        The entry requires HOSTNAME and a metadata.name variable and admits
+        any value; every other variable stays exact. This holds for one
+        replica too: CI scales the StatefulSet from 1 to 2 pods at runtime,
+        and inference-worker-1 must match the same entry.
+        """
+        container = {"name": "app", "image": IMAGE, "env": [
+            {"name": "POD", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}}]}
+        for replicas in (None, 0, 1, 2, 8):
+            with self.subTest(replicas=replicas):
+                workers = controller(container=container)
+                if replicas is None:
+                    del workers["spec"]["replicas"]
+                else:
+                    workers["spec"]["replicas"] = replicas
+                values = self.env(workers)
+                self.assertIs(values["HOSTNAME"], GEN.OPEN_VALUE)
+                self.assertIs(values["POD"], GEN.OPEN_VALUE)
+                policy = GEN.env_policy(values)
+                self.assertEqual(policy["policy"], "match")
+                self.assertEqual({name for name, rule in policy["variables"].items() if "exact" not in rule},
+                                 {"HOSTNAME", "POD"})
+                self.assertEqual(policy["variables"]["A"], {"exact": "1"})
+                self.assertNotIn("worker-0", json.dumps(policy))
+        # The StatefulSet controller sets each pod's hostname to its name.
+        workers["spec"]["template"]["spec"]["hostname"] = "fixed"
+        self.assertIs(GEN.pod_name(workers), GEN.OPEN_VALUE)
 
     def test_service_links_and_random_pod_names_are_refused(self):
         obj = controller()
@@ -631,10 +672,10 @@ class FrameworkReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(MAN.ManifestError, 'c8s.release'):
                 MAN.validate_spec({**spec, 'c8s': {**spec['c8s'], 'release': version}})
 
-    def test_the_spec_holds_only_c8s_and_images(self):
+    def test_the_spec_holds_only_c8s_images_and_the_confidential_sglang_record(self):
         spec = MAN.read_spec()
         for key, value in (("version", "v0.14.0"), ("model", {}), ("publicHostnames", ["api.example.invalid"])):
-            with self.subTest(key=key), self.assertRaisesRegex(MAN.ManifestError, "exactly c8s and images"):
+            with self.subTest(key=key), self.assertRaisesRegex(MAN.ManifestError, "exactly c8s, images and confidentialSglang"):
                 MAN.validate_spec({**spec, key: value})
 
     def test_the_spec_names_each_image_correctly(self):
@@ -659,7 +700,8 @@ class FrameworkReleaseTests(unittest.TestCase):
 
     def test_the_framework_manifest_names_the_software_and_no_deployment_value(self):
         files = build_framework(publication(published_release_images()))
-        self.assertEqual(sorted(files), ["cds-manifest.json", "confidential-inference-0.17.0.tgz", "release-bundle.json"])
+        self.assertEqual(sorted(files), ["cds-manifest.json", "confidential-inference-0.17.0.tgz", "recipes.json",
+                                         "release-bundle.json"])
         manifest = json.loads(files["release-bundle.json"])
         spec = MAN.read_spec()
         self.assertEqual(manifest["schema"], "confidential.ai/release-manifest/v2")
@@ -670,7 +712,10 @@ class FrameworkReleaseTests(unittest.TestCase):
         })
         self.assertEqual(manifest["source"], {"repository": REPOSITORY, "commit": "d" * 40})
         self.assertEqual(manifest["imagePublication"]["sourceCommit"], "b" * 40)
-        self.assertEqual(manifest["images"], RELEASE_IMAGES)
+        sglang = fixture_sglang_pin()
+        self.assertEqual(manifest["images"], {**RELEASE_IMAGES, **MAN.confidential_sglang_release.chart_images(sglang)})
+        self.assertEqual(manifest["confidentialSglang"], sglang)
+        self.assertEqual(manifest["recipes"]["sha256"], MAN.sha256(files["recipes.json"]))
         self.assertEqual(manifest["c8s"], {"release": spec["c8s"]["release"], "sourceCommit": spec["c8s"]["sourceCommit"],
                                            "coreImages": sorted(spec["c8s"]["coreImages"]),
                                            "seedImages": MAN.seed_images(spec["c8s"])})
@@ -1084,7 +1129,7 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(files["allowlist.json"], STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n"))
         self.assertEqual(yaml.safe_load(files["release-values.yaml"]),
                          {"environment": "staging", "deployment": STAGING_DEPLOYMENT,
-                          "images": RELEASE_IMAGES, "frameworkRelease": {
+                          "images": framework_manifest()["images"], "frameworkRelease": {
                              "name": "v0.17.0", "bundleSha256": MAN.sha256(framework_bytes())}})
         record = json.loads(files["render.json"])
         self.assertEqual(record["environment"], "staging")
@@ -1180,7 +1225,8 @@ class RenderTests(unittest.TestCase):
         values = STAGING.read_values()["inference"]["model"]
         manifest_sha256 = MAN.sha256(values["download"]["manifest"].encode()).removeprefix("sha256:")
         workers = rendered_workers(STAGING)
-        self.assertEqual(len(workers), 2)
+        self.assertEqual(len(workers), 1)
+        self.assertEqual(workers[0]["spec"]["replicas"], 2)
         for worker in workers:
             pod = worker["spec"]["template"]
             container = pod["spec"]["containers"][0]
@@ -1196,7 +1242,8 @@ class RenderTests(unittest.TestCase):
 
         allowlist = json.loads(STAGING_ALLOWLIST.read_text())
         zero_digest = "sha256:" + "0" * 64
-        for index, name in enumerate(("inference-worker-0", "inference-worker-1")):
+        self.assertNotIn("inference-worker-0", allowlist["workloads"])
+        for name in ("inference-worker",):
             entry = allowlist["workloads"][name]
             # The download address is the entry's one exit (C8s #1047).
             self.assertEqual(entry["egress"], [{"cidr": "192.0.2.20/32", "port": 443}])
@@ -1204,10 +1251,13 @@ class RenderTests(unittest.TestCase):
                        if item["command"].get("argv", [""])[0] == "/bin/sh"]
             self.assertEqual(len(guarded), 1)
             policy = guarded[0]
-            self.assertEqual(policy["command"]["argv"], workers[index]["spec"]["template"]["spec"]["containers"][0]["command"])
+            self.assertEqual(policy["command"]["argv"], workers[0]["spec"]["template"]["spec"]["containers"][0]["command"])
+            # The two pods differ in HOSTNAME: the entry requires it and admits any value.
+            self.assertEqual(policy["env"]["policy"], "match")
+            self.assertEqual(policy["env"]["variables"]["HOSTNAME"], {"present": True})
             self.assertEqual(policy["args"]["argv"][0], "/usr/local/bin/wait-for-model")
             self.assertIn("sglang_simulator.simulation.sglang.launch_server", policy["args"]["argv"])
-            model = "/mnt/c8s-data/models/" + values["volumeNames"][index]
+            model = "/mnt/c8s-data/models/" + values["volumeNames"][0]
             # The download volume is writable at the fetch path and read-only at the model path.
             self.assertEqual(policy["mounts"], {"policy": "exact", "rules": [
                 {"destination": "/dev/shm", "kind": "emptyDir"},
@@ -1254,10 +1304,20 @@ class RenderTests(unittest.TestCase):
         router = next(item for item in documents if item.get("kind") == "Deployment"
                       and item.get("metadata", {}).get("name") == "sglang-router")
         args = router["spec"]["template"]["spec"]["containers"][0]["args"]
-        self.assertEqual(args[:3], ["--worker-urls", "http://inference-worker-0-0.inference-workers:30000",
-                                    "http://inference-worker-1-0.inference-workers:30000"])
+        self.assertEqual(args[:2], ["--service-discovery",
+                                    "--service-discovery-namespace=confidential-inference-staging"])
+        # Staging sets the API server address at deploy time, so the router's
+        # exit is the range it can be in (router.discovery.apiServer.cidrs),
+        # and the pod still dials the deploy-time address (C8s #1047).
+        self.assertEqual(allowlist["workloads"]["sglang-router"]["egress"], [{"cidr": "10.48.64.0/18", "port": 6443}])
+        self.assertEqual(router["metadata"]["annotations"], {GEN.EGRESS_CIDRS_ANNOTATION: "10.48.64.0/18"})
+        self.assertEqual(router["spec"]["template"]["spec"]["hostAliases"],
+                         [{"ip": "192.0.2.30", "hostnames": ["kubernetes-api"]}])
+        production = next(item for item in rendered(PRODUCTION) if item.get("kind") == "Deployment"
+                          and item.get("metadata", {}).get("name") == "sglang-router")
+        self.assertNotIn(GEN.EGRESS_CIDRS_ANNOTATION, production["metadata"].get("annotations", {}))
         changed = json.loads(json.dumps(allowlist))
-        changed["workloads"].pop("inference-worker-1")
+        changed["workloads"].pop("inference-worker")
         with self.assertRaisesRegex(REN.ManifestError, "entries differ"):
             contract(changed)
         changed = json.loads(json.dumps(allowlist))

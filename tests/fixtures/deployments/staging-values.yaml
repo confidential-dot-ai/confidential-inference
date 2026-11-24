@@ -83,6 +83,13 @@ telemetry:
 c8s:
   frontDoorPodLabelName: router
   frontDoorNamespace: c8s-router
+router:
+  discovery:
+    apiServer:
+      # The deployment sets the address after the release render; the
+      # allowlist exits are the ranges it can be in.
+      cidrs:
+      - 10.48.64.0/18
 workloadOverridesEnabled: false
 scheduling:
   inferenceNodeNames:

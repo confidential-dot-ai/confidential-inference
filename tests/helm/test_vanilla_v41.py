@@ -18,12 +18,15 @@ class VanillaV41Tests(unittest.TestCase):
         ], text=True)
         docs = [d for d in yaml.safe_load_all(output) if d]
         workers = [d for d in docs if d['kind'] == 'StatefulSet'
-                   and d['metadata']['name'].startswith('inference-worker-')]
-        self.assertEqual(2, len(workers))
+                   and d['metadata']['name'] == 'inference-worker']
+        self.assertEqual(1, len(workers))
+        self.assertEqual(2, workers[0]['spec']['replicas'])
         nodes = set()
         for worker in workers:
             spec = worker['spec']['template']['spec']
-            nodes.add(spec['nodeSelector']['kubernetes.io/hostname'])
+            (term,) = spec['affinity']['nodeAffinity']['requiredDuringSchedulingIgnoredDuringExecution'][
+                'nodeSelectorTerms']
+            nodes.update(term['matchExpressions'][0]['values'])
             c = next(c for c in spec['containers'] if c['name'] == 'sglang')
             args = c['args']
             self.assertIn('--tp=4', args)

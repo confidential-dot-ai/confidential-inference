@@ -59,7 +59,8 @@ class NetworkContractTests(unittest.TestCase):
             if item["kind"] in {"Deployment", "StatefulSet", "DaemonSet"}
             and "confidential.ai/cw" in item["spec"]["template"]["metadata"].get("annotations", {})
         ]
-        self.assertGreaterEqual(len(found), 5)
+        # gateway, router, one worker StatefulSet, kube-state-metrics.
+        self.assertGreaterEqual(len(found), 4)
         return found
 
     def test_public_and_c8s_ports_are_explicit(self) -> None:

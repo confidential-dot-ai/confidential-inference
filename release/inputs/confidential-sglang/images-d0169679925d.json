@@ -1,0 +1,37 @@
+{
+  "images": [
+    {
+      "builds": [
+        "sha256:8fa664cea485ee500aa9000eb7aa540cd08e5133db604fbda6c0528c07ac4f1d",
+        "sha256:8fa664cea485ee500aa9000eb7aa540cd08e5133db604fbda6c0528c07ac4f1d"
+      ],
+      "digest": "sha256:8fa664cea485ee500aa9000eb7aa540cd08e5133db604fbda6c0528c07ac4f1d",
+      "image": "ghcr.io/confidential-dot-ai/confidential-sglang/engine",
+      "name": "engine",
+      "reference": "ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:8fa664cea485ee500aa9000eb7aa540cd08e5133db604fbda6c0528c07ac4f1d",
+      "tag": "sha-d0169679925d16c0886ad923d864a8df71aba702"
+    },
+    {
+      "builds": [
+        "sha256:609ab202467daa7fc94d089e98a7ca4fa651fbe4c473b731b6f07d51abf4f3f6",
+        "sha256:609ab202467daa7fc94d089e98a7ca4fa651fbe4c473b731b6f07d51abf4f3f6"
+      ],
+      "digest": "sha256:609ab202467daa7fc94d089e98a7ca4fa651fbe4c473b731b6f07d51abf4f3f6",
+      "image": "ghcr.io/confidential-dot-ai/confidential-sglang/router",
+      "name": "router",
+      "reference": "ghcr.io/confidential-dot-ai/confidential-sglang/router@sha256:609ab202467daa7fc94d089e98a7ca4fa651fbe4c473b731b6f07d51abf4f3f6",
+      "tag": "sha-d0169679925d16c0886ad923d864a8df71aba702"
+    }
+  ],
+  "repository": "https://github.com/confidential-dot-ai/confidential-sglang",
+  "run": {
+    "attempt": 1,
+    "id": 44716530121,
+    "repository": "confidential-dot-ai/confidential-sglang-ci",
+    "url": "https://github.com/confidential-dot-ai/confidential-sglang-ci/actions/runs/44716530121/attempts/1",
+    "workflow": "confidential-dot-ai/confidential-sglang-ci/.github/workflows/images.yml@refs/heads/main"
+  },
+  "schema": "confidential.ai/confidential-sglang-images/v1",
+  "sourceCommit": "d0169679925d16c0886ad923d864a8df71aba702",
+  "sourceDateEpoch": 1795169221
+}

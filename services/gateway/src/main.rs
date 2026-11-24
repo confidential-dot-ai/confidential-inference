@@ -183,12 +183,14 @@ async fn main() -> Result<()> {
     let limits = HttpLimits::from_args(&args)?;
     let mut catalog_model_ids = vec![args.model.clone()];
     let mut inference_model_ids = vec![args.model.clone()];
+    let mut unsupported_parameters = Vec::new();
     if let Some(json) = args.runtime_config.clone() {
         let settings: GatewaySettings =
             serde_json::from_str(&json).context("parse the gateway settings")?;
         apply_settings(&mut args, &settings).context("load gateway settings")?;
         catalog_model_ids = settings.catalog_model_ids;
         inference_model_ids = settings.inference_model_ids;
+        unsupported_parameters = settings.unsupported_parameters;
     }
     validate_args(&args)?;
     tracing::info!("gateway configuration validated");
@@ -248,6 +250,7 @@ async fn main() -> Result<()> {
             maximum_body_bytes: args.maximum_body_bytes,
             upstream_timeout: timeout,
             protection,
+            unsupported_parameters,
         },
         keys,
         Arc::new(TracingAuditSink::new(key_pseudonyms)),
@@ -620,15 +623,19 @@ fn wait_for_bounded_file(path: &Path, limit: usize, timeout: Duration) -> Result
 mod tests {
     use super::*;
 
-    fn settings(router_service: Option<&str>) -> GatewaySettings {
-        let mut value = serde_json::json!({
+    fn settings_json() -> serde_json::Value {
+        serde_json::json!({
             "schemaVersion":1,
             "catalogModelIds":["test"],"inferenceModelIds":["test"],"maximumBodyBytes":1024,
             "upstreamTimeoutSeconds":30,"bodyTimeoutSeconds":10,"streamIdleTimeoutSeconds":20,
             "attestationCacheSeconds":3,"globalRequestConcurrency":256,"perAddressConcurrency":16,
             "inferenceConcurrency":1,"inferenceQueue":0,"queueTimeoutSeconds":2,"perKeyConcurrency":4,
             "attestationConcurrency":4,"requestsPerAddressPerSecond":30
-        });
+        })
+    }
+
+    fn settings(router_service: Option<&str>) -> GatewaySettings {
+        let mut value = settings_json();
         if let Some(service) = router_service {
             value["routerService"] = service.into();
         }
@@ -668,6 +675,31 @@ mod tests {
         value.router_namespace = Some("confidential-inference".into());
         assert!(apply_settings(&mut value, &settings(Some("other"))).is_err());
         assert!(apply_settings(&mut value, &settings(Some("router-headless"))).is_ok());
+    }
+
+    #[test]
+    fn settings_check_the_unsupported_parameters() {
+        let with = |parameters: serde_json::Value| {
+            let mut value = serde_json::to_value(settings_json()).unwrap_or_default();
+            value["unsupportedParameters"] = parameters;
+            serde_json::from_value::<GatewaySettings>(value)
+                .map_err(|error| error.to_string())
+                .and_then(|settings| settings.validate())
+        };
+        assert!(with(serde_json::json!([])).is_ok());
+        assert!(
+            with(serde_json::json!([{"name":"n","allowed":[1]},{"name":"min_p","allowed":[0]},{"name":"logprobs"}]))
+                .is_ok()
+        );
+        // A repeated or malformed name, an unknown field, or a structured allowed value.
+        assert!(with(serde_json::json!([{"name":"n"},{"name":"n"}])).is_err());
+        assert!(with(serde_json::json!([{"name":"N"}])).is_err());
+        assert!(with(serde_json::json!([{"name":""}])).is_err());
+        assert!(with(serde_json::json!([{"name":"n","when":1}])).is_err());
+        assert!(with(serde_json::json!([{"name":"n","allowed":[[1]]}])).is_err());
+        assert!(with(serde_json::json!([{"name":"n","allowed":[null]}])).is_err());
+        // A settings file without the field has none.
+        assert!(settings(None).unsupported_parameters.is_empty());
     }
 
     #[tokio::test]

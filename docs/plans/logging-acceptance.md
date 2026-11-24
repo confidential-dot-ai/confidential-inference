@@ -54,7 +54,7 @@ sum by (service_name) (count_over_time({k8s_cluster_name="<deployment>"}[10m]))
 
 Pass when each of these sources has at least one record: `gateway`,
 `sglang-router`, `inference-worker` (one or more records for each worker
-pod: `inference-worker-0-0`, `inference-worker-1-0`), `c8s`,
+pod: `inference-worker-0`, `inference-worker-1`), `c8s`,
 `node-log-agent`, `telemetry-collector`.
 
 For one record of each source, check that the body has `environment`,

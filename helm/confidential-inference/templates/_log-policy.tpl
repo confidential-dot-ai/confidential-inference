@@ -11,7 +11,7 @@ container name from the log file path (no Kubernetes API access):
   it is one of gatewayMessages, or the audit record (auditRecord), which
   leaves as its own fields. services/gateway/tests/log_privacy.rs fails when
   a gateway message is not on this list.
-- sglang-router, inference-worker: JSON events of fixed names. Only the listed
+- sglang-router, inference-worker, inference-pair: JSON events of fixed names. Only the listed
   fields leave, each checked: a string field against its pattern, an
   integer field as a number. images/sglang-router/README.md and
   images/sglang-confidential/README.md give the events.
@@ -58,7 +58,10 @@ structured:
       status: {int: true}
       code: {int: true}
   inference-worker:
-    events: [worker_ready, request_failed, gpu_oom, cuda_error, nccl_error, worker_error, worker_exit]
+    # model_verified: the engine image's model gate (wait-for-model) once
+    # every model file matches the manifest: a file count, the bytes, the time.
+    events: [worker_ready, request_failed, gpu_oom, cuda_error, nccl_error, worker_error, worker_exit, jit_compile,
+             model_verified]
     fields:
       model_revision: {string: '^[0-9a-f]{40}$'}
       gpus: {int: true}
@@ -75,6 +78,109 @@ structured:
       code: {string: '^(cudaError[A-Za-z]{1,40}|nccl[A-Za-z]{1,40}|timeout|unknown)$'}
       exit_code: {int: true}
       signal: {string: '^SIG[A-Z0-9]{1,12}$'}
+      # jit_compile: a kernel compiled after worker_ready. The cache is a
+      # fixed name, never a path; files is a count.
+      cache: {string: '^(flashinfer|triton|inductor|deep_gemm|sglang_jit|cuda|tilelang|cute_dsl|tvm_ffi|other)$'}
+      files: {int: true}
+      # The Triton kernels that compiled: their function names in code (file
+      # stems of the Triton cache), at most 8, comma-joined; empty otherwise.
+      kernels: {string: '^([A-Za-z_][A-Za-z0-9_]{0,63}(,[A-Za-z_][A-Za-z0-9_]{0,63}){0,7})?$'}
+      # model_verified: the model's total bytes (the recipe's manifest).
+      size_bytes: {int: true}
+  # sglang-pair (inference.layout pair): the supervisor's error records,
+  # confidential-sglang confidential/helpers/pair_supervisor.py EVENTS. The
+  # supervisor discards the workers' and the model gate's own output and
+  # writes only records that pass its schema (reviewed_event); the workers
+  # send it error events and, on a failure, stack and NCCL snapshots
+  # (sglang/srt/utils/pair_progress.py). Every field is a fixed name, a
+  # code path of the image, or a number. Left out on purpose: count and
+  # bytes (an NCCL collective's tensor size, a KV transfer's size) and
+  # input_tokens / output_tokens (a batch's token totals): with one request
+  # in a batch, each gives that request's prompt or output length.
+  inference-pair:
+    events: [rank_failed, watchdog_timeout, communicator_abort_timeout, child_exit, progress_stale,
+             startup_timeout, shutdown_timeout, supervisor_failed, cuda_error, nccl_error, diagnostic_failed,
+             kv_transfer_failed, status_request_failed, rank_progress_failed, stack_frame, stack_dump_complete,
+             stack_dump_unavailable, communicator_abort_started, communicator_abort_finished,
+             communicator_abort_failed, fatal_exit_deadline, nccl_collective, nccl_snapshot,
+             nccl_snapshot_unavailable, scheduler_snapshot, scheduler_snapshot_unavailable,
+             gpu_event_query_failed, diagnostic_delivery_failed,
+             # Readiness and late compiles, and the model gate's own events
+             # (confidential-sglang #31: fetch-model, wait-for-model).
+             worker_ready, jit_compile, model_fetch_started, model_fetch_retry, model_fetch_complete,
+             model_fetch_failed, model_verified, model_check_failed]
+    fields:
+      # The supervisor's own: when, which supervisor run (random per start),
+      # which source build.
+      timestamp_ns: {int: true}
+      run_id: {string: '^[0-9a-f]{32}$'}
+      source_revision: {string: '^([0-9a-f]{40}|unknown)$'}
+      # Which worker: the pair itself, prefill or decode, and the rank.
+      role: {string: '^(pair|prefill|decode)$'}
+      rank: {int: true}
+      # A fixed numeric code of the event (child exit status, failure kind).
+      code: {int: true}
+      # Times: of the failure, since the last progress, of a pending GPU
+      # step, of the scheduler's stage and last step, an NCCL timeout.
+      duration_ms: {int: true}
+      age_ms: {int: true}
+      gpu_pending_ms: {int: true}
+      step_age_ms: {int: true}
+      last_step_ms: {int: true}
+      timeout_ms: {int: true}
+      # A stack frame: a thread and frame index, a file of the image's code
+      # (sglang, torch, uvicorn, zmq or the Python library; never a frame's
+      # text) and its line.
+      thread: {int: true}
+      frame: {int: true}
+      location: {string: '^(sglang|torch|uvicorn|zmq|python)/[A-Za-z0-9_/.-]{1,200}[.]py$'}
+      line: {int: true}
+      # A scheduler snapshot: its stage (a fixed code) and how many requests
+      # its batch holds.
+      stage_code: {int: true}
+      batch_size: {int: true}
+      queue_depth: {int: true}
+      # An NCCL collective: its kind, state, sequence number, process group
+      # number and times.
+      op: {string: '^(all_reduce|broadcast|reduce|all_gather|reduce_scatter|all_to_all|send|recv|barrier)$'}
+      state: {string: '^(scheduled|started|completed)$'}
+      sequence: {int: true}
+      group_id: {int: true}
+      created_ns: {int: true}
+      started_ns: {int: true}
+      completed_ns: {int: true}
+      # Delivery counters of the snapshot and of the diagnostics.
+      rejected: {int: true}
+      exported: {int: true}
+      dropped: {int: true}
+      pending: {int: true}
+      failures: {int: true}
+      # worker_ready: the worker's GPUs and seconds since the supervisor started.
+      gpus: {int: true}
+      load_seconds: {int: true}
+      # jit_compile after worker_ready: the Triton kernel's function name in
+      # code and its compile time (duration_ms above).
+      kernel: {string: '^[A-Za-z_][A-Za-z0-9_]{0,63}$'}
+      # The model gate: a file of the pinned model manifest (never a name read
+      # from disk), the model server's host name (an allowlist exit), the
+      # attempt, a fixed error class and HTTP status, sizes and SHA-256 digests
+      # of model bytes, and file and byte counts.
+      # A segment may start with a dot (.gitattributes) but is never . or ..;
+      # the source caps each segment at 128 characters (RE2 refuses a nested
+      # repeat count here).
+      file: {string: '^([A-Za-z0-9_-][A-Za-z0-9_.-]*|[.][A-Za-z0-9_-][A-Za-z0-9_.-]*)(/([A-Za-z0-9_-][A-Za-z0-9_.-]*|[.][A-Za-z0-9_-][A-Za-z0-9_.-]*)){0,8}$'}
+      host: {string: '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'}
+      attempt: {int: true}
+      error_class: {string: '^(http_error|connection|timeout|size_mismatch|digest_mismatch|io|manifest_digest|manifest_invalid|unsafe_path|unavailable|writable|missing|extra|unexpected_file|index_invalid|root|range_unsupported)$'}
+      http_status: {int: true}
+      expected_size: {int: true}
+      got_size: {int: true}
+      expected_sha256: {string: '^[0-9a-f]{64}$'}
+      got_sha256: {string: '^[0-9a-f]{64}$'}
+      files: {int: true}
+      size_bytes: {int: true}
+      downloaded: {int: true}
+      kept: {int: true}
 textSources: [c8s, telemetry-collector, node-log-agent]
 # The containers C8s injects into a member pod (C8s v0.101.5
 # pkg/workloadclaims). The front door's namespace (c8s.frontDoorNamespace) and

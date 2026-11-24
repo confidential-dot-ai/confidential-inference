@@ -254,6 +254,138 @@
         }
       }
     },
+    "confidentialSglang": {
+      "description": "The confidential-sglang release record of the engine and router images (scripts/confidential_sglang_release.py). The images are also in images, as confidentialSglangEngine and confidentialSglangRouter. Their build evidence is this record: two clean builds with equal digests, not this repository's image publication.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "record",
+        "recordAsset",
+        "recordSha256",
+        "sourceCommit",
+        "runId",
+        "images"
+      ],
+      "properties": {
+        "repository": {
+          "const": "confidential-dot-ai/confidential-sglang"
+        },
+        "record": {
+          "description": "The GitHub release of the record: images-<first 12 hex of sourceCommit>.",
+          "type": "string",
+          "pattern": "^images-[0-9a-f]{12}$"
+        },
+        "recordAsset": {
+          "pattern": "^images-[0-9a-f]{12}\\.json$"
+        },
+        "recordSha256": {
+          "description": "The SHA-256 of the record asset.",
+          "$ref": "#/$defs/sha256Digest"
+        },
+        "sourceCommit": {
+          "$ref": "#/$defs/gitCommit"
+        },
+        "runId": {
+          "description": "The confidential-sglang workflow run that built and pushed the images.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "images": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "engine",
+            "router"
+          ],
+          "properties": {
+            "engine": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reference",
+                "buildDigests"
+              ],
+              "properties": {
+                "reference": {
+                  "$ref": "#/$defs/imageReference"
+                },
+                "buildDigests": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "items": {
+                    "$ref": "#/$defs/sha256Digest"
+                  }
+                }
+              }
+            },
+            "router": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reference",
+                "buildDigests"
+              ],
+              "properties": {
+                "reference": {
+                  "$ref": "#/$defs/imageReference"
+                },
+                "buildDigests": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "items": {
+                    "$ref": "#/$defs/sha256Digest"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "layouts": {
+          "description": "The SHA-256 of each DeepSeek-V4.1 launch plan that the engine image bakes at /opt/sglang/layouts/<name>.json, by layout name (release/inputs/confidential-sglang/layouts/<record>/). A pair recipe names one (recipes/README.md). Absent in a release that pins no layout.",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[a-z0-9][a-z0-9.-]{0,62}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/sha256Digest"
+          }
+        }
+      }
+    },
+    "recipes": {
+      "description": "The recipes of the release (recipes/README.md). The release asset recipes.json holds every file of each recipe.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file",
+        "sha256",
+        "recipes"
+      ],
+      "properties": {
+        "file": {
+          "const": "recipes.json"
+        },
+        "sha256": {
+          "description": "The SHA-256 of recipes.json.",
+          "$ref": "#/$defs/sha256Digest"
+        },
+        "recipes": {
+          "description": "The SHA-256 of each recipe.yaml, by recipe name.",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[a-z0-9][a-z0-9.-]{0,62}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/sha256Digest"
+          }
+        }
+      }
+    },
     "sourceLock": {
       "type": "object",
       "additionalProperties": false,

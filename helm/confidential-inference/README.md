@@ -73,25 +73,89 @@ or routes change changes the gateway's or the router's pod template, so it
 rolls that pod. A release that changes neither the gateway image nor its
 settings does not roll the gateway.
 
-The inference workers use `updateStrategy: OnDelete`. Helm updates their
-StatefulSets, but a worker keeps its old pod until you delete it. Each worker
-is its own StatefulSet with its own C8s workload and model volume, so neither
-a StatefulSet `RollingUpdate` nor a PodDisruptionBudget keeps one worker
-serving: both StatefulSets would roll at once, and a PodDisruptionBudget does
-not apply to controller updates. Roll them one at a time:
+The inference workers use `updateStrategy: OnDelete`. One StatefulSet,
+`inference-worker`, runs every worker: pods `inference-worker-0` to
+`inference-worker-<replicas - 1>`. Helm updates the StatefulSet, but a worker
+keeps its old pod until you delete it. Roll the workers one at a time, so
+that the others keep serving:
 
 ```sh
-for worker in inference-worker-0 inference-worker-1; do
-  revision=$(kubectl -n "$NS" get statefulset "$worker" -o jsonpath='{.status.updateRevision}')
-  kubectl -n "$NS" delete pod "$worker-0"
-  # The new pod starts after the old one frees its GPUs; model load and
-  # tuning take about 35 minutes.
-  until [ "$(kubectl -n "$NS" get pod "$worker-0" \
+revision=$(kubectl -n "$NS" get statefulset inference-worker -o jsonpath='{.status.updateRevision}')
+for index in $(seq 0 $(( $(kubectl -n "$NS" get statefulset inference-worker -o jsonpath='{.spec.replicas}') - 1 ))); do
+  pod="inference-worker-$index"
+  kubectl -n "$NS" delete pod "$pod"
+  # The new pod starts after the old one frees its GPUs; a large model takes
+  # about 35 minutes to load and tune.
+  until [ "$(kubectl -n "$NS" get pod "$pod" \
       -o jsonpath='{.metadata.labels.controller-revision-hash}')" = "$revision" ]; do sleep 10; done
-  kubectl -n "$NS" wait --for=condition=Ready "pod/$worker-0" --timeout=60m
+  kubectl -n "$NS" wait --for=condition=Ready "pod/$pod" --timeout=60m
   # Send one chat completion through the router before the next worker.
 done
 ```
+
+## Workers and the router
+
+All worker pods are one C8s workload: the `confidential.ai/cw` annotation
+names the allowlist entry `inference.attestedWorkload` (default
+`inference-worker`), and every pod claims it. The pods differ only in their
+name, so the entry requires `HOSTNAME` and admits any value
+(`scripts/generate-release-allowlist.py`). This is so for every value of
+`inference.replicas`, 1 included: a scale of the StatefulSet at runtime (for
+example from 1 to 2 pods) needs no new allowlist. The deployment's allowlist policy
+has one item for them: `{"name": "inference-worker", "controller":
+"StatefulSet/inference-worker"}`.
+
+The scheduler places a worker that downloads its model
+(`inference.model.download`): on a node with free GPUs and, when it is set,
+with the labels of `scheduling.inferenceNodeSelector`. A worker that reads a
+C8s model volume runs only on the nodes of `scheduling.inferenceNodeNames`
+(or on `scheduling.inferenceNodeName`), because the volume is node-local.
+Every worker uses the first name of `inference.model.volumeNames`.
+
+The router finds the workers with Kubernetes service discovery. It watches
+the pods of its namespace with the labels
+`app.kubernetes.io/component=inference-worker` and
+`confidential.ai/traffic-eligible=true`. It adds each pod that is Running and
+Ready (readiness is a 1-token generation, `/health_generate`) at
+`<pod IP>:<inference.port>`, and removes a pod when it is deleted. Its own
+health checks (`/health_generate`, 3 failures) stop traffic to a listed
+worker whose scheduler does not answer, until it answers again.
+
+A C8s mesh member cannot reach the API server through the `kubernetes`
+Service: the Service address is in a cluster range, so the mesh captures the
+connection. The router dials the API server's own address,
+`router.discovery.apiServer.address` (default: a documentation address that
+reaches no API server). That address is the router's one allowlist exit, so
+the deployment's allowlist policy must declare `"egress": {"port": <port>}`
+for `Deployment/sglang-router`, with `router.discovery.apiServer.port`.
+
+An environment that sets the address at deploy time (after the release
+render of the allowlist, for example when the control plane is made with the
+cluster) sets `router.discovery.apiServer.cidrs` instead: a list of the IPv4
+ranges the address can be in, for example `["10.48.64.0/18"]`. Each range is
+`a.b.c.d/n` with `n` from 16 to 32 (C8s refuses an exit broader than /16),
+with no host bits, at most 8. Each range is then one allowlist exit on the
+port, in place of the exact address; the chart writes the list to the
+Deployment annotation `inference.confidential.ai/egress-cidrs`, which the
+allowlist generator reads. The pod still dials
+`router.discovery.apiServer.address` (its `hostAliases` entry and
+kubeconfig), which the deploy sets. The chart refuses an address outside
+every range, except a documentation address (192.0.2.0/24, the default),
+which means "not known yet". The router's node must not be in a range, and
+neither must the cluster's pod and Service ranges: C8s refuses an exit to the
+node's own address or into the cluster. With an empty list (the default) the
+exit is the exact address. The `router-paths` NetworkPolicy names only the
+port in both cases: the API server is a host identity to Cilium, and C8s
+limits the address.
+
+The router reads a kubeconfig, its service account token and the cluster CA
+from one projected volume below `/mnt/c8s-data/kubernetes`, and checks the
+API server certificate for `router.discovery.apiServer.serverName`
+(`kubernetes.default.svc`). The Role `sglang-router-pods` lets it get, list
+and watch pods in its namespace only.
+
+The API server is outside the trust boundary, as DNS is: it only selects
+the worker addresses. The mesh authenticates every worker connection.
 
 ## Model download
 
@@ -197,14 +261,170 @@ recipe in values only, for example:
 `inference.workerImage`, `inference.model.source` and
 `inference.model.imagePath` were removed; the render fails if they are set.
 
-## Prefill/decode layout (removed)
+## Prefill/decode pairs (`inference.layout: pair`)
 
-The chart runs aggregated workers only (`inference-worker-N`, one complete
-SGLang server each, behind the router). The prefill/decode layout
-(`inference-pd`) and its pairs (`sglang-pair`) were removed: neither the
-production recipe nor the staging recipe uses them. `inference.pd.enabled`
-stays in the schema so that existing environment values still render; only
-`false` is accepted.
+A pair recipe (`recipes/README.md`) sets `inference.layout: pair` and
+`inference.pair`. Each replica is then two pods:
+
+- `inference-pair-<i>`, a pod of the StatefulSet `inference-pair` (headless
+  Service `inference-pairs`). Its one container runs `sglang-pair` from the
+  engine image: the model gate (fetch-model when `inference.model.download`
+  is on, wait-for-model, then the Engram holder, which locks about 198 GiB of
+  host memory), then the prefill and the decode worker of the recipe's launch
+  plan, one after the other, each with the cold-path warmup. Prefill writes KV
+  into decode's GPU memory over NVLink. CUDA IPC needs one process namespace
+  that sees both workers' GPUs; C8s gives that only inside one container. The
+  startup, readiness and liveness probes read sglang-pair's status port.
+  Every pair pod claims one allowlist entry (`inference.pair.attestedWorkload`).
+- `pd-router-<i>`, a Deployment of one router pod (router image). It sends
+  each request to `inference-pair-<i>`'s prefill and decode by their
+  headless-Service names, with the plan's router arguments. Decode reaches
+  prefill's KV bootstrap server on loopback inside the pair, whatever address
+  the router names. The PD routers differ in the pair they reach, so each has
+  its own allowlist entry, `<inference.pair.pdRouter.attestedWorkloadPrefix>-<i>`:
+  the deployment's allowlist policy lists one per replica. A PD router has no
+  exit and no Kubernetes API access.
+
+The cache-aware router (`sglang-router`) discovers the Ready PD router pods
+(label `app.kubernetes.io/component=pd-router`) and routes between them; a PD
+router is Ready while its pair's prefill and decode are. Only that router
+talks to the Kubernetes API, at the deploy-time address of
+`router.discovery.apiServer`.
+
+The environment sets `inference.replicas`, `inference.pair.resources` (the
+defaults are conservative, not measured), the model server, and the router's
+API server. `inference.pd.enabled` stays in the schema so that existing
+environment values still render; only `false` is accepted.
+
+### Kernel cache seed
+
+A pair compiles its kernels into the plan's cache tree,
+`paths.kernel_cache_dir` of the launch plan (`/tmp/dsv41/kernel-cache` for
+dsv41-262k). The plan's worker env puts every compiler cache under it:
+`SGLANG_CACHE_DIR` is the root, and `CUDA_CACHE_PATH` (`nv`),
+`FLASHINFER_WORKSPACE_BASE` (`flashinfer`), `TORCHINDUCTOR_CACHE_DIR`
+(`inductor`) and `TRITON_CACHE_DIR` (`triton`) are below it. The tree lives in
+the pod's `/tmp` emptyDir, so every new pod starts cold: dsv41-262k on a 4x
+B200 takes about 26 minutes to `/readyz` cold and about 9 minutes warm. The
+warm tree is about 145 MB.
+
+With `inference.pair.kernelCache.seed.enabled`, the pair fetches a warm tree
+from the model mirror before the model gate. fetch-model reads each file at
+`<repository>/resolve/<revision>/<path>` from the `inference.model.download`
+hosts in order. It checks every file's SHA-256 and size against the seed
+manifest, whose own SHA-256 is in the pair's argv and so in its allowlist
+entry. A file that does not match is not written. When the whole seed is in
+place, fetch-model also removes every file under the directory that the
+manifest does not list (after a container restart, what the last run compiled
+beyond the seed). If no host gives the whole seed, the gate goes on with the
+files it verified and the workers compile the rest, as without a seed.
+
+The seed is the whole tree. `inference.pair.kernelCache.planDirectory` is
+rendered by `scripts/recipe-values.py` from the plan's `paths.kernel_cache_dir`.
+With the seed on, the chart refuses to render if `planDirectory` is not the
+workers' `SGLANG_CACHE_DIR`, or if one of the cache variables above points
+outside it. Make the seed from the whole tree: a seed with only some of the
+subdirectories (for example only `triton`) still fetches and verifies, but
+the other caches start cold and the warmup takes nearly as long as without a
+seed. The tree includes FlashInfer's run-time `cubins` download
+(`flashinfer/.cache/flashinfer/cubins`); the seed carries it under the same
+pin.
+
+#### What the seed is trusted for
+
+Seeded kernels are compiled outside the TEE, on a bring-up host. They are
+code: Triton cubins, Inductor modules and shared objects, CUDA binaries.
+Nothing measures how they were built. They are trusted only because their
+exact bytes are pinned. The manifest lists every file's SHA-256 and size, and
+the manifest's own SHA-256 is in the pair's argv, so in its C8s allowlist entry
+(the attested workload). That is the same trust as the model weights: the
+release pins the bytes, not where they came from. A verifier who accepts the
+allowlist entry accepts those bytes, and so trusts whoever made the seed. The
+release signature and the TEE measurements do not cover the seed; the
+manifest pin does.
+
+A host or mirror that changes a seed byte cannot make the pair run it:
+fetch-model refuses the file, and the worker compiles that kernel itself. A
+host that withholds the seed only makes the start cold. A wrong seed that
+matches its manifest (for example one made from another image) is refused at
+render time by the revision check below, not at run time.
+
+Without the seed, the workers compile at start inside the TEE with the
+compilers of the measured image; those kernels are not pinned either, but they
+come from the measured code. The seed trades that for pinned bytes made
+outside.
+
+`jit_compile` keeps its meaning. In a pair it comes from the workers' Triton
+compile listener (confidential-sglang `python/sglang/srt/utils/triton_load_watch.py`
+and `pair_progress.compile_event`): one event per Triton compile that is not
+a cache hit, forwarded by sglang-pair once that worker is ready. It is not a
+scan of the cache directory against a baseline (the CompileWatcher of
+`images/sglang-confidential/wait_for_model.py` is the worker layout's; the
+pair does not forward the gate's `jit_compile`). So:
+
+- a seeded kernel is a cache hit: it is part of the pinned startup state and
+  is never reported as a run-time compile, before or after `worker_ready`;
+- a kernel that the seed lacks, or one recompiled over a seeded file after
+  `worker_ready`, is a compile and is reported as before.
+
+The seed's own fetch shows in the pair's events: the first
+`model_fetch_started` (role `pair`) is the seed's, with its file count and
+size, then its `model_fetch_complete` (files downloaded and kept) or
+`model_fetch_failed`, before the model's fetch. A `model_fetch_failed` before the model's fetch is a cold start, not a
+failed pair.
+
+#### Platform, owner and lifetime
+
+A seed is tied to one engine image, one plan, one GPU model and one driver.
+CUDA, Triton and FlashInfer binaries are built for the bring-up host's GPU
+architecture and driver, and the cache keys include them. The manifest's
+revision is `sha256-<engine image digest>-<plan>`, and the chart refuses to
+render a seed of another engine image or plan. The plan fixes the GPU model
+(its layout's `target.gpu_models`, B200 for dsv41-262k), so make the seed on
+that GPU. The revision does not name the driver: a seed made on another
+driver still renders, and its Triton and Inductor binaries load as they were
+built (only the CUDA driver's own PTX cache is keyed by driver and misses).
+So make the seed on the driver of the release's C8s node image, and make a
+new one when that driver changes.
+
+A new engine image starts cold: its seed is refused at render time, so turn
+the seed off or make a new one in the same release change. The engineer who
+pins the engine image (the release PR) makes the seed, when one of these
+changes:
+
+- the engine image digest (a confidential-sglang release record);
+- the launch plan, or its target GPU;
+- the node image's NVIDIA driver (a C8s pin change).
+
+Retire a seed when its image or plan leaves the release; remove its files from
+the mirror once no deployed release names its revision. After a deploy,
+check the seed: the pair's first `model_fetch_started` has the seed's file
+count, the `model_fetch_complete` after it counts them downloaded or kept, and
+the pair reaches `/readyz` in about the warm time. The seed
+does not change `jit_compile` after `worker_ready`, so compare that count with
+a cold start of the same image: it should not grow.
+
+To make a seed:
+
+1. Run a pair of the release's engine image and plan to `/readyz`, outside the
+   TEE (a bring-up host with the target GPU and driver), and send it the
+   warmup. Copy its whole `paths.kernel_cache_dir` (`/tmp/dsv41/kernel-cache`).
+2. `scripts/kernel-cache-manifest.py <copy> --repository <owner>/<name>
+   --engine-image <engine image@sha256:...> --plan <plan> > manifest.json`.
+   It leaves out lock files and partial writes. fetch-model writes every file
+   read-only, so a seeded lock file could not be opened for writing.
+3. Serve each listed file on the mirror at
+   `<repository>/resolve/sha256-<digest>-<plan>/<path>`.
+4. In the environment values, set `inference.pair.kernelCache.seed.enabled:
+   true` and `inference.pair.kernelCache.seed.manifest` to the manifest text.
+
+The chart does not keep the cache on the node. The pinned C8s (v0.101.9)
+refuses every tenant `hostPath` (its `deny-host-namespaces` policy) and has no
+StorageClass on its node image (C8s #1129 removed local-path). The node's
+writable disk is dm-crypt with a per-boot key and no integrity, so the host
+could also corrupt or roll back a cache kept there. A C8s mutable volume
+persists but has no integrity either, and a host rollback of it goes
+undetected (C8s `docs/volumes.md`). The seed's bytes are pinned instead.
 
 ## Gateway admission
 

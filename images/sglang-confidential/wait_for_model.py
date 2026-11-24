@@ -7,6 +7,7 @@ import argparse
 import collections
 import concurrent.futures
 import errno
+import glob
 import hashlib
 import json
 import os
@@ -18,7 +19,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import BinaryIO, Callable, Iterable, Iterator
+from typing import BinaryIO, Callable, Iterable, Iterator, Mapping
 
 # Every model file is hashed before the server starts. Hashing threads release
 # the GIL inside hashlib, so parallel reads keep a large volume's check short.
@@ -356,6 +357,7 @@ EVENT_KEYS = {
     "nccl_error": frozenset({"event", "code", "location"}),
     "worker_error": frozenset({"event", "error_class", "exception", "location"}),
     "worker_exit": frozenset({"event", "exit_code", "signal"}),
+    "jit_compile": frozenset({"event", "cache", "files"}),
 }
 
 EXCEPTION_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,95}")
@@ -426,6 +428,8 @@ def valid_event(event: object) -> bool:
             and nullable(event["exception"], EXCEPTION_PATTERN)
             and nullable(event["location"], LOCATION_PATTERN)
         )
+    if name == "jit_compile":
+        return event["cache"] in COMPILE_CACHES and integer(event["files"]) and event["files"] >= 1
     exit_code, signal_name = event["exit_code"], event["signal"]
     return (
         (exit_code is None or (integer(exit_code) and -255 <= exit_code <= 255))
@@ -790,6 +794,189 @@ def bounded_lines(stream: BinaryIO) -> Iterator[str]:
         yield chunk.decode("utf-8", errors="replace")
 
 
+# ---------------------------------------------------------------------------
+# Run-time kernel compilation.
+#
+# Why this exists: on 2026-11-19 the staging deployment staging-826711f4bd9d
+# failed validation. The first request with top-k/top-p sampling made each
+# Qwen3.5 worker JIT-compile FlashInfer's sampling module (about 67 s) inside
+# the SGLang scheduler. During the compile, /health (a 1-token generation)
+# could not answer. The liveness probe (30 s period, 3 failures) killed both
+# workers mid-compile, and every request returned 503. An earlier run that
+# passed had the same 67 s stall on each worker; it passed only because the
+# probe timing landed later. The 2026-11-06 production incident had the same
+# cause. A kernel compiled at run time is also not part of the measured
+# (attested) image.
+#
+# So the supervisor reports every compile after worker_ready, by any
+# compiler, without depending on timing. Startup compiles (before
+# worker_ready, under the startup probe) are the baseline and are not
+# reported. Every SCAN_SECONDS it lists the cache directories of each
+# compiler in the image and compares file names and sizes. It reads no file
+# content. The event names a cache from COMPILE_CACHES and a file count. It
+# holds no path and no file name: a kernel file name can encode request
+# shapes.
+#
+# Where each compiler writes. HOME is /tmp in the pod (chart and Dockerfile).
+# SGLang's package __init__ (sglang/__init__.py, sglang.srt.environ
+# redirect_third_party_caches) sets, when unset, TRITON_CACHE_DIR,
+# TORCHINDUCTOR_CACHE_DIR, CUDA_CACHE_PATH, TILELANG_CACHE_DIR and
+# FLASHINFER_WORKSPACE_BASE below SGLANG_CACHE_DIR (default ~/.cache/sglang).
+# The supervisor does not import SGLang, so it watches both that redirect and
+# each library's own default:
+#
+# - flashinfer: <FLASHINFER_WORKSPACE_BASE or ~>/.cache/flashinfer
+#   (flashinfer/jit/env.py, 0.7.2). The cubins/ folder there is a run-time
+#   download, which is also unmeasured code.
+# - triton: TRITON_CACHE_DIR, else <TRITON_HOME or ~>/.triton (triton
+#   knobs.py: .triton/cache; tokenspeed-triton: .triton/tokenspeed-cache).
+# - inductor: TORCHINDUCTOR_CACHE_DIR, else <tmp>/torchinductor_<user>
+#   (torch/_inductor/runtime/cache_dir_utils.py).
+# - deep_gemm: DG_JIT_CACHE_DIR (a PATH-style list; SGLang sets it to
+#   SGLANG_DG_CACHE_DIR, default <SGLANG_CACHE_DIR>/deep_gemm), else
+#   DJ_JIT_CACHE_DIR, else ~/.dj (deep_jit/cache/disk.hpp, sgl-deep-gemm 0.2.3).
+# - sglang_jit: SGLANG_JIT_CACHE_DIR, else ~/.cache/sglang/jit
+#   (sglang/kernels/jit/utils/compile/cache.py cache_root).
+# - cuda: the driver's PTX JIT cache, CUDA_CACHE_PATH, else ~/.nv/ComputeCache.
+# - tilelang: TILELANG_CACHE_DIR, else ~/.tilelang (tilelang/env.py).
+# - cute_dsl: CUTE_DSL_CACHE_DIR, else <tmp>/<user>/cutlass_python_cache or
+#   <tmp>/cutlass_python_cache (cutlass/base_dsl/cache_helpers.py), and
+#   SGLang's SGLANG_CUTE_AOT_CACHE_DIR (default <SGLANG_CACHE_DIR>/cute_aot).
+# - tvm_ffi: TVM_FFI_CACHE_DIR, else ~/.cache/tvm-ffi (tvm_ffi/cpp/extension.py).
+# - other: any other file below SGLANG_CACHE_DIR or ~/.cache, so that a
+#   compiler not named here is still seen.
+#
+# A file belongs to the most specific watched directory that holds it.
+# Only a new file name or a changed size counts. A changed mtime alone does
+# not: SGLang's JIT cache and DeepGEMM touch an entry on every cache hit.
+# A compile that only NVRTC or the driver does in memory leaves no file;
+# FLASHINFER_DISABLE_JIT=1 (chart value inference.flashinferDisableJit) and
+# a startup that loads every kernel close that gap for FlashInfer.
+# ---------------------------------------------------------------------------
+
+COMPILE_CACHES = ("flashinfer", "triton", "inductor", "deep_gemm", "sglang_jit", "cuda", "tilelang",
+                  "cute_dsl", "tvm_ffi", "other")
+SCAN_SECONDS = 5.0
+# A scan stops after this many files. The pod caches hold far fewer.
+SCAN_MAX_FILES = 200_000
+
+
+def compile_cache_roots(environ: Mapping[str, str]) -> list[tuple[str, str]]:
+    """Return (cache name, directory) pairs to watch, the named caches before `other`.
+
+    Globs are expanded on every call, so a directory that a compiler creates
+    after worker_ready is found on the next scan.
+    """
+    home = environ.get("HOME") or os.path.expanduser("~")
+    tmp = environ.get("TMPDIR") or "/tmp"
+
+    def user(path: str) -> str:
+        return path if not path.startswith("~") else home + path[1:]
+
+    def env(name: str) -> list[str]:
+        value = environ.get(name)
+        return [user(value)] if value else []
+
+    sglang = user(environ.get("SGLANG_CACHE_DIR") or "~/.cache/sglang")
+    deep_gemm = [user(item) for name in ("DG_JIT_CACHE_DIR", "DJ_JIT_CACHE_DIR")
+                 for item in (environ.get(name) or "").split(":") if item]
+    roots = {
+        "flashinfer": [os.path.join(base, ".cache", "flashinfer")
+                       for base in [*env("FLASHINFER_WORKSPACE_BASE"), sglang, home]],
+        "triton": [*env("TRITON_CACHE_DIR"), os.path.join(sglang, "triton"),
+                   os.path.join(user(environ.get("TRITON_HOME") or home), ".triton")],
+        "inductor": [*env("TORCHINDUCTOR_CACHE_DIR"), os.path.join(sglang, "inductor"),
+                     *sorted(glob_dirs(os.path.join(tmp, "torchinductor_*")))],
+        "deep_gemm": [*deep_gemm, *env("SGLANG_DG_CACHE_DIR"), os.path.join(sglang, "deep_gemm"),
+                      os.path.join(home, ".dj")],
+        "sglang_jit": [*env("SGLANG_JIT_CACHE_DIR"), os.path.join(home, ".cache", "sglang", "jit")],
+        "cuda": [*env("CUDA_CACHE_PATH"), os.path.join(sglang, "nv"), os.path.join(home, ".nv", "ComputeCache")],
+        "tilelang": [*env("TILELANG_CACHE_DIR"), os.path.join(sglang, "tilelang"), os.path.join(home, ".tilelang")],
+        "cute_dsl": [*env("CUTE_DSL_CACHE_DIR"), *env("SGLANG_CUTE_AOT_CACHE_DIR"), os.path.join(sglang, "cute_aot"),
+                     os.path.join(tmp, "cutlass_python_cache"),
+                     *sorted(glob_dirs(os.path.join(tmp, "*", "cutlass_python_cache")))],
+        "tvm_ffi": [*env("TVM_FFI_CACHE_DIR"), os.path.join(home, ".cache", "tvm-ffi")],
+        "other": [sglang, os.path.join(home, ".cache")],
+    }
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for name in COMPILE_CACHES:
+        for directory in roots[name]:
+            # The first name that claims a directory keeps it.
+            key = os.path.realpath(directory)
+            if key not in seen:
+                seen.add(key)
+                pairs.append((name, key))
+    return pairs
+
+
+def glob_dirs(pattern: str) -> list[str]:
+    return [path for path in glob.glob(pattern) if os.path.isdir(path) and not os.path.islink(path)]
+
+
+def scan_compile_caches(roots: list[tuple[str, str]],
+                        max_files: int = SCAN_MAX_FILES) -> dict[str, dict[str, int]]:
+    """Return {cache name: {file path: size}}. No file content is read.
+
+    A directory that is itself a watched root is skipped inside another
+    root and listed under its own name, so no file is counted twice.
+    """
+    owned = {directory for _name, directory in roots}
+    found: dict[str, dict[str, int]] = {name: {} for name in COMPILE_CACHES}
+    budget = max_files
+    for name, root in roots:
+        files = found[name]
+        for directory, directories, names in os.walk(root, followlinks=False):
+            directories[:] = [item for item in directories if os.path.join(directory, item) not in owned]
+            for item in names:
+                if budget <= 0:
+                    return found
+                budget -= 1
+                path = os.path.join(directory, item)
+                try:
+                    files[path] = os.lstat(path).st_size
+                except OSError:
+                    continue
+    return found
+
+
+class CompileWatcher:
+    """Report files that compilers write after worker_ready.
+
+    start() takes the baseline: what startup compiled. check() reports, per
+    cache, the files that are new or changed in size since the last scan,
+    as one jit_compile event per cache. A file that stays the same is
+    reported once.
+    """
+
+    def __init__(self, emit: Callable[[dict], object],
+                 roots: Callable[[], list[tuple[str, str]]] = lambda: compile_cache_roots(os.environ),
+                 max_files: int = SCAN_MAX_FILES) -> None:
+        self._emit = emit
+        self._roots = roots
+        self._max_files = max_files
+        self._seen: dict[str, dict[str, int]] | None = None
+
+    def start(self) -> None:
+        self._seen = scan_compile_caches(self._roots(), self._max_files)
+
+    def check(self) -> list[dict]:
+        current = scan_compile_caches(self._roots(), self._max_files)
+        if self._seen is None:
+            self._seen = current
+            return []
+        events = []
+        for name in COMPILE_CACHES:
+            before = self._seen.get(name, {})
+            changed = sum(1 for path, size in current[name].items() if before.get(path) != size)
+            if changed:
+                events.append({"event": "jit_compile", "cache": name, "files": changed})
+        self._seen = current
+        for event in events:
+            self._emit(event)
+        return events
+
+
 def server_port(command: list[str]) -> int:
     port = DEFAULT_SERVER_PORT
     for index, item in enumerate(command):
@@ -828,8 +1015,14 @@ def run_server(
     out: NonblockingStdout | None = None,
     dev_dir: Path = Path("/dev"),
     health_interval: float = HEALTH_INTERVAL_SECONDS,
+    compile_roots: Callable[[], list[tuple[str, str]]] | None = None,
+    scan_interval: float = SCAN_SECONDS,
 ) -> int:
-    """Start the server, capture its output in memory, export only contract events, and return its code."""
+    """Start the server, capture its output in memory, export only contract events, and return its code.
+
+    After worker_ready the health thread watches the compiler caches
+    (CompileWatcher) until the server exits.
+    """
     out = out or NonblockingStdout()
     lock = threading.Lock()
 
@@ -872,8 +1065,27 @@ def run_server(
             if ready and not exited.is_set():
                 emit({"event": "worker_ready", "model_revision": model_revision, "gpus": count_gpus(dev_dir),
                       "load_seconds": max(0, int(time.monotonic() - started))})
+                watch_compiles()
                 return
             exited.wait(health_interval)
+
+    def watch_compiles() -> None:
+        # The baseline is what startup compiled; only later files are reported.
+        def report(event: dict) -> None:
+            # Nothing after worker_exit.
+            if not exited.is_set():
+                emit(event)
+
+        watcher = CompileWatcher(report, compile_roots or (lambda: compile_cache_roots(os.environ)))
+        try:
+            watcher.start()
+        except Exception:  # noqa: BLE001 - a watcher fault must not stop the server
+            return
+        while not exited.wait(scan_interval):
+            try:
+                watcher.check()
+            except Exception:  # noqa: BLE001
+                pass
 
     reader = threading.Thread(target=read, daemon=True)
     helpers = [threading.Thread(target=tick, daemon=True), threading.Thread(target=health, daemon=True)]

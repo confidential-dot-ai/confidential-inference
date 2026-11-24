@@ -77,6 +77,7 @@ async fn app(maximum_body_bytes: usize, received: Arc<AtomicUsize>) -> Router {
                 body_timeout: Duration::from_secs(30),
                 ..ProtectionConfig::default()
             },
+            unsupported_parameters: Vec::new(),
         },
         Arc::new(Keys),
         Arc::new(Audit),

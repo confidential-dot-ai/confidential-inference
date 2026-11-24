@@ -1,0 +1,76 @@
+# DeepSeek-V4.1-Flash-1017 at 262,144 tokens: each replica is one
+# prefill/decode pair on one 4x B200 VM. recipes/README.md describes the fields.
+#
+# The pair runs confidential-sglang's launch plan dsv41-262k, which the engine
+# image bakes at /opt/sglang/layouts/dsv41-262k.json (confidential-sglang
+# recipes/deepseek-v41/container/dsv41-262k.env, qualified 2026-11-09): a TP2
+# prefill and a TP2 decode in one sglang-pair container, KV over NVLink, the
+# Engram holder, DSpark speculative decoding, and the plan's PD router. The
+# release pins the plan's bytes (release/inputs/confidential-sglang/layouts/);
+# the recipe copies none of its flags.
+schema: confidential.ai/recipe/v2
+name: deepseek-v41-flash-262k-4xb200
+description: DeepSeek-V4.1-Flash-1017 at 262K context; each replica is one prefill/decode pair (TP2 + TP2, NVLink KV) on one 4x B200; cache-aware routing between replicas.
+engine:
+  # The confidential-sglang engine image (release/spec.yaml confidentialSglang).
+  image: confidentialSglangEngine
+  # FLASHINFER_DISABLE_JIT=1 on both workers: a kernel missing from the
+  # image fails at once instead of compiling inside the scheduler. The GPU dev
+  # run on a 4x B200 with images-727ec2031889 had zero MissingJITCacheError
+  # in every run with it set: cold start, warm start, the functional suite,
+  # needles up to 253K tokens, and realmix. With JIT on (the published-image
+  # run), FlashInfer only generated trtllm export headers and compiled no .so.
+  # The one startup compile, the flashinfer_globaltimer torch extension of
+  # SGLang's sharded_verify, happens either way; the flag does not affect it.
+  flashinferDisableJit: true
+replica:
+  layout: pair
+  plan: dsv41-262k
+  gpus: 4
+  gpuArchitectures: [BLACKWELL]
+  # The pod's GPU evidence shows its four devices.
+  attestedGpuCount: 4
+model:
+  repository: deepseek-ai/DeepSeek-V4.1-Flash-1017
+  revision: 1bae0e1088993b9b82de08f59de5be5a34e42170
+  # The byte manifest that production pinned for this revision
+  # (confidential-inference-internal deploy/targets/b200-vanilla-release/
+  # expected-model-manifest.json, the same bytes). Its SHA-256 is the pin.
+  manifest: model-manifest.json
+  manifestSha256: eb73a3749d5c99994b018a6063068c2ca28871900415fc364fbbfe1b07300629
+  # The Engram holder reads the index first.
+  checkFiles: [config.json, tokenizer_config.json, model.safetensors.index.json]
+  contextLength: 262144
+worker:
+  # What the plan must set; recipe-values.py checks both workers.
+  toolCallParser: deepseekv41
+  reasoningParser: deepseek-v41
+  speculativeAlgorithm: DSPARK
+routing:
+  kind: sglang-router
+  policy: cache_aware
+  # The confidential-sglang router image: the cache-aware router between
+  # replicas and each replica's PD router.
+  image: confidentialSglangRouter
+behavior:
+  apis:
+    chat: {}
+    completions: {}
+    # A reasoning model can spend short outputs on reasoning.
+    responses: {minOutputTokens: 16}
+    messages: {}
+  # The pair refuses these, or (n > 1) holds a decode slot until the request
+  # times out. The gateway refuses them first with 400 unsupported_parameter,
+  # before a worker tokenizes the prompt. An absent or null value, or an
+  # allowed one, passes.
+  unsupportedParameters:
+    # Quoted: in YAML 1.1 a bare n is false.
+    - {name: "n", allowed: [1]}
+    # Completions only.
+    - {name: best_of, allowed: [1]}
+    # DSPARK speculative decoding has no min_p.
+    - {name: min_p, allowed: [0]}
+    # Chat: a boolean. Completions: a count, where 0 still returns logprobs.
+    # Responses: an include of message.output_text.logprobs counts as true.
+    - {name: logprobs, allowed: [false]}
+    - {name: top_logprobs, allowed: [0]}

@@ -30,6 +30,10 @@
     {
       "path": "patches/private-errors.patch",
       "sha256": "645f17a966d2476663052cf7be423eba06d55571abfbf47726217ca7494f6aa8"
+    },
+    {
+      "path": "patches/client-errors.patch",
+      "sha256": "beeb92df439945d48d1a68a51bf853078481846a0fb8b436cacf071ccffa4761"
     }
   ],
   "deploymentImage": {

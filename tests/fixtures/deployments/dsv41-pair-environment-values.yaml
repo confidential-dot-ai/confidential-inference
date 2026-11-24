@@ -1,0 +1,30 @@
+# An example environment for the recipe deepseek-v41-flash-262k-4xb200: what
+# a deployment (confidential-inference-internal environments/<name>/) sets
+# after the recipe values (scripts/recipe-values.py) and before the release
+# values. It is a test fixture: every address is a documentation or example
+# address, and the deployment's workflow sets its own.
+environment: staging
+inference:
+  # The replica count: one pair, on one 4x B200 VM.
+  replicas: 1
+  model:
+    volumeNames: [dsv41]
+    download:
+      enabled: true
+      scheme: http
+      port: 8080
+      hosts:
+        - serverName: models.example.invalid
+          address: 192.0.2.20
+  pair:
+    # Example requests; set them from a measured run.
+    resources:
+      cpu: "32"
+      memory: 400Gi
+router:
+  discovery:
+    apiServer:
+      # Set at deploy time, once the control plane exists; the release
+      # render of the allowlist knows only the ranges.
+      address: 192.0.2.30
+      cidrs: [192.0.2.0/24]

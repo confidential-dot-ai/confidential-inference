@@ -28,7 +28,9 @@
         "gatewayNodeName": {"$ref": "#/definitions/kubernetesName"},
         "inferenceNodeName": {"$ref": "#/definitions/kubernetesName"},
         "inferenceNodeNames": {"type": "array", "items": {"$ref": "#/definitions/kubernetesName"}},
-        "routerNodeName": {"anyOf": [{"const": ""}, {"$ref": "#/definitions/kubernetesName"}]}
+        "inferenceNodeSelector": {"type": "object", "additionalProperties": {"type": "string", "maxLength": 63}},
+        "routerNodeName": {"anyOf": [{"const": ""}, {"$ref": "#/definitions/kubernetesName"}]},
+        "nodeLossTolerationSeconds": {"type": "integer", "minimum": 0, "maximum": 86400}
       }
     },
     "images": {
@@ -39,6 +41,8 @@
         "gateway": {"$ref": "#/definitions/image"},
         "sglangConfidential": {"$ref": "#/definitions/image"},
         "sglangRouter": {"$ref": "#/definitions/image"},
+        "confidentialSglangEngine": {"$ref": "#/definitions/image"},
+        "confidentialSglangRouter": {"$ref": "#/definitions/image"},
         "rolloutClient": {"$ref": "#/definitions/image"},
         "telemetryCollector": {"$ref": "#/definitions/image"},
         "nodeExporter": {"$ref": "#/definitions/image"},
@@ -102,7 +106,7 @@
     },
     "inference": {
       "type": "object",
-      "required": ["enabled", "mode", "replicas", "gpusPerReplica", "gpuArchitectures", "attestedWorkloads", "port", "metricsPort", "autoscaling", "model", "simulator"],
+      "required": ["enabled", "mode", "replicas", "gpusPerReplica", "gpuArchitectures", "attestedWorkload", "port", "metricsPort", "autoscaling", "model", "simulator"],
       "properties": {
         "enabled": {"type": "boolean"},
         "mode": {"enum": ["model", "simulator"]},
@@ -112,10 +116,9 @@
         "gpuArchitectures": {
           "type": "array", "uniqueItems": true, "items": {"enum": ["HOPPER", "BLACKWELL", "LS10"]}
         },
+        "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
         "attestedWorkloads": {
           "type": "array",
-          "minItems": 1,
-          "maxItems": 2,
           "uniqueItems": true,
           "items": {"$ref": "#/definitions/workloadPolicyName"}
         },
@@ -125,6 +128,8 @@
         "toolCallParser": {"type": "string"},
         "speculativeAlgorithm": {"type": "string"},
         "moeRunnerBackend": {"type": "string"},
+        "flashinferDisableJit": {"type": "boolean"},
+        "engineImage": {"enum": ["sglangConfidential", "confidentialSglangEngine"]},
         "workerExtraArgs": {"type": "array", "items": {"type": "string"}},
         "contextLength": {"type": "integer", "minimum": 0, "maximum": 16777216},
         "maxRunningRequests": {"type": "integer", "minimum": 0, "maximum": 65536},
@@ -203,6 +208,8 @@
                     "required": ["serverName", "address"],
                     "properties": {
                       "serverName": {"type": "string", "format": "hostname", "pattern": "^[A-Za-z0-9.-]+$"},
+                      "scheme": {"enum": ["https", "http"]},
+                      "port": {"type": "integer", "minimum": 1, "maximum": 65535},
                       "address": {"type": "string", "format": "ipv4", "pattern": "^[0-9]{1,3}(?:\\.[0-9]{1,3}){3}$"}
                     }
                   }
@@ -235,6 +242,88 @@
           "additionalProperties": false,
           "properties": {
             "enabled": {"const": false}
+          }
+        },
+        "layout": {
+          "description": "What one replica is: worker (one aggregated worker pod) or pair (one prefill/decode pair pod and its own PD router pod). A recipe sets it.",
+          "enum": ["worker", "pair"]
+        },
+        "pair": {
+          "description": "inference.layout pair (templates/inference-pairs.yaml). plan to router come from the recipe (scripts/recipe-values.py); the others are environment values.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "plan": {"type": "string"},
+            "layoutSha256": {"type": "string", "pattern": "^(|sha256:[0-9a-f]{64})$"},
+            "python": {"type": "string", "pattern": "^/"},
+            "engramHolder": {"type": "string", "pattern": "^/"},
+            "prefill": {"anyOf": [{"type": "object", "maxProperties": 0}, {
+              "type": "object", "additionalProperties": false,
+              "required": ["gpus", "port", "bootstrapPort", "args", "env"],
+              "properties": {
+                "gpus": {"type": "integer", "minimum": 1, "maximum": 8},
+                "port": {"type": "integer", "minimum": 1024, "maximum": 65534},
+                "bootstrapPort": {"type": "integer", "minimum": 1024, "maximum": 65534},
+                "args": {"type": "array", "items": {"type": "string"}},
+                "env": {"type": "object", "additionalProperties": {"type": "string"}}
+              }}]},
+            "decode": {"anyOf": [{"type": "object", "maxProperties": 0}, {
+              "type": "object", "additionalProperties": false,
+              "required": ["gpus", "port", "maxRunningRequests", "args", "env"],
+              "properties": {
+                "gpus": {"type": "integer", "minimum": 1, "maximum": 8},
+                "port": {"type": "integer", "minimum": 1024, "maximum": 65534},
+                "maxRunningRequests": {"type": "integer", "minimum": 0},
+                "args": {"type": "array", "items": {"type": "string"}},
+                "env": {"type": "object", "additionalProperties": {"type": "string"}}
+              }}]},
+            "router": {"anyOf": [{"type": "object", "maxProperties": 0}, {
+              "type": "object", "additionalProperties": false,
+              "required": ["port", "metricsPort", "args"],
+              "properties": {
+                "port": {"type": "integer", "minimum": 1024, "maximum": 65534},
+                "metricsPort": {"type": "integer", "minimum": 1024, "maximum": 65534},
+                "args": {"type": "array", "items": {"type": "string"}}
+              }}]},
+            "statusPort": {"type": "integer", "minimum": 1024, "maximum": 65534},
+            "progressTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+            "startupTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+            "shutdownTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+            "parallelStart": {"type": "boolean"},
+            "attestedWorkload": {"type": "string", "minLength": 1},
+            "resources": {
+              "type": "object", "additionalProperties": false, "required": ["cpu", "memory"],
+              "properties": {"cpu": {"type": ["string", "integer"]}, "memory": {"type": ["string", "integer"]}}
+            },
+            "shmSizeLimit": {"type": "string"},
+            "scratchSizeLimit": {"type": "string"},
+            "kernelCache": {
+              "description": "Seed the plan's kernel caches from the model mirror (templates/inference-pairs.yaml).",
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "planDirectory": {"type": "string", "pattern": "^/tmp/[A-Za-z0-9._/-]+$"},
+                "seed": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {"type": "boolean"},
+                    "manifest": {"type": "string"}
+                  }
+                }
+              }
+            },
+            "pdRouter": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "attestedWorkloadPrefix": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,40}[a-z0-9])?$"},
+                "resources": {
+                  "type": "object", "additionalProperties": false, "required": ["cpu", "memory"],
+                  "properties": {"cpu": {"type": ["string", "integer"]}, "memory": {"type": ["string", "integer"]}}
+                }
+              }
+            }
           }
         }
       }
@@ -315,6 +404,16 @@
             "address": {"type": "string", "format": "ipv4"}
           }
         },
+        "unsupportedParameters": {
+          "type": "array", "maxItems": 64, "uniqueItems": true,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["name"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^[a-z0-9_]{1,64}$"},
+              "allowed": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": ["boolean", "number", "string"]}}
+            }
+          }
+        },
         "usage": {
           "type": "object",
           "additionalProperties": false,
@@ -337,10 +436,32 @@
     },
     "router": {
       "type": "object",
-      "required": ["attestedWorkload", "requestTimeoutSeconds", "maxConcurrentRequests", "queueSize", "queueTimeoutSeconds"],
+      "required": ["attestedWorkload", "discovery", "requestTimeoutSeconds", "maxConcurrentRequests", "queueSize", "queueTimeoutSeconds"],
       "properties": {
         "attestedWorkload": {"$ref": "#/definitions/workloadPolicyName"},
+        "discovery": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["apiServer"],
+          "properties": {
+            "apiServer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["address", "port", "serverName"],
+              "properties": {
+                "address": {"type": "string", "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$"},
+                "cidrs": {
+                  "type": "array", "maxItems": 8, "uniqueItems": true,
+                  "items": {"type": "string", "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])/(1[6-9]|2[0-9]|3[0-2])$"}
+                },
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                "serverName": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"}
+              }
+            }
+          }
+        },
         "requestTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 172800},
+        "image": {"enum": ["", "sglangRouter", "confidentialSglangRouter"]},
         "maxConcurrentRequests": {"type": "integer", "minimum": 0, "maximum": 65536},
         "queueSize": {"type": "integer", "minimum": 0, "maximum": 65536},
         "queueTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600}

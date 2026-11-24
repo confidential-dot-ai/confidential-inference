@@ -1,19 +1,31 @@
 {{- define "confidential-inference.source.inference-workers" -}}
-{{- if .Values.inference.enabled }}
+{{- /* inference.layout pair runs templates/inference-pairs.yaml instead. */}}
+{{- if and .Values.inference.enabled (ne (.Values.inference.layout | default "worker") "pair") }}
 {{- if dig "pd" "enabled" false .Values.inference }}
-{{- fail "inference.pd was removed: the chart runs aggregated workers only (inference-worker-N)" }}
+{{- fail "inference.pd was removed: the chart runs aggregated workers only (inference-worker)" }}
 {{- end }}
 {{- if and (gt (int .Values.inference.gpusPerReplica) 0) (eq (len .Values.inference.gpuArchitectures) 0) }}
 {{- fail "inference.gpuArchitectures is required when inference.gpusPerReplica is greater than zero" }}
 {{- end }}
-{{- range $flag, $value := dict "--context-length" .Values.inference.contextLength "--max-running-requests" .Values.inference.maxRunningRequests }}
+{{- range $flag, $value := dict "--context-length" .Values.inference.contextLength "--max-running-requests" .Values.inference.maxRunningRequests "--warmups" (ternary "confidential_cold_path" "" (eq (.Values.inference.engineImage | default "sglangConfidential") "confidentialSglangEngine")) }}
 {{- if $value }}
 {{- range $.Values.inference.workerExtraArgs }}
-{{- if or (eq . $flag) (hasPrefix (printf "%s=" $flag) .) }}
+{{- $given := index (splitList "=" .) 0 }}
+{{- /* SGLang's argparse accepts a unique prefix of a flag (--warmup for --warmups). */}}
+{{- if and (hasPrefix "--" $given) (gt (len $given) 2) (hasPrefix $given $flag) }}
 {{- fail (printf "inference.workerExtraArgs sets %s, which the chart value sets too: remove it from workerExtraArgs" $flag) }}
 {{- end }}
 {{- end }}
 {{- end }}
+{{- end }}
+{{- /* The cold-path warmup's prefill step sends prompts of up to 32,768 tokens
+(confidential-sglang warmup.py prefill_shapes). SGLang refuses a prompt at or above
+the context length, and the server would fail at startup. Until the warmup caps its
+lengths at the context length, a shorter context length is refused here. */}}
+{{- /* So the context length is required here (it may not come from workerExtraArgs, which
+the flag check above then refuses, or from the model's unknown default). */}}
+{{- if and (eq (.Values.inference.engineImage | default "sglangConfidential") "confidentialSglangEngine") (lt (int (.Values.inference.contextLength | default 0)) 32770) }}
+{{- fail (printf "inference.contextLength is required with the confidential-sglang engine and must be at least 32,770, the longest cold-path warmup prompt plus one token (it is %d)" (int (.Values.inference.contextLength | default 0))) }}
 {{- end }}
 apiVersion: v1
 kind: Service
@@ -35,44 +47,56 @@ spec:
 {{- fail "inference.model.cache is unsupported on C8s v0.99.29: the worker mounts /var/lib/models read-only; use inference.model.download or the c8s model volume" }}
 {{- end }}
 {{- $download := .Values.inference.model.download.enabled }}
-{{- range $index := until (int .Values.inference.replicas) }}
-{{- $simulatorMode := eq $.Values.inference.mode "simulator" }}
-{{- $modelMount := or (not $simulatorMode) $.Values.inference.simulator.validateModelMount }}
+{{- $simulatorMode := eq .Values.inference.mode "simulator" }}
+{{- $modelMount := or (not $simulatorMode) .Values.inference.simulator.validateModelMount }}
 {{- $volumeName := "" }}
 {{- $modelPath := "" }}
 {{- if $modelMount }}
-{{- $volumeName = index $.Values.inference.model.volumeNames $index }}
-{{- $modelPath = printf "%s/%s" $.Values.inference.model.volumeDirectory $volumeName }}
+{{- /* Every replica reads the same model path. A C8s model volume is
+       node-local, so each node holds its own copy under this one name. */}}
+{{- if not .Values.inference.model.volumeNames }}
+{{- fail "inference.model.volumeNames needs one name: the model directory of every worker" }}
 {{- end }}
-{{- $attestedWorkload := index $.Values.inference.attestedWorkloads $index }}
+{{- $volumeName = first .Values.inference.model.volumeNames }}
+{{- $modelPath = printf "%s/%s" .Values.inference.model.volumeDirectory $volumeName }}
+{{- end }}
 {{- $fetch := and $modelMount $download }}
 ---
+# One StatefulSet runs every worker: pods inference-worker-0 to
+# inference-worker-<replicas - 1>. All of them are one C8s workload: the
+# confidential.ai/cw annotation names one allowlist entry
+# (inference.attestedWorkload), and many pods may claim one entry. The
+# router finds the Ready pods by label (templates/sglang-router.yaml).
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: inference-worker-{{ $index }}
+  name: inference-worker
   labels:
     {{- include "confidential-inference.labels" $ | nindent 4 }}
     app.kubernetes.io/component: inference-worker
-    app.kubernetes.io/instance: inference-worker-{{ $index }}
 spec:
   serviceName: inference-workers
-  replicas: 1
+  replicas: {{ int $.Values.inference.replicas }}
+  # Start and stop the workers together. A worker can need more than 30
+  # minutes to load, and no worker depends on another one.
+  podManagementPolicy: Parallel
   updateStrategy:
     type: OnDelete
     rollingUpdate: null
   selector:
     matchLabels:
       {{- include "confidential-inference.selector" (dict "root" $ "component" "inference-worker") | nindent 6 }}
-      app.kubernetes.io/instance: inference-worker-{{ $index }}
   template:
     metadata:
       labels:
         {{- include "confidential-inference.selector" (dict "root" $ "component" "inference-worker") | nindent 8 }}
-        app.kubernetes.io/instance: inference-worker-{{ $index }}
         confidential.ai/environment: {{ $.Values.environment | quote }}
+        # The router discovers only pods with this label set to "true"
+        # (images/sglang-router, worker-withdrawal.patch). A new router does
+        # not pick up a pod relabeled "false".
+        confidential.ai/traffic-eligible: "true"
       annotations:
-        confidential.ai/cw: inference-worker-{{ $index }}
+        confidential.ai/cw: {{ $.Values.inference.attestedWorkload | quote }}
         {{- if and $modelMount (not $download) }}
         confidential.ai/c8s-volumes: {{ printf "%s=%s" $volumeName $.Values.inference.model.c8sVolumeSource | quote }}
         confidential.ai/c8s-volume-dir: {{ $.Values.inference.model.volumeDirectory | quote }}
@@ -86,12 +110,33 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ $.Values.inference.port | quote }}
     spec:
+      {{- if $download }}
+      # A downloading worker needs no node-local state, so the scheduler
+      # places it: on a node with a free GPU (resources below) and, when it
+      # is set, with the labels of scheduling.inferenceNodeSelector.
+      {{- with $.Values.scheduling.inferenceNodeSelector }}
       nodeSelector:
-        kubernetes.io/hostname: {{ include "confidential-inference.inferenceNodeName" (dict "root" $ "index" $index) | quote }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- else if $.Values.scheduling.inferenceNodeNames }}
+      # A C8s model volume is node-local: run only on the listed nodes.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: {{ include "confidential-inference.inferenceNodeNames" $ }}
+      {{- else }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ $.Values.scheduling.inferenceNodeName | quote }}
+      {{- end }}
       {{- if $fetch }}
       # The model source addresses are also the pod's allowlist exits.
       {{- include "confidential-inference.modelDownloadHostAliases" $ | nindent 6 }}
       {{- end }}
+      {{- include "confidential-inference.nodeLossTolerations" $ | nindent 6 }}
       enableServiceLinks: false
       serviceAccountName: confidential-inference
       terminationGracePeriodSeconds: {{ $.Values.inference.terminationGracePeriodSeconds }}
@@ -152,7 +197,7 @@ spec:
             - --chat-template={{ $.Values.inference.simulator.chatTemplate }}
             - --max-total-tokens={{ $.Values.inference.simulator.maxTotalTokens }}
             - --max-running-requests={{ $.Values.inference.simulator.maxRunningRequests }}
-            - --random-seed={{ $index }}
+            - --random-seed=0
             - --enable-metrics
             - --enable-cache-report
             - --host=0.0.0.0
@@ -192,6 +237,14 @@ spec:
             {{- if $.Values.inference.speculativeAlgorithm }}
             - --speculative-algorithm={{ $.Values.inference.speculativeAlgorithm }}
             {{- end }}
+            {{- if eq ($.Values.inference.engineImage | default "sglangConfidential") "confidentialSglangEngine" }}
+            # confidential-sglang's cold-path warmup (python/sglang/srt/entrypoints/warmup.py):
+            # prefill lengths, every sampling path and decode batch sizes, run in the
+            # server lifespan before it listens. The probes and the router see the
+            # worker only when it is warm (staging-39086210fdc6 compiled 20 kernels
+            # after ready without it). This repository's own image does not have it.
+            - --warmups=confidential_cold_path
+            {{- end }}
             {{- range $.Values.inference.workerExtraArgs }}
             - {{ . | quote }}
             {{- end }}
@@ -217,6 +270,10 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            # /health answers without a generation; /health_generate still
+            # generates one token. The probes below explain the split.
+            - name: SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION
+              value: "false"
             {{- if $modelMount }}
             - name: HF_HUB_OFFLINE
               value: "1"
@@ -230,6 +287,11 @@ spec:
               value: {{ $.Values.inference.simulator.outputMode | quote }}
             - name: PYTHONPATH
               value: /opt/confidential-inference/sglang-simulator/src
+            {{- else if $.Values.inference.flashinferDisableJit }}
+            # FlashInfer fails a kernel that the image does not carry instead
+            # of compiling it at run time (values.yaml explains why).
+            - name: FLASHINFER_DISABLE_JIT
+              value: "1"
             {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -254,17 +316,35 @@ spec:
             limits:
               nvidia.com/gpu: {{ $.Values.inference.gpusPerReplica }}
             {{- end }}
+          # The probes use two SGLang endpoints (http_server.py health_generate).
+          # With SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=false, /health answers
+          # 200 without a generation once the server is up, and 503 while it
+          # starts or drains. /health_generate runs a 1-token generation and
+          # waits for the scheduler.
+          #
+          # Liveness must not generate. On 2026-11-19 the first top-k request
+          # made each staging worker JIT-compile a FlashInfer kernel for about
+          # 67 s inside the scheduler. A generating /health could not answer,
+          # and the liveness probe killed both workers mid-compile. A busy
+          # scheduler is not a dead process: liveness restarts only a server
+          # whose HTTP process stopped answering.
+          #
+          # Startup and readiness do generate. A worker gets traffic only
+          # after it produced a token, and a stalled scheduler takes the pod
+          # out of the Service endpoints (and out of the router) until it
+          # answers again, without a restart.
+          #
+          # c8s >= v0.64 forwards only HTTP probes through the per-pod mesh.
           startupProbe:
             httpGet:
-              path: /health
+              path: /health_generate
               port: inference
             periodSeconds: 15
             failureThreshold: 240
             timeoutSeconds: 5
-          # c8s >= v0.64 forwards only HTTP probes through the per-pod mesh.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health_generate
               port: inference
             periodSeconds: 10
             timeoutSeconds: 5
@@ -288,7 +368,6 @@ spec:
         {{- if $fetch }}
         {{- include "confidential-inference.modelDownloadVolumes" $ | nindent 8 }}
         {{- end }}
-{{- end }}
 {{- end }}
 
 {{- end -}}

@@ -177,7 +177,7 @@ def check_model_download() -> None:
         documents = render_values(download_values(), "--set", f"inference.mode={mode}",
                                   "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
         worker = next(item for item in documents if item["kind"] == "StatefulSet"
-                      and item["metadata"]["name"] == "inference-worker-0")
+                      and item["metadata"]["name"] == "inference-worker")
         template = worker["spec"]["template"]
         pod = template["spec"]
         assert "confidential.ai/c8s-volumes" not in template["metadata"]["annotations"], mode
@@ -187,9 +187,13 @@ def check_model_download() -> None:
         container = pod["containers"][0]
         shell, flag, script, name = container["command"]
         assert (shell, flag, name) == ("/bin/sh", "-c", "sh")
-        assert ("/usr/local/bin/fetch-model --endpoint=https://models.example.invalid fetch "
+        # Two sources: fetch-model tries each in order until one gives every byte.
+        assert script.startswith("trap 'kill $f 2>/dev/null; wait $f; exit 143' TERM INT; "
+                                 "for e in https://models.example.invalid https://cdn.example.invalid; do "), script
+        assert ("/usr/local/bin/fetch-model --endpoint=$e fetch "
                 f"--path=/mnt/c8s-data/model-download --manifest=/mnt/c8s-data/model-manifest/manifest.json "
                 f"--manifest-sha256={pin} --revision-metadata=.model-lock-local-manifest.json &") in script
+        assert '[ -z "$f" ] || exit 1; trap - TERM INT; exec "$@"' in script
         assert script.endswith('exec "$@"')
         assert container["args"][:3] == ["/usr/local/bin/wait-for-model", "--path=/mnt/c8s-data/models/model",
                                          "--plain-cache"], container["args"][:3]
@@ -223,6 +227,96 @@ def check_model_download() -> None:
         assert error in render_values(values, success=False), name
 
 
+def check_model_download_sources() -> None:
+    """One source keeps the one fetch-model command; distinct sources are tried in order, each with its own
+    scheme on the one exit port. The same server name twice is one source."""
+    import hashlib
+    pin = hashlib.sha256(MANIFEST.encode()).hexdigest()
+    single = [{"serverName": "models.example.invalid", "address": "192.0.2.20"}]
+    for hosts, download, expected in (
+            (single, {}, None),
+            (single + [{"serverName": "models.example.invalid", "address": "192.0.2.21"}], {}, None),
+            ([{"serverName": "model-cache.example.invalid", "address": "10.95.0.80", "scheme": "http"}] + single, {},
+             "http://model-cache.example.invalid https://models.example.invalid"),
+            ([{"serverName": "mirror.example.invalid", "address": "10.48.176.17", "scheme": "http", "port": 8080}]
+             + single, {}, "http://mirror.example.invalid:8080 https://models.example.invalid"),
+            ([{"serverName": "model-cache.example.invalid", "address": "10.95.0.80"}] + single, {"scheme": "http"},
+             "http://model-cache.example.invalid http://models.example.invalid")):
+        documents = render_values(download_values(hosts=hosts, **download), "--set", "inference.mode=model",
+                                  "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
+        worker = next(item for item in documents if item["kind"] == "StatefulSet"
+                      and item["metadata"]["name"] == "inference-worker")
+        script = worker["spec"]["template"]["spec"]["containers"][0]["command"][2]
+        if expected is None:
+            scheme = download.get("scheme", "https")
+            assert script == ("trap 'kill $f 2>/dev/null; wait $f; exit 143' TERM INT; /usr/local/bin/fetch-model "
+                              f"--endpoint={scheme}://models.example.invalid fetch --path=/mnt/c8s-data/model-download "
+                              "--manifest=/mnt/c8s-data/model-manifest/manifest.json "
+                              f"--manifest-sha256={pin} --revision-metadata=.model-lock-local-manifest.json & f=$!; "
+                              'wait $f || exit $?; trap - TERM INT; exec "$@"'), script
+        else:
+            assert f"for e in {expected}; do " in script, script
+    hosts = [{"serverName": "c.example.invalid", "address": "10.95.0.80", "scheme": "ftp"}]
+    assert "scheme" in render_values(download_values(hosts=hosts), success=False)
+    # Each host's port: one NetworkPolicy rule per port, with the addresses of that port.
+    hosts = [{"serverName": "mirror.example.invalid", "address": "10.48.176.17", "scheme": "http"}] + single
+    documents = render_values(download_values(hosts=hosts), "--set", "inference.mode=model",
+                              "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
+    policy = next(item for item in documents if item["kind"] == "NetworkPolicy"
+                  and item["metadata"]["name"] == "inference-worker-model-download")["spec"]
+    assert policy["egress"] == [
+        {"to": [{"ipBlock": {"cidr": "10.48.176.17/32"}}], "ports": [{"protocol": "TCP", "port": 80}]},
+        {"to": [{"ipBlock": {"cidr": "192.0.2.20/32"}}], "ports": [{"protocol": "TCP", "port": 443}]}], policy
+    check_model_download_fallback_runs()
+
+
+def check_model_download_fallback_runs() -> None:
+    """Run the rendered two-source command with a fetch-model stub: the sources go in order, the first
+    success stops the loop and starts the check, all failures exit 1 without the check, and TERM stops
+    the running fetch at once without trying the next source."""
+    import os
+    import signal
+    import time
+    hosts = [{"serverName": "cache.example.invalid", "address": "10.95.0.80", "scheme": "http"},
+             {"serverName": "models.example.invalid", "address": "192.0.2.20"}]
+    documents = render_values(download_values(hosts=hosts), "--set", "inference.mode=model",
+                              "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
+    worker = next(item for item in documents if item["kind"] == "StatefulSet"
+                  and item["metadata"]["name"] == "inference-worker")
+    script = worker["spec"]["template"]["spec"]["containers"][0]["command"][2]
+    with tempfile.TemporaryDirectory() as directory:
+        log = Path(directory) / "log"
+        stub = Path(directory) / "fetch-model"
+        stub.write_text('#!/bin/sh\nendpoint=${1#--endpoint=}\necho "fetch $endpoint" >> "$LOG"\n'
+                        'case " $FAIL " in *" $endpoint "*) exit 7;; esac\n'
+                        '[ -n "$SLEEP" ] && exec sleep "$SLEEP"\nexit 0\n')
+        stub.chmod(0o755)
+        runnable = script.replace("/usr/local/bin/fetch-model", str(stub))
+        cache, server = "http://cache.example.invalid", "https://models.example.invalid"
+
+        def run(fail: str = "", sleep: str = "") -> tuple[int, list[str]]:
+            log.write_text("")
+            env = {**os.environ, "LOG": str(log), "FAIL": fail, "SLEEP": sleep}
+            done = subprocess.run(["/bin/sh", "-c", runnable, "sh", "sh", "-c", f'echo check >> "{log}"'],
+                                  env=env, capture_output=True, text=True, timeout=30)
+            return done.returncode, log.read_text().split("\n")[:-1]
+
+        assert run() == (0, [f"fetch {cache}", "check"])
+        assert run(fail=cache) == (0, [f"fetch {cache}", f"fetch {server}", "check"])
+        assert run(fail=f"{cache} {server}") == (1, [f"fetch {cache}", f"fetch {server}"])
+        log.write_text("")
+        process = subprocess.Popen(["/bin/sh", "-c", runnable, "sh", "sh", "-c", f'echo check >> "{log}"'],
+                                   env={**os.environ, "LOG": str(log), "FAIL": "", "SLEEP": "30"})
+        for _ in range(100):
+            if log.read_text():
+                break
+            time.sleep(0.05)
+        time.sleep(0.2)
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=10) == 143
+        assert log.read_text().split("\n")[:-1] == [f"fetch {cache}"], log.read_text()
+
+
 def check_model_download_scheme() -> None:
     """A plain HTTP model server: the byte manifest, not TLS, pins the model bytes.
 
@@ -234,10 +328,10 @@ def check_model_download_scheme() -> None:
             ({"scheme": "http"}, "http://models.example.invalid", 80),
             ({"scheme": "http", "port": 80}, "http://models.example.invalid", 80),
             ({"scheme": "http", "port": 8080}, "http://models.example.invalid:8080", 8080)):
-        documents = render_values(download_values(**download), "--set", "inference.mode=model",
+        documents = render_values(download_values(hosts=DOWNLOAD_HOSTS[:1], **download), "--set", "inference.mode=model",
                                   "--set", "inference.gpusPerReplica=1", "--set", "inference.gpuArchitectures={BLACKWELL}")
         worker = next(item for item in documents if item["kind"] == "StatefulSet"
-                      and item["metadata"]["name"] == "inference-worker-0")
+                      and item["metadata"]["name"] == "inference-worker")
         container = worker["spec"]["template"]["spec"]["containers"][0]
         script = container["command"][2]
         assert f"/usr/local/bin/fetch-model --endpoint={endpoint} fetch " in script, (download, script)
@@ -368,8 +462,8 @@ def check_log_privacy(config: dict) -> None:
     # A body leaves only when a source's keep rule marks it; every other body is replaced.
     keeps = [item for item in statements if item.startswith('set(log.cache["keep"], true) where ')]
     sources = [re.match(r'.*?resource\.attributes\["service\.name"\] == "([a-z0-9-]+)"', item).group(1) for item in keeps]
-    assert sources == ["gateway", "inference-worker", "sglang-router", "c8s", "telemetry-collector",
-                       "node-log-agent"], sources
+    assert sources == ["gateway", "inference-pair", "inference-worker", "sglang-router", "c8s",
+                       "telemetry-collector", "node-log-agent"], sources
     keep_body = 'set(log.body, String(log.cache["b"])) where log.cache["keep"] == true'
     drop_body = 'set(log.body, "[body dropped: not a reviewed record]") where log.cache["keep"] != true'
     assert statements.index(keep_body) < statements.index(drop_body)
@@ -492,11 +586,13 @@ def check_telemetry_collector() -> None:
     documents = render(*TELEMETRY, "--set", "telemetry.traces.enabled=true")
     pods = {item["metadata"]["name"]: item["spec"]["template"]["spec"] for item in documents
             if item["kind"] in {"Deployment", "StatefulSet"}}
-    # The collector and (stateless, #223) the gateway are the only pods with
-    # an exit; each exit is a hostAliases address and its one ipBlock. The
-    # CDS rule on TCP 8443 is the only other ipBlock.
+    # The collector, (stateless, #223) the gateway and the router (the API
+    # server, for service discovery) are the only pods with an exit; each
+    # exit is a hostAliases address. The collector's and the gateway's have
+    # their one ipBlock; the router's API server is a node, so its rule names
+    # only the port. The CDS rule on TCP 8443 is the only other ipBlock.
     exits = {name for name, pod in pods.items() if pod.get("hostAliases")}
-    assert "telemetry-collector" in exits and exits <= {"telemetry-collector", "gateway"}, exits
+    assert "telemetry-collector" in exits and exits <= {"telemetry-collector", "gateway", "sglang-router"}, exits
     collector = pods["telemetry-collector"]
     assert collector["hostAliases"] == [{"ip": "203.0.113.7", "hostnames": ["relay.example.com"]}]
     assert PINNED.match(collector["containers"][0]["image"])
@@ -513,7 +609,7 @@ def check_telemetry_collector() -> None:
     blocks = [peer["ipBlock"]["cidr"] for policy in policies.values()
               for rule in policy["spec"].get("egress", []) if {"protocol": "TCP", "port": 8443} not in rule.get("ports", [])
               for peer in rule.get("to", []) if "ipBlock" in peer]
-    addresses = {alias["ip"] + "/32" for name in exits for alias in pods[name]["hostAliases"]}
+    addresses = {alias["ip"] + "/32" for name in exits - {"sglang-router"} for alias in pods[name]["hostAliases"]}
     assert sorted(blocks) == sorted(addresses) and "203.0.113.7/32" in blocks, blocks
 
     config = collector_config(documents)
@@ -524,6 +620,10 @@ def check_telemetry_collector() -> None:
     jobs = config["receivers"]["prometheus"]["config"]["scrape_configs"]
     assert [job["job_name"] for job in jobs] == ["gateway", "sglang-router", "inference-worker-0", "inference-worker-1",
                                                  "otelcol"]
+    # The StatefulSet's pods have stable names in the headless Service.
+    assert [job["static_configs"][0]["targets"] for job in jobs[2:4]] == [
+        ["inference-worker-0.inference-workers.default.svc.cluster.local:30000"],
+        ["inference-worker-1.inference-workers.default.svc.cluster.local:30000"]]
     # The collector scrapes its own otelcol_* metrics on loopback; every
     # series carries `cluster` (kube-state-metrics has its own `deployment`).
     assert jobs[-1]["static_configs"][0]["targets"] == ["127.0.0.1:8888"]
@@ -531,6 +631,10 @@ def check_telemetry_collector() -> None:
         "host": "127.0.0.1", "port": 8888}
     labels = config["exporters"]["prometheusremotewrite"]["external_labels"]
     assert labels["cluster"] == "test-deployment" and "deployment" not in labels
+    # Without a deployment value (this render) there is no deployment_name; the render tool sets it.
+    assert "deployment_name" not in labels
+    named = collector_config(render(*TELEMETRY, "--set", "deployment=staging-0123456789ab"))
+    assert named["exporters"]["prometheusremotewrite"]["external_labels"]["deployment_name"] == "staging-0123456789ab"
     for job in jobs:
         (keep,) = job["metric_relabel_configs"]
         assert keep["action"] == "labelkeep"
@@ -603,6 +707,8 @@ def main() -> None:
     assert not any(name.startswith(('GATEWAY_C8S_', 'GATEWAY_RELEASE_')) for name in gateway_environment)
     production_settings = json.loads(gateway_environment['GATEWAY_RUNTIME_CONFIG'])
     assert production_settings['maximumBodyBytes'] == 2097152
+    # No unsupported parameter by default: the settings keep their earlier keys.
+    assert 'unsupportedParameters' not in production_settings
     # Refuse a chart value that the published gateway cannot start with: the
     # gateway accepts 1024 to 67108864 bytes (64 MiB).
     def render_body_limit(value):
@@ -633,9 +739,12 @@ def main() -> None:
     assert production_settings['firstTokenTimeoutSeconds'] == 3600
     assert production_settings['streamIdleTimeoutSeconds'] == 60
     check_long_request_limits(production)
+    check_flashinfer_disable_jit(production)
+    check_cold_path_warmup(production)
+    check_worker_probes(production)
     production_workers = [item for item in production if item['kind'] == 'StatefulSet'
-                          and item['metadata']['name'].startswith('inference-worker-')]
-    assert len(production_workers) == 2
+                          and item['metadata']['name'] == 'inference-worker']
+    assert len(production_workers) == 1 and production_workers[0]['spec']['replicas'] == 2
     for worker in production_workers:
         container = worker['spec']['template']['spec']['containers'][0]
         context_args = [arg for arg in container['args'] if arg.startswith('--context-length')]
@@ -697,15 +806,17 @@ def main() -> None:
                           and item['metadata']['name'] == 'sglang-router')
     router_container = next(item for item in runtime_router['spec']['template']['spec']['containers']
                             if item['name'] == 'sglang-router')
-    assert [item['name'] for item in router_container['env']] == ['CI_ROUTER_MODEL_ROUTES']
+    assert [item['name'] for item in router_container['env']] == ['CI_ROUTER_MODEL_ROUTES', 'KUBECONFIG']
     routes = json.loads(router_container['env'][0]['value'])
     assert routes == {'schemaVersion': 1, 'routes': {'public-a': ['backend-a'], 'public-b': ['backend-b']}}
     assert settings['catalogModelIds'] == settings['inferenceModelIds'] == sorted(routes['routes'])
     assert settings['routerService'] == 'router-headless'
     router_slot = next(item for item in runtime_documents if item['kind'] == 'Service' and item['metadata']['name'] == settings['routerService'])
     assert router_slot['spec']['clusterIP'] == 'None'
-    assert not any(item['kind'] == 'ConfigMap' for item in runtime_documents)
-    assert 'volumeMounts' not in router_container
+    # The router's one ConfigMap is its Kubernetes client configuration.
+    assert [item['metadata']['name'] for item in runtime_documents if item['kind'] == 'ConfigMap'] == [
+        'sglang-router-kubeconfig']
+    assert [mount['mountPath'] for mount in router_container['volumeMounts']] == ['/mnt/c8s-data/kubernetes']
     for removed in ('GATEWAY_MODEL', 'GATEWAY_INFERENCE_CONCURRENCY',
                     'GATEWAY_MAXIMUM_BODY_BYTES', 'GATEWAY_UPSTREAM_TIMEOUT_SECONDS'):
         assert removed not in runtime_gateway.env
@@ -726,7 +837,7 @@ def main() -> None:
         if item["kind"] in {"Deployment", "StatefulSet", "DaemonSet"}
     ]
     names = {item["metadata"]["name"] for item in workloads}
-    assert {"gateway", "sglang-router", "inference-worker-0", "inference-worker-1"}.issubset(names)
+    assert {"gateway", "sglang-router", "inference-worker"}.issubset(names)
     assert not any(item["kind"] == "PersistentVolume" for item in documents)
     assert not any(container["name"] == "cds-attest" for workload in workloads
                    for container in workload["spec"]["template"]["spec"]["containers"])
@@ -849,9 +960,7 @@ def main() -> None:
         for container in router["spec"]["template"]["spec"]["containers"]
         if container["name"] == "sglang-router"
     )
-    assert router_args[:3] == ["--worker-urls", "http://inference-worker-0-0.inference-workers:30000",
-                               "http://inference-worker-1-0.inference-workers:30000"]
-    assert not any(arg.startswith("--service-discovery") for arg in router_args)
+    check_router_discovery(inference_documents)
     assert router["spec"]["strategy"]["rollingUpdate"] == {
         "maxUnavailable": 0,
         "maxSurge": 1,
@@ -861,14 +970,12 @@ def main() -> None:
         if item["kind"] == "Service" and item["metadata"]["name"] == "sglang-router"
     )
     assert "publishNotReadyAddresses" not in router_service["spec"]
-    assert not any(item["kind"] in {"Role", "RoleBinding"} and item["metadata"]["name"] == "sglang-router-pods"
-                   for item in inference_documents)
 
     # The attested GPU count annotation defaults to the per-pod allocation and
     # can be overridden when several workers share one node's GPUs.
     worker = next(
         item for item in inference_documents
-        if item["metadata"]["name"] == "inference-worker-0"
+        if item["metadata"]["name"] == "inference-worker"
         and item["kind"] in {"Deployment", "StatefulSet"}
     )
     worker_annotations = worker["spec"]["template"]["metadata"]["annotations"]
@@ -884,7 +991,7 @@ def main() -> None:
     ]
     override_worker = next(
         item for item in override_documents
-        if item["metadata"]["name"] == "inference-worker-0"
+        if item["metadata"]["name"] == "inference-worker"
         and item["kind"] in {"Deployment", "StatefulSet"}
     )
     override_annotations = override_worker["spec"]["template"]["metadata"]["annotations"]
@@ -898,16 +1005,15 @@ def main() -> None:
         for rule in router_network_policy["spec"]["egress"]
         for port in rule.get("ports", [])
     }
-    assert router_egress_ports == {30000}
+    assert router_egress_ports == {30000, 6443}
 
     workers = [
         item for item in inference_documents
         if item["kind"] == "StatefulSet"
-        and item["metadata"]["name"].startswith("inference-worker-")
+        and item["metadata"]["name"] == "inference-worker"
     ]
-    assert len(workers) == 2
+    assert len(workers) == 1 and workers[0]["spec"]["replicas"] == 2
     for worker in workers:
-        worker_index = worker["metadata"]["name"].removeprefix("inference-worker-")
         worker_pod = worker["spec"]["template"]
         sglang_args = next(
             container["args"]
@@ -915,10 +1021,7 @@ def main() -> None:
             if container["name"] == "sglang"
         )
         assert sglang_args.count("--tool-call-parser=deepseekv4") == 1
-        assert (
-            worker["spec"]["template"]["metadata"]["annotations"]["confidential.ai/cw"]
-            == f"inference-worker-{worker_index}"
-        )
+        assert worker["spec"]["template"]["metadata"]["annotations"]["confidential.ai/cw"] == "inference-worker"
 
     simulator_documents = [
         item for item in yaml.safe_load_all(
@@ -931,11 +1034,10 @@ def main() -> None:
     simulator_workers = [
         item for item in simulator_documents
         if item["kind"] == "StatefulSet"
-        and item["metadata"]["name"].startswith("inference-worker-")
+        and item["metadata"]["name"] == "inference-worker"
     ]
-    assert len(simulator_workers) == 2
+    assert len(simulator_workers) == 1 and simulator_workers[0]["spec"]["replicas"] == 2
     for worker in simulator_workers:
-        worker_index = worker["metadata"]["name"].removeprefix("inference-worker-")
         pod = worker["spec"]["template"]
         assert "confidential.ai/c8s-volumes" not in pod["metadata"]["annotations"]
         container = next(
@@ -944,7 +1046,7 @@ def main() -> None:
         assert container["command"] == ["python3"]
         assert "sglang_simulator.simulation.sglang.launch_server" in container["args"]
         assert "--chat-template=chatml" in container["args"]
-        assert f"--random-seed={worker_index}" in container["args"]
+        assert "--random-seed=0" in container["args"]
         assert "nvidia.com/gpu" not in container["resources"].get("requests", {})
         assert "nvidia.com/gpu" not in container["resources"].get("limits", {})
         environment = {item["name"]: item["value"] for item in container["env"]}
@@ -992,8 +1094,10 @@ def main() -> None:
     router_slot = next(item for item in staging_documents if item["kind"] == "Service" and item["metadata"]["name"] == settings["routerService"])
     assert router_slot["spec"]["clusterIP"] == "None"
     assert routes["routes"] == {model: [model]}
-    # The only ConfigMap is the byte manifest of the staging model download.
-    assert [item["metadata"]["name"] for item in staging_documents if item["kind"] == "ConfigMap"] == ["model-manifest"]
+    # The ConfigMaps are the router's Kubernetes client configuration and the
+    # byte manifest of the staging model download.
+    assert sorted(item["metadata"]["name"] for item in staging_documents if item["kind"] == "ConfigMap") == [
+        "model-manifest", "sglang-router-kubeconfig"]
     assert not any(container["name"] == "cds-attest" for document in staging_documents
                    if document["kind"] in {"Deployment", "StatefulSet"}
                    for container in document["spec"]["template"]["spec"]["containers"])
@@ -1022,6 +1126,9 @@ def main() -> None:
     check_model_cache()
     check_model_download()
     check_model_download_scheme()
+    check_model_download_sources()
+    check_worker_placement()
+    check_router_exit_ranges()
     check_front_door_namespace()
     check_c8s_admission()
     check_telemetry_collector()
@@ -1070,13 +1177,238 @@ def check_long_request_limits(production: list[dict]) -> None:
                        '--set-json', 'inference.workerExtraArgs=["--sampling-backend=pytorch"]')
     assert accepted.returncode == 0, accepted.stderr
     workers = [item for item in yaml.safe_load_all(accepted.stdout) if item and item['kind'] == 'StatefulSet'
-               and item['metadata']['name'].startswith('inference-worker-')]
+               and item['metadata']['name'] == 'inference-worker']
     assert workers
     for worker in workers:
         container_args = worker['spec']['template']['spec']['containers'][0]['args']
         assert [arg for arg in container_args if arg.startswith('--context-length')] == ['--context-length=1048576']
         assert [arg for arg in container_args if arg.startswith('--max-running-requests')] == [
             '--max-running-requests=8']
+
+
+def check_cold_path_warmup(production: list[dict]) -> None:
+    """Every confidential-sglang engine worker runs --warmups=confidential_cold_path,
+    before the server listens (staging-39086210fdc6 compiled 20 kernels after
+    ready without it). This repository's own image has no such warmup, so its
+    worker gets none, and only the chart may set --warmups."""
+    def worker_args(documents):
+        workers = [item for item in documents if item['kind'] == 'StatefulSet'
+                   and item['metadata']['name'] == 'inference-worker']
+        assert workers
+        return [worker['spec']['template']['spec']['containers'][0]['args'] for worker in workers]
+    production_files = ('-f', str(ROOT / 'tests/fixtures/deployments/production-values.yaml'),
+                        '-f', str(ROOT / 'tests/release-v1/fixtures/release-values.yaml'))
+    assert all(not any(a.startswith('--warmups') for a in args) for args in worker_args(production))
+    engine_set = ('--set', 'inference.engineImage=confidentialSglangEngine',
+                  '--set', 'images.confidentialSglangEngine=ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:' + '0' * 64)
+    sized = (*engine_set, '--set-json', 'inference.workerExtraArgs=[]', '--set', 'inference.contextLength=65536')
+    engine = render(*production_files, *sized)
+    for args in worker_args(engine):
+        assert [a for a in args if a.startswith('--warmups')] == ['--warmups=confidential_cold_path'], args
+    refused = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files, *sized,
+                              '--set', 'inference.workerExtraArgs[0]=--warmups=other'],
+                             capture_output=True, text=True)
+    assert refused.returncode != 0 and 'sets --warmups' in refused.stderr, refused.stderr
+    # argparse takes a unique prefix: --warmup would replace the chart's --warmups.
+    abbreviated = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files, *sized,
+                                  '--set', 'inference.workerExtraArgs[0]=--warmup=other'], capture_output=True, text=True)
+    assert abbreviated.returncode != 0 and 'sets --warmups' in abbreviated.stderr, abbreviated.stderr
+    # The warmup's longest prompt is 32,768 tokens; a shorter context length would fail at startup.
+    short = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files, *engine_set,
+                            '--set-json', 'inference.workerExtraArgs=[]', '--set', 'inference.contextLength=8192'], capture_output=True, text=True)
+    assert short.returncode != 0 and 'at least 32,770' in short.stderr, short.stderr
+    assert render(*production_files, *engine_set, '--set-json', 'inference.workerExtraArgs=[]', '--set', 'inference.contextLength=65536')
+    # The context length may not come from workerExtraArgs or the model's default.
+    unset = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files, *engine_set,
+                            '--set-json', 'inference.workerExtraArgs=["--context-length=8192"]',
+                            '--set', 'inference.contextLength=0'], capture_output=True, text=True)
+    assert unset.returncode != 0 and 'contextLength is required' in unset.stderr, unset.stderr
+    given = subprocess.run(['helm', 'template', 'warmup-test', str(CHART), *production_files, *engine_set,
+                            '--set-json', 'inference.workerExtraArgs=["--context=8192"]',
+                            '--set', 'inference.contextLength=65536'], capture_output=True, text=True)
+    assert given.returncode != 0 and 'sets --context-length' in given.stderr, given.stderr
+
+
+def check_flashinfer_disable_jit(production: list[dict]) -> None:
+    """inference.flashinferDisableJit sets FLASHINFER_DISABLE_JIT=1 on the model worker only.
+
+    A FlashInfer compile at run time stalls the SGLang scheduler; on
+    2026-11-19 one let the liveness probe kill both staging workers. The
+    default stays false: today's worker image carries no prebuilt FlashInfer
+    JIT cache, so the flag would fail its first sampling request. The default
+    render must not change, because the C8s allowlist pins the worker env.
+    """
+    def worker_env(documents):
+        workers = [item for item in documents if item['kind'] == 'StatefulSet'
+                   and item['metadata']['name'] == 'inference-worker']
+        assert workers
+        return [{item['name']: item.get('value') for item in worker['spec']['template']['spec']['containers'][0]['env']}
+                for worker in workers]
+    assert all('FLASHINFER_DISABLE_JIT' not in env for env in worker_env(production))
+    production_files = ('-f', str(ROOT / 'tests/fixtures/deployments/production-values.yaml'),
+                        '-f', str(ROOT / 'tests/release-v1/fixtures/release-values.yaml'))
+    enabled = render(*production_files, '--set', 'inference.flashinferDisableJit=true')
+    assert all(env.get('FLASHINFER_DISABLE_JIT') == '1' for env in worker_env(enabled))
+    # The CPU simulator has no FlashInfer: the flag renders nothing there.
+    simulator = render('--set', 'inference.flashinferDisableJit=true')
+    assert all('FLASHINFER_DISABLE_JIT' not in env for env in worker_env(simulator))
+    rejected = subprocess.run(['helm', 'template', 'flag-test', str(CHART), *NEUTRAL_MODE,
+                               '--set-string', 'inference.flashinferDisableJit=yes'],
+                              capture_output=True, text=True)
+    assert rejected.returncode != 0 and 'flashinferDisableJit' in rejected.stderr, rejected.stderr
+
+
+def check_router_discovery(documents: list[dict]) -> None:
+    """The router finds the workers with Kubernetes service discovery.
+
+    One StatefulSet runs every worker under one C8s entry. The router watches
+    its pods through the API server's own address (its allowlist exit), with
+    a kubeconfig, a projected token and a Role that reads pods only.
+    """
+    def one(kind, name):
+        (item,) = [item for item in documents if item["kind"] == kind and item["metadata"]["name"] == name]
+        return item
+    router = one("Deployment", "sglang-router")
+    pod = router["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    args = container["args"]
+    assert not any(arg.startswith("--worker-urls") or "inference-worker-0" in arg for arg in args), args
+    namespace = next(arg for arg in args if arg.startswith("--service-discovery-namespace=")).partition("=")[2]
+    assert args[:5] == ["--service-discovery", f"--service-discovery-namespace={namespace}",
+                        "--service-discovery-port=30000", "--selector=app.kubernetes.io/component=inference-worker",
+                        "--selector=confidential.ai/traffic-eligible=true"], args
+    assert pod["hostAliases"] == [{"ip": "192.0.2.30", "hostnames": ["kubernetes-api"]}]
+    assert pod["serviceAccountName"] == "sglang-router"
+    env = {item["name"]: item["value"] for item in container["env"]}
+    assert env["KUBECONFIG"] == "/mnt/c8s-data/kubernetes/kubeconfig"
+    assert container["volumeMounts"] == [{"name": "kubernetes", "mountPath": "/mnt/c8s-data/kubernetes", "readOnly": True}]
+    (volume,) = pod["volumes"]
+    sources = volume["projected"]["sources"]
+    assert sources[0] == {"serviceAccountToken": {"path": "token", "expirationSeconds": 3600}}
+    assert [source["configMap"]["name"] for source in sources[1:]] == ["kube-root-ca.crt", "sglang-router-kubeconfig"]
+    config = yaml.safe_load(one("ConfigMap", "sglang-router-kubeconfig")["data"]["kubeconfig"])
+    cluster = config["clusters"][0]["cluster"]
+    assert cluster == {"server": "https://192.0.2.30:6443", "certificate-authority": "/mnt/c8s-data/kubernetes/ca.crt",
+                       "tls-server-name": "kubernetes.default.svc"}
+    assert config["users"][0]["user"] == {"tokenFile": "/mnt/c8s-data/kubernetes/token"}
+    assert config["contexts"][0]["context"]["namespace"] == namespace
+    # The service account mounts no token of its own; the Role reads pods only.
+    account = one("ServiceAccount", "sglang-router")
+    assert account["automountServiceAccountToken"] is False
+    assert one("Role", "sglang-router-pods")["rules"] == [
+        {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch"]}]
+    binding = one("RoleBinding", "sglang-router-pods")
+    assert binding["roleRef"]["name"] == "sglang-router-pods"
+    assert binding["subjects"] == [{"kind": "ServiceAccount", "name": "sglang-router", "namespace": namespace}]
+    # The workers: one StatefulSet, one entry, and the label the router selects.
+    (worker,) = [item for item in documents if item["kind"] == "StatefulSet"]
+    assert worker["metadata"]["name"] == "inference-worker"
+    assert worker["spec"]["podManagementPolicy"] == "Parallel"
+    template = worker["spec"]["template"]
+    assert template["metadata"]["annotations"]["confidential.ai/cw"] == "inference-worker"
+    assert template["metadata"]["labels"]["confidential.ai/traffic-eligible"] == "true"
+    assert template["metadata"]["labels"]["app.kubernetes.io/component"] == "inference-worker"
+
+
+def check_router_exit_ranges() -> None:
+    """router.discovery.apiServer.cidrs: the allowlist exit ranges of an address set at deploy time.
+
+    The release render of the allowlist knows only the ranges; the deploy
+    sets the address. The ranges go on the router Deployment (not its pod),
+    the pod dials the address, and a known address must be in a range.
+    """
+    def router(*arguments):
+        documents = render(*arguments)
+        (item,) = [item for item in documents if item["kind"] == "Deployment"
+                   and item["metadata"]["name"] == "sglang-router"]
+        (policy,) = [item for item in documents if item["kind"] == "NetworkPolicy"
+                     and item["metadata"]["name"] == "router-paths"]
+        return item, policy
+    annotation = "inference.confidential.ai/egress-cidrs"
+    default, default_policy = router()
+    assert annotation not in default["metadata"].get("annotations", {})
+    # The release render: ranges, and the documentation address (not known yet).
+    ranges = ("--set-json", 'router.discovery.apiServer.cidrs=["10.48.64.0/18","10.50.0.0/16"]')
+    rendered, policy = router(*ranges)
+    assert rendered["metadata"]["annotations"] == {annotation: "10.48.64.0/18,10.50.0.0/16"}
+    assert rendered["spec"]["template"] == default["spec"]["template"], "the ranges must not change the pod"
+    # The NetworkPolicy names only the port: the API server is a host identity
+    # to Cilium, and C8s limits the address to the exit ranges.
+    assert policy == default_policy
+    assert {"ports": [{"protocol": "TCP", "port": 6443}]} in policy["spec"]["egress"]
+    # The deploy: the address in a range.
+    for address in ("10.48.64.0", "10.48.100.7", "10.48.127.255", "10.50.255.1"):
+        rendered, _ = router(*ranges, "--set", f"router.discovery.apiServer.address={address}")
+        assert rendered["spec"]["template"]["spec"]["hostAliases"] == [{"ip": address, "hostnames": ["kubernetes-api"]}]
+        assert rendered["metadata"]["annotations"] == {annotation: "10.48.64.0/18,10.50.0.0/16"}
+    # An address outside every range: C8s would drop the connection.
+    for address in ("10.48.128.1", "10.48.63.255", "10.51.0.1"):
+        error = render_values({"router": {"discovery": {"apiServer": {
+            "address": address, "cidrs": ["10.48.64.0/18", "10.50.0.0/16"]}}}}, success=False)
+        assert "is in no range of router.discovery.apiServer.cidrs" in error, error
+    single, _ = router("--set-json", 'router.discovery.apiServer.cidrs=["203.0.113.9/32"]',
+                       "--set", "router.discovery.apiServer.address=203.0.113.9")
+    assert single["metadata"]["annotations"] == {annotation: "203.0.113.9/32"}
+    # C8s refuses an exit broader than /16, and more than 8 exits.
+    for cidrs in (["10.0.0.0/8"], ["10.48.0.0/15"], ["10.48.64.0"], ["10.48.64.0/18", "10.48.64.0/18"],
+                  [f"10.{i}.0.0/16" for i in range(9)]):
+        error = render_values({"router": {"discovery": {"apiServer": {"cidrs": cidrs}}}}, success=False)
+        assert "cidrs" in error, error
+
+
+def check_worker_placement() -> None:
+    """A downloading worker is placed by the scheduler; a C8s volume worker stays on its nodes."""
+    def worker_pod(*arguments, values=None):
+        if values is not None:
+            documents = render_values(values, *arguments)
+        else:
+            documents = render(*arguments)
+        (worker,) = [item for item in documents if item["kind"] == "StatefulSet"]
+        return worker["spec"]["template"]["spec"]
+    # The default: every worker on scheduling.inferenceNodeName.
+    assert worker_pod()["nodeSelector"] == {"kubernetes.io/hostname": "inference-node"}
+    # C8s model volumes: the listed nodes.
+    pod = worker_pod("--set-json", 'scheduling.inferenceNodeNames=["node-a","node-b"]')
+    assert "nodeSelector" not in pod
+    (term,) = pod["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"]
+    assert term == {"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In",
+                                           "values": ["node-a", "node-b"]}]}
+    # Model download: no hostname, only the optional node labels.
+    download = download_values()
+    pod = worker_pod(values=download)
+    assert "nodeSelector" not in pod and "affinity" not in pod
+    download["scheduling"] = {"inferenceNodeNames": ["node-a"],
+                              "inferenceNodeSelector": {"inference.confidential.ai/role": "gpu"}}
+    pod = worker_pod(values=download)
+    assert pod["nodeSelector"] == {"inference.confidential.ai/role": "gpu"} and "affinity" not in pod
+
+
+def check_worker_probes(production: list[dict]) -> None:
+    """Liveness does not generate; startup, readiness and the router do.
+
+    On 2026-11-19 a 67 s FlashInfer JIT compile stalled each staging worker's
+    scheduler. /health then ran a generation, so the liveness probe killed
+    both workers mid-compile. With SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION
+    false, /health answers without the scheduler and /health_generate still
+    generates one token (SGLang http_server.py health_generate).
+    """
+    for documents in (production, render()):
+        workers = [item for item in documents if item['kind'] == 'StatefulSet'
+                   and item['metadata']['name'].startswith('inference-worker')]
+        assert workers
+        for worker in workers:
+            container = worker['spec']['template']['spec']['containers'][0]
+            env = {item['name']: item.get('value') for item in container['env']}
+            assert env['SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION'] == 'false'
+            paths = {probe: container[probe]['httpGet']['path']
+                     for probe in ('startupProbe', 'readinessProbe', 'livenessProbe')}
+            assert paths == {'startupProbe': '/health_generate', 'readinessProbe': '/health_generate',
+                             'livenessProbe': '/health'}, paths
+        router = next(item for item in documents if item['kind'] == 'Deployment'
+                      and item['metadata']['name'] == 'sglang-router')
+        args = router['spec']['template']['spec']['containers'][0]['args']
+        assert [arg for arg in args if arg.startswith('--health-check-endpoint')] == [
+            '--health-check-endpoint=/health_generate'], args
 
 
 if __name__ == "__main__":
