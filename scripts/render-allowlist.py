@@ -26,9 +26,13 @@ It refuses to render when:
 - the --environment or --deployment name is not lowercase letters, digits,
   and hyphens (at most 63 characters);
 - the chart renders an image that the framework release does not name;
-- the C8s seed record of the pinned commit (release/inputs/c8s-seeds/) is
-  not what `c8s node-image render` of the --c8s CLI writes. The render runs
-  the Helm version that the record names, so put it first on PATH;
+- the C8s seed record of the pinned commit (release/inputs/c8s-seeds/), its
+  seed or its component set, is not what `c8s node-image render` of the
+  --c8s CLI writes. The render runs the Helm version that the record names,
+  so put it first on PATH;
+- the allowlist has a section other than the schema, the workloads, and the
+  component set of the pinned C8s release, or a workload that has the name
+  of a component set entry and differs from it;
 - `c8s allowlist lint --strict` finds a problem that the deployment did not
   accept (--accepted-findings).
 
@@ -287,7 +291,7 @@ def require_allowlist_contract(
             expected_processes.append((match.group(2), command, args))
         actual_processes = []
         entry = workloads[item["name"]]
-        for container in entry.get("initContainers", []) + entry.get("containers", []):
+        for container in ALLOWLIST_GENERATOR["entry_containers"](entry):
             command_policy = container.get("command", {})
             args_policy = container.get("args", {})
             require(command_policy.get("policy") == "exact",
@@ -313,6 +317,47 @@ def pinned_env(container: dict[str, Any]) -> dict[str, str]:
         return dict(env.get("values") or {})
     return {key: rule["exact"] for key, rule in (env.get("variables") or {}).items()
             if isinstance(rule, dict) and "exact" in rule}
+
+
+def require_allowlist_sections(allowlist: dict[str, Any], components: dict[str, Any]) -> None:
+    """Require the schema, the workloads, and the components section of the pinned C8s release, and no other section."""
+    require(allowlist.get("schema") == "c8s.allowlist/v1", "the allowlist has the wrong schema")
+    extra = sorted(set(allowlist) - {"schema", "workloads", "components"})
+    require(not extra, f"the allowlist has sections that the release does not pin: {extra}")
+    require(allowlist.get("components") == components,
+            "the allowlist does not carry the component set of the pinned C8s release alone")
+
+
+def without_node_service_mark(entry: dict[str, Any]) -> dict[str, Any]:
+    """A component set entry as a workload states it: only a set entry can mark a node service."""
+    return {key: value for key, value in entry.items() if key != "nodeService"}
+
+
+def require_shared_names_name_one_entry(allowlist: dict[str, Any]) -> None:
+    """Require a workload named like a component set entry to equal that entry: C8s matches the two as one."""
+    for component_set in allowlist["components"].values():
+        for name, entry in component_set["entries"].items():
+            workload = allowlist["workloads"].get(name)
+            require(workload is None or workload == without_node_service_mark(entry),
+                    f"the workload {name} differs from the component set entry of its name")
+
+
+def allowlist_entries(allowlist: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every entry that admits a container: the workloads and the entries of the component sets."""
+    return [*allowlist["workloads"].values(),
+            *(entry for component_set in allowlist["components"].values() for entry in component_set["entries"].values())]
+
+
+def entry_digests(entries: list[dict[str, Any]]) -> set[str]:
+    """The image digests that the entries name."""
+    return {container["digest"] for entry in entries for container in ALLOWLIST_GENERATOR["entry_containers"](entry)}
+
+
+def require_workloads_name_rendered_images(allowlist: dict[str, Any], images: list[str]) -> None:
+    """Require a workload to name every image the chart renders: a component set admits the containers of C8s alone."""
+    workload_digests = entry_digests(list(allowlist["workloads"].values()))
+    missing = [image for image in images if OCI.fullmatch(image).group(2) not in workload_digests]
+    require(not missing, f"rendered images absent from the workloads of the allowlist: {missing}")
 
 
 def require_release_identity(allowlist: dict[str, Any], name: str, bundle_sha256: str) -> None:
@@ -362,24 +407,22 @@ def render(
                 deployment, c8s, canonical_tool, overlay=overlay_path, image_env=configs, c8s=spec["c8s"],
             )
             # The allowlist mirrors the seed record; it must be the render of the pinned CLI.
-            ALLOWLIST_GENERATOR["verify_core_seed"](c8s, canonical_tool, spec["c8s"])
+            ALLOWLIST_GENERATOR["verify_node_image_render"](c8s, canonical_tool, spec["c8s"])
         except ALLOWLIST_GENERATOR["GenerationError"] as error:
             raise ManifestError(str(error)) from error
     allowlist = json.loads(allowlist_bytes)
-    require(allowlist.get("schema") == "c8s.allowlist/v1", "the allowlist has the wrong schema")
+    try:
+        require_allowlist_sections(allowlist, ALLOWLIST_GENERATOR["components_section"](spec["c8s"]))
+    except ALLOWLIST_GENERATOR["GenerationError"] as error:
+        raise ManifestError(str(error)) from error
+    require_shared_names_name_one_entry(allowlist)
     require_allowlist_contract(allowlist, policy, spec["c8s"]["coreImages"], documents, configs,
                                feature, ALLOWLIST_GENERATOR["core_seed"](spec["c8s"]))
-    allowlisted = {
-        container["digest"]
-        for entry in allowlist["workloads"].values()
-        for container in entry.get("initContainers", []) + entry.get("containers", [])
-    }
-    missing = [image for image in images if OCI.fullmatch(image).group(2) not in allowlisted]
-    require(not missing, f"rendered images absent from the allowlist: {missing}")
+    require_workloads_name_rendered_images(allowlist, images)
     # The client check: every digest of the allowlist is named by the release.
     named = {image.rsplit("@", 1)[1] for image in
              [*manifest["images"].values(), *manifest["c8s"]["coreImages"], *manifest["c8s"]["seedImages"]]}
-    unnamed = sorted(allowlisted - named)
+    unnamed = sorted(entry_digests(allowlist_entries(allowlist)) - named)
     require(not unnamed, f"the allowlist names digests that the framework release does not name: {unnamed}")
     require_release_identity(allowlist, manifest["release"]["name"], bundle_sha256)
     record = {

@@ -6,4 +6,4 @@ images:
   telemetryCollector: docker.io/otel/opentelemetry-collector-contrib@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849
   nodeExporter: quay.io/prometheus/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
   kubeStateMetrics: registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:44cfc22900bf545fb9a073adea2132b80558b7e9b6a6f687a8f23b4d7fc438c9
-  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:66b336b3a7818b5b133ad4446ca469b88a90d55c5a196b82d6518f16ebc9757f
+  c8sOperator: ghcr.io/confidential-dot-ai/c8s-operator@sha256:74be77bbf4fc45ab597a8284ad0c150ac6f11998d925c6f89f835167c38f2714

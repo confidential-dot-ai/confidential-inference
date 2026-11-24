@@ -188,7 +188,31 @@ jq -r '.workloads.gateway.containers[0].env.values | .CI_FRAMEWORK_RELEASE, .CI_
 ```
 
 The release name must equal `$RELEASE`. The digest must be `sha256:`
-followed by the `sha256sum` value of `release-bundle.json` from step 2. Then check that the live allowlist runs only images of that release:
+followed by the `sha256sum` value of `release-bundle.json` from step 2.
+
+The live allowlist has three sections: `schema`, `workloads`, and
+`components`. `components` must hold the component set of the pinned C8s
+release and nothing else. A component set admits the containers that C8s
+runs in every pod and on every worker, and grants them their platform roles;
+its volumed entry holds host privilege. Download the set from the C8s
+release and check it against the release manifest:
+
+```sh
+C8S_RELEASE=$(jq -r .c8s.release release-bundle.json)
+SET=$(jq -r .c8s.componentSet.asset release-bundle.json)
+curl -fsSLO "https://github.com/confidential-dot-ai/confidential-kubernetes/releases/download/$C8S_RELEASE/$SET"
+test "sha256:$(sha256sum < "$SET" | cut -d' ' -f1)" = "$(jq -r .c8s.componentSet.sha256 release-bundle.json)"
+jq -n -e '[inputs] | length == 1 and (.[0] | type == "object" and keys == ["components", "schema", "workloads"])' allowlist-live.json
+jq -n -e --slurpfile live allowlist-live.json --slurpfile set "$SET" '$live[0].components == $set[0].components'
+jq -n -e --slurpfile live allowlist-live.json '$live[0] | .workloads as $workloads | [.components[].entries | to_entries[] | select($workloads[.key] != null) | $workloads[.key] == (.value | del(.nodeService))] | all'
+```
+
+`test` must succeed and each `jq` must print `true`. The last command checks
+each workload that has the name of a set entry: C8s matches the two as one
+entry, so the workload must equal the set entry without its `nodeService`
+mark. That mark names a node service, and only a set entry carries it.
+
+Then check that the workloads run only images of that release:
 
 ```sh
 jq -r '[.images[], .c8s.coreImages[], .c8s.seedImages[]] | map(split("@")[1]) | unique[]' release-bundle.json > release-digests.txt
@@ -254,7 +278,10 @@ does not track signed route revisions; it permits any route digest that
 remains in the approved set.
 
 This procedure does not prove that every policy enforced since boot was
-approved. TEErminator caches a passing verdict for one minute, bounded by the
+approved. That includes an earlier component set. A C8s operator key writes a
+component set, and a set can give a container host privilege on a worker;
+step 5 of this procedure checks the set of the policy that you pin, and no
+earlier one. TEErminator caches a passing verdict for one minute, bounded by the
 serving certificate's expiry and exact certificate identity. A workload stamp
 states the policy used at certificate issuance. Fresh connection evidence does
 not turn that stamp into an instantaneous read of the current Trust Authority policy.

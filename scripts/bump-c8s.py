@@ -25,10 +25,13 @@ Usage:
    inputs did not change. The inputs are bin/confos-fetch-gpu at the
    confidential-os-builder ref that c8s pins in .github/build-pins.json. When
    the ref changed, --confos-repo must be a confidential-os-builder checkout;
-5. renders the seed with the c8s CLI (`c8s node-image render`, with the
-   kubelet and Helm versions of the worker image build), records it in
-   release/inputs/c8s-seeds/<source commit>.json, and deletes the record of
-   the old pin. Helm must be the version the worker image pins;
+5. renders the seed and the component set with the c8s CLI (`c8s node-image
+   render`, with the kubelet and Helm versions of the worker image build),
+   requires the component set file to have the SHA-256 the signed release
+   statement names, records the seed in release/inputs/c8s-seeds/<source
+   commit>.json and the component set file in
+   release/inputs/c8s-component-sets/<source commit>.json, and deletes the
+   records of the old pin. Helm must be the version the worker image pins;
 6. fetches the node and Trust Authority manifests and refreshes the image config;
 7. regenerates the allowlist test fixture
    (tests/release-v1/fixtures/staging-allowlist.json) with the c8s CLI
@@ -593,33 +596,52 @@ def sync_setting(sync: str, name: str) -> str:
     return match.group(1)
 
 
-def render_core_seed(binary: Path, c8s_repo: Path, new: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Render the seed the release serves, before the bump writes anything.
+def render_node_image(binary: Path, c8s_repo: Path, new: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], bytes]:
+    """Render the seed and the component set the release serves, before the bump writes anything.
 
-    The worker image bakes an empty seed and the release publishes none, so
-    the seed is the render of the pinned CLI with the inputs of the worker
-    image build: its kubelet version, its Helm version, the operator and mesh
-    images. Return the record inputs and the rendered seed.
+    Both are the render of the pinned CLI with the inputs of the worker image
+    build: its kubelet version, its Helm version, the operator, mesh and
+    volumed images. Return the record inputs, the rendered seed and the
+    bytes of the component set file.
     """
     sync = git_show(c8s_repo, new["sourceCommit"], WORKER_SYNC).decode()
     inputs = {"sourceCommit": new["sourceCommit"], "coreImages": new["coreImages"], "hardwarePlatform": SEED_PLATFORM,
               "kubeVersion": sync_setting(sync, "KUBERNETES_VERSION"), "helmVersion": sync_setting(sync, "HELM_VERSION")}
     generator = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
     try:
-        return inputs, generator["render_seed"](binary, inputs)
+        return (inputs, *generator["render_node_image"](binary, inputs))
     except generator["GenerationError"] as error:
         raise BumpError(str(error)) from error
 
 
-def record_core_seed(inputs: dict[str, Any], seed: dict[str, Any], old: dict[str, Any]) -> None:
-    """Record the seed in release/inputs/c8s-seeds/<source commit>.json, and delete the record of the old pin."""
-    records = ROOT / "release/inputs/c8s-seeds"
+def require_signed_component_set(tag: str, component_set_file: bytes) -> None:
+    """Require the rendered component set file to be the one the C8s release statement signs."""
+    with tempfile.TemporaryDirectory(prefix="bump-c8s-statement-") as directory:
+        try:
+            signed = c8s_release.signed_statement(tag, Path(directory), subprocess.run, None, "-beta." in tag)
+            expected = c8s_release.signed_component_set_sha256(signed, SEED_PLATFORM)
+        except c8s_release.ReleaseError as error:
+            raise BumpError(str(error)) from error
+    if hashlib.sha256(component_set_file).hexdigest() != expected:
+        raise BumpError(f"the rendered component set is not the file the signed c8s {tag} statement names")
+
+
+def record_node_image_render(inputs: dict[str, Any], seed: dict[str, Any], component_set_file: bytes,
+                     old: dict[str, Any]) -> None:
+    """Record the seed in release/inputs/c8s-seeds/<source commit>.json and the component set file in
+    release/inputs/c8s-component-sets/<source commit>.json, and delete the records of the old pin."""
+    seeds, component_sets = ROOT / "release/inputs/c8s-seeds", ROOT / "release/inputs/c8s-component-sets"
     generator = runpy.run_path(str(ROOT / "scripts/generate-release-allowlist.py"))
-    write_json(records / (inputs["sourceCommit"] + ".json"),
+    write_json(seeds / (inputs["sourceCommit"] + ".json"),
                {**inputs, "allowlist": json.loads(generator["canonicalize"](seed, None))})
-    stale = records / (old["sourceCommit"] + ".json")
-    if old["sourceCommit"] != inputs["sourceCommit"] and stale.exists():
-        run(["git", "-C", str(ROOT), "rm", "-q", str(stale)])
+    component_sets.mkdir(parents=True, exist_ok=True)
+    (component_sets / (inputs["sourceCommit"] + ".json")).write_bytes(component_set_file)
+    if old["sourceCommit"] == inputs["sourceCommit"]:
+        return
+    for records in (seeds, component_sets):
+        stale = records / (old["sourceCommit"] + ".json")
+        if stale.exists():
+            run(["git", "-C", str(ROOT), "rm", "-q", str(stale)])
 
 
 def regenerate() -> None:
@@ -677,7 +699,8 @@ def write_bump(args: argparse.Namespace, c8s_repo: Path, commit: str,
     with tempfile.TemporaryDirectory(prefix="bump-c8s-") as directory:
         binary = c8s_cli(args.c8s.resolve() if args.c8s else None, c8s_repo, commit, args.tag, Path(directory),
                         getattr(args, "c8s_source_build", False))
-        seed_inputs, seed = render_core_seed(binary, c8s_repo, new)
+        seed_inputs, seed, component_set_file = render_node_image(binary, c8s_repo, new)
+        require_signed_component_set(args.tag, component_set_file)
         try:
             pin_spec(new)
             bump_module(old["release"], args.tag)
@@ -685,7 +708,7 @@ def write_bump(args: argparse.Namespace, c8s_repo: Path, commit: str,
             share_protocol_manifest(c8s_repo, old["sourceCommit"], commit, args.tag,
                                     args.protocol_diff_out.resolve() if args.protocol_review else None)
             extend_cdi_record(c8s_repo, args.confos_repo.resolve() if args.confos_repo else None, old, new)
-            record_core_seed(seed_inputs, seed, old)
+            record_node_image_render(seed_inputs, seed, component_set_file, old)
             regenerate()
             regenerate_fixture(binary)
         except BaseException:

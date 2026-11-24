@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import functools
+import hashlib
 import importlib.util
 import io
 import json
@@ -147,14 +148,14 @@ def framework_manifest() -> dict:
 
 
 def render_deployment(deployment=STAGING, c8s: Path | None = None, manifest: dict | None = None,
-                      verify_core_seed=None, environment: str = "staging",
+                      verify_node_image_render=None, environment: str = "staging",
                       deployment_name: str = STAGING_DEPLOYMENT) -> dict[str, bytes]:
     """Render a deployment allowlist. Without `c8s`, the fixture allowlist replaces the c8s CLI
-    and the seed render check is skipped, unless `verify_core_seed` replaces it."""
+    and the seed render check is skipped, unless `verify_node_image_render` replaces it."""
     generated = STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")
     generate = REN.ALLOWLIST_GENERATOR["generate"] if c8s else lambda *_args, **_kwargs: generated
-    verify = verify_core_seed or (REN.ALLOWLIST_GENERATOR["verify_core_seed"] if c8s else lambda *_args: None)
-    with mock.patch.dict(REN.ALLOWLIST_GENERATOR, {"generate": generate, "verify_core_seed": verify,
+    verify = verify_node_image_render or (REN.ALLOWLIST_GENERATOR["verify_node_image_render"] if c8s else lambda *_args: None)
+    with mock.patch.dict(REN.ALLOWLIST_GENERATOR, {"generate": generate, "verify_node_image_render": verify,
                                                    "image_config": REPOSITORY_CONFIGS.__getitem__}):
         return REN.render(manifest or framework_manifest(), REN.MAN["read_spec"](), deployment,
                           c8s or Path("c8s"), None, MAN.sha256(framework_bytes()), environment,
@@ -478,12 +479,46 @@ class ProcessTests(unittest.TestCase):
                 self.assertRaisesRegex(GEN.GenerationError, "no C8s seed record"):
             GEN.core_seed(spec)
 
+    def test_the_component_set_is_the_one_set_of_the_pinned_release(self):
+        spec = {"release": "v0.107.0", "sourceCommit": "a" * 40, "coreImages": [CORE]}
+        released = {"entries": {"c8s-get-cert": {"containers": [{"digest": "sha256:" + "b" * 64, "role": "credentials"}]}}}
+        refused = {
+            "a set of another release": {"components": {"0.106.0": released}},
+            "a second set": {"components": {"0.107.0": released, "0.106.0": released}},
+            "a workload entry beside the set": {"workloads": {"gateway": {}}, "components": {"0.107.0": released}},
+            "no set": {},
+        }
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(GEN, "ROOT", Path(directory)):
+            path = Path(directory) / "release/inputs/c8s-component-sets" / (spec["sourceCommit"] + ".json")
+            with self.assertRaisesRegex(GEN.GenerationError, "no C8s component set file"):
+                GEN.components_section(spec)
+            path.parent.mkdir(parents=True)
+
+            def publish(document):
+                path.write_text(json.dumps({"schema": "c8s.allowlist/v1", "workloads": {}, **document}))
+
+            publish({"components": {"0.107.0": released}})
+            self.assertEqual(GEN.components_section(spec), {"0.107.0": released})
+            seeds = Path(directory) / "release/inputs/c8s-seeds"
+            seeds.mkdir()
+            (seeds / path.name).write_text(json.dumps({"sourceCommit": spec["sourceCommit"], "coreImages": [CORE],
+                                                       "hardwarePlatform": "tdx"}))
+            self.assertEqual(GEN.component_set_pin(spec),
+                             {"version": "0.107.0", "asset": "component-set-tdx.json",
+                              "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()})
+            for name, document in refused.items():
+                publish(document)
+                with self.subTest(name), self.assertRaisesRegex(GEN.GenerationError, "the set 0.107.0 alone"):
+                    GEN.components_section(spec)
+
     def test_the_seed_record_must_be_the_render_of_the_pinned_cli(self):
         operator = "ghcr.io/confidential-dot-ai/c8s-operator@sha256:" + "1" * 64
         mesh = "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:" + "2" * 64
+        volumed = "ghcr.io/confidential-dot-ai/volumed@sha256:" + "3" * 64
         seed = {"schema": "c8s.allowlist/v1", "workloads": {"c8s-router": {"containers": [{"digest": "sha256:" + "1" * 64}]}}}
-        spec = {"release": "v0.99.29", "sourceCommit": "a" * 40, "coreImages": [operator, mesh]}
-        record = {"sourceCommit": "a" * 40, "coreImages": [operator, mesh], "hardwarePlatform": "tdx",
+        component_set_file = b'{"schema": "c8s.allowlist/v1", "workloads": {}, "components": {"0.99.29": {"entries": {}}}}'
+        spec = {"release": "v0.99.29", "sourceCommit": "a" * 40, "coreImages": [operator, mesh, volumed]}
+        record = {"sourceCommit": "a" * 40, "coreImages": [operator, mesh, volumed], "hardwarePlatform": "tdx",
                   "kubeVersion": "v1.36.4", "helmVersion": "v3.14.4", "allowlist": seed}
         rendered, commands = {}, []
 
@@ -493,35 +528,40 @@ class ProcessTests(unittest.TestCase):
                 return b"v3.14.4"
             output = Path(command[command.index("--output-dir") + 1])
             (output / "allowlist-seed.json").write_text(json.dumps(rendered))
+            (output / "component-set.json").write_bytes(component_set_file)
             return b""
 
         cases = {
-            "identical render": (seed, record, None),
+            "identical render": (seed, record, component_set_file, None),
             "one argv edited in the record": (
                 seed, {**record, "allowlist": {**seed, "workloads": {"c8s-router": {"containers": [
                     {"digest": "sha256:" + "1" * 64, "command": {"policy": "exact", "argv": ["/c8s"]}}]}}}},
-                "differs from the render"),
+                component_set_file, "seed record differs from the render"),
             "record without its inputs": (seed, {k: v for k, v in record.items() if k != "helmVersion"},
-                                          "names no helmVersion"),
-            "another Helm": (seed, {**record, "helmVersion": "v3.16.3"}, "Helm v3.16.3"),
+                                          component_set_file, "names no helmVersion"),
+            "another Helm": (seed, {**record, "helmVersion": "v3.16.3"}, component_set_file, "Helm v3.16.3"),
+            "one byte more in the component set file": (seed, record, component_set_file + b"\n",
+                                                        "component set file differs from the render"),
         }
-        for name, (render, value, error) in cases.items():
+        for name, (render, value, recorded_set, error) in cases.items():
             with self.subTest(name), tempfile.TemporaryDirectory() as directory, \
                     mock.patch.object(GEN, "ROOT", Path(directory)), mock.patch.object(GEN, "run", side_effect=run), \
                     mock.patch.object(GEN, "canonicalize", side_effect=lambda document, _tool: json.dumps(document).encode()):
                 rendered.clear()
                 rendered.update(render)
-                path = Path(directory) / "release/inputs/c8s-seeds" / (spec["sourceCommit"] + ".json")
-                path.parent.mkdir(parents=True)
-                path.write_text(json.dumps(value))
+                for records, data in (("c8s-seeds", json.dumps(value).encode()), ("c8s-component-sets", recorded_set)):
+                    path = Path(directory) / "release/inputs" / records / (spec["sourceCommit"] + ".json")
+                    path.parent.mkdir(parents=True)
+                    path.write_bytes(data)
                 if error is None:
-                    GEN.verify_core_seed(Path("c8s"), None, spec)
+                    GEN.verify_node_image_render(Path("c8s"), None, spec)
                 else:
                     with self.assertRaisesRegex(GEN.GenerationError, error):
-                        GEN.verify_core_seed(Path("c8s"), None, spec)
+                        GEN.verify_node_image_render(Path("c8s"), None, spec)
         render = next(command for command in reversed(commands) if command[0] == "c8s")
         for flag, value in (("--hardware-platform", "tdx"), ("--kube-version", "v1.36.4"),
-                            ("--image-digest", "sha256:" + "1" * 64), ("--armtls-mesh-image-digest", "sha256:" + "2" * 64)):
+                            ("--image-digest", "sha256:" + "1" * 64), ("--armtls-mesh-image-digest", "sha256:" + "2" * 64),
+                            ("--volumed-image-digest", "sha256:" + "3" * 64)):
             self.assertEqual(render[render.index(flag) + 1], value)
 
     def test_the_render_fails_when_the_seed_record_is_not_the_render(self):
@@ -532,7 +572,7 @@ class ProcessTests(unittest.TestCase):
             raise REN.ALLOWLIST_GENERATOR["GenerationError"]("the C8s seed record differs from the render")
 
         with self.assertRaisesRegex(REN.ManifestError, "differs from the render"):
-            render_deployment(verify_core_seed=verify)
+            render_deployment(verify_node_image_render=verify)
         self.assertEqual(checked, [(Path("c8s"), MAN.read_spec()["c8s"]["sourceCommit"])])
 
     def test_the_c8s_cli_must_be_built_from_the_pinned_commit(self):
@@ -733,7 +773,8 @@ class FrameworkReleaseTests(unittest.TestCase):
         self.assertEqual(manifest["recipes"]["sha256"], MAN.sha256(files["recipes.json"]))
         self.assertEqual(manifest["c8s"], {"release": spec["c8s"]["release"], "sourceCommit": spec["c8s"]["sourceCommit"],
                                            "coreImages": sorted(spec["c8s"]["coreImages"]),
-                                           "seedImages": MAN.seed_images(spec["c8s"])})
+                                           "seedImages": MAN.seed_images(spec["c8s"]),
+                                           "componentSet": MAN.component_set_pin(spec["c8s"])})
         # The C8s v0.99.29 seed names the operator, mesh and router images, all C8s core images.
         self.assertTrue(manifest["c8s"]["seedImages"])
         self.assertLessEqual(set(manifest["c8s"]["seedImages"]), set(spec["c8s"]["coreImages"]))
@@ -756,7 +797,7 @@ class FrameworkReleaseTests(unittest.TestCase):
                                                      *manifest["c8s"]["seedImages"]]}
         allowlist = json.loads(render_deployment()["allowlist.json"])
         live = {container["digest"] for entry in allowlist["workloads"].values()
-                for container in entry.get("initContainers", []) + entry.get("containers", [])}
+                for container in GEN.entry_containers(entry)}
         self.assertEqual(live - named, set())
 
     def test_image_source_boundary_allows_only_later_non_image_changes(self):
@@ -1106,6 +1147,21 @@ class FrameworkReleaseTests(unittest.TestCase):
         self.assertIn("cdsImage", manifest)
         jsonschema.validate(manifest, schema)
 
+    def test_the_framework_manifest_names_the_component_set_file_of_the_pinned_c8s_release(self):
+        c8s = MAN.read_spec()["c8s"]
+        published = (ROOT / "release/inputs/c8s-component-sets" / (c8s["sourceCommit"] + ".json")).read_bytes()
+        self.assertEqual(framework_manifest()["c8s"]["componentSet"],
+                         {"version": c8s["release"].removeprefix("v"), "asset": "component-set-tdx.json",
+                          "sha256": "sha256:" + hashlib.sha256(published).hexdigest()})
+        self.assertEqual(json.loads(STAGING_ALLOWLIST.read_bytes())["components"], json.loads(published)["components"])
+
+    def test_exactly_one_attestation_protocol_record_names_the_pinned_c8s_commit(self):
+        commit = MAN.read_spec()["c8s"]["sourceCommit"]
+        records = [json.loads(path.read_text()) for path in (ROOT / "release/inputs/c8s-attestation-protocols").glob("*.json")]
+        covering = [record["commit"] for record in records
+                    if commit in (record["commit"], *record.get("sharedWithCommits", []))]
+        self.assertEqual(covering, [commit])
+
     def test_a_framework_release_pins_no_dev_c8s_build(self):
         schema = json.loads((ROOT / "api/release-manifest-v2.schema.json").read_text())
         rule = schema["properties"]["c8s"]["properties"]["release"]
@@ -1134,9 +1190,46 @@ class RenderTests(unittest.TestCase):
             return STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n")
 
         with mock.patch.dict(REN.ALLOWLIST_GENERATOR, {"generate": generate}):
-            files = render_deployment(c8s=Path("/tmp/c8s"), verify_core_seed=lambda *_args: None)
+            files = render_deployment(c8s=Path("/tmp/c8s"), verify_node_image_render=lambda *_args: None)
         self.assertEqual(files["allowlist.json"], STAGING_ALLOWLIST.read_bytes().removesuffix(b"\n"))
         self.assertEqual(calls, [Path("/tmp/c8s")])
+
+    def test_the_render_takes_only_an_allowlist_that_carries_the_pinned_component_set_alone(self):
+        staging = json.loads(STAGING_ALLOWLIST.read_bytes())
+        (version, released), = staging["components"].items()
+        one_more_entry = {**released, "entries": {**released["entries"], "gateway": staging["workloads"]["gateway"]}}
+        shared = next(name for name in released["entries"] if name in staging["workloads"])
+        with_an_exit = {**staging["workloads"][shared], "egress": [{"cidr": "192.0.2.1/32", "port": 443}]}
+        set_only = next(name for name in released["entries"] if name not in staging["workloads"])
+        refused = {
+            "a seed workload that differs from the set entry of its name": (
+                {**staging, "workloads": {**staging["workloads"], shared: with_an_exit}},
+                f"the workload {shared} differs from the component set entry of its name"),
+            "a deployment workload under the name of a set entry": (
+                {**staging, "workloads": {**staging["workloads"], set_only: staging["workloads"]["gateway"]}},
+                f"the workload {set_only} differs from the component set entry of its name"),
+            "a section the release does not pin": ({**staging, "digests": {}}, "sections that the release does not pin"),
+            "no component set": ({"schema": staging["schema"], "workloads": staging["workloads"]},
+                                 "does not carry the component set"),
+            "a second set": ({**staging, "components": {version: released, "0.1.0": released}},
+                             "does not carry the component set"),
+            "one more entry in the set": ({**staging, "components": {version: one_more_entry}},
+                                          "does not carry the component set"),
+        }
+        for name, (document, error) in refused.items():
+            with self.subTest(name), mock.patch.dict(
+                    REN.ALLOWLIST_GENERATOR, {"generate": lambda *_args, **_kwargs: json.dumps(document).encode()}), \
+                    self.assertRaisesRegex(REN.ManifestError, error):
+                render_deployment(c8s=Path("/tmp/c8s"), verify_node_image_render=lambda *_args: None)
+
+    def test_a_rendered_image_needs_a_workload_even_when_a_component_set_entry_names_it(self):
+        digest = "sha256:" + "a" * 64
+        entry = {"containers": [{"digest": digest}]}
+        images = ["ghcr.io/example/app@" + digest]
+        REN.require_workloads_name_rendered_images({"workloads": {"app": entry}}, images)
+        with self.assertRaisesRegex(REN.ManifestError, "absent from the workloads"):
+            REN.require_workloads_name_rendered_images(
+                {"workloads": {}, "components": {"0.107.0": {"entries": {"app": entry}}}}, images)
 
     def test_the_render_writes_the_allowlist_the_framework_values_and_its_record(self):
         files = render_deployment()
@@ -1299,7 +1392,7 @@ class RenderTests(unittest.TestCase):
         with_egress = {name: entry for name, entry in allowlist["workloads"].items() if entry.get("egress")}
         self.assertIn("inference-worker", with_egress)
         for name, entry in with_egress.items():
-            for container in entry.get("initContainers", []) + entry["containers"]:
+            for container in GEN.entry_containers(entry):
                 with self.subTest(entry=name, container=container["digest"]):
                     self.assertTrue(env_is_pinned(container["env"]))
 

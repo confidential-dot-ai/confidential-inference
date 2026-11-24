@@ -542,6 +542,14 @@ def publication_binding(
     }
 
 
+def component_set_pin(c8s: dict[str, Any]) -> dict[str, str]:
+    """The component set every deployment allowlist carries, as the manifest names it."""
+    try:
+        return ALLOWLIST_GENERATOR["component_set_pin"](c8s)
+    except ALLOWLIST_GENERATOR["GenerationError"] as error:
+        raise ManifestError(f"C8s component set: {error}") from error
+
+
 def seed_images(c8s: dict[str, Any]) -> list[str]:
     """The images of the C8s node seed: the core entries that every allowlist mirrors.
 
@@ -556,7 +564,7 @@ def seed_images(c8s: dict[str, Any]) -> list[str]:
         raise ManifestError(f"C8s seed: {error}") from error
     images = set()
     for name, entry in seed.items():
-        for container in entry.get("initContainers", []) + entry.get("containers", []):
+        for container in ALLOWLIST_GENERATOR["entry_containers"](entry):
             image = container.get("image")
             match = OCI.fullmatch(image) if isinstance(image, str) else None
             require(match is not None and match.group(2) == container.get("digest"),
@@ -624,6 +632,7 @@ def build(
             # Every deployment allowlist mirrors the seed entries, so a client
             # needs these digests too.
             "seedImages": seed_images(spec["c8s"]),
+            "componentSet": component_set_pin(spec["c8s"]),
         },
         # The SHA-256 of release/node-manifest.json, the c8s manifest.json that
         # records the measurements. Its bytes equal the manifest.json layer of
