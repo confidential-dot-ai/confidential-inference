@@ -114,7 +114,7 @@ class BumpTests(unittest.TestCase):
                "nodeManifestArtifact": {"tag": "rke2-tdx-v0.80.10", "digest": "sha256:" + "2" * 64,
                                         "manifestJson": "sha256:" + "3" * 64}}
         digests = {f"{BUMP.REGISTRY}guests/worker:v0.99.29-tdx-kubevirt": "4", f"{BUMP.REGISTRY}guests/worker:v0.99.29-tdx": "5",
-                   f"{BUMP.REGISTRY}guests/cds:v0.99.29-kubevirt": "6", f"{BUMP.REGISTRY}guests/cds:v0.99.29": "7"}
+                   f"{BUMP.REGISTRY}guests/ta:v0.99.29-kubevirt": "6", f"{BUMP.REGISTRY}guests/ta:v0.99.29": "7"}
         with mock.patch.object(BUMP, "digest", side_effect=lambda reference: "sha256:" + digests[reference] * 64), \
              mock.patch.object(BUMP, "core_images", return_value=["core"]), \
              mock.patch.dict(BUMP.NODE, {"manifest_json_digest": lambda reference, artifact: reference + artifact[7]}):
@@ -123,10 +123,10 @@ class BumpTests(unittest.TestCase):
                                                 "digest": "sha256:" + "4" * 64})
             self.assertEqual(new["nodeManifestArtifact"], {"tag": "v0.99.29-tdx", "digest": "sha256:" + "5" * 64,
                                                            "manifestJson": BUMP.REGISTRY + "guests/worker5"})
-            self.assertEqual(new["cdsImage"], {"reference": BUMP.REGISTRY + "guests/cds", "tag": "v0.99.29-kubevirt",
+            self.assertEqual(new["cdsImage"], {"reference": BUMP.REGISTRY + "guests/ta", "tag": "v0.99.29-kubevirt",
                                                "digest": "sha256:" + "6" * 64})
             self.assertEqual(new["cdsManifestArtifact"], {"tag": "v0.99.29", "digest": "sha256:" + "7" * 64,
-                                                          "manifestJson": BUMP.REGISTRY + "guests/cds7"})
+                                                          "manifestJson": BUMP.REGISTRY + "guests/ta7"})
             self.assertEqual((new["release"], new["sourceCommit"], new["coreImages"]), ("v0.99.29", "b" * 40, ["core"]))
             with self.assertRaisesRegex(BUMP.BumpError, "v0.99.0 and later"):
                 BUMP.new_c8s("v0.95.0", "b" * 40, old, Path("c8s"))
@@ -140,7 +140,7 @@ class BumpTests(unittest.TestCase):
         with mock.patch.object(BUMP, "ROOT", path.parent):
             BUMP.pin_c8s_mapping(path, value)
             self.assertEqual(BUMP.yaml.safe_load(path.read_text())["c8s"], value)
-            self.assertIn("  cdsImage:\n    reference: ghcr.io/confidential-dot-ai/guests/cds\n", path.read_text())
+            self.assertIn("  cdsImage:\n    reference: ghcr.io/confidential-dot-ai/guests/ta\n", path.read_text())
             self.assertIn("\nmodel:\n  repository: example/model\n", path.read_text())
             del value["sourceCommit"]
             with self.assertRaisesRegex(BUMP.BumpError, "drop sourceCommit"):
@@ -537,14 +537,14 @@ class BetaCompatibilityTests(unittest.TestCase):
     def test_channel_identity_is_exact_and_beta_orders_below_stable(self):
         release = BUMP.c8s_release
         self.assertLess(release.version('v0.37.0-beta.1'), release.version('v0.37.0'))
-        self.assertEqual(release.signer('v0.37.0-beta.1', True), 'https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/beta')
+        self.assertEqual(release.signer('v0.37.0-beta.1', True), 'https://github.com/confidential-dot-ai/confidential-kubernetes/.github/workflows/semver-tag.yml@refs/heads/beta')
         with self.assertRaises(ValueError):
             release.signer('v0.37.0-beta.1')
 
     def test_signed_beta_requires_branch_prerelease_and_exact_statement(self):
         tag, commit = 'v0.37.0-beta.1', 'a' * 40
         release = BUMP.c8s_release
-        statement = {'repository': 'confidential-dot-ai/C8s', 'tag': tag, 'commit': commit}
+        statement = {'repository': 'confidential-dot-ai/confidential-kubernetes', 'tag': tag, 'commit': commit}
         calls = []
 
         def run(argv, **kwargs):

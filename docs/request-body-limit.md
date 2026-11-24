@@ -45,7 +45,7 @@ C8s v0.99.38 has these details (paths in the C8s repository):
 The launch commits the digest of the whole launch file. Thus a change to the
 front-door limit needs a new launch file, a `node-images` decree, and a new
 launch of the worker VM. C8s issue
-[confidential-dot-ai/C8s#1777](https://github.com/confidential-dot-ai/C8s/issues/1777)
+[confidential-dot-ai/confidential-kubernetes#1777](https://github.com/confidential-dot-ai/confidential-kubernetes/issues/1777)
 asks for a change without a relaunch, a limit for each route, a cloud chart
 value, and a decision on the tunnel limit.
 

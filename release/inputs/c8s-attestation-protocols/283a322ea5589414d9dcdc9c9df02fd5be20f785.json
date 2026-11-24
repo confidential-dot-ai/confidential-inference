@@ -1,0 +1,97 @@
+{
+  "schema": "confidential-inference.c8s-attestation-protocol-manifest/v1",
+  "commit": "283a322ea5589414d9dcdc9c9df02fd5be20f785",
+  "attestationProtocol": "c8s/attest-pq/v1+xwing",
+  "capturedFrom": {
+    "cdsattestRoutes": "internal/cmds/taattest/server.go",
+    "bundleTypes": "pkg/types/verify.go",
+    "cdsAllowlistRoutes": "internal/cmds/ta/routes.go"
+  },
+  "cdsattestRoutes": [
+    {
+      "method": "POST",
+      "path": "/.well-known/c8s/attest-pq"
+    },
+    {
+      "method": "GET",
+      "path": "/.well-known/c8s/attest-pq",
+      "note": "always 400 invalid_request (client-first POST only)"
+    },
+    {
+      "method": "GET",
+      "path": "/.well-known/c8s/attest-lb"
+    },
+    {
+      "method": "POST",
+      "path": "/.well-known/c8s/tunnel"
+    }
+  ],
+  "retiredRoutes": [
+    {
+      "method": "PUT",
+      "path": "/allowlist/workloads/{name}",
+      "note": "handler removed; answers 404"
+    },
+    {
+      "method": "DELETE",
+      "path": "/allowlist/workloads/{name}",
+      "note": "handler removed; answers 404"
+    }
+  ],
+  "attestPqRequest": {
+    "method": "POST",
+    "bodyFields": [
+      "nonce",
+      "xwing_ek"
+    ]
+  },
+  "attestationBundleFields": [
+    "version",
+    "platform",
+    "generation",
+    "nonce",
+    "evidence",
+    "cds_cert_pem",
+    "front_door_mode",
+    "xwing_ek",
+    "xwing_ct",
+    "session_id",
+    "identity_proof",
+    "serving_leaf_sha256",
+    "measured_policies",
+    "route_digest"
+  ],
+  "identityProofFields": [
+    "algorithm",
+    "leaf_sha256",
+    "mesh_ca_sha256",
+    "signature"
+  ],
+  "cdsRoutes": [
+    {
+      "method": "GET",
+      "path": "/allowlist"
+    },
+    {
+      "method": "PUT",
+      "path": "/allowlist"
+    },
+    {
+      "method": "GET",
+      "path": "/ca"
+    },
+    {
+      "method": "GET",
+      "path": "/operator-keys"
+    },
+    {
+      "method": "GET",
+      "path": "/measurements"
+    }
+  ],
+  "allowlistDocumentTopLevelFields": [
+    "schema",
+    "workloads"
+  ],
+  "capturedFromNote": "Read from the C8s v0.104.0 source, where the Trust Authority rename moved the route files. Against v0.101.9 (2c1d0de0, which shares the capture of e0e4fd3c), internal/cmds/ta/routes.go and internal/cmds/taattest/server.go differ from internal/cmds/cds/routes.go and internal/cmds/cdsattest/server.go only in Go comments, the package name, the module path of their imports, and the text of one HTTP error and one log line. pkg/types differs only in Go comments (tools/go-strip-comments). The route tables, the attest-pq request, the bundle fields and the identity proof fields are unchanged."
+}

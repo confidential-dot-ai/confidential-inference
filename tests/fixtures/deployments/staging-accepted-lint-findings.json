@@ -3,5 +3,5 @@
   "reviewedBy": "the release coordinator, 2026-09-26",
   "findings": [],
   "reason": "The staging simulator requests no GPU and has no NVIDIA CDI host mounts.",
-  "issue": "https://github.com/confidential-dot-ai/C8s/issues/713"
+  "issue": "https://github.com/confidential-dot-ai/confidential-kubernetes/issues/713"
 }

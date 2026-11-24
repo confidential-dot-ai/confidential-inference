@@ -573,7 +573,7 @@ class ProcessTests(unittest.TestCase):
             binary = Path(directory) / "c8s-linux-amd64"
             binary.write_bytes(b"signed c8s cli")
             digest = release_module.file_sha256(binary)
-            statement = {"repository": "confidential-dot-ai/C8s", "tag": release, "commit": commit,
+            statement = {"repository": "confidential-dot-ai/confidential-kubernetes", "tag": release, "commit": commit,
                          "cli": {"linux-amd64": {"asset": "c8s-linux-amd64", "sha256": digest}}}
             calls = []
 
@@ -586,7 +586,7 @@ class ProcessTests(unittest.TestCase):
                         (target / "release-statement.sigstore.json").write_text("{}")
                         return subprocess.CompletedProcess(argv, 0, "", "")
                     if argv[1] == "verify-blob":
-                        self.assertIn("https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml"
+                        self.assertIn("https://github.com/confidential-dot-ai/confidential-kubernetes/.github/workflows/semver-tag.yml"
                                       "@refs/heads/main", argv)
                         return subprocess.CompletedProcess(argv, 0 if cosign_ok else 1, "", "bad signature")
                     raise AssertionError(argv)
@@ -1216,7 +1216,7 @@ class RenderTests(unittest.TestCase):
         changed = framework_manifest()
         for key in ("coreImages", "seedImages"):
             changed["c8s"][key] = [image for image in changed["c8s"][key] if "nginx-unprivileged" not in image]
-        with self.assertRaisesRegex(REN.ManifestError, "does not name: \\['sha256:5d8bb943"):
+        with self.assertRaisesRegex(REN.ManifestError, "does not name: \\['sha256:8432c57a"):
             render_deployment(manifest=changed)
 
     def test_the_live_allowlist_names_the_framework_release(self):
