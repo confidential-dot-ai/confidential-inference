@@ -564,11 +564,11 @@
       "get": {
         "operationId": "getCdsCertificate",
         "tags": ["tls-lb-static"],
-        "summary": "Read the CDS TLS certificate",
+        "summary": "Read the Trust Authority TLS certificate",
         "description": "Nginx aliases this path directly to a local PEM file. The gateway process never sees this request.",
         "responses": {
           "200": {
-            "description": "The CDS TLS certificate, PEM-encoded.",
+            "description": "The Trust Authority TLS certificate, PEM-encoded.",
             "content": {"application/x-pem-file": {"schema": {"type": "string"}}}
           }
         }

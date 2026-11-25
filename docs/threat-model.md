@@ -20,10 +20,10 @@ the caller's own key value, or prompt text from it.
 
 Trust the CPU and GPU hardware security mechanisms, their vendor attestation
 chains, the accepted measured node image, and the software and policies that
-you review. With C8s v0.99.29, CDS runs as its own confidential VM outside
-the cluster, from the CDS guest image that the release pins. Its launch binds
+you review. With C8s v0.99.29, the Trust Authority runs as its own confidential VM outside
+the cluster, from the Trust Authority guest image that the release pins. Its launch binds
 the exact bytes of its per-deployment `cds-config.yaml`, and the worker's
-launch file pins that CDS image and configuration. Host management and
+launch file pins that Trust Authority image and configuration. Host management and
 Kubernetes declarations are not proof of approved execution. Measured
 admission and connection controls must enforce those declarations.
 
@@ -46,8 +46,8 @@ binds the SHA-256 of the route manifest in use. A client that pins that digest
 rejects a changed route, for example a route from `api.confidential.ai` to an
 allowlisted workload other than the gateway.
 
-With C8s v0.99.29, the image tuple does not identify the CDS. Pin the RTMR[3]
-seed of the worker's reviewed launch file too: the launch file selects the CDS
+With C8s v0.99.29, the image tuple does not identify the Trust Authority. Pin the RTMR[3]
+seed of the worker's reviewed launch file too: the launch file selects the Trust Authority
 image and configuration that admit workers and issue their identities.
 
 ## Policy and configuration protection
@@ -71,7 +71,7 @@ reviews the rest of the policy. Keep your approved bytes until you explicitly
 accept an update.
 
 A workload certificate records a policy decision at issuance. A new connection
-proof does not establish that CDS has not changed the policy since issuance.
+proof does not establish that the Trust Authority has not changed the policy since issuance.
 TEErminator caches verdicts and checks certificate identity and expiry. Do not
 claim immediate disconnection of every stream after a policy update.
 
@@ -93,7 +93,7 @@ blocks node admission and powers off the node. This is the supported GPU
 verification contract, not a public raw-GPU-evidence collection.
 
 Current C8s node storage uses encrypted scratch state with a per-boot key held
-inside the guest, and encrypted application volumes supplied through CDS.
+inside the guest, and encrypted application volumes supplied through the Trust Authority.
 The historical plain control-plane state disk is not a current production
 requirement. For a selected release, review its exact node image and storage
 implementation. Encryption alone does not imply authenticated disk contents;
@@ -141,7 +141,7 @@ operator-signature verification mode.
 
 ## Restricted Kubernetes credentials
 
-CDS policy-update authority is different from Kubernetes permissions. Before
+Permission to update Trust Authority policy is separate from Kubernetes permissions. Before
 C8s v0.99.29, the C8s operator authentication key also authorized credential
 release. The `c8s-operator` workload is a different component.
 
@@ -172,12 +172,12 @@ a lower revision than the one it holds, so that channel cannot roll the key
 set back through the snapshot route; it can still remove keys, which is a
 denial of service, not a loss of confidentiality.
 The gateway keeps its keys in memory only. It pulls them from the admin over
-HTTPS: the admin URL, its CA and the gateway's admin token are a CDS
+HTTPS: the admin URL, its CA and the gateway's admin token are a Trust Authority
 application secret, so only the attested gateway reads them. A restarted
 gateway holds no revision, so it accepts the admin's current snapshot at any
 revision; the admin that owns the registry is trusted for the key set either
 way.
-CDS application secrets are distinct from Kubernetes Secrets. Launch checks
+Trust Authority application secrets are distinct from Kubernetes Secrets. Launch checks
 do not establish that approved application code never writes sensitive data
 to a log or exposes it through an API.
 
@@ -185,7 +185,7 @@ RTMR3 binds the launch configuration. It does not define Kubernetes
 permissions. In releases before C8s v0.99.29, the permissions and guards are
 part of the measured node implementation. With C8s v0.99.29, RTMR3 starts
 from the digest of the worker's launch file. A measured worker takes the
-operator keys from the CDS configuration that this file pins, and the guards
+operator keys from the Trust Authority configuration that this file pins, and the guards
 are the measured worker's admission and runtime controls.
 
 ## Request media

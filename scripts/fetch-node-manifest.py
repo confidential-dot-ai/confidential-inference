@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Fetch the node and CDS guest image manifest.json files named by release/spec.yaml.
+"""Fetch the node and Trust Authority guest image manifest.json files named by release/spec.yaml.
 
 c8s publishes a measurement artifact beside each guest image. The artifact
 holds manifest.json, which records the TDX measurements MRTD, RTMR1, and
 RTMR2 of the image. This script downloads that file through the digest
 chain that release/spec.yaml pins, checks every digest, checks the
 measurements, and writes the exact bytes to release/node-manifest.json, and
-for the CDS guest image to release/cds-manifest.json.
+for the Trust Authority guest image to release/cds-manifest.json.
 
 Anyone can repeat the check: the SHA-256 of each file must equal the
 manifest.json layer digest of the pinned artifact.
@@ -52,15 +52,15 @@ def sha256(data: bytes) -> str:
 
 # The pinned guest images: the image key and its measurement artifact key in `c8s`.
 NODE = ("nodeImage", "nodeManifestArtifact")
-CDS = ("cdsImage", "cdsManifestArtifact")
+TA = ("cdsImage", "cdsManifestArtifact")
 
 
 def read_spec(spec: Any) -> dict[str, Any]:
-    """Check the pinned node and CDS guest images."""
+    """Check the pinned node and Trust Authority guest images."""
     c8s = spec.get("c8s") if isinstance(spec, dict) else None
     if not isinstance(c8s, dict) or not all(key in c8s for key in NODE):
         raise FetchError("the release specification has no c8s node image and manifest artifact")
-    for image, artifact in (NODE, CDS):
+    for image, artifact in (NODE, TA):
         pins = [c8s.get(key) for key in (image, artifact)]
         if not all(isinstance(pin, dict) for pin in pins):
             raise FetchError(f"the release specification pins {image} and {artifact}")
@@ -121,7 +121,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spec", type=Path, default=release_spec.SPEC, help="the release specification")
     parser.add_argument("--output", type=Path, default=release_spec.NODE_MANIFEST)
-    parser.add_argument("--cds-output", type=Path, default=release_spec.CDS_MANIFEST)
+    parser.add_argument("--ta-output", "--cds-output", type=Path, default=release_spec.TA_MANIFEST)
     parser.add_argument(
         "--check", action="store_true",
         help="fail when the committed file differs from the registry bytes",
@@ -130,8 +130,8 @@ def main() -> int:
     try:
         spec = read_spec(release_spec.read_spec(args.spec))
         data, record = fetch(spec)
-        cds_data, record["cds"] = fetch(spec, CDS)
-        for path, content in ((args.output, data), (args.cds_output, cds_data)):
+        ta_data, record["cds"] = fetch(spec, TA)
+        for path, content in ((args.output, data), (args.ta_output, ta_data)):
             if args.check:
                 if path.read_bytes() != content:
                     raise FetchError(f"{path} differs from the pinned artifact")

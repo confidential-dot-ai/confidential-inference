@@ -44,7 +44,7 @@ The admin computes totals from the stored events by minute of `ended_at_ms`, pro
 
 ## Configuration
 
-The CDS secret `/confidential-inference/gateway/product-usage` supplies `endpoint` (the HTTPS ingest URL), `token`, optional `tls_ca_pem` (when set, the only trusted CA), optional `connect_address`, and `models` (each requested model with its served model and model revision). The origin of `endpoint` also serves the key snapshot the gateway pulls (see `gateway-admin.openapi.json`). The secret is never a public ConfigMap or a Kubernetes Secret. No credential enters an event or an error log.
+The Trust Authority secret `/confidential-inference/gateway/product-usage` supplies `endpoint` (the HTTPS ingest URL), `token`, optional `tls_ca_pem` (when set, the only trusted CA), optional `connect_address`, and `models` (each requested model with its served model and model revision). The origin of `endpoint` also serves the key snapshot the gateway pulls (see `gateway-admin.openapi.json`). The secret is never a public ConfigMap or a Kubernetes Secret. No credential enters an event or an error log.
 
 The gateway reports `gateway_usage_events_pending`, `gateway_usage_events_dropped_total`, and `gateway_usage_send_failed_total{reason}`.
 

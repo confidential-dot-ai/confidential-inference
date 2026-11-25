@@ -2,6 +2,9 @@
 
 This chart installs one stateless fallback gateway in a confidential VM.
 
+Set `ta.cidrs` to the Trust Authority addresses and `ta.port` to its TCP port (default 8443).
+Values under `ta` override matching fields under `cds`, which holds the defaults.
+
 Set `image` to the published digest.
 The C8s router owns the public TLS certificate. It sends HTTP to this workload through the attested internal mesh.
 The pod has no service account token, state volume, upstream route, or egress access.

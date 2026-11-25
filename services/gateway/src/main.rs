@@ -49,7 +49,7 @@ struct AdminSecret {
 #[derive(Parser, Debug, Clone)]
 #[command(name = "confidential-gateway")]
 struct Args {
-    // The admin client token: a CDS secret, JSON `{"token": ...}`
+    // The admin client token: a Trust Authority secret, JSON `{"token": ...}`
     // (`crate::admin_client`). Other fields of the secret are ignored.
     #[arg(
         long,

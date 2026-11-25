@@ -10,7 +10,7 @@ is, and a client verifies it. It lists:
 - the c8s release, its source commit, its core image digests, the images of
   its node seed, and the source lock entry for that commit;
 - the node image digest and its TDX measurements;
-- the CDS guest image digest and the SHA-256 of its manifest.json;
+- the Trust Authority guest image digest and the SHA-256 of its manifest.json;
 - the confidential-sglang release record of the engine and router images,
   and those two images by digest (scripts/confidential_sglang_release.py);
 - the recipes (recipes/), by SHA-256, and the recipes file that holds them.
@@ -54,9 +54,9 @@ The build writes four files to --output-dir:
   (chart.reference). The build writes the archive itself with fixed metadata
   (not helm package, whose output carries file times), so a rebuild gives
   the same bytes;
-- cds-manifest.json: the CDS guest image manifest.json (release/cds-manifest.json).
+- cds-manifest.json: the Trust Authority guest image manifest.json (release/cds-manifest.json).
   The manifest binds its SHA-256 (cdsImage.manifestSha256). A client needs
-  its measurements to check the CDS pin of a deployment;
+  its measurements to check the Trust Authority pin of a deployment;
 - recipes.json: every recipe of recipes/ with its files (recipes/README.md).
   The manifest binds its SHA-256 (recipes.sha256) and each recipe.yaml. A pair
   recipe must match the layout it names, which the manifest binds
@@ -180,9 +180,9 @@ def validate_spec(spec: Any) -> dict[str, Any]:
             "c8s.nodeManifestArtifact.digest must be a SHA-256 digest")
     require(DIGEST.fullmatch(str(c8s["nodeManifestArtifact"].get("manifestJson"))) is not None,
             "c8s.nodeManifestArtifact.manifestJson must be a SHA-256 digest")
-    cds = c8s.get("cdsImage")
-    require(isinstance(cds, dict) and isinstance(cds.get("reference"), str)
-            and DIGEST.fullmatch(str(cds.get("digest"))) is not None,
+    ta = c8s.get("cdsImage")
+    require(isinstance(ta, dict) and isinstance(ta.get("reference"), str)
+            and DIGEST.fullmatch(str(ta.get("digest"))) is not None,
             "c8s.cdsImage needs a reference and a digest")
     artifact = c8s.get("cdsManifestArtifact")
     require(isinstance(artifact, dict) and DIGEST.fullmatch(str(artifact.get("digest"))) is not None
@@ -323,8 +323,8 @@ def node_measurements(path: Path, spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def cds_image(path: Path, spec: dict[str, Any]) -> dict[str, str]:
-    """The pinned CDS guest image and the SHA-256 of its manifest.json, which the CDS pin of a deployment binds."""
+def ta_image(path: Path, spec: dict[str, Any]) -> dict[str, str]:
+    """The pinned Trust Authority guest image and the SHA-256 of its manifest.json, which the Trust Authority pin of a deployment binds."""
     data = path.read_bytes()
     require(sha256(data) == spec["c8s"]["cdsManifestArtifact"]["manifestJson"],
             f"{path.name} differs from c8s.cdsManifestArtifact.manifestJson")
@@ -574,9 +574,9 @@ def build(
     download_dir: Path | None,
     spec_path: Path = release_spec.SPEC,
     node_manifest: Path = release_spec.NODE_MANIFEST,
-    cds_manifest: Path = release_spec.CDS_MANIFEST,
+    ta_manifest: Path = release_spec.TA_MANIFEST,
 ) -> dict[str, bytes]:
-    """Return the release files by name: the manifest, the chart package and the CDS image manifest."""
+    """Return the release files by name: the manifest, the chart package and the Trust Authority image manifest."""
     version = chart_version(tag)
     chart = chart.resolve()
     identity = chart_identity(chart)
@@ -592,7 +592,7 @@ def build(
     images = dict(sorted({**images, **confidential_sglang_release.chart_images(sglang)}.items()))
     recipes_data, recipes = recipes_file(images, sglang)
     node = node_measurements(node_manifest, spec)
-    cds = cds_image(cds_manifest, spec)
+    ta = ta_image(ta_manifest, spec)
     lock = source_lock_entry(read_json(lock_path), spec["c8s"]["sourceCommit"])
     require(lock.get("tag") == spec["c8s"]["release"], "the source lock tag differs from c8s.release")
     node_reference = f"{spec['c8s']['nodeImage']['reference']}@{spec['c8s']['nodeImage']['digest']}"
@@ -634,8 +634,8 @@ def build(
         "rtmr1": node["tdx"]["rtmr1"],
         "rtmr2": node["tdx"]["rtmr2"],
         # The SHA-256 of release/cds-manifest.json, the manifest.json of the
-        # pinned CDS guest image, which the release publishes beside the manifest.
-        "cdsImage": cds,
+        # pinned Trust Authority guest image, which the release publishes beside the manifest.
+        "cdsImage": ta,
         "confidentialSglang": sglang,
         "recipes": recipes,
         "sourceLock": {
@@ -645,7 +645,7 @@ def build(
     }
     validate_schema(manifest)
     return {"release-bundle.json": encode(manifest), archive_name: archive,
-            "cds-manifest.json": cds_manifest.read_bytes(), RECIPES_FILE: recipes_data}
+            "cds-manifest.json": ta_manifest.read_bytes(), RECIPES_FILE: recipes_data}
 
 
 def encode(manifest: dict[str, Any]) -> bytes:

@@ -388,7 +388,7 @@ class ProcessTests(unittest.TestCase):
         kept = GEN.effective_process({**base, "args": ['"$1" ${env:NODE_NAME} end$']}, self.config)
         self.assertEqual(kept["args"], ['"$1" ${env:NODE_NAME} end$'])
 
-    def test_c8s_carve_out_matches_cds(self):
+    def test_c8s_carve_out_matches_ta(self):
         core = {GEN.split_image(CORE)[1]}
         self.assertTrue(GEN.is_carved_out({"image": CORE, "command": ["/c8s"]}, core))
         self.assertFalse(GEN.is_carved_out({"image": CORE, "command": ["/other"]}, core))
@@ -969,53 +969,53 @@ class FrameworkReleaseTests(unittest.TestCase):
         self.assertEqual(MAN.sha256(data), MAN.read_spec()["c8s"]["nodeManifestArtifact"]["manifestJson"])
         NODE.check_measurements(json.loads(data))
 
-    def test_the_cds_manifest_matches_the_pinned_artifact_layer(self):
+    def test_the_ta_manifest_matches_the_pinned_artifact_layer(self):
         spec = MAN.read_spec()
-        data = SPEC.CDS_MANIFEST.read_bytes()
+        data = SPEC.TA_MANIFEST.read_bytes()
         self.assertEqual(MAN.sha256(data), spec["c8s"]["cdsManifestArtifact"]["manifestJson"])
         NODE.check_measurements(json.loads(data))
-        self.assertEqual(MAN.cds_image(SPEC.CDS_MANIFEST, spec), {
+        self.assertEqual(MAN.ta_image(SPEC.TA_MANIFEST, spec), {
             "reference": spec["c8s"]["cdsImage"]["reference"] + "@" + spec["c8s"]["cdsImage"]["digest"],
             "manifestSha256": MAN.sha256(data)})
 
-    def test_the_spec_pins_the_cds_guest_image_and_its_manifest_artifact(self):
+    def test_the_spec_pins_the_ta_guest_image_and_its_manifest_artifact(self):
         spec = copy.deepcopy(MAN.read_spec())
-        cds, artifact = spec["c8s"]["cdsImage"], spec["c8s"]["cdsManifestArtifact"]
+        ta, artifact = spec["c8s"]["cdsImage"], spec["c8s"]["cdsManifestArtifact"]
         for key in ("cdsImage", "cdsManifestArtifact"):
             with self.subTest(missing=key), self.assertRaisesRegex(MAN.ManifestError, f"c8s.{key} needs"):
                 MAN.validate_spec({**spec, "c8s": {k: v for k, v in spec["c8s"].items() if k != key}})
         with self.assertRaisesRegex(MAN.ManifestError, "cdsManifestArtifact needs"):
             MAN.validate_spec({**spec, "c8s": {**spec["c8s"], "cdsManifestArtifact": {**artifact, "manifestJson": "x"}}})
         with self.assertRaisesRegex(MAN.ManifestError, "cdsImage needs"):
-            MAN.validate_spec({**spec, "c8s": {**spec["c8s"], "cdsImage": {**cds, "digest": "latest"}}})
+            MAN.validate_spec({**spec, "c8s": {**spec["c8s"], "cdsImage": {**ta, "digest": "latest"}}})
 
-    def test_the_release_carries_the_cds_manifest_it_binds(self):
+    def test_the_release_carries_the_ta_manifest_it_binds(self):
         files = build_framework(publication(published_release_images()))
         manifest = json.loads(files["release-bundle.json"])
-        self.assertEqual(files["cds-manifest.json"], SPEC.CDS_MANIFEST.read_bytes())
+        self.assertEqual(files["cds-manifest.json"], SPEC.TA_MANIFEST.read_bytes())
         self.assertEqual(MAN.sha256(files["cds-manifest.json"]), manifest["cdsImage"]["manifestSha256"])
         spec = MAN.read_spec()["c8s"]
         self.assertEqual(manifest["cdsImage"]["reference"], spec["cdsImage"]["reference"] + "@" + spec["cdsImage"]["digest"])
 
-    def test_a_changed_cds_manifest_stops_the_build(self):
+    def test_a_changed_ta_manifest_stops_the_build(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "cds-manifest.json"
-            path.write_bytes(SPEC.CDS_MANIFEST.read_bytes() + b" ")
+            path.write_bytes(SPEC.TA_MANIFEST.read_bytes() + b" ")
             with self.assertRaisesRegex(MAN.ManifestError, "differs from c8s.cdsManifestArtifact.manifestJson"):
-                MAN.cds_image(path, MAN.read_spec())
+                MAN.ta_image(path, MAN.read_spec())
 
-    def test_fetch_needs_the_node_and_the_cds_pins_whole(self):
+    def test_fetch_needs_the_node_and_the_ta_pins_whole(self):
         node = {"nodeImage": {"reference": "ghcr.io/example/worker"},
                 "nodeManifestArtifact": {"digest": "sha256:" + "1" * 64}}
-        cds = {"cdsImage": {"reference": "ghcr.io/example/cds"}, "cdsManifestArtifact": {"digest": "sha256:" + "2" * 64}}
+        ta = {"cdsImage": {"reference": "ghcr.io/example/cds"}, "cdsManifestArtifact": {"digest": "sha256:" + "2" * 64}}
         cases = {
-            "node and CDS": ({**node, **cds}, None),
+            "node and Trust Authority": ({**node, **ta}, None),
             "node only": (node, "pins cdsImage and cdsManifestArtifact"),
-            "CDS image only": ({"cdsImage": cds["cdsImage"]}, "no c8s node image"),
-            "node and the CDS image without its artifact": ({**node, "cdsImage": cds["cdsImage"]},
+            "Trust Authority image only": ({"cdsImage": ta["cdsImage"]}, "no c8s node image"),
+            "node and the Trust Authority image without its artifact": ({**node, "cdsImage": ta["cdsImage"]},
                                                             "pins cdsImage and cdsManifestArtifact"),
             "node without its artifact": ({"nodeImage": node["nodeImage"]}, "no c8s node image"),
-            "CDS image with a tag": ({**node, **cds, "cdsImage": {"reference": "ghcr.io/example/cds:v1"}},
+            "Trust Authority image with a tag": ({**node, **ta, "cdsImage": {"reference": "ghcr.io/example/cds:v1"}},
                                      "cdsImage.reference"),
             "no c8s": (None, "no c8s node image"),
         }
@@ -1028,26 +1028,26 @@ class FrameworkReleaseTests(unittest.TestCase):
                     with self.assertRaisesRegex(NODE.FetchError, error):
                         NODE.read_spec(spec)
 
-    def test_fetch_check_compares_the_node_and_the_cds_manifest(self):
-        node, cds = SPEC.NODE_MANIFEST.read_bytes(), SPEC.CDS_MANIFEST.read_bytes()
+    def test_fetch_check_compares_the_node_and_the_ta_manifest(self):
+        node, ta = SPEC.NODE_MANIFEST.read_bytes(), SPEC.TA_MANIFEST.read_bytes()
 
         def fetch(_spec, keys=NODE.NODE):
-            return (cds, {}) if keys == NODE.CDS else (node, {})
+            return (ta, {}) if keys == NODE.TA else (node, {})
 
-        for name, (node_file, cds_file, status) in {
-            "both match": (node, cds, 0), "the CDS manifest differs": (node, cds + b" ", 1),
-            "the node manifest differs": (node + b" ", cds, 1),
+        for name, (node_file, ta_file, status) in {
+            "both match": (node, ta, 0), "the Trust Authority manifest differs": (node, ta + b" ", 1),
+            "the node manifest differs": (node + b" ", ta, 1),
         }.items():
             with self.subTest(name), tempfile.TemporaryDirectory() as directory, \
                     mock.patch.object(NODE, "fetch", side_effect=fetch), contextlib.redirect_stdout(io.StringIO()), \
                     contextlib.redirect_stderr(io.StringIO()) as stderr:
                 paths = Path(directory) / "node.json", Path(directory) / "cds.json"
                 paths[0].write_bytes(node_file)
-                paths[1].write_bytes(cds_file)
+                paths[1].write_bytes(ta_file)
                 argv = ["fetch-node-manifest.py", "--check", "--output", str(paths[0]), "--cds-output", str(paths[1])]
                 with mock.patch.object(sys, "argv", argv):
                     self.assertEqual(NODE.main(), status, stderr.getvalue())
-                self.assertEqual((paths[0].read_bytes(), paths[1].read_bytes()), (node_file, cds_file))
+                self.assertEqual((paths[0].read_bytes(), paths[1].read_bytes()), (node_file, ta_file))
 
     def test_the_schema_refuses_deployment_values(self):
         schema = json.loads((ROOT / "api/release-manifest-v2.schema.json").read_text())
@@ -1072,16 +1072,16 @@ class FrameworkReleaseTests(unittest.TestCase):
         moved["sourceLock"]["path"] = MAN.SOURCE_LOCK.relative_to(ROOT).as_posix()
         MAN.release_signature.validate_release_schema(moved)
 
-    def test_a_release_of_c8s_v0_99_or_later_must_name_its_cds_image(self):
+    def test_a_release_of_c8s_v0_99_or_later_must_name_its_ta_image(self):
         schema = json.loads((ROOT / "api/release-manifest-v2.schema.json").read_text())
         rules = {"allOf": schema["allOf"]}
-        cds = {"reference": "ghcr.io/confidential-dot-ai/guests/cds@sha256:" + "1" * 64, "manifestSha256": "sha256:" + "2" * 64}
+        ta = {"reference": "ghcr.io/confidential-dot-ai/guests/cds@sha256:" + "1" * 64, "manifestSha256": "sha256:" + "2" * 64}
         for release, required in {
             "v0.9.0": False, "v0.98.9": False, "v0.80.10": False,
             "v0.99.0": True, "v0.99.29": True, "v0.99.29-beta.1": True, "v0.100.0": True, "v1.0.0": True,
         }.items():
             with self.subTest(release=release):
-                jsonschema.validate({"c8s": {"release": release}, "cdsImage": cds}, rules)
+                jsonschema.validate({"c8s": {"release": release}, "cdsImage": ta}, rules)
                 if required:
                     with self.assertRaises(jsonschema.ValidationError):
                         jsonschema.validate({"c8s": {"release": release}}, rules)
@@ -1295,7 +1295,7 @@ class RenderTests(unittest.TestCase):
         documents = rendered(STAGING)
         allowlist = json.loads(STAGING_ALLOWLIST.read_text())
         configs = {**json.loads(SPEC.IMAGE_CONFIG.read_text()), **REPOSITORY_CONFIGS}
-        # Use the real CDS process ordering that generation writes.
+        # Use the real Trust Authority process ordering that generation writes.
         allowlist = json.loads(GEN.canonicalize(allowlist, None))
         contract = functools.partial(REN.require_allowlist_contract, policy=policy, core_images=core,
                                      documents=documents, image_configs=configs,

@@ -3,6 +3,9 @@
 This chart installs the gateway, router, inference workers, and optional
 metrics components in a C8s Kubernetes cluster.
 
+Set `c8s.ta.cidrs` to the Trust Authority addresses and `c8s.ta.port` to its TCP port (default 8443).
+Values under `c8s.ta` override matching fields under `c8s.cds`, which holds the defaults.
+
 The default values form a small GPU-free simulator deployment. An operator
 must supply an external values file for a real environment. The file must pin
 every image by its Linux AMD64 digest. `scripts/render-allowlist.py` sets
@@ -149,7 +152,7 @@ the worker addresses. The mesh authenticates every worker connection.
 
 No model is in an image. A worker gets its model in one of two ways:
 
-- The C8s model volume (the default): an encrypted volume that CDS opens for
+- The C8s model volume (the default): an encrypted volume that the Trust Authority opens for
   the pod (`inference.model.c8sVolumeSource`, the `confidential.ai/c8s-volumes`
   annotation).
 - A download at each start from a model server

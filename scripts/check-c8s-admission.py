@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check rendered pod templates against C8s worker admission, offline.
 
-    helm template ... | scripts/check-c8s-admission.py [--cds-port PORT] -
+    helm template ... | scripts/check-c8s-admission.py [--ta-port PORT] -
 
 A C8s worker's webhook (internal/webhook pod_mutator.go and pod_floor.go,
 internal/podmesh probes.go and floor.go, at the pinned C8s release) refuses a
@@ -36,9 +36,9 @@ pod spec states:
 
 c8s has no offline command for these checks yet, so this script copies
 them. It also checks one deployment rule: a c8s workload (confidential.ai/cw)
-whose egress a NetworkPolicy restricts must be allowed TCP to the CDS port
-(8443 unless --cds-port says otherwise), with no peer or an ipBlock peer: the
-CDS runs as its own VM outside the cluster.
+whose egress a NetworkPolicy restricts must be allowed TCP to the Trust Authority port
+(8443 unless --ta-port says otherwise), with no peer or an ipBlock peer: the
+Trust Authority runs as its own VM outside the cluster.
 
 It prints one line per refusal and exits 1 when there is any.
 """
@@ -61,7 +61,7 @@ CREDENTIAL_ANNOTATIONS = tuple(f"confidential.ai/c8s-{name}" for name in (
 MESH_PORTS = {15001, 15006, 15021}
 MESH_PROBE_TIMEOUT = 5
 PROBE_PATH = re.compile(r"^(/[A-Za-z0-9\-._~]*)+$")
-CDS_PORT = 8443
+TA_PORT = 8443
 UNDECLARABLE_CAPABILITIES = {"ALL", "NET_ADMIN", "NET_RAW", "SETUID", "SETGID"}
 RESERVED_IDS = range(1337, 1342)
 POD_TEMPLATE_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job"}
@@ -210,15 +210,15 @@ def selects(selector: dict, labels: dict) -> bool:
             and all(operators[e["operator"]](e) for e in selector.get("matchExpressions", [])))
 
 
-def allows_cds(rule: dict, cds_port: int) -> bool:
+def allows_ta(rule: dict, ta_port: int) -> bool:
     ports = rule.get("ports")
-    port_ok = not ports or any(p.get("protocol", "TCP") == "TCP" and p.get("port") in (cds_port, None)
+    port_ok = not ports or any(p.get("protocol", "TCP") == "TCP" and p.get("port") in (ta_port, None)
                                for p in ports)
     peers = rule.get("to")
     return port_ok and (not peers or any("ipBlock" in peer for peer in peers))
 
 
-def cds_egress_refusals(documents: list[dict], cds_port: int) -> list[str]:
+def ta_egress_refusals(documents: list[dict], ta_port: int) -> list[str]:
     policies = [d for d in documents if d.get("kind") == "NetworkPolicy"
                 and "Egress" in d["spec"].get("policyTypes", ["Egress"] if "egress" in d["spec"] else [])]
     found = []
@@ -226,26 +226,26 @@ def cds_egress_refusals(documents: list[dict], cds_port: int) -> list[str]:
         if "confidential.ai/cw" not in metadata.get("annotations", {}):
             continue
         selecting = [p for p in policies if selects(p["spec"].get("podSelector", {}), metadata.get("labels", {}))]
-        if selecting and not any(allows_cds(rule, cds_port) for p in selecting for rule in p["spec"].get("egress", [])):
-            found.append(f"{name}: no NetworkPolicy allows egress to the CDS on TCP {cds_port} "
+        if selecting and not any(allows_ta(rule, ta_port) for p in selecting for rule in p["spec"].get("egress", [])):
+            found.append(f"{name}: no NetworkPolicy allows egress to the Trust Authority on TCP {ta_port} "
                          f"(egress restricted by {', '.join(p['metadata']['name'] for p in selecting)})")
     return found
 
 
-def refusals(documents: list[dict], cds_port: int = CDS_PORT) -> list[str]:
+def refusals(documents: list[dict], ta_port: int = TA_PORT) -> list[str]:
     found = []
     for name, metadata, spec in pods(documents):
         found += webhook_refusals(name, metadata, spec) + runtime_refusals(name, spec)
-    return found + cds_egress_refusals(documents, cds_port)
+    return found + ta_egress_refusals(documents, ta_port)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check rendered pod templates against C8s worker admission.")
-    parser.add_argument("--cds-port", type=int, default=CDS_PORT, help="the port the CDS serves on (default %(default)s)")
+    parser.add_argument("--ta-port", "--cds-port", type=int, default=TA_PORT, help="the port the Trust Authority serves on (default %(default)s)")
     parser.add_argument("rendered", help="rendered manifests, or - for standard input")
     args = parser.parse_args()
     text = sys.stdin.read() if args.rendered == "-" else Path(args.rendered).read_text()
-    found = refusals([d for d in yaml.safe_load_all(text) if d], args.cds_port)
+    found = refusals([d for d in yaml.safe_load_all(text) if d], args.ta_port)
     for line in found:
         print(line)
     return 1 if found else 0
