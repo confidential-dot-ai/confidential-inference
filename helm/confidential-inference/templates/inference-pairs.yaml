@@ -99,16 +99,31 @@ differ in the pair they reach, so each claims its own entry
 {{- $gate = concat (include "confidential-inference.modelDownloadCommand" . | fromJsonArray) $check }}
 {{- end }}
 {{- /* inference.pair.kernelCache.seed: before the model gate, fetch-model
-       fills the plan's kernel cache directory from the model mirror and
+       fills the plan's kernel cache directory from a model server and
        checks every file against the seed manifest, whose SHA-256 this argv
        pins. The manifest's revision names the engine image digest and the
        plan, so a seed of another image or plan does not render. A seed that
-       no host gives leaves a cold cache: the workers compile as before. */}}
+       no host gives leaves a cold cache: the workers compile as before.
+       The seed's sources are seed.hosts, or the inference.model.download
+       hosts when seed.hosts is empty. With the C8s model volume (no
+       download), seed.hosts is required. */}}
 {{- $seed := ($pair.kernelCache | default dict).seed | default dict }}
+{{- $seedHosts := list }}
+{{- $aliasHosts := list }}
+{{- if $download }}{{ $aliasHosts = .Values.inference.model.download.hosts }}{{ end }}
 {{- if $seed.enabled }}
-{{- if not $download }}
-{{- fail "inference.pair.kernelCache.seed needs inference.model.download: the seed comes from its hosts" }}
+{{- range ($seed.hosts | default list) }}
+{{- /* A seed host takes https and the scheme's port unless it sets its own:
+       not the download's defaults, which may be off. */}}
+{{- $seedHosts = append $seedHosts (merge (dict) . (dict "scheme" (.scheme | default "https"))) }}
 {{- end }}
+{{- if not $seedHosts }}
+{{- if not $download }}
+{{- fail "inference.pair.kernelCache.seed needs seed.hosts, or inference.model.download: the seed comes from those hosts" }}
+{{- end }}
+{{- $seedHosts = .Values.inference.model.download.hosts }}
+{{- end }}
+{{- $aliasHosts = concat $aliasHosts $seedHosts }}
 {{- $digest := regexFind "@sha256:[0-9a-f]{64}$" $image | trimPrefix "@sha256:" }}
 {{- if not $digest }}
 {{- fail (printf "inference.pair.kernelCache.seed needs a digest-pinned engine image (repository@sha256:<64 hex>), not %s" $image) }}
@@ -147,7 +162,7 @@ differ in the pair they reach, so each claims its own entry
 {{- end }}
 {{- end }}
 {{- end }}
-{{- $endpoints := include "confidential-inference.modelDownloadEndpoints" . | fromJsonArray }}
+{{- $endpoints := include "confidential-inference.sourceEndpoints" (dict "root" . "hosts" $seedHosts) | fromJsonArray }}
 {{- $fetch := printf "/usr/local/bin/fetch-model --endpoint=$e fetch --path=%s --manifest=%s/manifest.json --manifest-sha256=%s --revision-metadata=.kernel-cache-manifest.json" $cacheDir (include "confidential-inference.kernelCacheManifestDirectory" .) (sha256sum $seed.manifest) }}
 {{- $script := printf "trap 'kill $f 2>/dev/null; wait $f; exit 143' TERM INT; f=; for e in %s; do %s & f=$!; if wait $f; then f=; break; fi; echo \"kernel cache seed: $e failed\" >&2; done; [ -z \"$f\" ] || echo 'kernel cache seed: no source gave it; the workers compile their kernels' >&2; trap - TERM INT; exec \"$@\"" (join " " $endpoints) $fetch }}
 {{- $gate = concat (list "/bin/sh" "-c" $script "sh") $gate }}
@@ -233,13 +248,15 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ $decode.port | quote }}
     spec:
+      {{- if $aliasHosts }}
+      # The model and seed source addresses are also the pod's allowlist exits.
+      {{- include "confidential-inference.sourceHostAliases" $aliasHosts | nindent 6 }}
+      {{- end }}
       {{- if $download }}
       {{- with .Values.scheduling.inferenceNodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      # The model source addresses are also the pod's allowlist exits.
-      {{- include "confidential-inference.modelDownloadHostAliases" . | nindent 6 }}
       {{- else if .Values.scheduling.inferenceNodeNames }}
       affinity:
         nodeAffinity:

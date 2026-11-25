@@ -298,7 +298,7 @@
             "shmSizeLimit": {"type": "string"},
             "scratchSizeLimit": {"type": "string"},
             "kernelCache": {
-              "description": "Seed the plan's kernel caches from the model mirror (templates/inference-pairs.yaml).",
+              "description": "Seed the plan's kernel caches from a model server (templates/inference-pairs.yaml).",
               "type": "object",
               "additionalProperties": false,
               "properties": {
@@ -308,7 +308,23 @@
                   "additionalProperties": false,
                   "properties": {
                     "enabled": {"type": "boolean"},
-                    "manifest": {"type": "string"}
+                    "manifest": {"type": "string"},
+                    "hosts": {
+                      "description": "The seed's model servers, in order. Empty: the inference.model.download hosts.",
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["serverName", "address"],
+                        "properties": {
+                          "serverName": {"type": "string", "format": "hostname", "pattern": "^[A-Za-z0-9.-]+$"},
+                          "scheme": {"enum": ["https", "http"]},
+                          "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                          "address": {"type": "string", "format": "ipv4", "pattern": "^[0-9]{1,3}(?:\\.[0-9]{1,3}){3}$"}
+                        }
+                      }
+                    }
                   }
                 }
               }

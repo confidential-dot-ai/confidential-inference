@@ -32,6 +32,13 @@ ENGINE = "ghcr.io/confidential-dot-ai/confidential-sglang/engine@sha256:" + "e" 
 ROUTER = "ghcr.io/confidential-dot-ai/confidential-sglang/router@sha256:" + "f" * 64
 MODEL = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
 MODEL_PATH = "/mnt/c8s-data/models/dsv41"
+# The C8s model volume of a deployment without a download: the GPU worker's
+# `persistent` disk, opened from this CDS path.
+VOLUME_SOURCE = "/confidential-inference/volumes/persistent"
+VOLUME = ("--set", "inference.model.download.enabled=false", "--set-string",
+          f"inference.model.c8sVolumeSource={VOLUME_SOURCE}", "--set-json", 'inference.model.volumeNames=["persistent"]',
+          "--set-json", 'scheduling.inferenceNodeNames=["gpu-0"]')
+SEED_HOST = {"serverName": "models-seed.example.invalid", "address": "198.51.100.7"}
 
 
 def load(name: str, path: Path):
@@ -508,11 +515,93 @@ class PairLayoutTests(unittest.TestCase):
                 result = render(values=values, check=False)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message.strip(), result.stderr)
-        # The environment's model download comes last; turn it off there.
-        result = render("--set", "inference.model.download.enabled=false", "--set-string",
-                        "inference.model.c8sVolumeSource=/example/volumes/dsv41", values=self.seed_values(), check=False)
+        # The environment's model download comes last; turn it off there. Without
+        # it the seed needs its own hosts.
+        result = render(*VOLUME, values=self.seed_values(), check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("needs inference.model.download", result.stderr)
+        self.assertIn("needs seed.hosts, or inference.model.download", result.stderr)
+
+    def volume_seed_values(self) -> dict:
+        values = self.seed_values()
+        values["inference"]["pair"]["kernelCache"]["seed"]["hosts"] = [SEED_HOST]
+        return values
+
+    def test_the_pair_reads_the_c8s_model_volume(self):
+        """Download off: the pair reads the C8s volume `persistent`, checked in place, and nothing is fetched."""
+        found = documents(render(*VOLUME))
+        template = named(found, "StatefulSet", "inference-pair")["spec"]["template"]
+        annotations = template["metadata"]["annotations"]
+        self.assertEqual(annotations["confidential.ai/c8s-volumes"], f"persistent={VOLUME_SOURCE}")
+        self.assertEqual(annotations["confidential.ai/c8s-volume-dir"], "/mnt/c8s-data/models")
+        spec = template["spec"]
+        # Pinned to the node that holds the disk, no exit, no download objects.
+        self.assertEqual(spec["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
+                         ["nodeSelectorTerms"][0]["matchExpressions"][0]["values"], ["gpu-0"])
+        self.assertNotIn("nodeSelector", spec)
+        self.assertNotIn("hostAliases", spec)
+        self.assertEqual(sorted(volume["name"] for volume in spec["volumes"]), ["scratch", "shm"])
+        names = {item["metadata"]["name"] for item in found}
+        self.assertFalse({"model-manifest", "inference-worker-model-download", "inference-pair-kernel-cache-seed"} & names)
+        gate = pair_config(found)["modelGate"]
+        self.assertEqual(gate[0], "/usr/local/bin/wait-for-model")
+        self.assertIn("--path=/mnt/c8s-data/models/persistent", gate)
+        # The dm-verity mount, not a plain cache, and no fetch-model.
+        self.assertNotIn("--plain-cache", gate)
+        self.assertNotIn("fetch-model", json.dumps(gate))
+        self.assertIn("--revision-metadata=.model-lock-local-manifest.json", gate)
+        for worker in pair_config(found)["workers"]:
+            self.assertIn("--model-path=/mnt/c8s-data/models/persistent", worker["command"])
+        admission = runpy.run_path(str(ROOT / "scripts/check-c8s-admission.py"))
+        self.assertEqual(admission["refusals"](found), [])
+
+    def test_the_volume_consumer_allowlist_rules(self):
+        """The allowlist generator gives the pair the volume's `data` mount rule and `secrets` grant,
+        and one exit per seed address (C8s v0.101.9 docs/volumes.md "The mount policy")."""
+        gen = load("generate_release_allowlist_pair", ROOT / "scripts/generate-release-allowlist.py")
+        found = documents(render(*VOLUME, values=self.volume_seed_values()))
+        pair = named(found, "StatefulSet", "inference-pair")
+        container = pair["spec"]["template"]["spec"]["containers"][0]
+        rules = gen.container_mounts(pair, container, {"mounts": []}, c8s_release="v0.101.9")
+        self.assertIn({"destination": "/mnt/c8s-data/models/persistent", "kind": "data"}, rules)
+        self.assertFalse([rule for rule in rules if rule["kind"] == "host"])
+        self.assertEqual(gen.volume_reads(pair), [VOLUME_SOURCE])
+        exits = gen.declared_egress(pair, {"controller": "StatefulSet/inference-pair", "egress": {"port": 443}})
+        self.assertEqual(exits, [{"cidr": f"{SEED_HOST['address']}/32", "port": 443}])
+
+    def test_the_kernel_cache_seed_comes_from_its_own_hosts_with_the_model_volume(self):
+        found = documents(render(*VOLUME, values=self.volume_seed_values()))
+        spec = named(found, "StatefulSet", "inference-pair")["spec"]["template"]["spec"]
+        self.assertEqual(spec["hostAliases"], [{"ip": SEED_HOST["address"], "hostnames": [SEED_HOST["serverName"]]}])
+        self.assertIn("kernel-cache-manifest", [volume["name"] for volume in spec["volumes"]])
+        gate = pair_config(found)["modelGate"]
+        self.assertEqual(gate[:2], ["/bin/sh", "-c"])
+        # https on 443 by default, not the download's http on 8080.
+        self.assertIn(f"for e in https://{SEED_HOST['serverName']}; do /usr/local/bin/fetch-model", gate[2])
+        self.assertEqual(gate[4], "/usr/local/bin/wait-for-model")
+        self.assertNotIn("--plain-cache", gate)
+        policy = named(found, "NetworkPolicy", "inference-pair-kernel-cache-seed")["spec"]
+        self.assertEqual(policy["podSelector"], {"matchLabels": {"app.kubernetes.io/component": "inference-pair"}})
+        self.assertEqual(policy["egress"], [{"to": [{"ipBlock": {"cidr": f"{SEED_HOST['address']}/32"}}],
+                                             "ports": [{"protocol": "TCP", "port": 443}]}])
+        self.assertNotIn("inference-worker-model-download", {item["metadata"]["name"] for item in found})
+        admission = runpy.run_path(str(ROOT / "scripts/check-c8s-admission.py"))
+        self.assertEqual(admission["refusals"](found), [])
+
+    def test_seed_hosts_add_to_the_download_hosts(self):
+        """With the download on, seed.hosts are extra sources: both are aliases, the seed tries only its own."""
+        found = documents(render(values=self.volume_seed_values()))
+        spec = named(found, "StatefulSet", "inference-pair")["spec"]["template"]["spec"]
+        self.assertEqual(spec["hostAliases"], [{"ip": "192.0.2.20", "hostnames": ["models.example.invalid"]},
+                                               {"ip": SEED_HOST["address"], "hostnames": [SEED_HOST["serverName"]]}])
+        gate = pair_config(found)["modelGate"]
+        self.assertIn(f"for e in https://{SEED_HOST['serverName']}; do", gate[2])
+        self.assertNotIn("models.example.invalid", gate[2])
+        # A seed host that is also a download host is one alias.
+        values = self.seed_values()
+        values["inference"]["pair"]["kernelCache"]["seed"]["hosts"] = [
+            {"serverName": "models.example.invalid", "address": "192.0.2.20", "scheme": "http", "port": 8080}]
+        spec = named(documents(render(values=values)), "StatefulSet", "inference-pair")["spec"]["template"]["spec"]
+        self.assertEqual(spec["hostAliases"], [{"ip": "192.0.2.20", "hostnames": ["models.example.invalid"]}])
 
     def test_the_kernel_cache_manifest_tool(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -280,8 +280,49 @@ talks to the Kubernetes API, at the deploy-time address of
 `router.discovery.apiServer`.
 
 The environment sets `inference.replicas`, `inference.pair.resources` (the
-defaults are conservative, not measured), the model server, and the router's
-API server. `inference.pd.enabled` stays in the schema so that existing
+defaults are conservative, not measured), the model source, and the router's
+API server.
+
+### The pair on a C8s model volume
+
+With `inference.model.download.enabled: false`, the pair reads its weights
+from the C8s volume of the first `inference.model.volumeNames` entry, as a
+worker does. For example, the GPU worker's `persistent` disk, opened from the
+CDS path `/confidential-inference/volumes/persistent`:
+
+```yaml
+inference:
+  model:
+    c8sVolumeSource: /confidential-inference/volumes/persistent
+    volumeNames: [persistent]
+    download:
+      enabled: false
+scheduling:
+  inferenceNodeNames: [<the node that holds the disk>]
+```
+
+- The pair pod carries `confidential.ai/c8s-volumes:
+  persistent=/confidential-inference/volumes/persistent` and
+  `confidential.ai/c8s-volume-dir: /mnt/c8s-data/models`. C8s opens the volume
+  at `/mnt/c8s-data/models/persistent` once the pod's main container runs:
+  read-only erofs under dm-verity.
+- The pod is pinned to `scheduling.inferenceNodeNames` (or
+  `scheduling.inferenceNodeName`); `scheduling.inferenceNodeSelector` is not
+  used, because the disk is on one node.
+- The model gate is `wait-for-model` without `--plain-cache`: it waits for the
+  dm-verity mount (`c8s-verity-<pod>-persistent`), probes that it refuses
+  writes, then checks the revision metadata
+  (`mountVerification.revisionMetadata`, pinned by `mountVerification`) and
+  every file against it, as it does after a download. The volume holds the
+  manifest's files and the revision metadata file at its root, and nothing
+  else: an extra file stops the pair. No byte is downloaded.
+- The release allowlist (`scripts/render-allowlist.py`) gives the pair's
+  entry a `data` mount rule at `/mnt/c8s-data/models/persistent` and a
+  `secrets` grant for `/confidential-inference/volumes/persistent`, from the
+  annotations (C8s `docs/volumes.md`, "The mount policy"). The policy item
+  needs no `secretReads` for it.
+- With no download and no kernel cache seed, the pair has no exit: its policy
+  item declares no `egress`. With a seed, it has the seed's exits (below). `inference.pd.enabled` stays in the schema so that existing
 environment values still render; only `false` is accepted.
 
 ### Kernel cache seed
@@ -297,9 +338,16 @@ B200 takes about 26 minutes to `/readyz` cold and about 9 minutes warm. The
 warm tree is about 145 MB.
 
 With `inference.pair.kernelCache.seed.enabled`, the pair fetches a warm tree
-from the model mirror before the model gate. fetch-model reads each file at
-`<repository>/resolve/<revision>/<path>` from the `inference.model.download`
-hosts in order. It checks every file's SHA-256 and size against the seed
+from a model server before the model gate. fetch-model reads each file at
+`<repository>/resolve/<revision>/<path>` from the seed's hosts in order:
+`inference.pair.kernelCache.seed.hosts`, or the `inference.model.download`
+hosts when that list is empty. With the C8s model volume (no download),
+`seed.hosts` is required. A seed host is a download host (`serverName`,
+`address`, optional `scheme` and `port`), https on 443 unless it sets its
+own. Each seed address goes into the pair's `hostAliases`, so it is one
+allowlist exit on its port: the pair's policy item declares `"egress":
+{"port": <port>}` (or `ports`). The NetworkPolicy
+`inference-pair-kernel-cache-seed` admits the same addresses and ports. It checks every file's SHA-256 and size against the seed
 manifest, whose own SHA-256 is in the pair's argv and so in its allowlist
 entry. A file that does not match is not written. When the whole seed is in
 place, fetch-model also removes every file under the directory that the
@@ -401,7 +449,7 @@ To make a seed:
    --engine-image <engine image@sha256:...> --plan <plan> > manifest.json`.
    It leaves out lock files and partial writes. fetch-model writes every file
    read-only, so a seeded lock file could not be opened for writing.
-3. Serve each listed file on the mirror at
+3. Serve each listed file on the seed host at
    `<repository>/resolve/sha256-<digest>-<plan>/<path>`.
 4. In the environment values, set `inference.pair.kernelCache.seed.enabled:
    true` and `inference.pair.kernelCache.seed.manifest` to the manifest text.

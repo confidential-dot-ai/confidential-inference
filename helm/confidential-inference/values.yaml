@@ -393,11 +393,11 @@ inference:
     # /tmp of the pair: HOME, the plan's kernel caches, sglang-pair's run files.
     scratchSizeLimit: 128Gi
     # Seed the plan's kernel caches (Triton, Inductor, CUDA, FlashInfer and
-    # SGLang under planDirectory, about 145 MB for dsv41-262k) from the model
-    # mirror before the workers start. A warm cache brings a 4x B200 pair up
+    # SGLang under planDirectory, about 145 MB for dsv41-262k) from a model
+    # server before the workers start. A warm cache brings a 4x B200 pair up
     # in about 9 minutes instead of 26. The README of this chart ("Kernel
-    # cache seed") explains why the chart seeds from the mirror and does not
-    # keep the cache on the node.
+    # cache seed") explains why the chart seeds from a model server and does
+    # not keep the cache on the node.
     kernelCache:
       # The plan's cache root (paths.kernel_cache_dir of the plan), in the
       # /tmp emptyDir. The seed is fetched here. scripts/recipe-values.py
@@ -410,12 +410,20 @@ inference:
         # The fetch-model byte manifest of the cache tree on the model mirror
         # (scripts/kernel-cache-manifest.py). fetch-model downloads
         # <repository>/resolve/<immutable_revision>/<path> of each file from
-        # the inference.model.download hosts and checks its SHA-256 and size;
+        # the seed hosts in order and checks its SHA-256 and size;
         # the manifest's own SHA-256 is in the pair's attested argv. Its
         # immutable_revision must be sha256-<engine image digest>-<plan>: the
         # chart refuses a seed of another engine image or plan. A seed that no
         # host gives is skipped, and the pair compiles its kernels as before.
         manifest: ""
+        # The seed's model servers, in order, each as an
+        # inference.model.download host ({serverName, address}, optional
+        # scheme and port; https on 443 by default). Each address goes into
+        # the pair's hostAliases and is one allowlist exit on its port, so
+        # the allowlist policy of the pair must declare that egress port.
+        # Empty: the inference.model.download hosts. Required with the C8s
+        # model volume (no download).
+        hosts: []
     # Each replica's PD router (the router image). Its C8s allowlist entry is
     # <attestedWorkloadPrefix>-<i>: the routers differ in the pair they reach.
     pdRouter:
