@@ -272,6 +272,9 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            # A fixed HOSTNAME keeps the env exact in the c8s allowlist.
+            - name: HOSTNAME
+              value: inference-pair
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true

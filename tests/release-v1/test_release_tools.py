@@ -174,6 +174,15 @@ def rendered_workers(deployment) -> list[dict]:
     return [item for item in rendered(deployment) if item.get("kind") == "StatefulSet"
             and item.get("metadata", {}).get("name", "") == "inference-worker"]
 
+
+def env_is_pinned(env: dict) -> bool:
+    """Whether the host chooses no variable or value of a container, as C8s judges it (pkg/allowlist envPinned)."""
+    policy = env.get("policy")
+    if policy in ("deny", "exact"):
+        return True
+    every_matcher_is_exact = all("exact" in matcher for matcher in env.get("variables", {}).values())
+    return policy == "match" and every_matcher_is_exact and not env.get("serviceLinks")
+
 DIGEST = "sha256:" + "a" * 64
 IMAGE = f"ghcr.io/example/app@{DIGEST}"
 CORE = f"ghcr.io/confidential-dot-ai/c8s-operator@sha256:{'b' * 64}"
@@ -264,6 +273,12 @@ class EnvironmentTests(unittest.TestCase):
         # The StatefulSet controller sets each pod's hostname to its name.
         workers["spec"]["template"]["spec"]["hostname"] = "fixed"
         self.assertIs(GEN.pod_name(workers), GEN.OPEN_VALUE)
+
+    def test_a_statefulset_container_that_sets_hostname_has_an_exact_env(self):
+        workers = controller(container={"name": "app", "image": IMAGE, "env": [{"name": "HOSTNAME", "value": "worker"}]})
+        values = self.env(workers)
+        self.assertEqual(values["HOSTNAME"], "worker")
+        self.assertEqual(GEN.env_policy(values)["policy"], "exact")
 
     def test_service_links_and_random_pod_names_are_refused(self):
         obj = controller()
@@ -1252,9 +1267,8 @@ class RenderTests(unittest.TestCase):
             self.assertEqual(len(guarded), 1)
             policy = guarded[0]
             self.assertEqual(policy["command"]["argv"], workers[0]["spec"]["template"]["spec"]["containers"][0]["command"])
-            # The two pods differ in HOSTNAME: the entry requires it and admits any value.
-            self.assertEqual(policy["env"]["policy"], "match")
-            self.assertEqual(policy["env"]["variables"]["HOSTNAME"], {"present": True})
+            self.assertEqual(policy["env"]["policy"], "exact")
+            self.assertEqual(policy["env"]["values"]["HOSTNAME"], "inference-worker")
             self.assertEqual(policy["args"]["argv"][0], "/usr/local/bin/wait-for-model")
             self.assertIn("sglang_simulator.simulation.sglang.launch_server", policy["args"]["argv"])
             model = "/mnt/c8s-data/models/" + values["volumeNames"][0]
@@ -1279,6 +1293,15 @@ class RenderTests(unittest.TestCase):
             result.append([arg.removeprefix("--expected-file=") for arg in args
                            if arg.startswith("--expected-file=")])
         return result
+
+    def test_every_staging_entry_with_egress_has_a_pinned_env(self):
+        allowlist = json.loads(STAGING_ALLOWLIST.read_text())
+        with_egress = {name: entry for name, entry in allowlist["workloads"].items() if entry.get("egress")}
+        self.assertIn("inference-worker", with_egress)
+        for name, entry in with_egress.items():
+            for container in entry.get("initContainers", []) + entry["containers"]:
+                with self.subTest(entry=name, container=container["digest"]):
+                    self.assertTrue(env_is_pinned(container["env"]))
 
     def test_workers_check_the_expected_files_map_of_their_values(self):
         for name, deployment in (("production", PRODUCTION), ("staging", STAGING)):
