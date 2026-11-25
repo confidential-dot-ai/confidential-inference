@@ -215,9 +215,15 @@ exit on its host's port (the policy item's egress `ports`). Plain http is
 allowed: fetch-model checks every byte against the pinned byte manifest, and
 the weights are public. */}}
 {{- define "confidential-inference.modelDownloadEndpoints" -}}
-{{- $root := . -}}
+{{- include "confidential-inference.sourceEndpoints" (dict "root" . "hosts" .Values.inference.model.download.hosts) -}}
+{{- end }}
+
+{{/* The fetch-model endpoints of a list of model sources (dict root, hosts),
+one per distinct source, in order; each host as in modelDownloadEndpoints. */}}
+{{- define "confidential-inference.sourceEndpoints" -}}
+{{- $root := .root -}}
 {{- $endpoints := list -}}
-{{- range .Values.inference.model.download.hosts -}}
+{{- range .hosts -}}
 {{- $scheme := include "confidential-inference.modelDownloadHostScheme" (dict "root" $root "host" .) -}}
 {{- $port := include "confidential-inference.modelDownloadHostPort" (dict "root" $root "host" .) -}}
 {{- $endpoint := printf "%s://%s" $scheme .serverName -}}
@@ -271,10 +277,23 @@ the weights are public. */}}
 
 {{/* The pinned addresses of the model source. Each is one allowlist exit. */}}
 {{- define "confidential-inference.modelDownloadHostAliases" -}}
+{{- include "confidential-inference.sourceHostAliases" .Values.inference.model.download.hosts -}}
+{{- end }}
+
+{{/* The hostAliases of a list of model sources, in order, each distinct
+address and name once (a name may have more than one address). */}}
+{{- define "confidential-inference.sourceHostAliases" -}}
+{{- $aliases := list -}}
+{{- range . -}}
+{{- $alias := dict "ip" .address "hostnames" (list .serverName) -}}
+{{- if not (has $alias $aliases) -}}
+{{- $aliases = append $aliases $alias -}}
+{{- end -}}
+{{- end -}}
 hostAliases:
-  {{- range .Values.inference.model.download.hosts }}
-  - ip: {{ .address | quote }}
-    hostnames: [{{ .serverName | quote }}]
+  {{- range $aliases }}
+  - ip: {{ .ip | quote }}
+    hostnames: [{{ first .hostnames | quote }}]
   {{- end }}
 {{- end }}
 

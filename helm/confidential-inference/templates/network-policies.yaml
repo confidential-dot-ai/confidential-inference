@@ -418,3 +418,27 @@ spec:
         - {protocol: TCP, port: {{ int $port }}}
     {{- end }}
 {{- end }}
+{{- $seed := ((.Values.inference.pair | default dict).kernelCache | default dict).seed | default dict }}
+{{- if and .Values.inference.enabled (eq (.Values.inference.layout | default "worker") "pair") $seed.enabled $seed.hosts }}
+---
+# fetch-model fills the pair's kernel cache from the pinned addresses of
+# inference.pair.kernelCache.seed.hosts, which are also the pair's allowlist
+# exits. The seed manifest pins every byte.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inference-pair-kernel-cache-seed
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: inference-pair
+  policyTypes: [Egress]
+  egress:
+    {{- range $seed.hosts }}
+    {{- $scheme := .scheme | default "https" }}
+    - to:
+        - ipBlock: {cidr: {{ printf "%s/32" .address | quote }}}
+      ports:
+        - {protocol: TCP, port: {{ gt (int (.port | default 0)) 0 | ternary (int .port) (eq $scheme "http" | ternary 80 443) }}}
+    {{- end }}
+{{- end }}
