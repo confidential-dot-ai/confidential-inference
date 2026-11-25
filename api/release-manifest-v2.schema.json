@@ -183,7 +183,8 @@
         "release",
         "sourceCommit",
         "coreImages",
-        "seedImages"
+        "seedImages",
+        "componentSet"
       ],
       "properties": {
         "release": {
@@ -208,6 +209,28 @@
           "uniqueItems": true,
           "items": {
             "$ref": "#/$defs/imageReference"
+          }
+        },
+        "componentSet": {
+          "description": "The C8s component set. The components section of every deployment allowlist holds this set alone. asset names the file of the C8s release for TDX, the CPU TEE of the node image, and sha256 is of that file.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "asset",
+            "sha256"
+          ],
+          "properties": {
+            "asset": {
+              "const": "component-set-tdx.json"
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-beta\\.[1-9][0-9]*)?$"
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256Digest"
+            }
           }
         }
       }
