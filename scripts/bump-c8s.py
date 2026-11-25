@@ -79,7 +79,7 @@ STRIP_COMMENTS_TOOL = ROOT / "tools/go-strip-comments"
 RELEASE_TESTS = ROOT / "tests/release-v1/test_release_tools.py"
 NODE = runpy.run_path(str(ROOT / "scripts/fetch-node-manifest.py"))
 REGISTRY = "ghcr.io/confidential-dot-ai/"
-C8S_MODULE = "github.com/confidential-dot-ai/c8s"
+C8S_MODULE = "github.com/confidential-dot-ai/confidential-kubernetes"
 # A c8s release tag, or the Go pseudo-version of an untagged c8s commit (a dev
 # build for staging, published under the image tags dev-<commit 12>).
 TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
@@ -97,7 +97,7 @@ CHART_VALUES = "charts/cloud/values.yaml"
 # node-guest-base. Not every later tag publishes a Trust Authority guest; the bump stops
 # when crane finds no digest.
 GUEST_IMAGES_SINCE = (0, 99, 0)
-TA_IMAGE = REGISTRY + "guests/cds"
+TA_IMAGE = REGISTRY + "guests/ta"
 # The worker image build: its pinned kubelet and Helm versions render the seed.
 WORKER_SYNC = "images/node-guest/worker/mkosi.sync"
 SEED_PLATFORM = "tdx"

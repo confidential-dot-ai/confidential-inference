@@ -297,7 +297,7 @@ At the exact C8s commit pinned by your selected release, inspect:
 - `pkg/allowlist/mountenv_test.go`,
   `TestMountPolicyRefusesAnUndeclaredDestination`: a bind over an undeclared
   image executable path is rejected without changing the image digest.
-- `internal/cmds/cds/attest_matchedworkload_test.go`: workload stamps require
+- `internal/cmds/ta/attest_matchedworkload_test.go`: workload stamps require
   matching environment and mount evidence.
 
 These checks run at different layers. A policy must declare the restrictions

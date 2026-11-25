@@ -22,7 +22,7 @@ def channel(tag, allow_beta=False):
 
 def signer(tag, allow_beta=False):
     branch = channel(tag, allow_beta)
-    return f"https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/{branch}"
+    return f"https://github.com/{C8S_REPOSITORY}/.github/workflows/semver-tag.yml@refs/heads/{branch}"
 
 import hashlib
 import json
@@ -34,8 +34,7 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable
 
-C8S_REPOSITORY = "confidential-dot-ai/c8s"
-C8S_SIGNED_REPOSITORY = "confidential-dot-ai/C8s"
+C8S_REPOSITORY = "confidential-dot-ai/confidential-kubernetes"
 C8S_STATEMENT = "release-statement.json"
 C8S_BUNDLE = "release-statement.sigstore.json"
 C8S_SIGNER_ISSUER = "https://token.actions.githubusercontent.com"
@@ -145,9 +144,9 @@ def signed_statement(tag: str, directory: Path, run: Callable[..., subprocess.Co
     # Statements from C8s #1070 list the allowlist seed assets; later ones name the chart instead,
     # and from C8s #1685 the CLI binaries.
     if (not isinstance(signed, dict) or set(signed) - {"repository", "tag", "commit", "allowlistSeeds", "chart", "cli"}
-            or signed.get("repository") != C8S_SIGNED_REPOSITORY or signed.get("tag") != tag
+            or signed.get("repository") != C8S_REPOSITORY or signed.get("tag") != tag
             or not isinstance(signed.get("commit"), str)):
-        raise ReleaseError(f"the signed c8s {tag} statement {signed} does not name {C8S_SIGNED_REPOSITORY} {tag}")
+        raise ReleaseError(f"the signed c8s {tag} statement {signed} does not name {C8S_REPOSITORY} {tag}")
     if "chart" in signed and CHART.fullmatch(str(signed["chart"])) is None:
         raise ReleaseError(f"the signed c8s {tag} statement names no digest-pinned C8s chart: {signed['chart']}")
     return signed

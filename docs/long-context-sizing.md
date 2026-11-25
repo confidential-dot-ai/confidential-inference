@@ -31,7 +31,7 @@ The C8s sealed tunnel (`/tunnel` on the front door) is a different path. It
 accepts at most 8 MiB for each request record (`MaxTunnelRecordBytes`) and
 buffers at most 32 MiB of each response. A client that uses the tunnel
 cannot send a 1M-token request. The open C8s issue
-[confidential-dot-ai/C8s#1777](https://github.com/confidential-dot-ai/C8s/issues/1777)
+[confidential-dot-ai/confidential-kubernetes#1777](https://github.com/confidential-dot-ai/confidential-kubernetes/issues/1777)
 covers the front-door body limit.
 
 ## 2. The GPU capacity

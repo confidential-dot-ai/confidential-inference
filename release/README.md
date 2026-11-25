@@ -156,7 +156,7 @@ exact beta workflow and source commit.
 
 It needs `crane`, Go, read access to the C8s Go module, and first on `PATH`
 the Helm version that the worker image build pins (`HELM_VERSION` in its
-`mkosi.sync`; v3.14.4 at C8s v0.101.9). `--c8s` gives a C8s CLI built from the
+`mkosi.sync`; v3.14.4 at C8s v0.104.0). `--c8s` gives a C8s CLI built from the
 tag; without it the script builds one. It changes the C8s pins in `spec.yaml`,
 the source lock, the seed record, the node and Trust Authority manifests, the image
 config, and the allowlist test fixture, and then runs the release checks.
@@ -167,11 +167,11 @@ Do those steps by hand. Review the full diff before you commit.
 ## Move a deployment to C8s v0.99.29
 
 A release that pins C8s v0.99.29 or later runs only on workers of the
-pinned C8s release with a standalone Trust Authority VM. This release pins C8s v0.101.9.
+pinned C8s release with a standalone Trust Authority VM. This release pins C8s v0.104.0.
 From v0.99.38 each GPU worker runs the NVIDIA device plugin and
 dcgm-exporter as static pods (C8s #1700). The old cluster's Trust Authority state does
 not carry over: a new Trust Authority keeps its secrets in process memory, starts empty,
-and mints a new mesh CA (C8s `docs/secrets.md`, `docs/cds-ha.md`). Keep the
+and mints a new mesh CA (C8s `docs/secrets.md`, `docs/ta-ha.md`). Keep the
 old cluster, its Trust Authority and its release serving until the new deployment passes
 every acceptance check.
 
@@ -184,10 +184,10 @@ lives: `cds-config.yaml` for the Trust Authority and `worker.yaml` for each work
 embeds the Trust Authority pin and so the exact bytes of `cds-config.yaml`. The worker
 documents the Trust Authority admits are not in either file: operator-signed decrees in
 the Trust Authority log carry them, and a later `node-images` decree replaces the set
-(C8s `docs/cds-ha.md`, `docs/launch-configuration.md`). Bring a deployment
+(C8s `docs/ta-ha.md`, `docs/launch-configuration.md`). Bring a deployment
 of workers up in this order:
 
-1. Write `cds-config.yaml` with `c8s cds config new --replica CDS_HOST
+1. Write `cds-config.yaml` with `c8s ta config new --replica CDS_HOST
    --voters 1` and no `--node-pins`, so the launch file names no nodes.
    `CDS_HOST` is the Trust Authority VM's DNS name or IPv4 address; name each replica
    for more than one VM, with an odd `--voters`. A Trust Authority without `--replica`
@@ -196,11 +196,11 @@ of workers up in this order:
 2. Boot the Trust Authority VM from the release's `cdsImage` and that file.
 3. Write `worker.yaml` with `c8s worker new` against the deployment's
    `cds-pin.json`.
-4. Sign the Genesis decree as C8s `docs/cds-ha-runbooks.md` runbook 1
+4. Sign the Genesis decree as C8s `docs/ta-ha-runbooks.md` runbook 1
    describes, with `--image-manifest cds-manifest.json` from the release and
    `--worker-document worker.yaml --worker-image worker-image.json`, where
    `worker-image.json` holds the measurements of the release's node image
-   (`c8s cds ha decree genesis`).
+   (`c8s ta ha decree genesis`).
 5. Admit every later or changed `worker.yaml` with a `node-images` decree on
    the set in force.
 
@@ -219,7 +219,10 @@ Hand traffic over only when all of these hold:
   keys.
 - Every application secret is written to the new Trust Authority.
 - Every encrypted volume key is written back from its escrow file with
-  `c8s secrets put` (C8s `docs/volumes.md`). A volume without an escrow file
+  `c8s secrets put` (C8s `docs/volumes.md`). From C8s v0.101.10 the key blob
+  must carry the volume's name: to a copy of an escrow file written before
+  that, add `"name"` with the name given to `c8s volume create --name`. A
+  volume without an escrow file, or with a name longer than 12 characters,
   cannot move; provision it again.
 - Every inference worker gets its model. The v0.99.29 worker mounts its
   models disk read-only, so the plain model cache cannot work. A deployment
@@ -242,7 +245,7 @@ Accept the new deployment only after these checks pass on it:
    is refused.
 4. A worker launched with a `worker.yaml` that no entry of the decree in
    force binds is refused admission and gets no credentials. Read the set in
-   force with `c8s cds ha decrees --config cds-config.yaml --cds-pin
+   force with `c8s ta ha decrees --config cds-config.yaml --ta-pin
    cds-pin.json --json` (its `node_pins`), not from `cds-config.yaml`.
 5. The public attestation route verifies against the new release manifest
    and the RTMR[3] seed of the deployment's `worker.yaml`.

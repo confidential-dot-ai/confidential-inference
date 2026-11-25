@@ -147,7 +147,7 @@ release. The `c8s-operator` workload is a different component.
 
 The C8s node image pinned by the `v0.14.29` example issues Kubernetes user
 `operator` in group `c8s:node-operators`, rather than `system:masters`.
-The measured [role and binding](https://github.com/confidential-dot-ai/c8s/blob/deca64d1f5bf6c70e00c1a42ad0638bdf654efbc/node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/cred-release-rbac.yaml)
+The measured [role and binding](https://github.com/confidential-dot-ai/confidential-kubernetes/blob/deca64d1f5bf6c70e00c1a42ad0638bdf654efbc/node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/cred-release-rbac.yaml)
 permit application management and restrict access to the security controls.
 Measured admission guards deny exec, attach, port-forward, and ephemeral
 containers. They also protect system namespaces and prevent operator changes
