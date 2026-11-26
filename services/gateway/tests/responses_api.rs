@@ -435,4 +435,9 @@ async fn the_body_limit_and_model_check_apply() {
             .unwrap_or_else(|_| unreachable!())
             .is_empty()
     );
+    let rendered = gateway.metrics.render_prometheus();
+    assert!(
+        rendered.contains("key_id=\"key_record_1\",reason=\"model_not_authorized\""),
+        "{rendered}"
+    );
 }

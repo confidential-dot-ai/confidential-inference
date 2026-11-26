@@ -418,7 +418,9 @@ async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Re
         .iter()
         .any(|candidate| candidate == &model)
     {
-        state.metrics.record_rejection("model_not_authorized");
+        state
+            .metrics
+            .record_key_rejection("model_not_authorized", &key_id);
         return client_error(StatusCode::UNAUTHORIZED, "model_not_authorized");
     }
     let model = model.as_str();
@@ -450,10 +452,15 @@ async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Re
         )
     });
     let mut usage_request = match &state.usage {
-        Some(recorder) => match recorder.reserve(&key_id, model) {
-            Some(guard) => Some(guard.charge_to(state.keys.clone())),
-            None => return protection::overload("usage_capacity"),
-        },
+        Some(recorder) => {
+            let Some(guard) = recorder.reserve(&key_id, model) else {
+                state
+                    .metrics
+                    .record_key_rejection("usage_capacity", &key_id);
+                return protection::overload("usage_capacity");
+            };
+            Some(guard.charge_to(state.keys.clone()))
+        }
         None => None,
     };
     let internal_stream_usage = api.stream_usage(&payload, usage_request.is_some());
@@ -492,7 +499,9 @@ async fn proxy_inference(state: Arc<AppState>, request: Request, api: Api) -> Re
         if let Some(usage) = &mut usage_request {
             usage.finish(usage::Outcome::Failed);
         }
-        state.metrics.record_rejection("inference_capacity");
+        state
+            .metrics
+            .record_key_rejection("inference_capacity", &key_id);
         return protection::overload("inference_capacity");
     };
     let active_request = state.metrics.active_request();
