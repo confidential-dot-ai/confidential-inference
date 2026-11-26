@@ -1,0 +1,15 @@
+{
+  "endpoint": "https://api.confidential.ai/",
+  "release": "v0.16.9",
+  "bundleSha256": "639bfd2d46c53f58de4ed99364a88cb961ebcb09a294d5bbda940575712fc94c",
+  "allowlistSha256": "251eaf57d70dda5b2f6e292bf898cb339993a81a99381d195d45f580708da113",
+  "workload": "c8s-router-7210bdeb078b",
+  "routeDigest": "7ab8ecae4187cdc3a69c7b9d7dba2df6910d777a52081063b797446233303d96",
+  "expectedRTMR3": "ef50dded08051bcdbd3216dc01de22f3b5540f35b80dcbc92ba0e70b99ef621c43bd1b3266b49000a90d275270b28710",
+  "tdxTCBStatus": "UpToDate",
+  "launchKey": {
+    "source": "Front-door server launch record, 2026-11-06, launch/server/pubkey",
+    "pemSha256": "d97d4a971a7757653232eecd2cda38fd36b6248aed221417636316c1228c8f98",
+    "pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEBkr1houy9rdDVI9/gth3HwVtwdPx\n3XRzAJ8KPt/5zfXNNQRRU0XdGlTTTgPgSKCM9qIeZ5xo9toxG/eOL4LpJQ==\n-----END PUBLIC KEY-----\n"
+  }
+}

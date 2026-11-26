@@ -1,12 +1,75 @@
 # Verify Confidential Inference
 
+## Current production
+
+Use the [v0.16.9 production profile](production-v0.16.9.json) for
+`https://api.confidential.ai/`. It pins the signed release, exact policy,
+front-door workload, route, RTMR3 seed and Intel TCB status. The launch
+key in the profile is the exact public PEM recorded for the front-door
+server on 6 November 2026. C8s v0.80.10 derives the seed as
+`SHA-384(48 zero bytes ‖ SHA-384(PEM))`, including the PEM's final newline.
+The pinned route sends requests for the production host at path
+`/` to workload `gateway`.
+
+Install [TEErminator v0.0.4](#1-install-teerminator), Cosign v3, GitHub CLI
+and jq. Save the linked profile as `production-v0.16.9.json` beside the
+TEErminator binary in a fresh directory. Run this check in Bash:
+
+```bash
+(
+  set -euo pipefail
+  profile=production-v0.16.9.json
+  sha256() { openssl dgst -sha256 -r "$1" | cut -d' ' -f1; }
+  test "$(sha256 "$profile")" = b45ba3e50d2c4c984734f78f0f17004eef5e6d31556199a9489d42d5d0930978
+  release=$(jq -er .release "$profile")
+  gh release download "$release" -R confidential-dot-ai/confidential-inference \
+    -p release-bundle.json -p release-bundle.sigstore.json -p allowlist.json
+  cosign verify-blob --bundle release-bundle.sigstore.json \
+    --certificate-identity "https://github.com/confidential-dot-ai/confidential-inference/.github/workflows/release-bundle.yml@refs/tags/$release" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com release-bundle.json
+  test "$(sha256 release-bundle.json)" = "$(jq -er .bundleSha256 "$profile")"
+  policy=$(sha256 allowlist.json)
+  test "$policy" = "$(jq -er .allowlistSha256 "$profile")"
+  test "sha256:$policy" = "$(jq -er .allowlist.sha256 release-bundle.json)"
+
+  seed=$(jq -er '.expectedRTMR3 | select(test("^[0-9a-f]{96}$"))' "$profile")
+  jq -jer .launchKey.pem "$profile" > launch-public.pem
+  test "$(sha256 launch-public.pem)" = "$(jq -er .launchKey.pemSha256 "$profile")"
+  derived=$( { dd if=/dev/zero bs=48 count=1 2>/dev/null; openssl dgst -sha384 -binary launch-public.pem; } |
+    openssl dgst -sha384 -r | cut -d' ' -f1)
+  test "$seed" = "$derived"
+
+  mkdir -m 700 teerminator-home
+  teerminator() { HOME="$PWD/teerminator-home" XDG_CONFIG_HOME="$PWD/teerminator-home/config" ./teerminator "$@"; }
+  teerminator remote add 127.0.0.1:8080 "$(jq -er .endpoint "$profile")" \
+    --mode attest-lb --image-manifest release-bundle.json --allowlist allowlist.json \
+    --workload "$(jq -er .workload "$profile")" --expected-rtmr3 "$seed" \
+    --route-digest "$(jq -er .routeDigest "$profile")" \
+    --tdx-tcb-status "$(jq -er .tdxTCBStatus "$profile")"
+  teerminator allowlist fetch 127.0.0.1:8080 --output allowlist-live.json
+  cmp allowlist.json allowlist-live.json
+  teerminator status | tee status.txt
+  awk '$1 == "127.0.0.1:8080" && $(NF-1) == "attest-lb" && $NF == "Verified" { ok=1 } END { exit !ok }' status.txt
+)
+```
+
+On 23 November 2026, TEErminator v0.0.4 printed `Verified`,
+`tdx tcb status UpToDate` and the profile's route digest followed by
+`(pinned)`. The fetched allowlist matched the signed release. The SHA-256
+check above identifies the profile revision for this run. Changing the first
+hex digit of the expected seed in the verifier invocation produced
+`Failed` with an `RTMR[3]` mismatch.
+
+After reviewing the signed allowlist and verifying the endpoint, start the
+proxy with the same configuration and direct requests to `http://127.0.0.1:8080/v1`:
+
+```sh
+HOME="$PWD/teerminator-home" XDG_CONFIG_HOME="$PWD/teerminator-home/config" ./teerminator start
+```
+
 ## Confidential Cloud deployments
 
-This procedure is for a client of a Confidential Cloud deployment. Do not
-apply it to current production or change existing client configurations.
-The current deployment keeps its existing verification policy. Its
-instructions remain available at
-[the current deployment's source commit](https://github.com/confidential-dot-ai/confidential-inference/blob/f127c4747dda30c60e0ebe26fd6b7d0fdd5936c3/docs/verification.md).
+The remaining steps apply to Confidential Cloud deployments.
 
 ## What verification proves
 
